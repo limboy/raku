@@ -866,15 +866,17 @@ impl Waku {
             .sidebar_row_project
             .replace(self.state.selected_project)
             != self.state.selected_project;
+        let mut cached = self.sidebar_row_cache.borrow_mut();
+        // Projectless tasks have distinct workspace project IDs but share
+        // one history. Switching between them must not reset its scroll.
+        if cached.as_slice() == rows {
+            return;
+        }
         if project_changed {
             self.sidebar_list_state.scroll_to(ListOffset {
                 item_ix: 0,
                 offset_in_item: Pixels::ZERO,
             });
-        }
-        let mut cached = self.sidebar_row_cache.borrow_mut();
-        if cached.as_slice() == rows {
-            return;
         }
         let anchored_offset = if project_changed {
             None
