@@ -468,20 +468,18 @@ impl Waku {
             });
         }
         self.open_settings_page(SettingsPage::Appearance, cx);
-        self.ensure_usage_history(false, cx);
         self.settings_focus_generation = self.settings_focus_generation.wrapping_add(1);
         let generation = self.settings_focus_generation;
         let entity = cx.entity().downgrade();
-        // The deferred popup must join the dispatch tree before receiving focus.
-        window.on_next_frame(move |window, _| {
-            window.on_next_frame(move |window, cx| {
-                let _ = entity.update(cx, |this, cx| {
-                    if this.settings_focus_generation == generation
-                        && let Some(page) = this.settings_page
-                    {
-                        window.focus(&this.settings_tab_focus[page as usize], cx);
-                    }
-                });
+        // Coalesce mounting and focus into the first draw, rather than
+        // refreshing the whole window again after an unfocused frame.
+        window.defer(cx, move |window, cx| {
+            let _ = entity.update(cx, |this, cx| {
+                if this.settings_focus_generation == generation
+                    && let Some(page) = this.settings_page
+                {
+                    window.focus(&this.settings_tab_focus[page as usize], cx);
+                }
             });
         });
         cx.notify();

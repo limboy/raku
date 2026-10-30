@@ -488,21 +488,21 @@ impl Waku {
             });
         }
 
-        // The palette is deferred onto GPUI's overlay plane. Wait for that
-        // subtree to join the dispatch tree before handing focus to its input.
+        // Hand focus over in this effect cycle, before the first draw. Waiting
+        // for frame callbacks first paints an unfocused popup, then refreshes
+        // the entire workspace when focus eventually arrives.
         let focus = self.command_palette.search.read(cx).focus();
         let weak = cx.entity().downgrade();
-        window.on_next_frame(move |window, _| {
-            window.on_next_frame(move |window, cx| {
-                let mut should_focus = false;
-                let _ = weak.update(cx, |this, _| {
-                    should_focus = this.command_palette.open
-                        && this.command_palette.focus_generation == focus_generation;
-                });
-                if should_focus {
-                    window.focus(&focus, cx);
-                }
-            });
+        window.defer(cx, move |window, cx| {
+            let should_focus = weak
+                .update(cx, |this, _| {
+                    this.command_palette.open
+                        && this.command_palette.focus_generation == focus_generation
+                })
+                .unwrap_or(false);
+            if should_focus {
+                window.focus(&focus, cx);
+            }
         });
         cx.notify();
     }

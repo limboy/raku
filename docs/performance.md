@@ -37,6 +37,13 @@ The Settings popup uses another cached pane while it is open. Background
 spinner ticks can replay the form; settings edits and root state changes still
 invalidate it through the same observer.
 
+Search and Settings hand off focus with `window.defer` in the opening effect
+cycle, before the first draw. Waiting for two `on_next_frame` callbacks paints
+an unfocused popup and then forces another full-window refresh when focus
+arrives. Keep the generation checks so a dismissed or replaced popup cannot
+steal focus. Settings starts its history scan when the Usage tab opens;
+opening Appearance does not need that scan.
+
 The one exception to that fan-out is the 200 ms panel slide: its display-rate
 root notifies would price every tick at a three-island rebuild, so while
 `panels_sliding()` the observer skips the fan-out and the cached-view keys
