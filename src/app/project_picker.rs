@@ -550,9 +550,23 @@ impl Waku {
         {
             return;
         }
+        // Keep the row cache in step with this deletion so the next render
+        // does not reset the whole list and discard its scroll position.
+        remove_project_picker_row(
+            project_id,
+            &mut self.project_picker_row_cache.borrow_mut(),
+            &self.project_picker_list_state,
+        );
         self.project_picker_highlight = None;
         self.save();
         cx.notify();
+    }
+}
+
+fn remove_project_picker_row(project_id: Uuid, rows: &mut Vec<Uuid>, list: &ListState) {
+    if let Some(index) = rows.iter().position(|id| *id == project_id) {
+        rows.remove(index);
+        list.splice(index..index + 1, 0);
     }
 }
 
@@ -741,6 +755,51 @@ mod tests {
         removed.remove(&projects[0].id);
         let entries = visible_project_entries(&projects, &removed, None, "crow", &mut matcher);
         assert_eq!(names(&entries), vec!["crow"]);
+    }
+
+    #[test]
+    fn removing_a_project_preserves_the_picker_viewport() {
+        let projects = (0..40)
+            .map(|index| project(&format!("project-{index}")))
+            .collect::<Vec<_>>();
+
+        for (removed_index, expected_top) in [(25, 20), (5, 19), (20, 20), (39, 20)] {
+            let mut rows = projects
+                .iter()
+                .map(|project| project.id)
+                .collect::<Vec<_>>();
+            let list = ListState::new(rows.len(), ListAlignment::Top, px(152.0))
+                .with_uniform_item_height(px(PROJECT_PICKER_ROW_HEIGHT));
+            list.scroll_to(ListOffset {
+                item_ix: 20,
+                offset_in_item: px(7.0),
+            });
+
+            let removed_id = rows[removed_index];
+            remove_project_picker_row(removed_id, &mut rows, &list);
+
+            assert_eq!(list.item_count(), projects.len() - 1);
+            let offset = list.logical_scroll_top();
+            assert_eq!(offset.item_ix, expected_top);
+            assert_eq!(
+                offset.offset_in_item,
+                if removed_index == 20 {
+                    px(0.0)
+                } else {
+                    px(7.0)
+                }
+            );
+            // The next render sees the same row IDs, so it skips the full
+            // reset that used to jump this viewport back to the first row.
+            let entries = visible_project_entries(
+                &projects,
+                &HashSet::from([removed_id]),
+                None,
+                "",
+                &mut Matcher::new(nucleo_matcher::Config::DEFAULT),
+            );
+            assert!(rows.iter().eq(entries.iter().map(|(id, _)| id)));
+        }
     }
 
     #[test]
