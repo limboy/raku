@@ -17,37 +17,6 @@ pub fn init(cx: &mut App) {
     )]);
 }
 
-fn updater_button_available_content(
-    foreground: Hsla,
-    label: SharedString,
-    label_reveal: f32,
-) -> Div {
-    div()
-        .relative()
-        .size_full()
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .opacity(1.0 - label_reveal)
-                .child(icon("icons/download.svg", 12.0, foreground)),
-        )
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .whitespace_nowrap()
-                .opacity(label_reveal)
-                .child(label),
-        )
-}
-
 /// Height of a session card plus the separation reserved beneath it in the
 /// virtualized sidebar list. Keep the gap inside the list row so measured and
 /// estimated heights stay identical for off-screen sessions.
@@ -55,7 +24,6 @@ const SIDEBAR_SESSION_CARD_HEIGHT: f32 = 32.0;
 const SIDEBAR_SESSION_ROW_GAP: f32 = 1.0;
 const SIDEBAR_SESSION_ROW_HEIGHT: f32 = SIDEBAR_SESSION_CARD_HEIGHT + SIDEBAR_SESSION_ROW_GAP;
 const SIDEBAR_ACTION_ROW_HEIGHT: f32 = 32.0;
-const SIDEBAR_SEARCH_BOTTOM_GAP: f32 = 10.0;
 
 /// Recency for sidebar ordering. A submitted turn promotes the
 /// task immediately, while metadata edits such as a rename do not; a task with
@@ -126,8 +94,6 @@ pub(super) fn format_time_ago(seconds: u64) -> String {
 /// One row of the virtualized sidebar session history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SidebarRow {
-    /// Opens the window-wide command palette and scrolls with history.
-    Search,
     /// A started session.
     Session(Uuid),
 }
@@ -139,7 +105,6 @@ fn sidebar_session_row_index(rows: &[SidebarRow], session_id: Uuid) -> Option<us
 
 fn sidebar_row_height(row: SidebarRow) -> Pixels {
     px(match row {
-        SidebarRow::Search => SIDEBAR_ACTION_ROW_HEIGHT + SIDEBAR_SEARCH_BOTTOM_GAP,
         SidebarRow::Session(_) => SIDEBAR_SESSION_ROW_HEIGHT,
     })
 }
@@ -433,14 +398,25 @@ impl Waku {
         }))
     }
 
-    fn render_sidebar_search(&self, cx: &mut Context<Self>) -> Div {
-        let search = self
-            .render_sidebar_action_row(
-                "sidebar-search",
-                "icons/search.svg",
-                tr!("sidebar.search"),
-                cx,
-            )
+    fn render_sidebar_search(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let theme = Theme::current(cx);
+        div()
+            .id("sidebar-search")
+            .track_focus(&self.sidebar_search_focus)
+            .tab_index(0)
+            .focus_visible(|style| style.border_1().border_color(theme.accent))
+            .w(px(26.0))
+            .h(px(26.0))
+            .flex_none()
+            .rounded(px(6.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_default()
+            .hover(|element| element.bg(theme.overlay))
+            .active(|element| element.bg(theme.overlay_strong))
+            .tooltip(Tooltip::text(tr_cow!("sidebar.search")))
+            .child(icon("icons/search.svg", 14.0, theme.text_tertiary))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.toggle_command_palette_action(&ToggleCommandPalette, window, cx);
             }))
@@ -449,133 +425,7 @@ impl Waku {
                     this.toggle_command_palette_action(&ToggleCommandPalette, window, cx);
                     cx.stop_propagation();
                 }
-            }));
-        div()
-            .w_full()
-            .h(px(SIDEBAR_ACTION_ROW_HEIGHT + SIDEBAR_SEARCH_BOTTOM_GAP))
-            .flex_none()
-            .child(search)
-    }
-
-    fn start_available_update(&mut self, cx: &mut Context<Self>) {
-        if self.updater_status != crate::updater::UpdateStatus::Available {
-            return;
-        }
-        let started = cx
-            .try_global::<crate::updater::UpdaterState>()
-            .and_then(|state| state.0.as_ref())
-            .is_some_and(|updater| updater.install_available_update());
-        if started {
-            self.updater_status = crate::updater::UpdateStatus::Updating;
-            self.reset_updater_button_animation();
-            cx.notify();
-        }
-    }
-
-    fn render_updater_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let status = self.updater_status;
-        if status == crate::updater::UpdateStatus::Idle {
-            return None;
-        }
-
-        let theme = Theme::current(cx);
-        let foreground = rgb(0xFFFFFF).into();
-        let available = status == crate::updater::UpdateStatus::Available;
-        let button = div()
-            .id("sidebar-update")
-            .track_focus(&self.updater_button_focus)
-            .when(available, |button| button.tab_index(0))
-            .w(px(UPDATER_BUTTON_COLLAPSED_WIDTH))
-            .h(px(20.0))
-            .flex_none()
-            .overflow_hidden()
-            .rounded_full()
-            .relative()
-            .cursor_default()
-            .bg(theme.gauge)
-            .text_color(foreground)
-            .text_size(sp(12.5))
-            .font_weight(FontWeight::MEDIUM)
-            .when(available, |button| {
-                button
-                    .hover(|style| style.opacity(0.92))
-                    .focus_visible(|style| style.border_1().border_color(rgb(0xFFFFFF)))
-                    .active(|style| style.opacity(0.8))
-                    .on_hover(cx.listener(|this, hovering: &bool, _, cx| {
-                        this.set_updater_button_hovered(*hovering, cx);
-                    }))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.start_available_update(cx);
-                    }))
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.start_available_update(cx);
-                            cx.stop_propagation();
-                        }
-                    }))
-            });
-
-        if !available {
-            let indicator = motion::spin_slow(icon("icons/loader-circle.svg", 14.0, foreground));
-            return Some(
-                button
-                    .tooltip(Tooltip::text(tr!("updater.updating")))
-                    .child(
-                        div()
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(indicator),
-                    )
-                    .into_any_element(),
-            );
-        }
-
-        let label: SharedString = tr_cow!("updater.update").into();
-        let animation_generation = self.updater_button_animation_generation;
-        if animation_generation == 0 {
-            return Some(
-                button
-                    .child(updater_button_available_content(foreground, label, 0.0))
-                    .into_any_element(),
-            );
-        }
-
-        let from_width = self.updater_button_animation_from_width;
-        let from_reveal = self.updater_button_animation_from_reveal;
-        let target_width = if self.updater_button_expanded() {
-            UPDATER_BUTTON_EXPANDED_WIDTH
-        } else {
-            UPDATER_BUTTON_COLLAPSED_WIDTH
-        };
-        let target_reveal = if self.updater_button_expanded() {
-            1.0
-        } else {
-            0.0
-        };
-        let current_width = self.updater_button_width.clone();
-        let current_reveal = self.updater_button_label_reveal.clone();
-
-        Some(
-            button
-                .with_animation(
-                    SharedString::from(format!("sidebar-updater-expand-{animation_generation}")),
-                    Animation::new(Duration::from_millis(150)).with_easing(ease_out_quint()),
-                    move |button, delta| {
-                        let width = from_width + (target_width - from_width) * delta;
-                        let reveal = from_reveal + (target_reveal - from_reveal) * delta;
-                        current_width.set(width);
-                        current_reveal.set(reveal);
-                        button.w(px(width)).child(updater_button_available_content(
-                            foreground,
-                            label.clone(),
-                            reveal,
-                        ))
-                    },
-                )
-                .into_any_element(),
-        )
+            }))
     }
 
     fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> Div {
@@ -633,9 +483,7 @@ impl Waku {
             .tab_stop(false)
             .child(project_selector)
             .child(div().flex_1())
-            .when_some(self.render_updater_button(cx), |footer, button| {
-                footer.child(button)
-            })
+            .child(self.render_sidebar_search(cx))
             .child(
                 div()
                     .id("open-settings")
@@ -721,6 +569,7 @@ impl Waku {
                 div()
                     .flex_none()
                     .px(px(10.0))
+                    .pb(px(10.0))
                     .child(self.render_sidebar_new_session(cx)),
             )
             .child(
@@ -820,12 +669,9 @@ impl Waku {
             projectless_root.as_deref(),
             self.state.sidebar_ordering,
         );
-        std::iter::once(SidebarRow::Search)
-            .chain(
-                sessions
-                    .into_iter()
-                    .map(|session| SidebarRow::Session(session.id)),
-            )
+        sessions
+            .into_iter()
+            .map(|session| SidebarRow::Session(session.id))
             .collect()
     }
 
@@ -871,7 +717,6 @@ impl Waku {
 
     fn sidebar_row(&self, index: usize, rows: &[SidebarRow], cx: &mut Context<Self>) -> AnyElement {
         match rows.get(index) {
-            Some(SidebarRow::Search) => self.render_sidebar_search(cx).into_any_element(),
             Some(SidebarRow::Session(session_id)) => {
                 self.render_sidebar_session_item(*session_id, cx)
             }
@@ -1578,14 +1423,13 @@ mod tests {
     #[test]
     fn selected_session_uses_nearest_bottom_edge_for_an_unmeasured_lower_row() {
         let target = Uuid::from_u128(31);
-        let mut rows = vec![SidebarRow::Search];
-        rows.extend((1..=40).map(|id| SidebarRow::Session(Uuid::from_u128(id))));
+        let rows: Vec<_> = (1..=40).map(|id| SidebarRow::Session(Uuid::from_u128(id))).collect();
 
         let index = sidebar_session_row_index(&rows, target).unwrap();
         let offset = sidebar_bottom_aligned_offset(&rows, index, px(400.0));
 
-        assert_eq!(index, 31);
-        assert_eq!(offset.item_ix, 19);
+        assert_eq!(index, 30);
+        assert_eq!(offset.item_ix, 18);
         assert_eq!(offset.offset_in_item, px(29.0));
         let visible_height = rows[offset.item_ix..=index]
             .iter()

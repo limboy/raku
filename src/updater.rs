@@ -35,6 +35,7 @@ pub enum UpdateStatus {
     allow(dead_code)
 )]
 pub enum UpdaterEvent {
+    #[allow(dead_code)]
     StatusChanged(UpdateStatus),
     UpToDate,
     Failed(String),
@@ -559,6 +560,7 @@ mod macos {
             self.set_status(UpdateStatus::Idle);
         }
 
+        #[allow(dead_code)]
         fn install_available_update(&self) -> bool {
             if self.uses_standard_presentation() {
                 return false;
@@ -698,6 +700,7 @@ mod macos {
             }
         }
 
+        #[allow(dead_code)]
         pub fn install_available_update(&self) -> bool {
             if self
                 .user_driver
@@ -714,6 +717,7 @@ mod macos {
             }
         }
 
+        #[allow(dead_code)]
         pub fn status(&self) -> UpdateStatus {
             self.status.get()
         }
