@@ -104,6 +104,7 @@ struct Preview {
 
 impl Preview {
     fn new(source: Arc<str>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::platform::configure_window_mouse_tracking(window, cx);
         // GPUI's simulated windows have no native handle. Their theme still
         // follows the same global observer and background rendering path.
         #[cfg(not(test))]

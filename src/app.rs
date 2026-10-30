@@ -2182,6 +2182,7 @@ impl Waku {
             .and_then(|state| state.0.as_ref())
             .map(|updater| updater.events());
         let entity = cx.new(|cx| {
+            crate::platform::configure_window_mouse_tracking(window, cx);
             let settings_focus = cx.focus_handle();
             let onboarding_add_project_focus = cx.focus_handle();
             let onboarding_projectless_focus = cx.focus_handle();

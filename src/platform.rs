@@ -405,6 +405,73 @@ pub fn configure_main_window_close_behavior(window: &Window, cx: &gpui::App) {
 #[cfg(not(target_os = "macos"))]
 pub fn configure_main_window_close_behavior(_: &Window, _: &gpui::App) {}
 
+/// GPUI enables mouse-moved delivery for normal AppKit windows even when
+/// they are inactive. Keep hover tracking confined to the key window.
+#[cfg(target_os = "macos")]
+pub fn configure_window_mouse_tracking<T: 'static>(window: &mut Window, cx: &mut gpui::Context<T>) {
+    sync_window_mouse_tracking(window, cx);
+    // GPUI emits this on activation changes too, after re-reading the native
+    // pointer position. Clear that position after the update has completed.
+    cx.observe_window_bounds(window, |_, window, cx| {
+        sync_window_mouse_tracking(window, cx);
+    })
+    .detach();
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn configure_window_mouse_tracking<T: 'static>(_: &mut Window, _: &mut gpui::Context<T>) {}
+
+#[cfg(target_os = "macos")]
+fn sync_window_mouse_tracking(window: &Window, cx: &mut gpui::App) {
+    // GPUI's test windows have no native handle.
+    #[cfg(not(test))]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSView;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::AppKit(handle) = handle.as_raw()
+            && let Some(_main_thread) = MainThreadMarker::new()
+        {
+            // The view and window belong to GPUI; access is confined to AppKit's
+            // main thread. This does not affect clicks, scrolling, or dragging.
+            unsafe {
+                let view = handle.ns_view.cast::<NSView>().as_ref();
+                if let Some(native_window) = view.window() {
+                    native_window.setAcceptsMouseMovedEvents(window.is_window_active());
+                }
+            }
+        }
+    }
+
+    if !window.is_window_active() {
+        // Defer dispatch so hover listeners can update their entities without
+        // re-entering the entity observing this window. A move outside clears
+        // hover styles, on_hover state, and pending/visible tooltips together.
+        // Keyboard modality already suppresses hover; preserve it so returning
+        // via the keyboard keeps focus-visible styling.
+        window.defer(cx, |window, cx| {
+            if !window.is_window_active() {
+                let event = if window.last_input_was_keyboard() {
+                    gpui::PlatformInput::MouseExited(gpui::MouseExitEvent {
+                        position: window.mouse_position(),
+                        modifiers: window.modifiers(),
+                        ..Default::default()
+                    })
+                } else {
+                    gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position: gpui::point(gpui::px(-1.0), gpui::px(-1.0)),
+                        modifiers: window.modifiers(),
+                        ..Default::default()
+                    })
+                };
+                window.dispatch_event(event, cx);
+            }
+        });
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub fn hide_window(window: &mut Window) {
     use objc2::MainThreadMarker;
@@ -636,6 +703,94 @@ pub fn set_window_appearance(window: &Window, dark: Option<bool>) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_window_appearance(_: &Window, _: Option<bool>) {}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mouse_tracking_tests {
+    use super::configure_window_mouse_tracking;
+    use gpui::{
+        Context, IntoElement, Modifiers, Render, TestAppContext, div, point, prelude::*, px,
+    };
+    use std::{cell::Cell, rc::Rc, time::Duration};
+
+    struct HoverTarget {
+        hovered: Rc<Cell<bool>>,
+        tooltips_built: Rc<Cell<usize>>,
+    }
+
+    struct EmptyTooltip;
+
+    impl Render for EmptyTooltip {
+        fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size(px(16.0))
+        }
+    }
+
+    impl Render for HoverTarget {
+        fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+            let hovered = self.hovered.clone();
+            let tooltips_built = self.tooltips_built.clone();
+            div().size_full().child(
+                div()
+                    .id("hover-target")
+                    .size(px(100.0))
+                    .on_hover(move |value, _, _| hovered.set(*value))
+                    .tooltip(move |_, cx| {
+                        tooltips_built.set(tooltips_built.get() + 1);
+                        cx.new(|_| EmptyTooltip).into()
+                    }),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn deactivation_clears_hover_and_cancels_pending_tooltips(cx: &mut TestAppContext) {
+        let hovered = Rc::new(Cell::new(false));
+        let tooltips_built = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            configure_window_mouse_tracking(window, cx);
+            HoverTarget {
+                hovered: hovered.clone(),
+                tooltips_built: tooltips_built.clone(),
+            }
+        });
+        cx.update(|window, _| window.activate_window());
+        cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
+        assert!(hovered.get());
+
+        cx.deactivate_window();
+        assert!(!hovered.get(), "losing activation must end the hover");
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(tooltips_built.get(), 0);
+
+        cx.update(|window, _| window.activate_window());
+        cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
+        assert!(hovered.get(), "hover must work again after activation");
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(tooltips_built.get(), 1);
+    }
+
+    #[gpui::test]
+    fn deactivation_preserves_keyboard_input_modality(cx: &mut TestAppContext) {
+        let hovered = Rc::new(Cell::new(false));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            configure_window_mouse_tracking(window, cx);
+            HoverTarget {
+                hovered: hovered.clone(),
+                tooltips_built: Rc::new(Cell::new(0)),
+            }
+        });
+        cx.update(|window, _| window.activate_window());
+        cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
+        cx.simulate_keystrokes("tab");
+        assert!(cx.update(|window, _| window.last_input_was_keyboard()));
+
+        cx.deactivate_window();
+        assert!(!hovered.get());
+        assert!(cx.update(|window, _| window.last_input_was_keyboard()));
+    }
+}
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
