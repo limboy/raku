@@ -1,3 +1,4 @@
+use chrono::{Datelike, NaiveDate, TimeZone};
 use gpui::{KeyBinding, actions};
 
 use super::*;
@@ -24,6 +25,79 @@ const SIDEBAR_SESSION_CARD_HEIGHT: f32 = 32.0;
 const SIDEBAR_SESSION_ROW_GAP: f32 = 1.0;
 const SIDEBAR_SESSION_ROW_HEIGHT: f32 = SIDEBAR_SESSION_CARD_HEIGHT + SIDEBAR_SESSION_ROW_GAP;
 const SIDEBAR_ACTION_ROW_HEIGHT: f32 = 32.0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SidebarDateGroup {
+    Today,
+    Yesterday,
+    ThisWeek,
+    ThisMonth,
+    ThisYear,
+    Earlier,
+}
+
+impl SidebarDateGroup {
+    fn label(self) -> String {
+        match self {
+            Self::Today => tr!("sidebar.today"),
+            Self::Yesterday => tr!("sidebar.yesterday"),
+            Self::ThisWeek => tr!("sidebar.this_week"),
+            Self::ThisMonth => tr!("sidebar.this_month"),
+            Self::ThisYear => tr!("sidebar.this_year"),
+            Self::Earlier => tr!("sidebar.more"),
+        }
+    }
+}
+
+/// Resolve calendar boundaries off-thread: local timezone lookup can read the
+/// filesystem. Frames and row builders only compare these cached Unix seconds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SidebarDateBoundaries {
+    starts: [i64; 5],
+    next_day: i64,
+}
+
+impl SidebarDateBoundaries {
+    fn at<Tz: TimeZone>(now: DateTime<Tz>) -> Self {
+        let today = now.date_naive();
+        let timezone = now.timezone();
+        let start = |date: NaiveDate| {
+            let midnight = date.and_hms_opt(0, 0, 0).unwrap();
+            // Some timezones skip or repeat midnight. Use the first valid
+            // instant of the date, including a skipped day at a dateline move.
+            (0..=24 * 60)
+                .find_map(|minute| {
+                    timezone
+                        .from_local_datetime(&(midnight + chrono::Duration::minutes(minute)))
+                        .earliest()
+                })
+                .expect("local date has a valid boundary")
+                .timestamp()
+        };
+        Self {
+            starts: [
+                start(today),
+                start(today.pred_opt().unwrap()),
+                start(today - chrono::Days::new(today.weekday().num_days_from_monday().into())),
+                start(today.with_day(1).unwrap()),
+                start(today.with_ordinal(1).unwrap()),
+            ],
+            next_day: start(today.succ_opt().unwrap()),
+        }
+    }
+
+    fn group(self, timestamp: u64) -> SidebarDateGroup {
+        let timestamp = i64::try_from(timestamp).unwrap_or(i64::MAX);
+        match self.starts.iter().position(|start| timestamp >= *start) {
+            Some(0) => SidebarDateGroup::Today,
+            Some(1) => SidebarDateGroup::Yesterday,
+            Some(2) => SidebarDateGroup::ThisWeek,
+            Some(3) => SidebarDateGroup::ThisMonth,
+            Some(4) => SidebarDateGroup::ThisYear,
+            _ => SidebarDateGroup::Earlier,
+        }
+    }
+}
 
 /// Recency for sidebar ordering. A submitted turn promotes the
 /// task immediately, while metadata edits such as a rename do not; a task with
@@ -94,8 +168,29 @@ pub(super) fn format_time_ago(seconds: u64) -> String {
 /// One row of the virtualized sidebar session history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SidebarRow {
+    /// Non-interactive calendar heading for the following sessions.
+    DateHeader(SidebarDateGroup),
     /// A started session.
     Session(Uuid),
+}
+
+fn grouped_sidebar_rows(
+    sessions: &[&AgentSession],
+    dates: Option<SidebarDateBoundaries>,
+) -> Vec<SidebarRow> {
+    let mut rows = Vec::with_capacity(sessions.len() + 6);
+    let mut previous_group = None;
+    for session in sessions {
+        if let Some(dates) = dates {
+            let group = dates.group(sidebar_session_timestamp(session));
+            if previous_group != Some(group) {
+                rows.push(SidebarRow::DateHeader(group));
+                previous_group = Some(group);
+            }
+        }
+        rows.push(SidebarRow::Session(session.id));
+    }
+    rows
 }
 
 fn sidebar_session_row_index(rows: &[SidebarRow], session_id: Uuid) -> Option<usize> {
@@ -103,9 +198,38 @@ fn sidebar_session_row_index(rows: &[SidebarRow], session_id: Uuid) -> Option<us
         .position(|row| *row == SidebarRow::Session(session_id))
 }
 
+fn sidebar_remapped_scroll_offset(
+    previous_rows: &[SidebarRow],
+    rows: &[SidebarRow],
+    previous: ListOffset,
+) -> Option<ListOffset> {
+    // Staying at the top must also reveal any newly inserted first heading.
+    if previous.item_ix == 0 && previous.offset_in_item <= Pixels::ZERO {
+        return None;
+    }
+    // Date headings can appear after startup or disappear at midnight. Keep
+    // the same row at the viewport edge, or its next session if a heading went.
+    [previous.item_ix, previous.item_ix + 1]
+        .into_iter()
+        .find_map(|previous_index| {
+            let anchor = previous_rows.get(previous_index)?;
+            let item_ix = rows.iter().position(|row| row == anchor)?;
+            Some(ListOffset {
+                item_ix,
+                offset_in_item: if previous_index == previous.item_ix {
+                    previous.offset_in_item
+                } else {
+                    Pixels::ZERO
+                },
+            })
+        })
+}
+
 fn sidebar_row_height(row: SidebarRow) -> Pixels {
     px(match row {
-        SidebarRow::Session(_) => SIDEBAR_SESSION_ROW_HEIGHT,
+        // Keep headings the same height as session rows so off-screen height
+        // hints and nearest-edge selection reveal remain exact.
+        SidebarRow::DateHeader(_) | SidebarRow::Session(_) => SIDEBAR_SESSION_ROW_HEIGHT,
     })
 }
 
@@ -154,6 +278,37 @@ fn reveal_sidebar_list_row(list: &ListState, rows: &[SidebarRow], index: usize) 
 }
 
 impl Waku {
+    pub(super) fn start_sidebar_date_clock(&mut self, cx: &mut Context<Self>) {
+        // One task owns all refreshes, so a superseded pass cannot land late.
+        self.sidebar_date_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let dates = cx
+                    .background_executor()
+                    .spawn(async { SidebarDateBoundaries::at(Local::now()) })
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        if this.sidebar_date_boundaries != Some(dates) {
+                            this.sidebar_date_boundaries = Some(dates);
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                // Wake at local midnight; check at least once a minute for
+                // timezone changes, wall-clock adjustments, and system wake.
+                // An unchanged calendar never requests a frame.
+                let now = i64::try_from(unix_time()).unwrap_or(i64::MAX);
+                let delay = dates.next_day.saturating_sub(now).clamp(1, 60) as u64;
+                cx.background_executor()
+                    .timer(Duration::from_secs(delay))
+                    .await;
+            }
+        }));
+    }
+
     pub(super) fn window_drag_region(
         &self,
         region: Stateful<Div>,
@@ -625,8 +780,9 @@ impl Waku {
         }
     }
 
-    /// Cache the selected project's flat history between session or selection
-    /// changes. A streaming frame only scans the allocation-free fingerprint.
+    /// Cache the selected project's grouped history between session, selection,
+    /// or local calendar changes. A streaming frame only scans the
+    /// allocation-free fingerprint.
     fn sidebar_rows_cached(&self) -> Rc<Vec<SidebarRow>> {
         let mut fingerprint = mix(
             0x51de_ba5e_5eed_c0de,
@@ -642,6 +798,13 @@ impl Waku {
                 SidebarOrdering::Oldest => 2,
             },
         );
+        let dates = self.sidebar_date_boundaries;
+        fingerprint = mix(fingerprint, u64::from(dates.is_some()));
+        if let Some(dates) = dates {
+            for start in dates.starts {
+                fingerprint = mix(fingerprint, start as u64);
+            }
+        }
         for session in &self.state.sessions {
             if !session.has_started() {
                 continue;
@@ -669,10 +832,7 @@ impl Waku {
             projectless_root.as_deref(),
             self.state.sidebar_ordering,
         );
-        sessions
-            .into_iter()
-            .map(|session| SidebarRow::Session(session.id))
-            .collect()
+        grouped_sidebar_rows(&sessions, self.sidebar_date_boundaries)
     }
 
     /// Keep the virtualized list in sync with the current row snapshot.
@@ -680,11 +840,11 @@ impl Waku {
     /// preserving scroll position and measured heights across unrelated churn
     /// (e.g. the active session's `updated_at` bumping on every stream tick).
     fn sync_sidebar_rows(&self, rows: &[SidebarRow]) {
-        if self
+        let project_changed = self
             .sidebar_row_project
             .replace(self.state.selected_project)
-            != self.state.selected_project
-        {
+            != self.state.selected_project;
+        if project_changed {
             self.sidebar_list_state.scroll_to(ListOffset {
                 item_ix: 0,
                 offset_in_item: Pixels::ZERO,
@@ -694,6 +854,15 @@ impl Waku {
         if cached.as_slice() == rows {
             return;
         }
+        let anchored_offset = if project_changed {
+            None
+        } else {
+            sidebar_remapped_scroll_offset(
+                &cached,
+                rows,
+                self.sidebar_list_state.logical_scroll_top(),
+            )
+        };
         let prefix = cached
             .iter()
             .zip(rows.iter())
@@ -713,10 +882,29 @@ impl Waku {
                 .clone()
                 .with_uniform_item_height(px(SIDEBAR_SESSION_ROW_HEIGHT));
         }
+        if let Some(offset) = anchored_offset {
+            self.sidebar_list_state.scroll_to(offset);
+        }
     }
 
     fn sidebar_row(&self, index: usize, rows: &[SidebarRow], cx: &mut Context<Self>) -> AnyElement {
         match rows.get(index) {
+            Some(row @ SidebarRow::DateHeader(group)) => {
+                let theme = Theme::current(cx);
+                div()
+                    .w_full()
+                    .h(sidebar_row_height(*row))
+                    .px(px(8.0))
+                    .pt(px(6.0))
+                    .flex()
+                    .items_center()
+                    .text_size(sp(11.5))
+                    .line_height(sp(16.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_tertiary)
+                    .child(group.label())
+                    .into_any_element()
+            }
             Some(SidebarRow::Session(session_id)) => {
                 self.render_sidebar_session_item(*session_id, cx)
             }
@@ -1284,6 +1472,181 @@ fn sidebar_session_selected(
 mod tests {
     use super::*;
 
+    fn calendar_time(year: i32, month: u32, day: u32, hour: u32) -> DateTime<chrono::FixedOffset> {
+        chrono::FixedOffset::east_opt(8 * 3_600)
+            .unwrap()
+            .with_ymd_and_hms(year, month, day, hour, 0, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn sidebar_date_groups_use_local_calendar_boundaries() {
+        use SidebarDateGroup::*;
+
+        let dates = SidebarDateBoundaries::at(calendar_time(2026, 10, 30, 12));
+        for (timestamp, expected) in [
+            (calendar_time(2026, 10, 31, 0), Today),
+            (calendar_time(2026, 10, 30, 0), Today),
+            (calendar_time(2026, 10, 29, 23), Yesterday),
+            (calendar_time(2026, 10, 29, 0), Yesterday),
+            (calendar_time(2026, 10, 28, 12), ThisWeek),
+            (calendar_time(2026, 10, 26, 0), ThisWeek),
+            (calendar_time(2026, 10, 25, 23), ThisMonth),
+            (calendar_time(2026, 10, 1, 0), ThisMonth),
+            (calendar_time(2026, 9, 30, 23), ThisYear),
+            (calendar_time(2026, 1, 1, 0), ThisYear),
+            (calendar_time(2025, 12, 31, 23), Earlier),
+        ] {
+            assert_eq!(dates.group(timestamp.timestamp() as u64), expected);
+        }
+
+        // Local midnight is still the preceding day in UTC.
+        let midnight = Utc.with_ymd_and_hms(2026, 10, 29, 16, 0, 0).unwrap();
+        assert_eq!(dates.group(midnight.timestamp() as u64), Today);
+        assert_eq!(dates.group(midnight.timestamp() as u64 - 1), Yesterday);
+    }
+
+    #[test]
+    fn sidebar_calendar_prioritizes_yesterday_and_week_across_months_and_years() {
+        use SidebarDateGroup::*;
+
+        let new_year = SidebarDateBoundaries::at(calendar_time(2026, 1, 1, 12));
+        assert_eq!(
+            new_year.group(calendar_time(2025, 12, 31, 12).timestamp() as u64),
+            Yesterday
+        );
+        assert_eq!(
+            new_year.group(calendar_time(2025, 12, 29, 0).timestamp() as u64),
+            ThisWeek
+        );
+        assert_eq!(
+            new_year.group(calendar_time(2025, 12, 28, 23).timestamp() as u64),
+            Earlier
+        );
+
+        let new_month = SidebarDateBoundaries::at(calendar_time(2026, 8, 1, 12));
+        assert_eq!(
+            new_month.group(calendar_time(2026, 7, 31, 12).timestamp() as u64),
+            Yesterday
+        );
+        assert_eq!(
+            new_month.group(calendar_time(2026, 7, 27, 0).timestamp() as u64),
+            ThisWeek
+        );
+        assert_eq!(
+            new_month.group(calendar_time(2026, 7, 26, 23).timestamp() as u64),
+            ThisYear
+        );
+
+        let monday = SidebarDateBoundaries::at(calendar_time(2026, 3, 2, 12));
+        assert_eq!(
+            monday.group(calendar_time(2026, 3, 1, 12).timestamp() as u64),
+            Yesterday
+        );
+        assert_eq!(
+            monday.group(calendar_time(2026, 2, 28, 12).timestamp() as u64),
+            ThisYear
+        );
+    }
+
+    #[test]
+    fn sidebar_headers_preserve_both_sort_orders_and_omit_empty_groups() {
+        use SidebarDateGroup::*;
+
+        let project_id = Uuid::new_v4();
+        let dates = SidebarDateBoundaries::at(calendar_time(2026, 10, 30, 12));
+        let sessions = [
+            (2026, 10, 30, 10),
+            (2026, 10, 30, 9),
+            (2026, 10, 29, 12),
+            (2025, 1, 1, 12),
+        ]
+        .map(|(year, month, day, hour)| {
+            let mut session = AgentSession::new(project_id, ProviderKind::Codex);
+            session.created_at = calendar_time(year, month, day, hour).timestamp() as u64;
+            session
+        });
+        let mut sorted = sessions.iter().collect::<Vec<_>>();
+        sort_sidebar_sessions(&mut sorted, SidebarOrdering::Newest);
+        let newest = vec![
+            SidebarRow::DateHeader(Today),
+            SidebarRow::Session(sessions[0].id),
+            SidebarRow::Session(sessions[1].id),
+            SidebarRow::DateHeader(Yesterday),
+            SidebarRow::Session(sessions[2].id),
+            SidebarRow::DateHeader(Earlier),
+            SidebarRow::Session(sessions[3].id),
+        ];
+        assert_eq!(grouped_sidebar_rows(&sorted, Some(dates)), newest);
+
+        sort_sidebar_sessions(&mut sorted, SidebarOrdering::Oldest);
+        assert_eq!(
+            grouped_sidebar_rows(&sorted, Some(dates)),
+            vec![
+                SidebarRow::DateHeader(Earlier),
+                SidebarRow::Session(sessions[3].id),
+                SidebarRow::DateHeader(Yesterday),
+                SidebarRow::Session(sessions[2].id),
+                SidebarRow::DateHeader(Today),
+                SidebarRow::Session(sessions[1].id),
+                SidebarRow::Session(sessions[0].id),
+            ]
+        );
+        assert!(grouped_sidebar_rows(&[], Some(dates)).is_empty());
+        assert_eq!(
+            grouped_sidebar_rows(&sorted, None),
+            sorted
+                .iter()
+                .map(|session| SidebarRow::Session(session.id))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sidebar_groups_change_at_midnight_without_session_edits() {
+        let before = SidebarDateBoundaries::at(calendar_time(2026, 10, 30, 23));
+        let after = SidebarDateBoundaries::at(calendar_time(2026, 10, 31, 0));
+        let timestamp = calendar_time(2026, 10, 30, 12).timestamp() as u64;
+
+        assert_ne!(before, after);
+        assert_eq!(before.next_day, after.starts[0]);
+        assert_eq!(before.group(timestamp), SidebarDateGroup::Today);
+        assert_eq!(after.group(timestamp), SidebarDateGroup::Yesterday);
+    }
+
+    #[test]
+    fn sidebar_date_changes_keep_the_viewport_on_the_same_session() {
+        let session = SidebarRow::Session(Uuid::from_u128(1));
+        let grouped = [SidebarRow::DateHeader(SidebarDateGroup::Today), session];
+        assert!(
+            sidebar_remapped_scroll_offset(&[session], &grouped, ListOffset::default()).is_none()
+        );
+        let offset = sidebar_remapped_scroll_offset(
+            &[session],
+            &grouped,
+            ListOffset {
+                item_ix: 0,
+                offset_in_item: px(7.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(offset.item_ix, 1);
+        assert_eq!(offset.offset_in_item, px(7.0));
+
+        let tomorrow = [SidebarRow::DateHeader(SidebarDateGroup::Yesterday), session];
+        let offset = sidebar_remapped_scroll_offset(
+            &grouped,
+            &tomorrow,
+            ListOffset {
+                item_ix: 0,
+                offset_in_item: px(7.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(offset.item_ix, 1);
+        assert_eq!(offset.offset_in_item, Pixels::ZERO);
+    }
+
     #[test]
     fn sidebar_recency_uses_last_reply_with_creation_fallback() {
         let project_id = Uuid::new_v4();
@@ -1423,7 +1786,9 @@ mod tests {
     #[test]
     fn selected_session_uses_nearest_bottom_edge_for_an_unmeasured_lower_row() {
         let target = Uuid::from_u128(31);
-        let rows: Vec<_> = (1..=40).map(|id| SidebarRow::Session(Uuid::from_u128(id))).collect();
+        let rows: Vec<_> = (1..=40)
+            .map(|id| SidebarRow::Session(Uuid::from_u128(id)))
+            .collect();
 
         let index = sidebar_session_row_index(&rows, target).unwrap();
         let offset = sidebar_bottom_aligned_offset(&rows, index, px(400.0));
@@ -1439,5 +1804,28 @@ mod tests {
             - offset.offset_in_item;
         assert_eq!(visible_height, px(400.0));
         assert_eq!(sidebar_session_row_index(&rows, Uuid::from_u128(41)), None);
+    }
+
+    #[test]
+    fn selected_session_reveal_accounts_for_date_headers() {
+        let target = Uuid::from_u128(15);
+        let mut rows = vec![SidebarRow::DateHeader(SidebarDateGroup::Today)];
+        rows.extend((1..=10).map(|id| SidebarRow::Session(Uuid::from_u128(id))));
+        rows.push(SidebarRow::DateHeader(SidebarDateGroup::Yesterday));
+        rows.extend((11..=20).map(|id| SidebarRow::Session(Uuid::from_u128(id))));
+
+        let index = sidebar_session_row_index(&rows, target).unwrap();
+        let offset = sidebar_bottom_aligned_offset(&rows, index, px(200.0));
+
+        assert_eq!(index, 16);
+        assert_eq!(offset.item_ix, 10);
+        assert_eq!(offset.offset_in_item, px(31.0));
+        let visible_height = rows[offset.item_ix..=index]
+            .iter()
+            .copied()
+            .map(sidebar_row_height)
+            .fold(Pixels::ZERO, |height, row| height + row)
+            - offset.offset_in_item;
+        assert_eq!(visible_height, px(200.0));
     }
 }
