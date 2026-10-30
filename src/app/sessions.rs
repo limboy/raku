@@ -444,18 +444,46 @@ impl Waku {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.settings_page = Some(SettingsPage::General);
-        self.settings_scroll.set_offset(gpui::Point::default());
-        // Sparkle owns this value and its consent prompt can flip it outside
-        // the settings UI, so re-mirror it each time settings opens.
-        self.automatic_updates_enabled = cx
-            .try_global::<crate::updater::UpdaterState>()
-            .and_then(|updater| updater.0.as_ref())
-            .is_some_and(|updater| updater.automatically_checks_for_updates());
-        // Warm the Usage page's transcript scan while the user is still on
-        // General, so clicking Usage lands on data instead of a spinner.
+        if let Some(page) = self.settings_page {
+            window.focus(&self.settings_tab_focus[page as usize], cx);
+            return;
+        }
+        let menus = self
+            .menus
+            .borrow()
+            .values()
+            .filter(|menu| menu.is_open())
+            .cloned()
+            .collect::<Vec<_>>();
+        self.settings_previous_focus = if menus.is_empty() {
+            window.focused(cx)
+        } else {
+            Some(self.composer_focus(cx))
+        };
+        if !menus.is_empty() {
+            window.defer(cx, move |window, cx| {
+                for menu in menus {
+                    menu.close(window, cx);
+                }
+            });
+        }
+        self.open_settings_page(SettingsPage::Appearance, cx);
         self.ensure_usage_history(false, cx);
-        window.focus(&self.settings_focus, cx);
+        self.settings_focus_generation = self.settings_focus_generation.wrapping_add(1);
+        let generation = self.settings_focus_generation;
+        let entity = cx.entity().downgrade();
+        // The deferred popup must join the dispatch tree before receiving focus.
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                let _ = entity.update(cx, |this, cx| {
+                    if this.settings_focus_generation == generation
+                        && let Some(page) = this.settings_page
+                    {
+                        window.focus(&this.settings_tab_focus[page as usize], cx);
+                    }
+                });
+            });
+        });
         cx.notify();
     }
 
@@ -683,10 +711,8 @@ impl Waku {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.settings_page.take().is_some() {
-            let focus_handle = self.composer_focus(cx);
-            window.focus(&focus_handle, cx);
-            cx.notify();
+        if self.settings_page.is_some() {
+            self.close_settings_popup(window, cx);
             return;
         }
 
@@ -770,10 +796,8 @@ impl Waku {
             self.cancel_task_switcher(window, cx);
             return;
         }
-        if self.settings_page.take().is_some() {
-            let focus_handle = self.composer_focus(cx);
-            window.focus(&focus_handle, cx);
-            cx.notify();
+        if self.settings_page.is_some() {
+            self.close_settings_popup(window, cx);
             return;
         }
         if self.message_edit.is_some() {

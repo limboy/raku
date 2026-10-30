@@ -96,6 +96,7 @@ settings.usage_keywords: 使用状況 トークン コスト 支出 キャッシ
 settings.daemon_keywords: デーモン サーバー リモート ウェブ ネットワーク 公開 オリジン トークン ポート websocket
 settings.computer_use_keywords: コンピュータ 操作 画面収録 アクセシビリティ アプリ 制御 codex
 settings.back: 戻る
+settings.close: 設定を閉じる
 settings.search: 設定を検索
 daemon.expose_title: 管理対象デーモンを公開
 daemon.expose_description: このマシン以外の Waku クライアントから接続できるようにします。変更時はデーモンだけが再起動します。

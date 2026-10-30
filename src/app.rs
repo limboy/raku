@@ -210,13 +210,11 @@ enum BranchPickerAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsPage {
-    General,
+    Appearance,
     Providers,
     Skills,
     Usage,
-    Daemon,
     ComputerUse,
-    Appearance,
 }
 
 impl SettingsPage {
@@ -1043,9 +1041,6 @@ pub struct Waku {
     /// app entity. Debug builds can replace it independently after a rebuild;
     /// all live driver handles below are lightweight RPC proxies.
     daemon: waku_client::DaemonSupervisor,
-    /// Cached once at construction for the Daemon settings connection URL;
-    /// rendering must not query account or network configuration.
-    daemon_hostname: String,
     /// Session details currently being fetched from the daemon. Sidebar rows
     /// stay usable while the selected transcript hydrates asynchronously.
     session_hydrations: HashSet<Uuid>,
@@ -1068,20 +1063,15 @@ pub struct Waku {
     command_palette: command_palette::CommandPaletteUi,
     task_switcher: task_switcher::TaskSwitcherUi,
     model_search: Entity<TextInput>,
-    settings_search: Entity<TextInput>,
-    daemon_port_input: Entity<TextInput>,
-    daemon_origins_input: Entity<TextInput>,
-    daemon_reconfigure_pending: bool,
-    daemon_token_revealed: bool,
     settings_focus: FocusHandle,
+    settings_close_focus: FocusHandle,
+    settings_tab_focus: [FocusHandle; 5],
+    settings_previous_focus: Option<FocusHandle>,
+    settings_focus_generation: u64,
     sidebar_settings_focus: FocusHandle,
     sidebar_search_focus: FocusHandle,
     onboarding_add_project_focus: FocusHandle,
     onboarding_projectless_focus: FocusHandle,
-    /// Mirror of Sparkle's persisted automatic-check setting. Refreshed when
-    /// settings opens and on toggle, so frames never read user defaults —
-    /// that lookup can reach cfprefsd.
-    automatic_updates_enabled: bool,
     probes: Vec<ProviderProbe>,
     provider_probe_tx: Sender<ProviderProbe>,
     provider_probe_events: Receiver<ProviderProbe>,
@@ -1587,6 +1577,7 @@ pub struct Waku {
     sidebar_pane: Entity<WakuPane>,
     transcript_pane: Entity<WakuPane>,
     right_panel_pane: Entity<WakuPane>,
+    settings_pane: Entity<WakuPane>,
     /// The unix second the pending time-label wake-up targets, or `None` when
     /// none is armed. See `schedule_time_label_wake`.
     time_label_wake: Cell<Option<u64>>,
@@ -1855,7 +1846,6 @@ impl Waku {
     ) -> Entity<Self> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let store = StateStore::remote(daemon.clone());
-        let daemon_hostname = crate::daemon::local_hostname().unwrap_or_else(|| "this-mac".into());
         let composer_draft_store = ComposerDraftStore::remote(daemon.clone());
         let composer_drafts = composer_draft_store.load().unwrap_or_default();
         let mut state = store.load_or_fresh(cwd);
@@ -1916,27 +1906,6 @@ impl Waku {
                 .clear_on_escape()
                 .placeholder(tr!("input.search_projects"))
         });
-        let settings_search = cx.new(|cx| {
-            TextInput::new(window, cx)
-                .clear_on_escape()
-                .placeholder(tr!("settings.search"))
-        });
-        let daemon_port = state.daemon_exposure.port.to_string();
-        let daemon_origins = state.daemon_exposure.allowed_origins_text();
-        let daemon_port_input = cx.new(|cx| {
-            let mut input = TextInput::new(window, cx)
-                .select_all_on_focus_click()
-                .placeholder(tr!("daemon.port_placeholder"));
-            input.set_content(daemon_port, cx);
-            input
-        });
-        let daemon_origins_input = cx.new(|cx| {
-            let mut input = TextInput::new(window, cx)
-                .select_all_on_focus_click()
-                .placeholder(tr!("daemon.allowed_origins_placeholder"));
-            input.set_content(daemon_origins, cx);
-            input
-        });
         let skills_search = cx.new(|cx| {
             TextInput::new(window, cx)
                 .clear_on_escape()
@@ -1956,6 +1925,7 @@ impl Waku {
         let sidebar_pane = WakuPane::new(Waku::sidebar_pane_content, cx);
         let transcript_pane = WakuPane::new(Waku::transcript_pane_content, cx);
         let right_panel_pane = WakuPane::new(Waku::right_panel_pane_content, cx);
+        let settings_pane = WakuPane::new(Waku::settings_pane_content, cx);
         let workspace_client = waku_client::WorkspaceClient::new(daemon.client());
         let (projectless_migrated, projectless_migration_error) =
             migrate_legacy_projectless_projects(&mut state, &workspace_client);
@@ -2285,7 +2255,11 @@ impl Waku {
             // dies with its element, send it home to the composer, the way
             // Zed's workspace refocuses itself.
             cx.on_focus_lost(window, |this: &mut Self, window, cx| {
-                let focus = this.composer_focus(cx);
+                let focus = if let Some(page) = this.settings_page {
+                    this.settings_tab_focus[page as usize].clone()
+                } else {
+                    this.composer_focus(cx)
+                };
                 window.focus(&focus, cx);
             })
             .detach();
@@ -2472,26 +2446,6 @@ impl Waku {
                 },
             )
             .detach();
-            cx.subscribe(
-                &settings_search,
-                |_: &mut Self, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Edited) {
-                        cx.notify();
-                    }
-                },
-            )
-            .detach();
-            for input in [&daemon_port_input, &daemon_origins_input] {
-                cx.subscribe(
-                    input,
-                    |this: &mut Self, _, event: &InputEvent, cx| match event {
-                        InputEvent::Submit(_) => this.apply_daemon_exposure_fields(cx),
-                        InputEvent::Edited => cx.notify(),
-                        _ => {}
-                    },
-                )
-                .detach();
-            }
             cx.subscribe(&skills_search, |_: &mut Self, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Edited) {
                     cx.notify();
@@ -2642,7 +2596,6 @@ impl Waku {
 
             Self {
                 daemon,
-                daemon_hostname,
                 session_hydrations: HashSet::new(),
                 pending_session_activation: None,
                 analytics,
@@ -2660,20 +2613,15 @@ impl Waku {
                 branch_search,
                 branch_create_input,
                 project_search,
-                settings_search,
-                daemon_port_input,
-                daemon_origins_input,
-                daemon_reconfigure_pending: false,
-                daemon_token_revealed: false,
                 settings_focus,
+                settings_close_focus: cx.focus_handle(),
+                settings_tab_focus: std::array::from_fn(|_| cx.focus_handle()),
+                settings_previous_focus: None,
+                settings_focus_generation: 0,
                 sidebar_settings_focus: cx.focus_handle(),
                 sidebar_search_focus: cx.focus_handle(),
                 onboarding_add_project_focus,
                 onboarding_projectless_focus,
-                automatic_updates_enabled: cx
-                    .try_global::<crate::updater::UpdaterState>()
-                    .and_then(|updater| updater.0.as_ref())
-                    .is_some_and(|updater| updater.automatically_checks_for_updates()),
                 probes,
                 provider_probe_tx,
                 provider_probe_events,
@@ -2928,6 +2876,7 @@ impl Waku {
                 sidebar_pane: sidebar_pane.clone(),
                 transcript_pane: transcript_pane.clone(),
                 right_panel_pane: right_panel_pane.clone(),
+                settings_pane: settings_pane.clone(),
                 time_label_wake: Cell::new(None),
                 time_label_wake_generation: Cell::new(0),
                 fps_last_frame: Instant::now(),
@@ -2936,7 +2885,12 @@ impl Waku {
             }
         });
         navigation_rail.update(cx, |rail, _| rail.set_waku(entity.downgrade()));
-        for pane in [&sidebar_pane, &transcript_pane, &right_panel_pane] {
+        for pane in [
+            &sidebar_pane,
+            &transcript_pane,
+            &right_panel_pane,
+            &settings_pane,
+        ] {
             pane.update(cx, |pane, cx| pane.bind(&entity, cx));
         }
         let initial_row_count = entity.read(cx).transcript_row_count();

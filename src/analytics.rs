@@ -34,6 +34,7 @@ const WEBSITE_ID: Option<&str> = None;
 pub struct Analytics {
     events: SyncSender<Event>,
     enabled: Arc<AtomicBool>,
+    #[cfg(test)]
     available: bool,
 }
 
@@ -45,7 +46,7 @@ impl Analytics {
         let (events, receiver) = sync_channel(EVENT_QUEUE_CAPACITY);
         let available = analytics_available();
         let enabled = Arc::new(AtomicBool::new(available && sharing_enabled));
-        if available {
+        if available && sharing_enabled {
             // If the thread cannot be created, its captured receiver is
             // dropped and future `try_send`s simply observe disconnection.
             // Analytics is never allowed to affect app startup or actions.
@@ -59,6 +60,7 @@ impl Analytics {
         Self {
             events,
             enabled,
+            #[cfg(test)]
             available,
         }
     }
@@ -73,6 +75,7 @@ impl Analytics {
 
     /// Applies the user's persisted sharing preference. The worker also checks
     /// this flag before sending, so disabling drops events already queued.
+    #[cfg(test)]
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled
             .store(self.available && enabled, Ordering::Release);

@@ -113,9 +113,8 @@ impl Waku {
     fn settle_panel_slides(&mut self, window: &Window) -> PanelFrame {
         let was_sliding = self.panels_sliding();
         if self.settings_page.is_some() {
-            // Settings covers the workspace, so there is no edge on screen to
-            // move. Retire the slide rather than animate a layout nobody can
-            // see; reopening the workspace finds the panels where they belong.
+            // Settle the workspace underneath the settings popup instead of
+            // animating panel edges behind it.
             self.sidebar_slide = None;
             self.right_panel_slide = None;
         }
@@ -234,42 +233,14 @@ impl Render for Waku {
             // `with_animation` would do, minus its element-id keying.
             window.request_animation_frame();
         }
-        // Before anything can early-return (the settings page below), settle
-        // whether each native browser webview belongs on screen this frame —
-        // it floats above everything GPUI paints.
+        // Settle native browser visibility before rendering the workspace
+        // and its overlays.
         self.sync_browser_webviews(cx);
         if self.fps_counter_visible {
             self.tick_fps(window);
         }
         let image_preview = self.render_image_preview(cx);
         let task_switcher = self.render_task_switcher(window, cx);
-        if self.settings_page.is_some() {
-            let command_palette = self.render_command_palette(window, cx);
-            let commit_dialog = self.render_commit_dialog(cx);
-            let goal_dialog = self.render_goal_dialog(window, cx);
-            let toast = self.render_active_toast(cx);
-            let content = div()
-                .relative()
-                .size_full()
-                .on_action(cx.listener(Self::toggle_command_palette_action))
-                .on_action(cx.listener(Self::open_resume_picker_action))
-                .on_action(cx.listener(Self::switch_task_forward_action))
-                .on_action(cx.listener(Self::switch_task_backward_action))
-                .on_action(cx.listener(Self::select_first_task_action))
-                .on_action(cx.listener(Self::select_last_task_action))
-                .on_action(cx.listener(Self::confirm_task_switch_action))
-                .on_action(cx.listener(Self::cancel_task_switch_action))
-                .on_modifiers_changed(cx.listener(Self::task_switcher_modifiers_changed))
-                .child(self.render_settings(window, cx))
-                .children(toast)
-                .children(command_palette)
-                .children(commit_dialog)
-                .children(goal_dialog)
-                .children(image_preview)
-                .children(task_switcher)
-                .into_any_element();
-            return self.render_window_frame(content, window, cx);
-        }
         // Keep running-turn elapsed labels current while the workspace is
         // visible; settled sessions leave the wake-up chain parked.
         self.schedule_time_label_wake(cx);
@@ -410,6 +381,13 @@ impl Render for Waku {
                 )
             })
             .children(computer_use)
+            .when(self.settings_page.is_some(), |root| {
+                root.child(
+                    self.settings_pane
+                        .clone()
+                        .cached(StyleRefinement::default().absolute().inset_0().size_full()),
+                )
+            })
             .children(command_palette)
             .children(commit_dialog)
             .children(goal_dialog)

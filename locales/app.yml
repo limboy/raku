@@ -189,6 +189,8 @@ settings.computer_use_keywords:
   en: computer use screen recording accessibility apps control codex
 settings.back:
   en: Back
+settings.close:
+  en: Close settings
 settings.search:
   en: Search Settings
 daemon.expose_title:

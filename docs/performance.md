@@ -33,6 +33,10 @@ re-renders every island, so caching can never show stale state — while a
 notify targeted at one pane (the pulse clock leases `window.current_view()`)
 rebuilds only that island and replays the rest.
 
+The Settings popup uses another cached pane while it is open. Background
+spinner ticks can replay the form; settings edits and root state changes still
+invalidate it through the same observer.
+
 The one exception to that fan-out is the 200 ms panel slide: its display-rate
 root notifies would price every tick at a three-island rebuild, so while
 `panels_sliding()` the observer skips the fan-out and the cached-view keys
@@ -127,9 +131,8 @@ Inline `$…$` and display `$$…$$` formulas use the native RaTeX engine
 ([src/md/math.rs](../src/md/math.rs)). Parsing TeX, loading embedded font
 outlines, producing SVGs and rasterizing them all run on the background
 executor. A frame only queues cache misses and reads completed results.
-The General setting **Render math expressions** is enabled by default.
-When disabled, every Markdown surface uses selectable LaTeX text without
-queuing math jobs. Right-clicking a rendered formula adds **Copy Expression**
+Math rendering is always enabled on the desktop. Right-clicking a rendered
+formula adds **Copy Expression**
 to its context menu; the copied source is captured at the click so later
 streaming or layout changes cannot change the expression being copied.
 

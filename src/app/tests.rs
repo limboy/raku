@@ -1813,52 +1813,31 @@ fn model_picker_highlight_wraps_at_both_ends() {
 }
 
 #[test]
-fn settings_search_filters_pages_for_arrow_cycling() {
+fn settings_navigation_contains_only_supported_pages() {
     use super::SettingsPage;
 
-    let pages = |query: &str| {
-        visible_settings_pages(query)
-            .map(|(page, ..)| page)
-            .collect::<Vec<_>>()
-    };
-
-    // An empty query keeps every page in sidebar order, so the arrows cycle
-    // the full navigation even before anything is typed.
-    let mut all_pages = vec![
-        SettingsPage::General,
+    let mut expected = vec![
         SettingsPage::Appearance,
         SettingsPage::Providers,
         SettingsPage::Skills,
         SettingsPage::Usage,
-        SettingsPage::Daemon,
     ];
     if cfg!(debug_assertions) {
-        all_pages.push(SettingsPage::ComputerUse);
+        expected.push(SettingsPage::ComputerUse);
     }
-    assert_eq!(pages(""), all_pages);
-
-    assert_eq!(pages("theme"), vec![SettingsPage::Appearance]);
-    assert_eq!(pages("skill"), vec![SettingsPage::Skills]);
-
-    // A keyword shared across pages keeps them all reachable.
-    let mut codex_pages = vec![
-        SettingsPage::Providers,
-        SettingsPage::Skills,
-        SettingsPage::Usage,
-    ];
-    if cfg!(debug_assertions) {
-        codex_pages.push(SettingsPage::ComputerUse);
-    }
-    assert_eq!(pages("codex"), codex_pages);
-
-    assert_eq!(pages("no such setting"), vec![]);
+    assert_eq!(
+        visible_settings_pages()
+            .map(|(page, ..)| page)
+            .collect::<Vec<_>>(),
+        expected
+    );
 }
 
 #[test]
 fn computer_use_navigation_is_debug_only() {
     use super::SettingsPage;
 
-    assert!(SettingsPage::General.is_visible_in_navigation());
+    assert!(SettingsPage::Appearance.is_visible_in_navigation());
     assert_eq!(
         SettingsPage::ComputerUse.is_visible_in_navigation(),
         cfg!(debug_assertions)

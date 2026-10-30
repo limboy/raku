@@ -2273,6 +2273,7 @@ impl Waku {
                         && preview.phase != ComputerUsePhase::AwaitingApproval
                 })
             })
+            || self.settings_page.is_some()
             || self.command_palette.is_open()
             || self.task_switcher.is_open()
             || self.commit_dialog.is_some()
@@ -2300,10 +2301,7 @@ impl Waku {
         // A webview composites above the GPUI scene, so the panel's clip does
         // not apply to it: shown mid-slide it would hang over the transcript
         // at full width. Keep it down until the panel has finished moving.
-        let active_browser = if self.settings_page.is_none()
-            && self.right_panel_visible
-            && self.right_panel_slide.is_none()
-        {
+        let active_browser = if self.right_panel_visible && self.right_panel_slide.is_none() {
             self.active_right_panel_surface()
                 .and_then(RightPanelSurface::browser_id)
         } else {

@@ -78,7 +78,7 @@ fn default_render_math() -> bool {
 }
 
 fn default_analytics_enabled() -> bool {
-    true
+    false
 }
 
 fn default_provider() -> ProviderKind {
@@ -282,6 +282,15 @@ impl Default for AppSettings {
     }
 }
 
+impl AppSettings {
+    /// Retired desktop preferences must not revive from an older settings file.
+    pub fn normalize_desktop_defaults(&mut self) {
+        self.analytics_enabled = false;
+        self.render_math = true;
+        self.daemon_exposure.enabled = false;
+    }
+}
+
 pub const DEFAULT_UI_FONT_SIZE: f32 = 14.0;
 pub const DEFAULT_CODE_FONT_SIZE: f32 = 13.0;
 
@@ -439,7 +448,7 @@ impl PersistedState {
         Self {
             version: STATE_VERSION,
             analytics_id: Uuid::new_v4(),
-            analytics_enabled: true,
+            analytics_enabled: false,
             projects: Vec::new(),
             sessions: Vec::new(),
             selected_project: None,
@@ -578,7 +587,7 @@ impl PersistedState {
     }
 
     fn app_settings(&self) -> AppSettings {
-        AppSettings {
+        let mut settings = AppSettings {
             analytics_enabled: self.analytics_enabled,
             favorite_models: self.favorite_models.clone(),
             model_picker_favorites_only: self.model_picker_favorites_only,
@@ -589,7 +598,9 @@ impl PersistedState {
             render_math: self.render_math,
             daemon_exposure: self.daemon_exposure.clone(),
             open_in_app: self.open_in_app.clone(),
-        }
+        };
+        settings.normalize_desktop_defaults();
+        settings
     }
 
     fn app_state(&self) -> AppState {
@@ -616,7 +627,8 @@ impl PersistedState {
         }
     }
 
-    fn apply_app_settings(&mut self, settings: AppSettings) {
+    fn apply_app_settings(&mut self, mut settings: AppSettings) {
+        settings.normalize_desktop_defaults();
         self.analytics_enabled = settings.analytics_enabled;
         self.favorite_models = settings.favorite_models;
         self.model_picker_favorites_only = settings.model_picker_favorites_only;
@@ -810,8 +822,11 @@ pub fn load_or_create_app_settings() -> io::Result<AppSettings> {
         .map(|(bytes, _)| serde_json::from_slice::<AppSettings>(&bytes).map_err(to_io_error))
         .transpose()?
         .unwrap_or_default();
+    let retired_preferences =
+        settings.analytics_enabled || !settings.render_math || settings.daemon_exposure.enabled;
+    settings.normalize_desktop_defaults();
     let generated_token = settings.daemon_exposure.ensure_token();
-    if !loaded_from_primary || !token_was_persisted || generated_token {
+    if !loaded_from_primary || !token_was_persisted || generated_token || retired_preferences {
         write_json_atomically(&path, &settings)?;
     }
     Ok(settings)
@@ -1156,23 +1171,34 @@ mod tests {
     }
 
     #[test]
-    fn math_rendering_defaults_on_and_persists_as_an_app_preference() {
-        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+    fn retired_desktop_preferences_cannot_be_restored_from_older_settings() {
+        let mut defaults: AppSettings = serde_json::from_str(
+            r#"{
+            "analytics_enabled": true,
+            "render_math": false,
+            "daemon_exposure": { "enabled": true, "port": 4123, "token": "existing-token" }
+        }"#,
+        )
+        .unwrap();
+        defaults.normalize_desktop_defaults();
+        assert!(!defaults.analytics_enabled);
         assert!(defaults.render_math);
-        let mut state = PersistedState::empty();
-        assert!(state.render_math);
-        state.render_math = false;
-        let settings = serde_json::to_value(state.app_settings()).unwrap();
-        assert_eq!(settings["render_math"], false);
-        assert!(
-            serde_json::to_value(state.app_state())
-                .unwrap()
-                .get("render_math")
-                .is_none()
-        );
+        assert!(!defaults.daemon_exposure.enabled);
+        assert_eq!(defaults.daemon_exposure.token, "existing-token");
+
         let mut restored = PersistedState::empty();
-        restored.apply_app_settings(serde_json::from_value(settings).unwrap());
-        assert!(!restored.render_math);
+        restored.apply_app_settings(defaults);
+        assert!(!restored.analytics_enabled);
+        assert!(restored.render_math);
+        assert!(!restored.daemon_exposure.enabled);
+        // Saving any other setting also writes the fixed desktop defaults.
+        restored.analytics_enabled = true;
+        restored.render_math = false;
+        restored.daemon_exposure.enabled = true;
+        let settings = restored.app_settings();
+        assert!(!settings.analytics_enabled);
+        assert!(settings.render_math);
+        assert!(!settings.daemon_exposure.enabled);
     }
 
     #[test]

@@ -92,6 +92,7 @@ settings.usage_keywords: 用量 令牌 费用 支出 缓存 每日 图表 模型
 settings.daemon_keywords: 守护进程 服务 远程 网页 网络 暴露 来源 令牌 端口 websocket
 settings.computer_use_keywords: 电脑操作 屏幕录制 辅助功能 应用 控制 codex
 settings.back: 返回
+settings.close: 关闭设置
 settings.search: 搜索设置
 daemon.expose_title: 暴露由 Waku 管理的守护进程
 daemon.expose_description: 允许本机之外的 Waku 客户端连接。更改此项只会重启守护进程。

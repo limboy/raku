@@ -14,6 +14,9 @@
 
 use gpui::Global;
 
+/// This desktop is updated through explicit installs.
+const UPDATES_ENABLED: bool = false;
+
 /// App-wide handle to the updater, if this build can update itself.
 pub struct UpdaterState(pub Option<Updater>);
 
@@ -587,6 +590,9 @@ mod macos {
         /// cannot update itself: debug builds unless forced, and binaries
         /// running outside a bundle with an embedded framework.
         pub fn init() -> Option<Self> {
+            if !super::UPDATES_ENABLED {
+                return None;
+            }
             let preview = cfg!(debug_assertions)
                 && std::env::var_os("WAKU_PREVIEW_UPDATE").is_some_and(|value| value == "1");
             let forced = std::env::var_os("WAKU_FORCE_UPDATER").is_some_and(|value| value == "1");
@@ -732,13 +738,6 @@ mod macos {
             self.updater.as_ref().is_some_and(|updater| unsafe {
                 msg_send![&**updater, automaticallyChecksForUpdates]
             })
-        }
-
-        pub fn set_automatically_checks_for_updates(&self, enabled: bool) {
-            if let Some(updater) = &self.updater {
-                let _: () =
-                    unsafe { msg_send![&**updater, setAutomaticallyChecksForUpdates: enabled] };
-            }
         }
 
         #[cfg(test)]
@@ -1032,13 +1031,15 @@ mod windows {
         /// being dropped, so Check for Updates still answers.
         explicit_check: Arc<AtomicBool>,
         automatic: Arc<AtomicBool>,
-        preference_path: PathBuf,
         events: smol::channel::Sender<UpdaterEvent>,
         receiver: smol::channel::Receiver<UpdaterEvent>,
     }
 
     impl Updater {
         pub fn init() -> Option<Self> {
+            if !super::UPDATES_ENABLED {
+                return None;
+            }
             // A debug build must never offer to replace the watcher's app
             // with a production install.
             let forced = std::env::var_os("WAKU_FORCE_UPDATER").is_some_and(|value| value == "1");
@@ -1059,7 +1060,6 @@ mod windows {
                 checking: Arc::new(AtomicBool::new(false)),
                 explicit_check: Arc::new(AtomicBool::new(false)),
                 automatic,
-                preference_path,
                 events,
                 receiver,
             };
@@ -1213,20 +1213,6 @@ mod windows {
             self.automatic.load(Ordering::Relaxed)
         }
 
-        pub fn set_automatically_checks_for_updates(&self, enabled: bool) {
-            if self.automatic.swap(enabled, Ordering::Relaxed) == enabled {
-                return;
-            }
-            let path = self.preference_path.clone();
-            // A settings toggle must not wait on the filesystem.
-            let _ = std::thread::Builder::new()
-                .name("waku-updater-preference".into())
-                .spawn(move || write_automatic_preference(&path, enabled));
-            if enabled {
-                self.start_check(false);
-            }
-        }
-
         fn set_status(&self, next: UpdateStatus) {
             let mut status = self
                 .status
@@ -1362,6 +1348,7 @@ mod windows {
             .unwrap_or(true)
     }
 
+    #[cfg(test)]
     fn write_automatic_preference(path: &Path, enabled: bool) {
         let Some(directory) = path.parent() else {
             return;
@@ -1487,6 +1474,12 @@ impl Updater {
     pub fn automatically_checks_for_updates(&self) -> bool {
         false
     }
+}
 
-    pub fn set_automatically_checks_for_updates(&self, _enabled: bool) {}
+#[cfg(test)]
+mod desktop_policy_tests {
+    #[test]
+    fn updates_are_disabled_before_platform_initialization() {
+        assert!(super::Updater::init().is_none());
+    }
 }
