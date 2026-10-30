@@ -1635,6 +1635,53 @@ pub fn decode_data_url(url: &str) -> Option<std::sync::Arc<gpui::Image>> {
     (!bytes.is_empty()).then(|| std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)))
 }
 
+#[derive(IntoElement)]
+struct MermaidPreviewButton {
+    id: SharedString,
+    source: SharedString,
+    palette: Palette,
+}
+
+impl gpui::RenderOnce for MermaidPreviewButton {
+    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        // Keep focus stable across streaming frames and retire it when this
+        // virtualized row leaves the element tree.
+        let state = window.use_keyed_state(self.id.clone(), cx, |_, cx| {
+            cx.focus_handle().tab_index(0).tab_stop(true)
+        });
+        let focus = state.read(cx).clone();
+        let source = self.source;
+        let keyboard_source = source.clone();
+        div()
+            .id(self.id)
+            .track_focus(&focus)
+            .tab_index(0)
+            .size(px(24.0))
+            .flex_none()
+            .rounded(px(5.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_default()
+            .focus_visible(|style| style.border_1().border_color(self.palette.accent))
+            .hover(|style| style.bg(self.palette.overlay))
+            .child(crate::ui::icon("icons/eye.svg", 11.0, self.palette.ghost))
+            .tooltip(Tooltip::text(tr!("mermaid.preview")))
+            .on_click(move |_, window, cx| {
+                super::mermaid::open(source.clone(), window, cx);
+                cx.stop_propagation();
+            })
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                if !event.keystroke.modifiers.modified()
+                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                {
+                    super::mermaid::open(keyboard_source.clone(), window, cx);
+                    cx.stop_propagation();
+                }
+            })
+    }
+}
+
 fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElement {
     let key = ctx.next_key();
     // Tokenizing is the most expensive flatten in the document, so a settled
@@ -1658,6 +1705,11 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
     // so cloning the whole source here would turn the copy affordance into a
     // permanent O(code length) render cost; allocate only when it is invoked.
     let copy_content = flat.text.clone();
+    let preview_button = super::mermaid::is_mermaid(language).then(|| MermaidPreviewButton {
+        id: format!("preview-mermaid-{}-{}", key.row, key.index).into(),
+        source: flat.text.clone(),
+        palette: *ctx.palette,
+    });
     let keyboard_copy_content = copy_content.clone();
     let copy_feedback = ctx.cache.map(|view| view.copied_code_blocks.clone());
     let copied = copy_feedback
@@ -1747,6 +1799,7 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
                             element.child(SharedString::from(label))
                         }),
                 )
+                .children(preview_button)
                 .child(copy_button),
         )
         .child(
@@ -2125,6 +2178,58 @@ mod tests {
         assert!(body.contains("show_code_copied"));
         assert!(body.contains(".tab_index(0)"));
         assert!(body.contains(".on_key_down"));
+    }
+
+    #[gpui::test]
+    fn mermaid_fence_opens_its_preview_from_the_keyboard_and_preserves_source(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct Harness {
+            markdown: MarkdownView,
+            selection: TranscriptSelection,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let palette = Palette::from_theme(&Theme::dark());
+                let ctx = Ctx::new(
+                    "mermaid-keyboard",
+                    &palette,
+                    Metrics::BODY,
+                    self.selection.clone(),
+                );
+                div()
+                    .w(px(600.0))
+                    .child(frame_reset(self.selection.clone()))
+                    .children(markdown(&self.markdown, &ctx))
+            }
+        }
+        let source = "flowchart LR\n A[Hello] --> B[World]";
+        let mut markdown = MarkdownView::new();
+        markdown.set_text(&format!("```mermaid\n{source}\n```"), false);
+        let (view, cx) = cx.add_window_view(|_, _| Harness {
+            markdown,
+            selection: TranscriptSelection::default(),
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.focus_next(cx));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.windows().len(),
+                2,
+                "Enter on Preview should open the diagram window"
+            )
+        });
+        view.read_with(cx, |view, _| {
+            assert!(
+                view.markdown
+                    .flats
+                    .borrow()
+                    .values()
+                    .any(|flat| flat.text.as_str() == source)
+            );
+        });
     }
 
     #[test]

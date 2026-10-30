@@ -1,6 +1,7 @@
 pub mod highlight;
 mod math;
 pub mod mend;
+mod mermaid;
 pub mod parser;
 pub mod render;
 pub mod selection;

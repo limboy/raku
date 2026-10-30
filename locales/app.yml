@@ -581,6 +581,28 @@ common.copy_to_composer:
   en: Copy to Composer
 common.copy_code:
   en: Copy Code
+mermaid.preview:
+  en: Preview
+mermaid.title:
+  en: Mermaid Preview
+mermaid.zoom_in:
+  en: Zoom in
+mermaid.zoom_out:
+  en: Zoom out
+mermaid.fit:
+  en: Fit
+mermaid.copy_svg:
+  en: Copy SVG
+mermaid.rendering:
+  en: Rendering diagram…
+mermaid.render_failed:
+  en: Could not render this Mermaid diagram
+mermaid.source_too_large:
+  en: The Mermaid source is too large to preview.
+mermaid.diagram_too_large:
+  en: The Mermaid diagram is too large to preview.
+mermaid.timed_out:
+  en: The Mermaid preview took too long to render.
 common.copy_expression:
   en: Copy Expression
 common.cancel:

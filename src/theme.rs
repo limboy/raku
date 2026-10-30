@@ -195,13 +195,13 @@ impl Theme {
 }
 
 #[derive(Clone, Copy)]
-struct ActiveWakuTheme(Theme);
+pub(crate) struct ActiveWakuTheme(Theme);
 
 impl Global for ActiveWakuTheme {}
 
 /// Publish the resolved palette. [`Theme::current`] reads it back from the
 /// global, which is how every view gets its colors.
-fn set_active_theme(theme: Theme, cx: &mut App) {
+pub(crate) fn set_active_theme(theme: Theme, cx: &mut App) {
     cx.set_global(ActiveWakuTheme(theme));
 }
 

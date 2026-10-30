@@ -149,6 +149,18 @@ element per word or start an animation clock. Selection and search use the
 original LaTeX byte ranges. The manual measurement is
 `cargo test --locked -p waku --lib md::math::tests::benchmark_native_math_cache -- --ignored --nocapture`.
 
+## Mermaid previews
+
+The **Preview** action on a Mermaid code block opens one reusable native
+window. The vendored Pele renderer runs in an isolated QuickJS runtime on the
+background executor, followed by native SVG/font rasterization. Frames read
+the completed image; zoom and pan reuse it without running Pele again.
+Source/output, JavaScript time/memory, and raster pixels are bounded.
+Replacing the source or closing the window cancels the old job, and a
+generation counter rejects obsolete completions. Theme and display-scale
+changes request a new image; opening the preview never needs network access
+or an external JavaScript runtime.
+
 ## Measuring
 
 Sampling alone misled this investigation for hours; counters cracked it in one
