@@ -11,6 +11,7 @@ import {
 import { cn } from '@/lib/utils'
 
 type PickerTab = 'favorites' | ProviderKind
+const FAVORITES_FILTER_KEY = 'waku.model-picker-favorites-only'
 
 export function ModelPicker({
   session,
@@ -30,7 +31,15 @@ export function ModelPicker({
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const [tab, setTab] = useState<PickerTab>(session.provider)
+  const [tab, setTab] = useState<PickerTab>(() => {
+    try {
+      return typeof window !== 'undefined' && window.localStorage.getItem(FAVORITES_FILTER_KEY) === 'true'
+        ? 'favorites'
+        : session.provider
+    } catch {
+      return session.provider
+    }
+  })
   const [highlight, setHighlight] = useState<number | null>(null)
   const [favorites, setFavorites] = useState<string[]>(() => {
     if (typeof window === 'undefined') return []
@@ -57,7 +66,7 @@ export function ModelPicker({
   useEffect(() => {
     if (!open) return
     setQuery('')
-    setTab(session.provider)
+    setTab((current) => current === 'favorites' ? current : session.provider)
     setHighlight(null)
   }, [open, session.provider])
 
@@ -108,6 +117,14 @@ export function ModelPicker({
     return () => cancelAnimationFrame(frame)
   }, [open, query, selectedIndex, tab])
 
+  function selectTab(next: PickerTab) {
+    setTab(next)
+    setQuery('')
+    setHighlight(null)
+    try { window.localStorage.setItem(FAVORITES_FILTER_KEY, String(next === 'favorites')) }
+    catch { /* Keep the filter in memory when browser storage is unavailable. */ }
+  }
+
   function choose(index: number) {
     const row = rows[index]
     if (!row) return
@@ -155,7 +172,7 @@ export function ModelPicker({
             role="dialog"
           >
           <div className="flex h-full w-[50px] shrink-0 flex-col items-center gap-1 overflow-y-auto border-r bg-background p-[5px]">
-            <ModelTab active={tab === 'favorites' && !query} label={t('models.favorites')} onClick={() => { setTab('favorites'); setQuery(''); setHighlight(null) }}>
+            <ModelTab active={tab === 'favorites' && !query} label={t('models.favorites')} onClick={() => selectTab('favorites')}>
               <WakuIcon className="size-[17px]" name="star" />
             </ModelTab>
             <div className="my-[3px] h-px w-[34px] shrink-0 bg-border" />
@@ -167,7 +184,7 @@ export function ModelPicker({
                   disabled={!enabled}
                   key={provider.id}
                   label={provider.name}
-                  onClick={() => { setTab(provider.id); setQuery(''); setHighlight(null) }}
+                  onClick={() => selectTab(provider.id)}
                 >
                   <ProviderIcon className="size-[18px]" provider={provider.id} />
                 </ModelTab>
@@ -206,8 +223,7 @@ export function ModelPicker({
                       const tabs: PickerTab[] = ['favorites', ...usable.map(({ id }) => id)]
                       const current = tabs.indexOf(tab)
                       const delta = event.shiftKey ? -1 : 1
-                      setTab(tabs[(current + delta + tabs.length) % tabs.length]!)
-                      setHighlight(null)
+                      selectTab(tabs[(current + delta + tabs.length) % tabs.length]!)
                     }
                   }}
                 />

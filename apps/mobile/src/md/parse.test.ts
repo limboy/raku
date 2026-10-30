@@ -24,6 +24,33 @@ const CORPUS =
   '| a | b |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |\n\n---\n\nClosing paragraph.\n';
 
 describe('IncrementalMarkdown', () => {
+  test.each([
+    ['**中文。**接着', 'strong', '中文。'],
+    ['**日本語。**続き', 'strong', '日本語。'],
+    ['**한국어(parenthesis)**가', 'strong', '한국어(parenthesis)'],
+    ['前*「斜体」*後', 'emphasis', '「斜体」'],
+    ['前~~「删除」~~後', 'delete', '「删除」'],
+  ])('parses CJK emphasis in %s', (source, type, value) => {
+    const paragraph = parseBlocks(source)[0]!.node;
+    if (paragraph.type !== 'paragraph') throw new Error('Expected a paragraph');
+    expect(shape(paragraph.children.filter((node) => node.type === type))).toEqual([
+      { type, children: [{ type: 'text', value }] },
+    ]);
+  });
+
+  test('streamed CJK emphasis preserves block offsets and the settled prefix', () => {
+    const source = '# 前**「标题」**後\n\n**日本語。**続き\n\n- **한국어(parenthesis)**가\n\n| 内容 |\n| --- |\n| 前~~「删除」~~後 |\n\n前*「斜体」*後';
+    const incremental = new IncrementalMarkdown();
+    for (const ch of source) {
+      incremental.append(ch);
+      const full = parseBlocks(incremental.text);
+      expect(incremental.blocks.map((block) => [block.start, block.end, block.source]))
+        .toEqual(full.map((block) => [block.start, block.end, block.source]));
+      expect(shape(incremental.blocks.map((block) => block.node)))
+        .toEqual(shape(full.map((block) => block.node)));
+    }
+  });
+
   test('chunked appends converge on the full parse', () => {
     for (const step of [1, 3, 7, 16]) {
       const incremental = new IncrementalMarkdown();

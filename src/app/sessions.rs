@@ -945,7 +945,9 @@ impl Waku {
             self.state.last_reasoning_effort = reasoning_effort;
             self.state.last_service_tier = service_tier;
             self.state.last_context_window = context_window;
-            self.model_picker_tab = ModelPickerTab::Provider(provider);
+            if !self.state.model_picker_favorites_only {
+                self.model_picker_tab = ModelPickerTab::Provider(provider);
+            }
             // A different provider is a different binary and protocol; only a
             // model change within one provider can be applied in session.
             if provider_changed {
@@ -1003,6 +1005,11 @@ impl Waku {
     pub(super) fn select_model_picker_tab(&mut self, tab: ModelPickerTab, cx: &mut Context<Self>) {
         if self.model_picker_tab != tab {
             self.model_picker_tab = tab;
+            let favorites_only = tab == ModelPickerTab::Favorites;
+            if self.state.model_picker_favorites_only != favorites_only {
+                self.state.model_picker_favorites_only = favorites_only;
+                self.save();
+            }
             if let ModelPickerTab::Provider(provider) = tab {
                 // Selecting a rail re-runs that provider's catalog discovery,
                 // so each tab is fresh when viewed without probing every

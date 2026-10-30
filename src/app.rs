@@ -2236,13 +2236,17 @@ impl Waku {
                 })
                 .ok();
         }
-        let model_picker_tab = ModelPickerTab::Provider(
-            state
-                .selected_session
-                .and_then(|id| state.sessions.iter().find(|session| session.id == id))
-                .map(|session| session.provider)
-                .unwrap_or(state.last_provider),
-        );
+        let model_picker_tab = if state.model_picker_favorites_only {
+            ModelPickerTab::Favorites
+        } else {
+            ModelPickerTab::Provider(
+                state
+                    .selected_session
+                    .and_then(|id| state.sessions.iter().find(|session| session.id == id))
+                    .map(|session| session.provider)
+                    .unwrap_or(state.last_provider),
+            )
+        };
         let mut session_navigation = SessionNavigation::default();
         if let Some(session_id) = state.selected_session.filter(|session_id| {
             state

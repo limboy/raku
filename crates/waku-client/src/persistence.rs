@@ -246,6 +246,7 @@ pub struct PersistedWindowState {
 pub struct AppSettings {
     pub analytics_enabled: bool,
     pub favorite_models: Vec<FavoriteModel>,
+    pub model_picker_favorites_only: bool,
     pub theme: ThemePreference,
     pub language: AppLanguage,
     /// Base text size for the interface, in pixels: chrome and prose are
@@ -269,6 +270,7 @@ impl Default for AppSettings {
         Self {
             analytics_enabled: default_analytics_enabled(),
             favorite_models: Vec::new(),
+            model_picker_favorites_only: false,
             theme: ThemePreference::System,
             language: AppLanguage::default(),
             ui_font_size: DEFAULT_UI_FONT_SIZE,
@@ -370,6 +372,8 @@ pub struct PersistedState {
     #[serde(default)]
     pub favorite_models: Vec<FavoriteModel>,
     #[serde(default)]
+    pub model_picker_favorites_only: bool,
+    #[serde(default)]
     pub theme: ThemePreference,
     #[serde(default)]
     pub language: AppLanguage,
@@ -448,6 +452,7 @@ impl PersistedState {
             last_context_window: None,
             remembered_model_traits: Vec::new(),
             favorite_models: Vec::new(),
+            model_picker_favorites_only: false,
             theme: ThemePreference::System,
             language: AppLanguage::default(),
             ui_font_size: DEFAULT_UI_FONT_SIZE,
@@ -576,6 +581,7 @@ impl PersistedState {
         AppSettings {
             analytics_enabled: self.analytics_enabled,
             favorite_models: self.favorite_models.clone(),
+            model_picker_favorites_only: self.model_picker_favorites_only,
             theme: self.theme,
             language: self.language,
             ui_font_size: self.ui_font_size,
@@ -613,6 +619,7 @@ impl PersistedState {
     fn apply_app_settings(&mut self, settings: AppSettings) {
         self.analytics_enabled = settings.analytics_enabled;
         self.favorite_models = settings.favorite_models;
+        self.model_picker_favorites_only = settings.model_picker_favorites_only;
         self.theme = settings.theme;
         self.language = settings.language;
         self.ui_font_size = sanitized_ui_font_size(settings.ui_font_size);
@@ -1135,6 +1142,18 @@ fn restore_task_state_skeletons(sessions: &mut [AgentSession]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_picker_favorites_filter_defaults_off_and_persists() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!defaults.model_picker_favorites_only);
+        let mut state = PersistedState::empty();
+        state.model_picker_favorites_only = true;
+        let settings = serde_json::to_string(&state.app_settings()).unwrap();
+        let mut restored = PersistedState::empty();
+        restored.apply_app_settings(serde_json::from_str(&settings).unwrap());
+        assert!(restored.model_picker_favorites_only);
+    }
 
     #[test]
     fn math_rendering_defaults_on_and_persists_as_an_app_preference() {

@@ -44,7 +44,8 @@ url = "2"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 waku-client = { path = "crates/waku-client" }
 waku-protocol = { path = "crates/waku-protocol" }
-pulldown-cmark = "0.13"
+# CJK-friendly emphasis is upstream but not yet in the 0.13 release line.
+pulldown-cmark = { git = "https://github.com/pulldown-cmark/pulldown-cmark", rev = "29d6cfa042b6c1fbb5702fc320f130edd2684271" }
 # Native, offline math typesetting; all layout and raster work runs on workers.
 ratex-parser = "=0.1.14"
 ratex-layout = "=0.1.14"

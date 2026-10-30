@@ -8,13 +8,13 @@ import { ContextMenu } from '@base-ui/react/context-menu'
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Virtuoso, type ListItem, type VirtuosoHandle } from 'react-virtuoso'
 import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { PreviewableImage } from '@/components/image-preview'
 import { FileTypeIcon, WakuIcon, type WakuIconName } from '@/components/waku-icon'
 import { readAttachmentImage } from '@/lib/attachments'
 import { useDaemon } from '@/lib/daemon-context'
 import { activitiesForBlock } from '@/lib/event-reducer'
 import { useI18n, type AppLocale } from '@/lib/i18n'
+import { markdownPlugins } from '@/lib/markdown-plugins'
 import {
   advanceMarkdownVeil,
   createMarkdownVeilState,
@@ -1391,7 +1391,7 @@ function Markdown({
   return (
     <div className={cn('markdown min-w-0', compact && '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0')}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={markdownPlugins}
         rehypePlugins={chunks.length ? [markdownVeilPlugin(chunks, now)] : []}
         components={{
           a: ({ children, href, ...props }) => (

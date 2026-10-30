@@ -3,7 +3,6 @@ import type { Project, ProviderKind, SkillEntry, SkillSource } from '@waku/clien
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Virtuoso } from 'react-virtuoso'
-import remarkGfm from 'remark-gfm'
 import { toast } from 'sonner'
 import { ControlMenu } from '@/components/control-menu'
 import { Button } from '@/components/ui/button'
@@ -13,6 +12,7 @@ import { useCopyFeedback } from '@/hooks/use-copy-feedback'
 import { daemonKeys, setSkillsEnabled, trashSkills } from '@/lib/daemon-api'
 import { useDaemon } from '@/lib/daemon-context'
 import { useI18n, type AppLocale } from '@/lib/i18n'
+import { markdownPlugins } from '@/lib/markdown-plugins'
 import type { Translator } from '@/lib/transcript-presentation'
 import { cn } from '@/lib/utils'
 
@@ -290,7 +290,7 @@ function SkillDetail({
           <div className="mt-[18px] border-t pt-3.5">
             <div className="font-mono text-[9.5px] text-[var(--text-ghost)]">SKILL.md</div>
             <div className="skill-markdown mt-2.5 text-[11.5px] leading-[18px] text-[var(--text-secondary)]">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{skill.body}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={markdownPlugins}>{skill.body}</ReactMarkdown>
             </div>
           </div>
         )}

@@ -16,6 +16,8 @@
 import type { RootContent } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { cjkFriendlyExtension } from 'micromark-extension-cjk-friendly';
+import { gfmStrikethroughCjkFriendly } from 'micromark-extension-cjk-friendly-gfm-strikethrough';
 import { gfm } from 'micromark-extension-gfm';
 
 import { closeHanging } from './mend';
@@ -31,7 +33,7 @@ export interface MarkdownBlock {
 
 export function parseBlocks(text: string, offset = 0): MarkdownBlock[] {
   const root = fromMarkdown(text, {
-    extensions: [gfm()],
+    extensions: [gfm(), cjkFriendlyExtension(), gfmStrikethroughCjkFriendly()],
     mdastExtensions: [gfmFromMarkdown()],
   });
   return root.children.map((node) => {

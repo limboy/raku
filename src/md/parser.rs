@@ -146,6 +146,7 @@ fn options() -> Options {
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_MATH
+        | Options::ENABLE_CJK_FRIENDLY_EMPHASIS
 }
 
 /// Parse a whole source into a [`BlockTree`].
@@ -917,6 +918,86 @@ fn has_link_definition(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cjk_emphasis_handles_punctuation_without_extra_spaces() {
+        for (source, bold) in [
+            ("**这些星号。**接着", "这些星号。"),
+            ("**日本語。**続き", "日本語。"),
+            ("**한국어(parenthesis)**가", "한국어(parenthesis)"),
+            ("前**「重要」**後", "「重要」"),
+            ("前**(重要)**後", "(重要)"),
+            ("前**`code`**後", "code"),
+            ("前**字\u{e0100}。**後", "字\u{e0100}。"),
+        ] {
+            let tree = parse(source);
+            let Block::Paragraph { runs } = &tree.blocks[0].block else {
+                panic!("{tree:?}")
+            };
+            assert_eq!(
+                runs.iter()
+                    .filter(|run| run.style.bold)
+                    .map(|run| run.text.as_str())
+                    .collect::<String>(),
+                bold,
+                "{source}"
+            );
+            assert!(runs.iter().all(|run| !run.text.contains("**")), "{source}");
+        }
+
+        let tree = parse("前*「斜体」*後、前~~「削除」~~後");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("{tree:?}")
+        };
+        assert!(
+            runs.iter()
+                .any(|run| run.style.italic && run.text == "「斜体」")
+        );
+        assert!(
+            runs.iter()
+                .any(|run| run.style.strikethrough && run.text == "「削除」")
+        );
+    }
+
+    #[test]
+    fn cjk_emphasis_preserves_literal_code_and_escaped_markers() {
+        let tree = parse(r"`前**「代码」**後` 和 \*\*「文字」\*\*後");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("{tree:?}")
+        };
+        assert!(runs.iter().all(|run| !run.style.bold));
+        assert_eq!(
+            paragraph_text(&tree.blocks[0].block),
+            "前**「代码」**後 和 **「文字」**後"
+        );
+
+        let tree = parse("```md\n前**「代码」**後\n```");
+        assert!(
+            matches!(&tree.blocks[0].block, Block::CodeBlock { code, .. } if code == "前**「代码」**後")
+        );
+    }
+
+    #[test]
+    fn streamed_cjk_emphasis_matches_full_parses_and_keeps_source_ranges() {
+        let source = "# 前**「标题」**後\n\n**日本語。**続き\n\n- **한국어(parenthesis)**가\n\n| 内容 |\n| --- |\n| 前~~「删除」~~後 |\n\n前*「斜体」*後";
+        let mut parser = IncrementalParser::new();
+        for ch in source.chars() {
+            parser.append(ch.encode_utf8(&mut [0; 4]));
+            assert_eq!(parser.tree(), &parse(parser.text()), "{}", parser.text());
+        }
+
+        parser.set_text("前**「重要");
+        let display = parser.display_tree();
+        let Block::Paragraph { runs } = &display.blocks[0].block else {
+            panic!("{display:?}")
+        };
+        assert!(
+            runs.iter()
+                .any(|run| run.style.bold && run.text == "「重要")
+        );
+        parser.append("」**後");
+        assert_eq!(parser.display_tree(), parse(parser.text()));
+    }
 
     #[test]
     fn math_keeps_inline_order_styles_and_display_blocks() {

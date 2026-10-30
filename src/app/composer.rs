@@ -922,7 +922,11 @@ impl Waku {
                             } else {
                                 provider
                             };
-                        this.model_picker_tab = ModelPickerTab::Provider(provider);
+                        this.model_picker_tab = if this.state.model_picker_favorites_only {
+                            ModelPickerTab::Favorites
+                        } else {
+                            ModelPickerTab::Provider(provider)
+                        };
                         // Opening re-runs the tab's catalog discovery so models
                         // authored since launch appear without a restart; the
                         // other rails refresh when selected, not all at once.
