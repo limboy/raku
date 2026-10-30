@@ -19,15 +19,10 @@ impl Waku {
         target: PanelResizeTarget,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let theme = Theme::current(cx);
-        let active = self
-            .panel_resize_drag
-            .is_some_and(|drag| drag.target == target);
         // The right panel's left edge abuts the browser webview, a native view
         // that composites above every base-scene pixel at or beyond the edge.
-        // Its bar and hover strip therefore sit entirely left of the edge,
-        // where GPUI still owns rendering and input; the other edges keep the
-        // conventional straddle.
+        // Keep its resize hit area mostly left of the edge, where GPUI still
+        // owns input; the other edges keep the conventional straddle.
         let (strip_left, strip_width) = match target {
             PanelResizeTarget::RightPanel => (-7.0, 8.0),
             PanelResizeTarget::Sidebar | PanelResizeTarget::FileTree => (-5.0, 10.0),
@@ -39,24 +34,7 @@ impl Waku {
             .left(px(strip_left))
             .w(px(strip_width))
             .h_full()
-            .group("panel-resize-handle")
             .cursor_col_resize()
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left(px(5.0))
-                    .w(px(2.0))
-                    .h_full()
-                    .bg(if active {
-                        theme.resize_handle
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .group_hover("panel-resize-handle", |element| {
-                        element.bg(theme.resize_handle)
-                    }),
-            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event, window, cx| {

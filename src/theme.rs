@@ -66,7 +66,6 @@ pub struct Theme {
 
     /// Brand coral. Logo, caret, live-activity pulses — nothing structural.
     pub accent: Hsla,
-    pub resize_handle: Hsla,
     /// Meter fills in the usage panel. Quota-meter blue by convention;
     /// warning/danger take over as a lane fills.
     pub gauge: Hsla,
@@ -128,7 +127,6 @@ impl Theme {
             text_ghost: rgb(0x575757).into(),
 
             accent: rgb(0xE2795B).into(),
-            resize_handle: rgb(0x3B82F6).into(),
             gauge: rgb(0x3B82F6).into(),
 
             selection: hsla(211.0 / 360.0, 1.0, 0.50, 0.55),
@@ -175,7 +173,6 @@ impl Theme {
             text_ghost: rgb(0xA4A4A4).into(),
 
             accent: rgb(0xC85F44).into(),
-            resize_handle: rgb(0x2563EB).into(),
             gauge: rgb(0x2563EB).into(),
 
             selection: hsla(211.0 / 360.0, 1.0, 0.50, 0.35),
