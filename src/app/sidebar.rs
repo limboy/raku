@@ -25,6 +25,9 @@ const SIDEBAR_SESSION_CARD_HEIGHT: f32 = 32.0;
 const SIDEBAR_SESSION_ROW_GAP: f32 = 1.0;
 const SIDEBAR_SESSION_ROW_HEIGHT: f32 = SIDEBAR_SESSION_CARD_HEIGHT + SIDEBAR_SESSION_ROW_GAP;
 const SIDEBAR_ACTION_ROW_HEIGHT: f32 = 32.0;
+const TITLEBAR_BUTTON_SIZE: f32 = 26.0;
+const TITLEBAR_NAVIGATION_GAP: f32 = 6.0;
+const HISTORY_BUTTON_GAP: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SidebarDateGroup {
@@ -384,8 +387,7 @@ impl Waku {
         let theme = Theme::current(cx);
         div()
             .id("toggle-sidebar")
-            .w(px(26.0))
-            .h(px(26.0))
+            .size(px(TITLEBAR_BUTTON_SIZE))
             .flex_none()
             .rounded(px(6.0))
             .flex()
@@ -415,8 +417,7 @@ impl Waku {
         let theme = Theme::current(cx);
         div()
             .id(id)
-            .w(px(26.0))
-            .h(px(26.0))
+            .size(px(TITLEBAR_BUTTON_SIZE))
             .flex_none()
             .rounded(px(6.0))
             .flex()
@@ -443,11 +444,28 @@ impl Waku {
             .child(icon(icon_path, 14.0, theme.text_tertiary))
     }
 
-    fn render_sidebar_titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn window_navigation_width(&self, window: &Window, cx: &App) -> f32 {
+        self.client_window_controls_width(super::window_chrome::WindowControlSide::Left, window, cx)
+            + TRAFFIC_LIGHT_CLEARANCE
+            + TITLEBAR_BUTTON_SIZE * 3.0
+            + TITLEBAR_NAVIGATION_GAP
+            + HISTORY_BUTTON_GAP
+    }
+
+    /// Keep navigation outside both panel trees so the sidebar's clip and
+    /// the main header's moving origin never move or hide these controls.
+    pub(super) fn render_window_navigation(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         div()
-            .id("sidebar-titlebar")
+            .id("window-navigation")
+            .absolute()
+            .top_0()
+            .left_0()
+            .w(px(self.window_navigation_width(window, cx)))
             .h(px(48.0))
-            .flex_none()
             .flex()
             .items_center()
             .children(self.render_client_window_controls(
@@ -458,7 +476,7 @@ impl Waku {
             .child(
                 self.window_drag_region(
                     div()
-                        .id("sidebar-traffic-light-drag-region")
+                        .id("navigation-traffic-light-drag-region")
                         .w(px(TRAFFIC_LIGHT_CLEARANCE))
                         .h_full()
                         .flex_none(),
@@ -468,10 +486,10 @@ impl Waku {
             .child(self.render_sidebar_toggle(cx))
             .child(
                 div()
-                    .ml(px(6.0))
+                    .ml(px(TITLEBAR_NAVIGATION_GAP))
                     .flex()
                     .items_center()
-                    .gap(px(2.0))
+                    .gap(px(HISTORY_BUTTON_GAP))
                     .child(self.render_history_button(
                         "navigate-back",
                         "icons/arrow-left.svg",
@@ -487,10 +505,6 @@ impl Waku {
                         cx,
                     )),
             )
-            .child(self.window_drag_region(
-                div().id("sidebar-titlebar-drag-region").h_full().flex_1(),
-                cx,
-            ))
     }
 
     fn render_sidebar_action_row(
@@ -719,7 +733,15 @@ impl Waku {
             } else {
                 theme.sidebar
             })
-            .child(self.render_sidebar_titlebar(window, cx))
+            .child(
+                self.window_drag_region(
+                    div()
+                        .id("sidebar-titlebar-drag-region")
+                        .h(px(48.0))
+                        .flex_none(),
+                    cx,
+                ),
+            )
             .child(
                 div()
                     .flex_none()
@@ -1167,24 +1189,6 @@ impl Waku {
         let agent_preset_label = session
             .filter(|session| session.provider == ProviderKind::DeepSeek && session.has_started())
             .and_then(|session| self.agent_preset_label_for_session(session));
-        let left_window_controls = (!self.sidebar_visible)
-            .then(|| {
-                self.render_client_window_controls(
-                    super::window_chrome::WindowControlSide::Left,
-                    window,
-                    cx,
-                )
-            })
-            .flatten();
-        let right_window_controls = (!self.right_panel_visible)
-            .then(|| {
-                self.render_client_window_controls(
-                    super::window_chrome::WindowControlSide::Right,
-                    window,
-                    cx,
-                )
-            })
-            .flatten();
         div()
             .id("window-header")
             .h(px(48.0))
@@ -1192,58 +1196,14 @@ impl Waku {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .children(left_window_controls)
-            // The header starts where the sidebar ends, so until the sidebar
-            // is wide enough to host the traffic lights itself the header has
-            // to clear them. Steady state with the sidebar open adds nothing;
-            // a sidebar sliding in shrinks the inset as it takes the lights
-            // over, which is what keeps the title from passing under them.
-            .pl(if self.sidebar_visible {
-                px(14.0 + (TRAFFIC_LIGHT_CLEARANCE - self.sidebar_rendered_width).max(0.0))
-            } else {
-                px(0.0)
-            })
-            .pr(px(14.0))
-            .when(!self.sidebar_visible, |element| {
-                element
-                    .child(
-                        self.window_drag_region(
-                            div()
-                                .id("header-traffic-light-drag-region")
-                                .w(px(TRAFFIC_LIGHT_CLEARANCE - 8.0))
-                                .h_full()
-                                .flex_none(),
-                            cx,
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(self.render_sidebar_toggle(cx))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(2.0))
-                                    .child(self.render_history_button(
-                                        "navigate-back",
-                                        "icons/arrow-left.svg",
-                                        !self.session_navigation.back.is_empty(),
-                                        true,
-                                        cx,
-                                    ))
-                                    .child(self.render_history_button(
-                                        "navigate-forward",
-                                        "icons/arrow-right.svg",
-                                        !self.session_navigation.forward.is_empty(),
-                                        false,
-                                        cx,
-                                    )),
-                            ),
-                    )
-            })
+            // Navigation stays pinned to the window while this header follows
+            // the sidebar edge. Reserve only the part still over the header.
+            .pl(px((self.window_navigation_width(window, cx) + 8.0
+                - self.sidebar_rendered_width)
+                .max(14.0)))
+            .pr(px((self.right_titlebar_controls_width(window, cx) + 8.0
+                - self.right_panel_rendered_width)
+                .max(14.0)))
             .child(
                 self.window_drag_region(
                     div()
@@ -1290,14 +1250,10 @@ impl Waku {
                 ),
             )
             .child(self.render_background_work_summary(cx))
-            .when(!self.right_panel_visible, |element| {
-                element
-                    .when(self.fps_counter_visible, |element| {
-                        element.child(self.render_fps_counter(cx))
-                    })
-                    .child(self.render_right_panel_toggle(cx))
-            })
-            .children(right_window_controls)
+            .when(
+                !self.right_panel_visible && self.fps_counter_visible,
+                |element| element.child(self.render_fps_counter(cx)),
+            )
     }
 
     // ── Empty states ───────────────────────────────────────────────────────

@@ -331,7 +331,7 @@ fn palette_scroll_index(results: &[CommandPaletteItem], selected: usize) -> usiz
 }
 
 fn command_palette_results_height(results: &[CommandPaletteItem], show_empty_state: bool) -> f32 {
-    let content_height = if show_empty_state {
+    if show_empty_state {
         EMPTY_RESULTS_HEIGHT
     } else {
         let mut previous_section = None;
@@ -353,8 +353,7 @@ fn command_palette_results_height(results: &[CommandPaletteItem], show_empty_sta
                 section_leading_height + command_palette_row_height(item)
             })
             .sum()
-    };
-    content_height + RESULTS_BOTTOM_PADDING
+    }
 }
 
 pub(super) struct CommandPaletteUi {
@@ -1273,8 +1272,8 @@ impl Waku {
         let show_placeholder_state = show_empty_state || show_loading_state;
         let results_height =
             command_palette_results_height(&self.command_palette.results, show_placeholder_state)
-                .min((card_max_height - SEARCH_ROW_HEIGHT).max(0.0));
-        let card_height = SEARCH_ROW_HEIGHT + results_height;
+                .min((card_max_height - SEARCH_ROW_HEIGHT - RESULTS_BOTTOM_PADDING).max(0.0));
+        let card_height = SEARCH_ROW_HEIGHT + results_height + RESULTS_BOTTOM_PADDING;
 
         let mut results = div()
             .id("command-palette-results")
@@ -1282,8 +1281,7 @@ impl Waku {
             .flex_none()
             .overflow_y_scroll()
             .track_scroll(&self.command_palette.scroll)
-            .px(px(8.0))
-            .pb(px(8.0));
+            .px(px(8.0));
 
         if show_placeholder_state {
             let error = resume_view
@@ -1612,11 +1610,14 @@ impl Waku {
                 .h(px(card_height))
                 .overflow_hidden()
                 .rounded(px(15.0))
-                .bg(theme.raised)
+                .bg(theme.surface)
                 .shadow_xl()
                 .relative()
                 .flex()
                 .flex_col()
+                // Keep the gutter outside the scroll viewport, including
+                // when the results fill the popup's maximum height.
+                .pb(px(RESULTS_BOTTOM_PADDING))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
                     div()
@@ -1872,14 +1873,11 @@ mod tests {
         let items = [item(PaletteSection::Tasks, 0), excerpt];
         assert_eq!(
             command_palette_results_height(&items, false),
-            SECTION_TOP_MARGIN
-                + RESULT_ROW_HEIGHT
-                + CONTENT_RESULT_ROW_HEIGHT
-                + RESULTS_BOTTOM_PADDING
+            SECTION_TOP_MARGIN + RESULT_ROW_HEIGHT + CONTENT_RESULT_ROW_HEIGHT
         );
         assert_eq!(
             command_palette_results_height(&[], true),
-            EMPTY_RESULTS_HEIGHT + RESULTS_BOTTOM_PADDING
+            EMPTY_RESULTS_HEIGHT
         );
         let resume = [
             item(PaletteSection::Providers, 0),
@@ -1887,10 +1885,7 @@ mod tests {
         ];
         assert_eq!(
             command_palette_results_height(&resume, false),
-            SECTION_TOP_MARGIN
-                + SECTION_HEADER_HEIGHT
-                + RESULT_ROW_HEIGHT * 2.0
-                + RESULTS_BOTTOM_PADDING
+            SECTION_TOP_MARGIN + SECTION_HEADER_HEIGHT + RESULT_ROW_HEIGHT * 2.0
         );
     }
 

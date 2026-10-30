@@ -16,6 +16,12 @@ use crate::ui::{icon, tooltip::Tooltip};
 
 const CLIENT_FRAME_INSET: f32 = 10.0;
 const CLIENT_FRAME_ROUNDING: f32 = 10.0;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+const CLIENT_WINDOW_BUTTON_SIZE: f32 = 26.0;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+const CLIENT_WINDOW_BUTTON_GAP: f32 = 8.0;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+const CLIENT_WINDOW_CONTROLS_INSET: f32 = 10.0;
 
 #[derive(Clone, Copy)]
 pub(super) enum WindowControlSide {
@@ -102,6 +108,68 @@ impl Waku {
             .into_any_element()
     }
 
+    /// Width reserved by client-drawn window buttons on either side. macOS
+    /// owns its traffic lights and needs no space in these groups.
+    pub(super) fn client_window_controls_width(
+        &self,
+        side: WindowControlSide,
+        window: &Window,
+        cx: &gpui::App,
+    ) -> f32 {
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            let count = self
+                .client_window_buttons(side, window, cx)
+                .into_iter()
+                .flatten()
+                .count();
+            if count > 0 {
+                return CLIENT_WINDOW_CONTROLS_INSET * 2.0
+                    + CLIENT_WINDOW_BUTTON_SIZE * count as f32
+                    + CLIENT_WINDOW_BUTTON_GAP * (count - 1) as f32;
+            }
+        }
+        let _ = (side, window, cx);
+        0.0
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn client_window_buttons(
+        &self,
+        side: WindowControlSide,
+        window: &Window,
+        cx: &gpui::App,
+    ) -> [Option<WindowButton>; 3] {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (window, cx);
+            // Windows keeps all three on the right, in this order, and has no
+            // per-user layout preference to read.
+            if !matches!(side, WindowControlSide::Right) {
+                return [None; 3];
+            }
+            [
+                Some(WindowButton::Minimize),
+                Some(WindowButton::Maximize),
+                Some(WindowButton::Close),
+            ]
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if !matches!(window.window_decorations(), Decorations::Client { .. }) {
+                return [None; 3];
+            }
+            let layout = cx
+                .button_layout()
+                .unwrap_or_else(WindowButtonLayout::linux_default);
+            match side {
+                WindowControlSide::Left => layout.left,
+                WindowControlSide::Right => layout.right,
+            }
+        }
+    }
+
     /// Render the window controls Waku owns: the desktop's configured button
     /// order when GPUI had to fall back from server-side to client-side
     /// decorations, and the platform order on Windows.
@@ -111,36 +179,9 @@ impl Waku {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        #[cfg(target_os = "windows")]
-        let buttons = {
-            // Windows keeps all three on the right, in this order, and has no
-            // per-user layout preference to read.
-            if !matches!(side, WindowControlSide::Right) {
-                return None;
-            }
-            [
-                Some(WindowButton::Minimize),
-                Some(WindowButton::Maximize),
-                Some(WindowButton::Close),
-            ]
-        };
-
-        #[cfg(target_os = "linux")]
-        let buttons = {
-            if !matches!(window.window_decorations(), Decorations::Client { .. }) {
-                return None;
-            }
-            let layout = cx
-                .button_layout()
-                .unwrap_or_else(WindowButtonLayout::linux_default);
-            match side {
-                WindowControlSide::Left => layout.left,
-                WindowControlSide::Right => layout.right,
-            }
-        };
-
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
+            let buttons = self.client_window_buttons(side, window, cx);
             if buttons.iter().all(Option::is_none) {
                 return None;
             }
@@ -168,10 +209,10 @@ impl Waku {
                     .tab_stop(false)
                     .h_full()
                     .flex_none()
-                    .px(px(10.0))
+                    .px(px(CLIENT_WINDOW_CONTROLS_INSET))
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
+                    .gap(px(CLIENT_WINDOW_BUTTON_GAP))
                     .children(controls)
                     .into_any_element(),
             )
@@ -237,7 +278,7 @@ fn client_window_button(
         .track_focus(&focus)
         .tab_index(0)
         .tab_stop(true)
-        .size(px(26.0))
+        .size(px(CLIENT_WINDOW_BUTTON_SIZE))
         .flex_none()
         .rounded_full()
         .flex()

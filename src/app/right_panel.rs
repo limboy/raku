@@ -5,6 +5,9 @@ use super::*;
 
 const TAB_SCROLL_FADE_WIDTH: f32 = 24.0;
 const REVIEW_DIFF_FILE_HEADER_HEIGHT: f32 = 36.0;
+const RIGHT_PANEL_TOGGLE_SIZE: f32 = 26.0;
+const RIGHT_TITLEBAR_INSET: f32 = 14.0;
+const RIGHT_TITLEBAR_GAP: f32 = 6.0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct WorkingTreeEntry {
@@ -2119,12 +2122,52 @@ impl Waku {
         }
     }
 
-    pub(super) fn render_right_panel_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn right_titlebar_controls_width(&self, window: &Window, cx: &App) -> f32 {
+        let window_controls = self.client_window_controls_width(
+            super::window_chrome::WindowControlSide::Right,
+            window,
+            cx,
+        );
+        RIGHT_TITLEBAR_INSET
+            + RIGHT_PANEL_TOGGLE_SIZE
+            + if window_controls > 0.0 {
+                RIGHT_TITLEBAR_GAP + window_controls
+            } else {
+                0.0
+            }
+    }
+
+    /// One window-anchored toggle survives the entire panel slide; neither
+    /// header owns a second copy while the panel is still on screen.
+    pub(super) fn render_right_titlebar_controls(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id("right-titlebar-controls")
+            .absolute()
+            .top_0()
+            .right_0()
+            .w(px(self.right_titlebar_controls_width(window, cx)))
+            .h(px(48.0))
+            .pr(px(RIGHT_TITLEBAR_INSET))
+            .flex()
+            .items_center()
+            .gap(px(RIGHT_TITLEBAR_GAP))
+            .child(self.render_right_panel_toggle(cx))
+            .children(self.render_client_window_controls(
+                super::window_chrome::WindowControlSide::Right,
+                window,
+                cx,
+            ))
+    }
+
+    fn render_right_panel_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::current(cx);
         div()
             .id("toggle-right-panel")
-            .w(px(26.0))
-            .h(px(26.0))
+            .size(px(RIGHT_PANEL_TOGGLE_SIZE))
             .flex_none()
             .rounded(px(6.0))
             .flex()
@@ -2492,9 +2535,11 @@ impl Waku {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(RIGHT_TITLEBAR_GAP))
             .pl(px(10.0))
-            .pr(px(14.0))
+            .pr(px(
+                self.right_titlebar_controls_width(window, cx) + RIGHT_TITLEBAR_GAP
+            ))
             .child(
                 div()
                     .relative()
@@ -2567,16 +2612,7 @@ impl Waku {
             );
         }
 
-        self.window_drag_region(
-            header.child(self.render_right_panel_toggle(cx)).children(
-                self.render_client_window_controls(
-                    super::window_chrome::WindowControlSide::Right,
-                    window,
-                    cx,
-                ),
-            ),
-            cx,
-        )
+        self.window_drag_region(header, cx)
     }
 
     fn render_right_panel_chooser(&self, cx: &mut Context<Self>) -> Stateful<Div> {
