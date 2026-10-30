@@ -201,6 +201,9 @@ impl Waku {
             self.state.last_service_tier = service_tier;
             self.state.last_context_window = context_window;
         }
+        // Activation may have switched projects after the initial request's
+        // reveal, so sync the filtered history before revealing its selection.
+        self.reveal_sidebar_session(session_id);
         if self
             .selected_session()
             .is_some_and(|session| !session.has_started())
@@ -247,9 +250,6 @@ impl Waku {
             return;
         };
         self.branch_snapshots.invalidate(&workspace_path);
-        self.sidebar_branch_scan_fingerprint.set(None);
-        self.sidebar_branch_scan_generation
-            .set(self.sidebar_branch_scan_generation.get().wrapping_add(1));
         self.refresh_workspace_surfaces(cx);
         self.invalidate_composer_sources(cx);
     }

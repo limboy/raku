@@ -1,9 +1,9 @@
-//! The project picker behind the empty-state headline and the composer's
+//! The project picker behind the sidebar, empty-state headline and composer's
 //! project chip: a filter field over a virtualized project list, with the
 //! add-project and no-project actions pinned beneath it so a long list can
 //! never push them out of reach.
 //!
-//! The two triggers never have their panels open together, so they share one
+//! The triggers never have their panels open together, so they share one
 //! filter field, one keyboard cursor and one list. Rows are only ranked while
 //! a panel is open; a closed picker costs what any other closed menu does.
 
@@ -21,9 +21,10 @@ const PROJECT_PICKER_VISIBLE_ROWS: f32 = 11.0;
 const PROJECT_PICKER_WIDTH: f32 = 300.0;
 
 /// Where a picker is drawn, which decides its anchoring and how a choice
-/// lands. The composer's variants also carry its draft to the new project.
+/// lands. Choices configuring an unsent task carry its draft to the new project.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ProjectPickerSite {
+    Sidebar,
     EmptyState,
     Composer,
 }
@@ -31,6 +32,7 @@ pub(super) enum ProjectPickerSite {
 impl ProjectPickerSite {
     fn menu_id(self) -> &'static str {
         match self {
+            Self::Sidebar => "sidebar-project",
             Self::EmptyState => "empty-state-project",
             Self::Composer => "workspace-project",
         }
@@ -39,8 +41,8 @@ impl ProjectPickerSite {
     fn align(self) -> MenuAlign {
         match self {
             Self::EmptyState => MenuAlign::BelowLeft,
-            // The composer sits at the bottom of the window.
-            Self::Composer => MenuAlign::AboveLeft,
+            // Both footers sit at the bottom of the window.
+            Self::Sidebar | Self::Composer => MenuAlign::AboveLeft,
         }
     }
 }
@@ -55,9 +57,23 @@ enum ProjectPickerAction {
 }
 
 impl Waku {
+    /// Both footer selectors reflect the same active project, including an
+    /// explicit label for a task without a project.
+    pub(super) fn project_picker_label(&self) -> String {
+        self.selected_project()
+            .map(|project| {
+                if project.is_projectless() {
+                    tr!("project.no_project_name")
+                } else {
+                    project.display_name()
+                }
+            })
+            .unwrap_or_else(|| tr!("project.choose_project"))
+    }
+
     /// The menu handle for `site`'s picker. Opening resets the filter and the
     /// keyboard cursor and hands focus to the field; closing returns focus to
-    /// the composer, as the branch picker does.
+    /// the sidebar trigger or the composer.
     pub(super) fn project_picker_handle(
         &self,
         site: ProjectPickerSite,
@@ -75,8 +91,17 @@ impl Waku {
                     this.project_picker_row_cache.borrow_mut().clear();
                     search.update(cx, |input, cx| input.clear(cx));
                 } else {
-                    let focus = this.composer_focus(cx);
-                    window.focus(&focus, cx);
+                    let focus = match site {
+                        ProjectPickerSite::Sidebar => this
+                            .menus
+                            .borrow()
+                            .get(site.menu_id())
+                            .map(|handle| handle.trigger_focus_handle().clone()),
+                        _ => Some(this.composer_focus(cx)),
+                    };
+                    if let Some(focus) = focus {
+                        window.focus(&focus, cx);
+                    }
                 }
                 cx.notify();
             });
@@ -401,16 +426,23 @@ impl Waku {
         site: ProjectPickerSite,
         cx: &mut Context<Self>,
     ) {
+        // A sidebar choice configures an unsent task just like the editor's
+        // picker. From an existing conversation it starts a task in the new
+        // project, leaving that conversation's draft in place.
+        let carry_draft = site == ProjectPickerSite::Composer
+            || (site == ProjectPickerSite::Sidebar
+                && self
+                    .selected_session()
+                    .is_some_and(|session| !session.has_started() && !session.is_busy()));
         match action {
             ProjectPickerAction::Select(project_id) => {
                 if self.state.selected_project == Some(project_id) {
                     return;
                 }
-                match site {
-                    ProjectPickerSite::EmptyState => self.select_project(project_id, cx),
-                    ProjectPickerSite::Composer => {
-                        self.select_project_from_composer(project_id, cx)
-                    }
+                if carry_draft {
+                    self.select_project_from_composer(project_id, cx);
+                } else {
+                    self.select_project(project_id, cx);
                 }
             }
             ProjectPickerAction::NewProject => self.add_project(cx),
@@ -418,11 +450,10 @@ impl Waku {
                 if self.selected_project().is_some_and(Project::is_projectless) {
                     return;
                 }
-                match site {
-                    ProjectPickerSite::EmptyState => self.create_projectless_session(cx),
-                    ProjectPickerSite::Composer => {
-                        self.create_projectless_session_from_composer(cx)
-                    }
+                if carry_draft {
+                    self.create_projectless_session_from_composer(cx);
+                } else {
+                    self.create_projectless_session(cx);
                 }
             }
         }

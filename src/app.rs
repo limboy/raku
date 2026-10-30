@@ -54,7 +54,7 @@ use crate::ui::tooltip::Tooltip;
 use crate::browser::BrowserView;
 use crate::persistence::{
     ComposerDraftStore, ComposerDrafts, DEFAULT_RIGHT_PANEL_WIDTH, DEFAULT_SIDEBAR_WIDTH,
-    PersistedState, PersistedWindowState, SidebarGrouping, SidebarOrdering, StateStore,
+    PersistedState, PersistedWindowState, SidebarOrdering, StateStore,
 };
 use crate::query::{Query, QueryCache};
 use crate::review_diff::{Snapshot as ReviewDiffSnapshot, Source as ReviewDiffSource};
@@ -1076,6 +1076,7 @@ pub struct Waku {
     daemon_reconfigure_pending: bool,
     daemon_token_revealed: bool,
     settings_focus: FocusHandle,
+    sidebar_settings_focus: FocusHandle,
     onboarding_add_project_focus: FocusHandle,
     onboarding_projectless_focus: FocusHandle,
     /// Mirror of Sparkle's persisted automatic-check setting. Refreshed when
@@ -1332,18 +1333,6 @@ pub struct Waku {
     /// One stable field reused across sidebar rows so virtualization never
     /// replaces the focused editor while a rename is in progress.
     session_rename_input: Entity<TextInput>,
-    /// Groups the user has folded in either sidebar view. This is
-    /// intentionally runtime-only, like transcript disclosure state.
-    sidebar_collapsed_groups: HashSet<SidebarGroup>,
-    /// Number of older sessions revealed inside each project section. This is
-    /// runtime-only so every launch starts with the recent three-day view.
-    sidebar_project_reveal_counts: HashMap<SidebarGroup, usize>,
-    /// Stable keyboard focus for each virtualized sidebar group header and
-    /// its hover-revealed New Task control.
-    sidebar_group_header_focuses: RefCell<HashMap<SidebarGroup, FocusHandle>>,
-    sidebar_group_compose_focuses: RefCell<HashMap<SidebarGroup, FocusHandle>>,
-    /// Stable keyboard focus for each virtualized project-history reveal row.
-    sidebar_show_more_focuses: RefCell<HashMap<SidebarGroup, FocusHandle>>,
     sidebar_visible: bool,
     sidebar_width: f32,
     right_panel_visible: bool,
@@ -1486,14 +1475,11 @@ pub struct Waku {
     sidebar_scrollbar: Rc<ScrollbarState>,
     /// Snapshot of the sidebar rows the list state currently corresponds to.
     sidebar_row_cache: RefCell<Vec<SidebarRow>>,
+    /// Project whose rows and scroll position are currently displayed.
+    sidebar_row_project: Cell<Option<Uuid>>,
     /// Fingerprint + snapshot pair backing `sidebar_rows_cached`.
     sidebar_rows_fingerprint: Cell<Option<u64>>,
     sidebar_rows_snapshot: RefCell<Rc<Vec<SidebarRow>>>,
-    /// Branch labels for ordinary local project paths, resolved together on a
-    /// background executor so sidebar rows only read memory.
-    sidebar_branch_labels: RefCell<HashMap<PathBuf, SharedString>>,
-    sidebar_branch_scan_fingerprint: Cell<Option<u64>>,
-    sidebar_branch_scan_generation: Cell<u64>,
     transcript_row_kinds: RefCell<Vec<TranscriptRowKind>>,
     /// Fingerprint of the transcript inputs `transcript_row_kinds` was folded
     /// from, so an unchanged transcript costs nothing on a frame. `None` until
@@ -1658,8 +1644,8 @@ pub use goal_dialog::init as init_goal_dialog_keys;
 pub use image_preview::init as init_image_preview_keys;
 use project_picker::ProjectPickerSite;
 pub use settings::init as init_settings_keys;
+use sidebar::SidebarRow;
 pub use sidebar::init as init_sidebar_keys;
-use sidebar::{SidebarGroup, SidebarRow};
 pub use skills_page::init as init_skills_keys;
 use streaming::*;
 use transcript::*;
@@ -1672,33 +1658,19 @@ fn single_line_label(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Seconds until any session's time label next changes value, or `None` when
-/// no label is on the clock at all. A running turn's elapsed counter moves
-/// every second; a settled reply's "5m"/"3h"/"2d" moves only at its unit
-/// boundary, so the wake-up this feeds gets rarer as the history ages.
-pub(super) fn next_time_label_change(sessions: &[AgentSession], now: u64) -> Option<u64> {
-    let mut next: Option<u64> = None;
-    for session in sessions {
-        if session.is_busy()
-            && session
-                .turns
-                .last()
-                .is_some_and(|turn| turn.status == TurnStatus::Running)
-        {
-            return Some(1);
-        }
-        if let Some(last_reply_at) = session.last_reply_at {
-            let elapsed = now.saturating_sub(last_reply_at);
-            let step = match elapsed {
-                0..=3_599 => 60,
-                3_600..=86_399 => 3_600,
-                _ => 86_400,
-            };
-            let remaining = (step - elapsed % step).max(1);
-            next = Some(next.map_or(remaining, |next| next.min(remaining)));
-        }
-    }
-    next
+/// Running turns need one-second updates for their transcript elapsed label.
+/// Settled sessions have no live time label and need no timer.
+pub(super) fn next_time_label_change(sessions: &[AgentSession]) -> Option<u64> {
+    sessions
+        .iter()
+        .any(|session| {
+            session.is_busy()
+                && session
+                    .turns
+                    .last()
+                    .is_some_and(|turn| turn.status == TurnStatus::Running)
+        })
+        .then_some(1)
 }
 
 fn migrate_legacy_projectless_projects(
@@ -1843,24 +1815,12 @@ impl Waku {
         });
     }
 
-    /// Arm one wake-up for the moment a time-derived label next changes —
-    /// the sidebar's relative reply times and every "Working for Ns" elapsed.
-    ///
-    /// There is deliberately no standing timer. Render calls this each frame;
-    /// while the scheduled instant is unchanged it is a `Cell` comparison and
-    /// nothing spawns. The timer fires exactly when a visible label rolls to
-    /// its next value, notifies once, and the frame that draws the new value
-    /// arms the next boundary. An idle window with hour-old sessions wakes
-    /// once an hour; with nothing to show it wakes never. (T3 Code's
-    /// equivalent is one minute-aligned interval gated on subscribers; label
-    /// boundaries make even that unnecessary.) A busy session pins the chain
-    /// to one-second steps — that is what keeps its elapsed counters moving
-    /// under reduce-motion, where the pulse animations that normally drive
-    /// frames are suppressed, and while a background turn sits between
-    /// stream events.
+    /// Keep running-turn elapsed labels current, including under reduce
+    /// motion. Settled sessions do not arm a timer now that sidebar ages are
+    /// hidden. Repeated frames reuse the same pending wake-up.
     fn schedule_time_label_wake(&self, cx: &mut Context<Self>) {
         let now = unix_time();
-        let target = next_time_label_change(&self.state.sessions, now).map(|seconds| now + seconds);
+        let target = next_time_label_change(&self.state.sessions).map(|seconds| now + seconds);
         if self.time_label_wake.get() == target {
             return;
         }
@@ -2777,6 +2737,7 @@ impl Waku {
                 daemon_reconfigure_pending: false,
                 daemon_token_revealed: false,
                 settings_focus,
+                sidebar_settings_focus: cx.focus_handle(),
                 onboarding_add_project_focus,
                 onboarding_projectless_focus,
                 automatic_updates_enabled: cx
@@ -2903,11 +2864,6 @@ impl Waku {
                 session_navigation,
                 session_rename: None,
                 session_rename_input,
-                sidebar_collapsed_groups: HashSet::new(),
-                sidebar_project_reveal_counts: HashMap::new(),
-                sidebar_group_header_focuses: RefCell::new(HashMap::new()),
-                sidebar_group_compose_focuses: RefCell::new(HashMap::new()),
-                sidebar_show_more_focuses: RefCell::new(HashMap::new()),
                 sidebar_visible,
                 sidebar_width,
                 right_panel_visible,
@@ -3006,11 +2962,9 @@ impl Waku {
                 sidebar_list_state,
                 sidebar_scrollbar: ScrollbarState::new(),
                 sidebar_row_cache: RefCell::new(Vec::new()),
+                sidebar_row_project: Cell::new(None),
                 sidebar_rows_fingerprint: Cell::new(None),
                 sidebar_rows_snapshot: RefCell::new(Rc::new(Vec::new())),
-                sidebar_branch_labels: RefCell::new(HashMap::new()),
-                sidebar_branch_scan_fingerprint: Cell::new(None),
-                sidebar_branch_scan_generation: Cell::new(0),
                 transcript_row_kinds: RefCell::new(Vec::new()),
                 transcript_row_kinds_fingerprint: Cell::new(None),
                 transcript_navigation_turns: RefCell::new(Rc::new(Vec::new())),

@@ -270,8 +270,8 @@ impl Render for Waku {
                 .into_any_element();
             return self.render_window_frame(content, window, cx);
         }
-        // Re-armed every frame this window shows time labels; parks while
-        // settings covers them and while the window isn't drawing at all.
+        // Keep running-turn elapsed labels current while the workspace is
+        // visible; settled sessions leave the wake-up chain parked.
         self.schedule_time_label_wake(cx);
 
         let theme = Theme::current(cx);

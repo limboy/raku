@@ -156,7 +156,6 @@ enum PaletteAction {
     CopyIdentifier(PaletteIdentifier),
     ChooseModel,
     ToggleUsage,
-    CollapseSidebarGroups,
     ToggleSidebar,
     ToggleRightPanel,
     OpenSettings(SettingsPage),
@@ -770,15 +769,6 @@ impl Waku {
                 next(),
             ));
         }
-        commands.push(CommandPaletteItem::command(
-            PaletteSection::Commands,
-            tr!("command_palette.collapse_sidebar_groups"),
-            "icons/command.svg",
-            None,
-            PaletteAction::CollapseSidebarGroups,
-            "collapse close fold all sidebar groups projects dates history",
-            next(),
-        ));
         commands.extend([
             CommandPaletteItem::command(
                 PaletteSection::Commands,
@@ -1581,7 +1571,6 @@ impl Waku {
                     cx.notify();
                 }
             }
-            PaletteAction::CollapseSidebarGroups => self.collapse_all_sidebar_groups(cx),
             PaletteAction::ToggleSidebar => self.toggle_sidebar_action(&ToggleSidebar, window, cx),
             PaletteAction::ToggleRightPanel => {
                 self.toggle_right_panel_action(&ToggleRightPanel, window, cx)

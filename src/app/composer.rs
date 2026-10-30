@@ -3359,16 +3359,6 @@ impl Waku {
     pub(super) fn render_workspace_footer(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::current(cx);
         let projectless_selected = self.selected_project().is_some_and(Project::is_projectless);
-        let project_name = self
-            .selected_project()
-            .map(|project| {
-                if project.is_projectless() {
-                    tr!("project.choose_project")
-                } else {
-                    project.display_name()
-                }
-            })
-            .unwrap_or_else(|| tr!("project.choose_project"));
         let can_configure_workspace = self
             .selected_session()
             .is_some_and(|session| !session.has_started() && !session.is_busy());
@@ -3376,7 +3366,7 @@ impl Waku {
         let project_handle = self.project_picker_handle(ProjectPickerSite::Composer, cx);
         let project_trigger = MenuChip::new("workspace-project")
             .icon("icons/folder.svg", theme.text_tertiary)
-            .label(project_name)
+            .label(self.project_picker_label())
             .caret(false)
             .disabled(!can_configure_workspace)
             .selected(can_configure_workspace && project_handle.is_open())
