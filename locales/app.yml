@@ -554,6 +554,8 @@ sidebar.status_failed:
 
 project.new_project:
   en: New project…
+project.remove:
+  en: Remove project
 project.no_project:
   en: Don't work in a project
 project.no_project_name:

@@ -270,6 +270,7 @@ sidebar.status_waiting: 正在等待
 sidebar.status_background: 等待后台任务
 sidebar.status_failed: 失败
 project.new_project: 新建项目…
+project.remove: 移除项目
 project.no_project: 不使用项目
 project.no_project_name: 无项目
 project.none_found: 未找到项目

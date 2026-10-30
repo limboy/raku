@@ -1625,8 +1625,15 @@ impl Waku {
                 && let Some(path) = paths.into_iter().next()
             {
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(existing) = this.state.projects.iter().find(|p| p.path == path) {
-                        this.select_project(existing.id, cx);
+                    if let Some(project_id) = this
+                        .state
+                        .projects
+                        .iter()
+                        .find(|p| p.path == path)
+                        .map(|project| project.id)
+                    {
+                        this.state.removed_project_ids.remove(&project_id);
+                        this.select_project(project_id, cx);
                         return;
                     }
                     let project = Project::from_path(path);

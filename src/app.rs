@@ -1194,8 +1194,8 @@ pub struct Waku {
     /// The project pickers' shared filter field. The empty-state headline
     /// and the composer chip never have their panels open together.
     project_search: Entity<TextInput>,
-    /// Keyboard cursor over the project picker's rows, then its pinned
-    /// actions. `None` means the keyboard has not moved yet.
+    /// Keyboard cursor over each project and its remove button, then the
+    /// pinned actions. `None` means the keyboard has not moved yet.
     project_picker_highlight: Option<usize>,
     project_picker_list_state: ListState,
     project_picker_row_cache: RefCell<Vec<Uuid>>,

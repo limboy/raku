@@ -318,6 +318,8 @@ struct AppState {
     analytics_id: Uuid,
     #[serde(default)]
     selected_project: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    removed_project_ids: HashSet<Uuid>,
     #[serde(default)]
     selected_session: Option<Uuid>,
     #[serde(default = "default_provider")]
@@ -364,6 +366,10 @@ pub struct PersistedState {
     pub projects: Vec<Project>,
     pub sessions: Vec<AgentSession>,
     pub selected_project: Option<Uuid>,
+    /// Projects removed from this client's picker. Keep their daemon-owned
+    /// task history so reopening the same folder restores its conversations.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub removed_project_ids: HashSet<Uuid>,
     pub selected_session: Option<Uuid>,
     pub last_provider: ProviderKind,
     #[serde(default)]
@@ -452,6 +458,7 @@ impl PersistedState {
             projects: Vec::new(),
             sessions: Vec::new(),
             selected_project: None,
+            removed_project_ids: HashSet::new(),
             selected_session: None,
             last_provider: ProviderKind::Codex,
             last_runtime_mode: RuntimeMode::default(),
@@ -608,6 +615,7 @@ impl PersistedState {
             app_state_version: APP_STATE_VERSION,
             analytics_id: self.analytics_id,
             selected_project: self.selected_project,
+            removed_project_ids: self.removed_project_ids.clone(),
             selected_session: self.persistable_selected_session(),
             last_provider: self.last_provider,
             last_runtime_mode: self.last_runtime_mode,
@@ -644,6 +652,7 @@ impl PersistedState {
     fn apply_app_state(&mut self, app_state: AppState) {
         self.analytics_id = app_state.analytics_id;
         self.selected_project = app_state.selected_project;
+        self.removed_project_ids = app_state.removed_project_ids;
         self.selected_session = app_state.selected_session;
         self.last_provider = app_state.last_provider;
         self.last_runtime_mode = app_state.last_runtime_mode;
@@ -1236,6 +1245,22 @@ mod tests {
         assert_eq!(state.sidebar_grouping, SidebarGrouping::Updated);
         assert_eq!(state.sidebar_ordering, SidebarOrdering::Newest);
         assert_eq!(state.last_runtime_mode, RuntimeMode::FullAccess);
+        assert!(state.removed_project_ids.is_empty());
+    }
+
+    #[test]
+    fn removed_projects_survive_app_state_reload_without_deleting_history() {
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let project_id = state.projects[0].id;
+        let session_id = state.sessions[0].id;
+        state.removed_project_ids.insert(project_id);
+        let encoded = serde_json::to_vec(&state.app_state()).unwrap();
+        state.removed_project_ids.clear();
+        state.apply_app_state(serde_json::from_slice(&encoded).unwrap());
+
+        assert!(state.removed_project_ids.contains(&project_id));
+        assert_eq!(state.projects[0].id, project_id);
+        assert_eq!(state.sessions[0].id, session_id);
     }
 
     #[test]

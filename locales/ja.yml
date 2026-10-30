@@ -283,6 +283,7 @@ sidebar.status_background: バックグラウンドタスク待ち
 sidebar.status_failed: 失敗
 
 project.new_project: 新規プロジェクト…
+project.remove: プロジェクトを削除
 project.no_project: プロジェクトを使用しない
 project.no_project_name: プロジェクトなし
 project.none_found: プロジェクトが見つかりません

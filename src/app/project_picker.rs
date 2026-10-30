@@ -47,11 +47,12 @@ impl ProjectPickerSite {
     }
 }
 
-/// A keyboard-reachable target, in drawn order: the filtered project rows,
-/// then the two pinned actions.
+/// A keyboard-reachable target, in drawn order: each project and its remove
+/// button, then the two pinned actions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectPickerAction {
     Select(Uuid),
+    Remove(Uuid),
     NewProject,
     NoProject,
 }
@@ -130,6 +131,7 @@ impl Waku {
         let projects = Rc::new(if handle.is_open() {
             visible_project_entries(
                 &self.state.projects,
+                &self.state.removed_project_ids,
                 selected_project,
                 self.project_search.read(cx).content(),
                 &mut self.project_picker_matcher.borrow_mut(),
@@ -143,7 +145,12 @@ impl Waku {
         let actions = Rc::new(
             projects
                 .iter()
-                .map(|(project_id, _)| ProjectPickerAction::Select(*project_id))
+                .flat_map(|(project_id, _)| {
+                    [
+                        ProjectPickerAction::Select(*project_id),
+                        ProjectPickerAction::Remove(*project_id),
+                    ]
+                })
                 .chain([
                     ProjectPickerAction::NewProject,
                     ProjectPickerAction::NoProject,
@@ -194,12 +201,15 @@ impl Waku {
                                 };
                                 let project_id = *project_id;
                                 let select_weak = list_weak.clone();
+                                let remove_weak = list_weak.clone();
+                                let remove_key_weak = list_weak.clone();
                                 let select_popover = list_popover.clone();
                                 project_picker_row(
                                     ("project-row", index),
-                                    highlight == Some(index),
+                                    highlight == Some(index * 2),
                                     &theme,
                                 )
+                                .group("project-picker-row")
                                 .w_full()
                                 .child(
                                     div()
@@ -209,13 +219,80 @@ impl Waku {
                                         .text_color(theme.text)
                                         .child(name.clone()),
                                 )
-                                .when(selected_project == Some(project_id), |element| {
-                                    element.child(icon(
-                                        "icons/check.svg",
-                                        11.0,
-                                        theme.text_secondary,
-                                    ))
-                                })
+                                .child(
+                                    div()
+                                        .relative()
+                                        .size(px(22.0))
+                                        .flex_none()
+                                        .when(
+                                            selected_project == Some(project_id)
+                                                && highlight != Some(index * 2 + 1),
+                                            |element| {
+                                                element.child(
+                                                    div()
+                                                        .absolute()
+                                                        .inset_0()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .group_hover(
+                                                            "project-picker-row",
+                                                            |style| style.invisible(),
+                                                        )
+                                                        .child(icon(
+                                                            "icons/check.svg",
+                                                            11.0,
+                                                            theme.text_secondary,
+                                                        )),
+                                                )
+                                            },
+                                        )
+                                        .child(
+                                            icon_button(
+                                                ("project-remove", index),
+                                                "icons/x.svg",
+                                                theme,
+                                            )
+                                            .tab_index(index as isize)
+                                            .opacity(0.0)
+                                            .group_hover("project-picker-row", |style| {
+                                                style.opacity(1.0)
+                                            })
+                                            .focus_visible(|style| {
+                                                style
+                                                    .opacity(1.0)
+                                                    .bg(theme.raised)
+                                                    .border_1()
+                                                    .border_color(theme.accent)
+                                            })
+                                            .when(highlight == Some(index * 2 + 1), |element| {
+                                                element.opacity(1.0).bg(theme.overlay_strong)
+                                            })
+                                            .tooltip(Tooltip::text(tr!("project.remove")))
+                                            .on_click(move |_, _, cx| {
+                                                cx.stop_propagation();
+                                                let _ = remove_weak.update(cx, |this, cx| {
+                                                    this.remove_project_from_picker(project_id, cx);
+                                                });
+                                            })
+                                            .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                                                if !event.keystroke.modifiers.modified()
+                                                    && matches!(
+                                                        event.keystroke.key.as_str(),
+                                                        "enter" | "space"
+                                                    )
+                                                {
+                                                    cx.stop_propagation();
+                                                    let _ =
+                                                        remove_key_weak.update(cx, |this, cx| {
+                                                            this.remove_project_from_picker(
+                                                                project_id, cx,
+                                                            );
+                                                        });
+                                                }
+                                            }),
+                                        ),
+                                )
                                 .on_click(move |_, window, cx| {
                                     select_popover.close(window, cx);
                                     window.refresh();
@@ -278,23 +355,24 @@ impl Waku {
 
                 let navigate = |key: &'static str| {
                     let weak = weak.clone();
-                    let action_count = actions.len();
                     let row_count = projects.len();
                     move |cx: &mut App| {
                         let _ = weak.update(cx, |this, cx| {
-                            this.move_project_picker_highlight(key, action_count, row_count, cx);
+                            this.move_project_picker_highlight(key, row_count, cx);
                         });
                     }
                 };
                 let next = navigate("down");
                 let previous = navigate("up");
-                let next_tab = navigate("down");
-                let previous_tab = navigate("up");
+                let next_tab = navigate("tab");
+                let previous_tab = navigate("shift-tab");
                 let confirm_weak = weak.clone();
                 let confirm_actions = actions.clone();
                 let confirm_popover = popover.clone();
 
                 div()
+                    .tab_group()
+                    .tab_stop(false)
                     .w(px(PROJECT_PICKER_WIDTH))
                     // A deferred panel inherits its trigger's text style, and
                     // the empty state's trigger sits in a 20pt medium
@@ -312,8 +390,7 @@ impl Waku {
                     .flex_col()
                     .on_action(move |_: &SelectNextEntry, _, cx| next(cx))
                     .on_action(move |_: &SelectPreviousEntry, _, cx| previous(cx))
-                    // Nothing here cycles tabs, so tab steps through the rows
-                    // like the command palette's.
+                    // Arrows select rows; Tab also visits each remove button.
                     .on_action(move |_: &SelectNextTab, _, cx| next_tab(cx))
                     .on_action(move |_: &SelectPreviousTab, _, cx| previous_tab(cx))
                     .on_action(move |_: &ConfirmEntry, window, cx| {
@@ -332,8 +409,10 @@ impl Waku {
                         };
                         // Close before applying: the toggle observer updates
                         // `Waku`, so it cannot run inside the update below.
-                        confirm_popover.close(window, cx);
-                        window.refresh();
+                        if !matches!(action, ProjectPickerAction::Remove(_)) {
+                            confirm_popover.close(window, cx);
+                            window.refresh();
+                        }
                         let _ = confirm_weak.update(cx, |this, cx| {
                             this.apply_project_picker_action(action, site, cx);
                         });
@@ -402,20 +481,19 @@ impl Waku {
     fn move_project_picker_highlight(
         &mut self,
         key: &str,
-        action_count: usize,
         row_count: usize,
         cx: &mut Context<Self>,
     ) {
-        let current = self
-            .project_picker_highlight
-            .filter(|index| *index < action_count);
-        let Some(next) = next_picker_highlight(current, action_count, key) else {
+        let Some(next) =
+            next_project_picker_highlight(self.project_picker_highlight, row_count, key)
+        else {
             return;
         };
         self.project_picker_highlight = Some(next);
         // The pinned actions sit outside the list and are always visible.
-        if next < row_count {
-            self.project_picker_list_state.scroll_to_reveal_item(next);
+        if next < row_count * 2 {
+            self.project_picker_list_state
+                .scroll_to_reveal_item(next / 2);
         }
         cx.notify();
     }
@@ -446,6 +524,9 @@ impl Waku {
                 }
             }
             ProjectPickerAction::NewProject => self.add_project(cx),
+            ProjectPickerAction::Remove(project_id) => {
+                self.remove_project_from_picker(project_id, cx);
+            }
             ProjectPickerAction::NoProject => {
                 if self.selected_project().is_some_and(Project::is_projectless) {
                     return;
@@ -457,6 +538,52 @@ impl Waku {
                 }
             }
         }
+    }
+
+    fn remove_project_from_picker(&mut self, project_id: Uuid, cx: &mut Context<Self>) {
+        if !self
+            .state
+            .projects
+            .iter()
+            .any(|project| project.id == project_id && !project.is_projectless())
+            || !self.state.removed_project_ids.insert(project_id)
+        {
+            return;
+        }
+        self.project_picker_highlight = None;
+        self.save();
+        cx.notify();
+    }
+}
+
+/// Arrows keep the existing row navigation. Tab visits the inline remove
+/// controls too, with the search field retaining focus for filtering.
+fn next_project_picker_highlight(
+    current: Option<usize>,
+    row_count: usize,
+    key: &str,
+) -> Option<usize> {
+    let current = current.filter(|index| *index < row_count * 2 + 2);
+    match key {
+        "tab" => next_picker_highlight(current, row_count * 2 + 2, "down"),
+        "shift-tab" => next_picker_highlight(current, row_count * 2 + 2, "up"),
+        "up" | "down" => {
+            let row = current.map(|index| {
+                if index < row_count * 2 {
+                    index / 2
+                } else {
+                    index - row_count
+                }
+            });
+            next_picker_highlight(row, row_count + 2, key).map(|index| {
+                if index < row_count {
+                    index * 2
+                } else {
+                    index + row_count
+                }
+            })
+        }
+        _ => None,
     }
 }
 
@@ -486,6 +613,7 @@ fn project_picker_row(id: impl Into<ElementId>, highlighted: bool, theme: &Theme
 /// namesakes — and then to the unfiltered order.
 fn visible_project_entries(
     projects: &[Project],
+    removed_project_ids: &HashSet<Uuid>,
     selected: Option<Uuid>,
     query: &str,
     matcher: &mut Matcher,
@@ -498,7 +626,7 @@ fn visible_project_entries(
                 .iter()
                 .filter(|project| Some(project.id) != selected),
         )
-        .filter(|project| !project.is_projectless());
+        .filter(|project| !project.is_projectless() && !removed_project_ids.contains(&project.id));
     let query = query.trim();
     if query.is_empty() {
         return ordered
@@ -546,7 +674,13 @@ mod tests {
     fn project_picker_lists_the_current_project_first() {
         let projects = vec![project("before.town"), project("wikis"), project("crow")];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        let entries = visible_project_entries(&projects, Some(projects[1].id), "", &mut matcher);
+        let entries = visible_project_entries(
+            &projects,
+            &HashSet::new(),
+            Some(projects[1].id),
+            "",
+            &mut matcher,
+        );
         assert_eq!(names(&entries), vec!["wikis", "before.town", "crow"]);
     }
 
@@ -559,7 +693,8 @@ mod tests {
             project("waku-crow-sync"),
         ];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        let entries = visible_project_entries(&projects, None, "  CROW ", &mut matcher);
+        let entries =
+            visible_project_entries(&projects, &HashSet::new(), None, "  CROW ", &mut matcher);
         // Every match survives, the exact name ranks above its longer
         // namesakes, and the non-matching project is gone.
         assert_eq!(
@@ -567,10 +702,14 @@ mod tests {
             vec!["crow", "crow-companion", "waku-crow-sync"]
         );
 
-        let entries = visible_project_entries(&projects, None, "sts", &mut matcher);
+        let entries =
+            visible_project_entries(&projects, &HashSet::new(), None, "sts", &mut matcher);
         assert_eq!(names(&entries), vec!["speech-to-subtitle"]);
 
-        assert!(visible_project_entries(&projects, None, "zzz", &mut matcher).is_empty());
+        assert!(
+            visible_project_entries(&projects, &HashSet::new(), None, "zzz", &mut matcher)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -578,8 +717,49 @@ mod tests {
         let projects = vec![project("alpha-one"), project("alpha-two")];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
         // The current project leads ties the same way it leads the full list.
-        let entries =
-            visible_project_entries(&projects, Some(projects[1].id), "alpha", &mut matcher);
+        let entries = visible_project_entries(
+            &projects,
+            &HashSet::new(),
+            Some(projects[1].id),
+            "alpha",
+            &mut matcher,
+        );
         assert_eq!(names(&entries), vec!["alpha-two", "alpha-one"]);
+    }
+
+    #[test]
+    fn removed_projects_stay_out_of_the_picker_even_when_selected_or_searched() {
+        let projects = vec![project("crow"), project("waku")];
+        let mut removed = HashSet::from([projects[0].id]);
+        let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
+        let entries =
+            visible_project_entries(&projects, &removed, Some(projects[0].id), "", &mut matcher);
+        assert_eq!(names(&entries), vec!["waku"]);
+        assert!(
+            visible_project_entries(&projects, &removed, None, "crow", &mut matcher).is_empty()
+        );
+        removed.remove(&projects[0].id);
+        let entries = visible_project_entries(&projects, &removed, None, "crow", &mut matcher);
+        assert_eq!(names(&entries), vec!["crow"]);
+    }
+
+    #[test]
+    fn arrows_skip_remove_buttons_while_tab_visits_them() {
+        // Two projects, then New project and No project.
+        assert_eq!(next_project_picker_highlight(None, 2, "down"), Some(0));
+        assert_eq!(next_project_picker_highlight(Some(0), 2, "tab"), Some(1));
+        assert_eq!(next_project_picker_highlight(Some(1), 2, "down"), Some(2));
+        assert_eq!(next_project_picker_highlight(Some(2), 2, "up"), Some(0));
+        assert_eq!(next_project_picker_highlight(Some(2), 2, "tab"), Some(3));
+        assert_eq!(next_project_picker_highlight(Some(2), 2, "down"), Some(4));
+        assert_eq!(next_project_picker_highlight(Some(4), 2, "down"), Some(5));
+        assert_eq!(next_project_picker_highlight(Some(5), 2, "down"), Some(0));
+        assert_eq!(next_project_picker_highlight(Some(4), 2, "up"), Some(2));
+        assert_eq!(
+            next_project_picker_highlight(Some(0), 2, "shift-tab"),
+            Some(5)
+        );
+        assert_eq!(next_project_picker_highlight(None, 0, "down"), Some(0));
+        assert_eq!(next_project_picker_highlight(Some(0), 0, "down"), Some(1));
     }
 }
