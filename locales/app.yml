@@ -32,6 +32,8 @@ menu.view:
   en: View
 menu.command_palette:
   en: Command Palette…
+menu.search_sessions:
+  en: Search Sessions…
 menu.toggle_sidebar:
   en: Toggle Sidebar
 menu.toggle_right_panel:
@@ -63,6 +65,19 @@ updater.up_to_date:
   en: Waku is up to date
 updater.failed:
   en: "Update failed: %{error}"
+
+session_search.placeholder:
+  en: Search sessions…
+session_search.no_results:
+  en: No matching sessions
+session_search.no_results_hint:
+  en: Try a session title or a phrase from the conversation
+session_search.no_sessions:
+  en: No sessions yet
+session_search.no_sessions_hint:
+  en: Start a conversation to find it here
+session_search.searching:
+  en: Searching sessions…
 
 command_palette.placeholder:
   en: Search tasks or run a command…

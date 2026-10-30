@@ -117,7 +117,7 @@ applies here too.
 
 While the composer's autocomplete popup is open (`ComposerAutocomplete >
 TextInput`), `up`, `down`, `ctrl-p` and `ctrl-n` move its highlight, `enter`
-and `tab` accept, and `escape` dismisses. The command palette, skills, model,
+and `tab` accept, and `escape` dismisses. The session, skills, model,
 branch and settings search fields bind their list navigation the same way at
 their own contexts.
 

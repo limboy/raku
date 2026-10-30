@@ -1894,7 +1894,7 @@ impl Waku {
         let command_palette_search = cx.new(|cx| {
             TextInput::new(window, cx)
                 .clear_on_escape()
-                .placeholder(tr!("command_palette.placeholder"))
+                .placeholder(tr!("session_search.placeholder"))
         });
         let model_search = cx.new(|cx| {
             TextInput::new(window, cx)

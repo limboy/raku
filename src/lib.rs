@@ -457,7 +457,7 @@ pub(crate) fn set_app_menus(cx: &mut App, updater_available: bool) {
             name: tr!("menu.view").into(),
             disabled: false,
             items: vec![
-                MenuItem::action(tr!("menu.command_palette"), ToggleCommandPalette),
+                MenuItem::action(tr!("menu.search_sessions"), ToggleCommandPalette),
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.toggle_sidebar"), ToggleSidebar),
                 MenuItem::action(tr!("menu.toggle_right_panel"), ToggleRightPanel),
