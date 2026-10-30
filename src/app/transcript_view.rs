@@ -1012,9 +1012,8 @@ impl Waku {
         if !session.provider.supports_conversation_rollback() {
             return None;
         }
-        // A steer joins the running turn as another user message. Rewinding
-        // restores the turn's checkpoint and resubmits the prompt that opened
-        // it, so only that prompt can carry the affordance.
+        // A steer joins the running turn as another user message. Provider
+        // history rewinds by turn, so only its opening prompt is editable.
         if !message_opens_turn(&session.messages, message_index) {
             return None;
         }
@@ -1022,15 +1021,13 @@ impl Waku {
         // Cache only — the ref lives in git, and this runs for every visible
         // user message on every frame. `prefetch_checkpoint_refs` fills the
         // cache off-thread and notifies.
-        if !self
+        let has_ref = self
             .checkpoint_ref_cache
             .borrow()
             .get(&(session.id, retained_turn_count))
             .copied()
-            .unwrap_or(false)
-        {
-            return None;
-        }
+            .unwrap_or(false);
+        let workspace = MessageEditWorkspace::for_checkpoint(turn.checkpoint.as_ref(), has_ref)?;
         let rollback_turns = session.provider_turns_after(retained_turn_count);
         if rollback_turns > 0 && session.provider_cursor.is_none() {
             return None;
@@ -1039,6 +1036,7 @@ impl Waku {
             session_id: session.id,
             message_id: message.id,
             turn_count: turn.turn_count,
+            workspace,
         })
     }
 
@@ -1256,15 +1254,33 @@ impl Waku {
                     let assistant_message_action =
                         self.assistant_message_action_for_message(message_index);
                     let user_message_action = self.user_message_action_for_message(message_index);
-                    let message_edit_input = user_message_action.and_then(|action| {
+                    let message_edit = user_message_action.and_then(|action| {
                         self.message_edit
                             .as_ref()
                             .filter(|edit| {
                                 edit.session_id == action.session_id
                                     && edit.message_id == action.message_id
                             })
-                            .map(|edit| edit.input.clone())
+                            .map(|edit| MessageEditRender {
+                                input: edit.input.clone(),
+                                cancel_focus: self.transcript_control_focus(
+                                    format!("cancel-message-edit-{}", message.id),
+                                    cx,
+                                ),
+                                submit_focus: self.transcript_control_focus(
+                                    format!("submit-message-edit-{}", message.id),
+                                    cx,
+                                ),
+                            })
                     });
+                    let user_message_control =
+                        user_message_action.map(|action| UserMessageControl {
+                            action,
+                            focus: self.transcript_control_focus(
+                                format!("user-message-action-{}", message.id),
+                                cx,
+                            ),
+                        });
                     let attachment_menus = (0..message.attachments.len())
                         .map(|index| {
                             self.menu_handle(
@@ -1336,9 +1352,9 @@ impl Waku {
                             assistant_footer_time,
                             copied,
                             assistant_message_action,
-                            user_message_action,
+                            user_message_control,
                             user_message_viewport: user_message_viewport.as_ref(),
-                            message_edit_input,
+                            message_edit,
                             attachment_menus,
                             attachment_images,
                             attachments_can_reveal,
@@ -1348,6 +1364,7 @@ impl Waku {
                             waku,
                             composer,
                         },
+                        window,
                         cx,
                     );
                     if animate_streaming && view.is_some_and(MarkdownView::is_fading) {

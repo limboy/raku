@@ -239,6 +239,7 @@ struct MessageRewindRequest {
     /// on the click path entirely.
     cursor_source: Option<AgentSession>,
     project_path: PathBuf,
+    workspace: MessageEditWorkspace,
     retained_turn_count: usize,
     previous_turn_count: usize,
     rollback_turns: usize,
@@ -260,6 +261,10 @@ struct PreparedMessageRewind {
 fn perform_message_rewind(
     mut request: MessageRewindRequest,
 ) -> Result<PreparedMessageRewind, String> {
+    if request.workspace == MessageEditWorkspace::KeepFiles {
+        let rewind = perform_provider_rewind(&mut request).map_err(|error| error.to_string())?;
+        return Ok(prepared_message_rewind(&request, rewind, None));
+    }
     let session_id = request.session_id;
     let turn_start_ref =
         checkpoint::turn_start_ref(session_id, request.retained_turn_count.saturating_add(1));
@@ -381,7 +386,19 @@ fn perform_message_rewind(
     .err()
     .map(|error| error.to_string());
 
-    Ok(PreparedMessageRewind {
+    Ok(prepared_message_rewind(
+        &request,
+        (provider_rewind_cursor, claude_fork, prepared_driver),
+        cleanup_error,
+    ))
+}
+
+fn prepared_message_rewind(
+    request: &MessageRewindRequest,
+    (provider_rewind_cursor, claude_fork, prepared_driver): ProviderRewindResult,
+    cleanup_error: Option<String>,
+) -> PreparedMessageRewind {
+    PreparedMessageRewind {
         provider_rewind_cursor,
         claude_fork,
         prepared_driver,
@@ -392,7 +409,7 @@ fn perform_message_rewind(
                 ProviderKind::Claude | ProviderKind::Cursor | ProviderKind::Grok
             ),
         cleanup_error,
-    })
+    }
 }
 
 type ProviderRewindResult = (
@@ -2030,6 +2047,7 @@ impl Waku {
             session_id,
             message_id,
             turn_count,
+            workspace,
         } = action;
         let Some((message_index, initial_message, attachments)) = self
             .state
@@ -2092,6 +2110,7 @@ impl Waku {
             session_id,
             message_id,
             turn_count,
+            workspace,
             input: input.clone(),
             attachments,
         });
@@ -2312,6 +2331,7 @@ impl Waku {
             cursor_source,
             previous_turn_count,
             project_path,
+            workspace: edit.workspace,
             retained_turn_count,
             rollback_turns,
             provider_turn_count,

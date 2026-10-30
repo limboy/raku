@@ -747,6 +747,50 @@ fn only_the_turn_opening_prompt_is_a_rewind_boundary() {
 }
 
 #[test]
+fn message_edit_is_available_without_a_git_repository() {
+    let checkpoint = Checkpoint {
+        turn_count: 1,
+        git_ref: String::new(),
+        status: CheckpointStatus::Unavailable,
+        files: Vec::new(),
+        additions: 0,
+        deletions: 0,
+        created_at: 0,
+    };
+    assert_eq!(
+        super::MessageEditWorkspace::for_checkpoint(Some(&checkpoint), false),
+        Some(super::MessageEditWorkspace::KeepFiles),
+    );
+}
+
+#[test]
+fn message_edit_does_not_bypass_a_missing_or_failed_git_checkpoint() {
+    assert_eq!(
+        super::MessageEditWorkspace::for_checkpoint(None, false),
+        None
+    );
+    for status in [CheckpointStatus::Ready, CheckpointStatus::Error] {
+        let checkpoint = Checkpoint {
+            turn_count: 1,
+            git_ref: String::new(),
+            status,
+            files: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            created_at: 0,
+        };
+        assert_eq!(
+            super::MessageEditWorkspace::for_checkpoint(Some(&checkpoint), false),
+            None,
+        );
+        assert_eq!(
+            super::MessageEditWorkspace::for_checkpoint(Some(&checkpoint), true),
+            Some(super::MessageEditWorkspace::RestoreCheckpoint),
+        );
+    }
+}
+
+#[test]
 fn fenced_code_collects_all_blocks_without_languages() {
     let markdown = "Before\n```rust\nfn main() {}\n```\nAfter\n```\ncargo test\n```";
     assert_eq!(

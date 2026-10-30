@@ -207,7 +207,7 @@ pub(super) fn render_message_footer(
     force_visible: bool,
     align_right: bool,
     assistant_message_action: Option<AssistantMessageAction>,
-    user_message_action: Option<UserMessageAction>,
+    user_message_control: Option<UserMessageControl>,
     waku: gpui::WeakEntity<Waku>,
 ) -> AnyElement {
     let theme = *theme;
@@ -319,13 +319,16 @@ pub(super) fn render_message_footer(
         footer = footer.child(timestamp);
     }
 
-    if let Some(action) = user_message_action {
-        let edit_waku = waku;
+    if let Some(UserMessageControl { action, focus }) = user_message_control {
+        let edit_waku = waku.clone();
         footer = footer.child(
             div()
                 .id(SharedString::from(format!(
                     "user-message-action-{message_id}"
                 )))
+                .track_focus(&focus)
+                .tab_group()
+                .tab_index(0)
                 .w(px(27.0))
                 .h(px(27.0))
                 .rounded(px(8.0))
@@ -333,18 +336,40 @@ pub(super) fn render_message_footer(
                 .items_center()
                 .justify_center()
                 .cursor_default()
+                .focus_visible(|element| element.bg(theme.overlay_strong))
                 .hover(|element| element.bg(theme.overlay_strong))
-                .child(icon("icons/rewind.svg", 14.0, footer_color))
-                .tooltip(Tooltip::text(tr_cow!("session.revert_to_here")))
+                .child(icon("icons/pencil.svg", 14.0, footer_color))
+                .tooltip(Tooltip::text(tr_cow!("session.edit_prompt")))
                 .on_click(move |_, window, cx| {
                     let _ = edit_waku.update(cx, |this, cx| {
                         this.begin_message_edit(action, window, cx);
                     });
+                })
+                .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                    if !event.keystroke.modifiers.modified()
+                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    {
+                        let _ = waku.update(cx, |this, cx| {
+                            this.begin_message_edit(action, window, cx);
+                        });
+                        cx.stop_propagation();
+                    }
                 }),
         );
     }
 
     footer.into_any_element()
+}
+
+pub(super) struct UserMessageControl {
+    pub(super) action: UserMessageAction,
+    pub(super) focus: FocusHandle,
+}
+
+pub(super) struct MessageEditRender {
+    pub(super) input: Entity<ComposerInput>,
+    pub(super) cancel_focus: FocusHandle,
+    pub(super) submit_focus: FocusHandle,
 }
 
 /// Everything one transcript message row needs to render itself. Bundled
@@ -356,9 +381,9 @@ pub(super) struct MessageRender<'a> {
     pub(super) assistant_footer_time: Option<u64>,
     pub(super) copied: bool,
     pub(super) assistant_message_action: Option<AssistantMessageAction>,
-    pub(super) user_message_action: Option<UserMessageAction>,
+    pub(super) user_message_control: Option<UserMessageControl>,
     pub(super) user_message_viewport: Option<&'a UserMessageScrollViewport>,
-    pub(super) message_edit_input: Option<Entity<ComposerInput>>,
+    pub(super) message_edit: Option<MessageEditRender>,
     pub(super) attachment_menus: Vec<ContextMenuHandle>,
     pub(super) attachment_images: Vec<Option<Arc<gpui::Image>>>,
     /// Captured from the selected daemon before the virtualized row is built.
@@ -544,7 +569,11 @@ fn render_markdown_message_body<'a>(
         })
 }
 
-pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement {
+pub(super) fn render_message(
+    params: MessageRender,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let MessageRender {
         theme,
         message,
@@ -552,9 +581,9 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
         assistant_footer_time,
         copied,
         assistant_message_action,
-        user_message_action,
+        user_message_control,
         user_message_viewport,
-        message_edit_input,
+        message_edit,
         attachment_menus,
         attachment_images,
         attachments_can_reveal,
@@ -575,6 +604,14 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
         .unwrap_or_else(|| SharedString::from(content.clone()));
     let message_id = message.id;
     let role = message.role;
+    let user_message_action = user_message_control.as_ref().map(|control| control.action);
+    let user_footer_focused = menu.trigger_focus_handle().is_focused(window)
+        || attachment_menus
+            .iter()
+            .any(|menu| menu.trigger_focus_handle().is_focused(window))
+        || user_message_control
+            .as_ref()
+            .is_some_and(|control| control.focus.is_focused(window));
     let element = match role {
         MessageRole::User => {
             let group_name = SharedString::from(format!("user-message-{message_id}"));
@@ -596,25 +633,29 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
             ) {
                 column = column.child(attachments);
             }
-            if let Some(edit_input) = message_edit_input {
-                let can_submit = !edit_input.read(cx).content(cx).trim().is_empty()
+            if let Some(edit) = message_edit {
+                let can_submit = !edit.input.read(cx).content(cx).trim().is_empty()
                     || !message.attachments.is_empty();
                 let cancel_waku = waku.clone();
+                let cancel_key_waku = waku.clone();
                 let submit_waku = waku.clone();
+                let submit_key_waku = waku.clone();
                 column = column.child(
                     div()
                         .w_full()
                         .max_w(px(540.0))
+                        .tab_group()
                         .rounded(px(12.0))
                         .bg(theme.raised)
                         .pt(px(9.0))
                         .pb(px(8.0))
-                        .child(edit_input)
+                        .child(edit.input)
                         .child(
                             div()
                                 .mt(px(7.0))
                                 .px(px(12.0))
                                 .flex()
+                                .items_center()
                                 .justify_end()
                                 .gap(px(6.0))
                                 .child(
@@ -622,6 +663,8 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
                                         .id(SharedString::from(format!(
                                             "cancel-message-edit-{message_id}"
                                         )))
+                                        .track_focus(&edit.cancel_focus)
+                                        .tab_index(0)
                                         .h(px(26.0))
                                         .px(px(10.0))
                                         .rounded(px(7.0))
@@ -633,12 +676,26 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
                                         .text_size(sp(12.5))
                                         .text_color(theme.text_secondary)
                                         .cursor_default()
+                                        .focus_visible(|element| element.border_color(theme.accent))
                                         .hover(|element| element.bg(theme.overlay_strong))
                                         .child(tr_cow!("common.cancel"))
                                         .on_click(move |_, window, cx| {
                                             let _ = cancel_waku.update(cx, |this, cx| {
                                                 this.cancel_message_edit(window, cx);
                                             });
+                                        })
+                                        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                                            if !event.keystroke.modifiers.modified()
+                                                && matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                )
+                                            {
+                                                let _ = cancel_key_waku.update(cx, |this, cx| {
+                                                    this.cancel_message_edit(window, cx);
+                                                });
+                                                cx.stop_propagation();
+                                            }
                                         }),
                                 )
                                 .child(
@@ -646,9 +703,17 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
                                         .id(SharedString::from(format!(
                                             "submit-message-edit-{message_id}"
                                         )))
+                                        .track_focus(&edit.submit_focus)
+                                        .tab_index(0)
                                         .h(px(26.0))
                                         .px(px(11.0))
                                         .rounded(px(7.0))
+                                        .border_1()
+                                        .border_color(if can_submit {
+                                            theme.inverse
+                                        } else {
+                                            theme.overlay_strong
+                                        })
                                         .bg(if can_submit {
                                             theme.inverse
                                         } else {
@@ -663,17 +728,32 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
                                         } else {
                                             theme.text_ghost
                                         })
+                                        .focus_visible(|element| element.border_color(theme.accent))
                                         .when(can_submit, |element| {
                                             element
                                                 .cursor_default()
                                                 .hover(|element| element.opacity(0.9))
                                         })
-                                        .child(tr_cow!("common.send"))
+                                        .child(tr_cow!("session.edit_and_resend"))
                                         .on_click(move |_, _, cx| {
                                             if can_submit {
                                                 let _ = submit_waku.update(cx, |this, cx| {
                                                     this.submit_message_edit(cx);
                                                 });
+                                            }
+                                        })
+                                        .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                                            if can_submit
+                                                && !event.keystroke.modifiers.modified()
+                                                && matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                )
+                                            {
+                                                let _ = submit_key_waku.update(cx, |this, cx| {
+                                                    this.submit_message_edit(cx);
+                                                });
+                                                cx.stop_propagation();
                                             }
                                         }),
                                 ),
@@ -807,10 +887,10 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
                     SharedString::from(content.clone()),
                     copied,
                     group_name,
-                    false,
+                    user_footer_focused,
                     true,
                     None,
-                    user_message_action,
+                    user_message_control,
                     waku.clone(),
                 ));
             }
@@ -942,12 +1022,12 @@ fn message_menu_items(
         let waku = waku.clone();
         items.push(MenuItem::Separator);
         items.push(
-            MenuItem::new(tr!("session.revert_to_here_title"), move |window, cx| {
+            MenuItem::new(tr!("session.edit_prompt"), move |window, cx| {
                 let _ = waku.update(cx, |this, cx| {
                     this.begin_message_edit(action, window, cx);
                 });
             })
-            .icon("icons/rewind.svg"),
+            .icon("icons/pencil.svg"),
         );
     }
 

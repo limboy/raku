@@ -813,6 +813,29 @@ struct UserMessageAction {
     /// boundary, so this is what the editor and the rewind both address.
     message_id: Uuid,
     turn_count: usize,
+    workspace: MessageEditWorkspace,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MessageEditWorkspace {
+    RestoreCheckpoint,
+    KeepFiles,
+}
+
+impl MessageEditWorkspace {
+    fn for_checkpoint(checkpoint: Option<&Checkpoint>, has_ref: bool) -> Option<Self> {
+        if has_ref {
+            Some(Self::RestoreCheckpoint)
+        } else if checkpoint
+            .is_some_and(|checkpoint| checkpoint.status == CheckpointStatus::Unavailable)
+        {
+            // Capture explicitly reports Unavailable outside a Git repository.
+            // A missing or failed Git snapshot must never silently keep files.
+            Some(Self::KeepFiles)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -830,6 +853,7 @@ struct MessageEdit {
     /// open this one input on every user message the turn holds.
     message_id: Uuid,
     turn_count: usize,
+    workspace: MessageEditWorkspace,
     input: Entity<ComposerInput>,
     attachments: Vec<MessageAttachment>,
 }

@@ -637,6 +637,10 @@ session.forking_task:
   en: Forking task…
 session.forking_task_title:
   en: Forking Task…
+session.edit_prompt:
+  en: Edit prompt
+session.edit_and_resend:
+  en: Edit & resend
 session.revert_to_here:
   en: Revert to here
 session.revert_to_here_title:
