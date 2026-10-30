@@ -10,9 +10,111 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::model::{
-    AgentTurn, Message, MessageRole, ProviderKind, ProviderResumeCursor, ProviderSessionHistory,
-    ProviderSessionSummary, TurnStatus,
+    ActivityKind, AgentSession, AgentTurn, Message, MessageRole, ProviderKind,
+    ProviderResumeCursor, ProviderSessionHistory, ProviderSessionSummary, TranscriptBlock,
+    TurnStatus,
 };
+
+fn is_deepseek_model(model: &str) -> bool {
+    model
+        .split('/')
+        .any(|part| part == "deepseek" || part.starts_with("deepseek-"))
+}
+
+pub(crate) fn is_deepseek_message(message: &Value) -> bool {
+    message.get("provider").and_then(Value::as_str) == Some("deepseek")
+        || message
+            .get("model")
+            .and_then(Value::as_str)
+            .is_some_and(is_deepseek_model)
+}
+
+/// DeepSeek can emit a literal period as the only text alongside tool calls.
+/// Hide that filler while keeping final period-only answers and all text from
+/// other models, and leave the native session untouched.
+pub(crate) fn is_deepseek_tool_placeholder(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("assistant")
+        && is_deepseek_message(message)
+        && message.get("stopReason").and_then(Value::as_str) == Some("toolUse")
+        && message
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|content| {
+                let has_tool = content
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) == Some("toolCall"));
+                let mut texts = content
+                    .iter()
+                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty());
+                has_tool && texts.next() == Some(".") && texts.next().is_none()
+            })
+}
+
+/// Repair the display projection of older Pi transcripts when they are loaded.
+/// Stored messages no longer carry native stop reasons, so require a tool
+/// activity immediately after the period in the same turn as confirmation.
+pub(crate) fn remove_deepseek_tool_placeholders(session: &mut AgentSession) -> bool {
+    if !matches!(session.provider, ProviderKind::Pi | ProviderKind::OhMyPi)
+        || !session.model.as_deref().is_some_and(is_deepseek_model)
+    {
+        return false;
+    }
+    let mut removed = vec![false; session.messages.len()];
+    for block in &session.transcript_blocks {
+        let Some(index) = block.after_message.checked_sub(1) else {
+            continue;
+        };
+        let Some(message) = session.messages.get(index) else {
+            continue;
+        };
+        if message.role == MessageRole::Assistant
+            && !message.streaming
+            && message.content.trim() == "."
+            && message.display_content.is_none()
+            && message.attachments.is_empty()
+            && message.turn_id.is_some()
+            && message.turn_id == block.turn_id
+            && block
+                .activities
+                .iter()
+                .any(|activity| activity.kind != ActivityKind::Reasoning)
+        {
+            removed[index] = true;
+        }
+    }
+    if !removed.contains(&true) {
+        return false;
+    }
+
+    let mut positions = Vec::with_capacity(removed.len() + 1);
+    positions.push(0);
+    for &remove in &removed {
+        positions.push(positions.last().copied().unwrap() + usize::from(!remove));
+    }
+    let mut index = 0;
+    session.messages.retain(|_| {
+        let keep = !removed[index];
+        index += 1;
+        keep
+    });
+    let mut blocks: Vec<TranscriptBlock> = Vec::with_capacity(session.transcript_blocks.len());
+    for mut block in std::mem::take(&mut session.transcript_blocks) {
+        block.after_message = positions[block.after_message.min(removed.len())];
+        if let Some(previous) = blocks.last_mut()
+            && previous.after_message == block.after_message
+            && previous.turn_id == block.turn_id
+        {
+            previous.activities.append(&mut block.activities);
+        } else {
+            blocks.push(block);
+        }
+    }
+    session.transcript_blocks = blocks;
+    true
+}
 
 #[derive(Debug)]
 struct NativeEntry {
@@ -176,7 +278,11 @@ fn parse_session(path: &Path) -> anyhow::Result<ParsedSession> {
                 .pointer("/message/role")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-            text: value.pointer("/message/content").and_then(text_content),
+            text: value.get("message").and_then(|message| {
+                (!is_deepseek_tool_placeholder(message))
+                    .then(|| message.get("content").and_then(text_content))
+                    .flatten()
+            }),
             stop_reason: value
                 .pointer("/message/stopReason")
                 .and_then(Value::as_str)
@@ -512,6 +618,69 @@ mod tests {
                 .all(|message| message.content != "abandoned")
         );
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn imports_deepseek_tool_messages_without_period_filler() {
+        let header = serde_json::json!({
+            "type": "session", "version": 3, "id": "deepseek-session",
+            "timestamp": "2026-01-01T00:00:00Z", "cwd": std::env::temp_dir(),
+        })
+        .to_string();
+        let path = write_session(&[
+            &header,
+            r#"{"type":"message","id":"u1","parentId":null,"message":{"role":"user","content":"."}}"#,
+            r#"{"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","provider":"deepseek","model":"deepseek-flash","content":[{"type":"thinking","thinking":"Inspect the project"},{"type":"text","text":"."},{"type":"toolCall","id":"tool-1","name":"read","arguments":{"path":"README.md"}}],"stopReason":"toolUse"}}"#,
+            r#"{"type":"message","id":"t1","parentId":"a1","message":{"role":"toolResult","toolCallId":"tool-1","content":[{"type":"text","text":"Read the instructions"}]}}"#,
+            r#"{"type":"message","id":"a2","parentId":"t1","message":{"role":"assistant","provider":"deepseek","model":"deepseek-flash","content":[{"type":"text","text":".gitignore updated."}],"stopReason":"stop"}}"#,
+            r#"{"type":"message","id":"a3","parentId":"a2","message":{"role":"assistant","provider":"deepseek","model":"deepseek-flash","content":[{"type":"text","text":"."}],"stopReason":"stop"}}"#,
+        ]);
+        let original = fs::read(&path).unwrap();
+        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+            let history =
+                provider_session_history(provider, "deepseek-session", &path, 10).unwrap();
+            assert_eq!(history.messages.len(), 2);
+            assert_eq!(history.messages[0].content, ".");
+            assert_eq!(history.messages[1].content, ".gitignore updated.\n\n.");
+            assert_eq!(history.turns[0].status, TurnStatus::Completed);
+        }
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn placeholder_detection_requires_deepseek_tool_use_and_only_one_period() {
+        let message = serde_json::json!({
+            "role": "assistant", "provider": "deepseek", "model": "deepseek-flash",
+            "stopReason": "toolUse", "content": [
+                {"type": "text", "text": "."},
+                {"type": "toolCall", "id": "tool-1", "name": "read"}
+            ]
+        });
+        assert!(is_deepseek_tool_placeholder(&message));
+        for (key, value) in [("role", "user"), ("stopReason", "stop")] {
+            let mut real = message.clone();
+            real[key] = value.into();
+            assert!(!is_deepseek_tool_placeholder(&real));
+        }
+        for text in [".gitignore", "...", "Done."] {
+            let mut real = message.clone();
+            real["content"][0]["text"] = text.into();
+            assert!(!is_deepseek_tool_placeholder(&real));
+        }
+        let mut real = message.clone();
+        real["provider"] = "other".into();
+        real["model"] = "other-model".into();
+        assert!(!is_deepseek_tool_placeholder(&real));
+        let mut real = message.clone();
+        real["content"].as_array_mut().unwrap().pop();
+        assert!(!is_deepseek_tool_placeholder(&real));
+        let mut real = message;
+        real["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"type": "text", "text": "Keep this commentary"}));
+        assert!(!is_deepseek_tool_placeholder(&real));
     }
 
     #[test]

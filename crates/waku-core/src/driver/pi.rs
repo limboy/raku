@@ -41,6 +41,10 @@ const CLONE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Oh My Pi refuses to reassemble beyond this, so neither should Waku.
 const MAX_REASSEMBLED_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
+/// Only a possible standalone period waits for the completed message. Prose
+/// streams immediately, and even malformed whitespace streams stay bounded.
+const MAX_PENDING_PLACEHOLDER_BYTES: usize = 256;
+
 /// Which dialect of the Pi RPC protocol a session speaks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PiFlavor {
@@ -345,6 +349,7 @@ impl PiDriver {
                             }
                         }
                     }
+                    flush_pending_message_text(&reader_events, &mut stream_state);
                     // Unblock anything waiting on an RPC reply immediately; the
                     // process thread owns the `ProcessExited` announcement so a
                     // non-zero exit can be reported before the runtime is torn down.
@@ -1261,6 +1266,8 @@ struct PiStreamState {
     run_started: bool,
     message_saw_text: bool,
     message_saw_reasoning: bool,
+    message_is_deepseek: bool,
+    message_pending_text: String,
     failed: bool,
     tools: HashMap<String, (ActivityKind, String)>,
 }
@@ -1355,6 +1362,7 @@ fn handle_pi_message(
         if value.get("isTerminal").and_then(Value::as_bool) == Some(false) {
             return;
         }
+        flush_pending_message_text(events, state);
         if state.run_started {
             pending
                 .lock()
@@ -1399,12 +1407,20 @@ fn handle_pi_message(
         }
         "message_start" => {
             if value.pointer("/message/role").and_then(Value::as_str) == Some("assistant") {
+                flush_pending_message_text(events, state);
                 state.message_saw_text = false;
                 state.message_saw_reasoning = false;
+                state.message_is_deepseek = value
+                    .get("message")
+                    .is_some_and(crate::pi_session::is_deepseek_message);
             }
         }
         "message_update" => {
             let update = value.get("assistantMessageEvent").unwrap_or(&Value::Null);
+            state.message_is_deepseek |= value
+                .get("message")
+                .or_else(|| update.get("partial"))
+                .is_some_and(crate::pi_session::is_deepseek_message);
             match update.get("type").and_then(Value::as_str) {
                 Some("text_delta") => {
                     if let Some(delta) = update
@@ -1412,8 +1428,20 @@ fn handle_pi_message(
                         .and_then(Value::as_str)
                         .filter(|delta| !delta.is_empty())
                     {
+                        let may_be_placeholder = state.message_is_deepseek
+                            && (!state.message_saw_text || !state.message_pending_text.is_empty());
                         state.message_saw_text = true;
-                        let _ = events.send(DriverEvent::TextDelta(delta.to_owned()));
+                        if may_be_placeholder {
+                            state.message_pending_text.push_str(delta);
+                            let text = state.message_pending_text.trim();
+                            if state.message_pending_text.len() > MAX_PENDING_PLACEHOLDER_BYTES
+                                || (!text.is_empty() && text != ".")
+                            {
+                                flush_pending_message_text(events, state);
+                            }
+                        } else {
+                            let _ = events.send(DriverEvent::TextDelta(delta.to_owned()));
+                        }
                     }
                 }
                 Some("thinking_delta") => {
@@ -1422,11 +1450,13 @@ fn handle_pi_message(
                         .and_then(Value::as_str)
                         .filter(|delta| !delta.is_empty())
                     {
+                        flush_pending_message_text(events, state);
                         state.message_saw_reasoning = true;
                         let _ = events.send(DriverEvent::ReasoningDelta(delta.to_owned()));
                     }
                 }
                 Some("error") => {
+                    flush_pending_message_text(events, state);
                     state.failed = true;
                     let _ = events.send(DriverEvent::Error(pi_error_message(flavor, update)));
                 }
@@ -1447,6 +1477,9 @@ fn handle_pi_message(
             }
         }
         "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
+            // Speculative tools may run before message_end. Leave a possible
+            // filler period pending until the completed text confirms it;
+            // a later delta may still extend it into ordinary prose.
             let id = value
                 .get("toolCallId")
                 .and_then(Value::as_str)
@@ -1528,6 +1561,14 @@ fn handle_pi_message(
     }
 }
 
+fn flush_pending_message_text(events: &impl DriverEventSink, state: &mut PiStreamState) {
+    if !state.message_pending_text.is_empty() {
+        let _ = events.send(DriverEvent::TextDelta(std::mem::take(
+            &mut state.message_pending_text,
+        )));
+    }
+}
+
 fn publish_commands(
     commands: Vec<waku_protocol::composer::SlashCommand>,
     events: &impl DriverEventSink,
@@ -1547,15 +1588,23 @@ fn emit_completed_message_fallback(
     events: &impl DriverEventSink,
     state: &mut PiStreamState,
 ) {
+    let placeholder = message.is_some_and(crate::pi_session::is_deepseek_tool_placeholder);
+    if placeholder {
+        state.message_pending_text.clear();
+    } else {
+        flush_pending_message_text(events, state);
+    }
     let Some(content) = message
         .and_then(|message| message.get("content"))
         .and_then(Value::as_array)
     else {
         return;
     };
+    let emit_text = !state.message_saw_text && !placeholder;
+    let emit_reasoning = !state.message_saw_reasoning;
     for block in content {
         match block.get("type").and_then(Value::as_str) {
-            Some("text") if !state.message_saw_text => {
+            Some("text") if emit_text => {
                 if let Some(text) = block
                     .get("text")
                     .and_then(Value::as_str)
@@ -1565,7 +1614,7 @@ fn emit_completed_message_fallback(
                     let _ = events.send(DriverEvent::TextDelta(text.to_owned()));
                 }
             }
-            Some("thinking") if !state.message_saw_reasoning => {
+            Some("thinking") if emit_reasoning => {
                 if let Some(thinking) = block
                     .get("thinking")
                     .and_then(Value::as_str)
@@ -2248,6 +2297,192 @@ mod tests {
         );
 
         assert!(matches!(event_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn deepseek_tool_periods_do_not_split_reasoning_and_tool_activity() {
+        // Shape recorded from a DeepSeek Flash message in Oh My Pi's native
+        // session: thinking, a literal period, then toolCall, stopReason toolUse.
+        for flavor in [PiFlavor::Pi, PiFlavor::OhMyPi] {
+            for streamed in [false, true] {
+                let (pending, commands, _command_rx, mut state) = harness();
+                let (events, event_rx) = unbounded();
+                let message = json!({
+                    "role": "assistant", "provider": "deepseek", "model": "deepseek-flash",
+                    "stopReason": "toolUse",
+                    "content": [
+                        {"type": "thinking", "thinking": "Inspect the project"},
+                        {"type": "text", "text": " \n.\n"},
+                        {"type": "toolCall", "id": "tool-1", "name": "read", "arguments": {"path": "README.md"}}
+                    ]
+                });
+                let mut frames = vec![json!({"type": "message_start", "message": {
+                    "role": "assistant", "provider": "deepseek", "model": "deepseek-flash", "content": []
+                }})];
+                if streamed {
+                    frames.push(json!({"type": "message_update", "assistantMessageEvent": {
+                        "type": "thinking_delta", "delta": "Inspect the project"
+                    }}));
+                    for delta in [" \n", ".", "\n"] {
+                        frames.push(json!({"type": "message_update", "assistantMessageEvent": {
+                            "type": "text_delta", "delta": delta
+                        }}));
+                    }
+                }
+                frames.extend([
+                    json!({"type": "message_end", "message": message}),
+                    json!({"type": "tool_execution_start", "toolCallId": "tool-1", "toolName": "read", "args": {"path": "README.md"}}),
+                    json!({"type": "tool_execution_end", "toolCallId": "tool-1", "toolName": "read", "result": {"content": "Project instructions"}}),
+                    json!({"type": "message_start", "message": {"role": "assistant", "provider": "deepseek"}}),
+                    json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Done."}}),
+                    json!({"type": "message_end", "message": {"role": "assistant", "provider": "deepseek", "stopReason": "stop", "content": [{"type": "text", "text": "Done."}]}}),
+                ]);
+                for frame in frames {
+                    handle_pi_message(flavor, frame, &pending, &commands, &events, &mut state);
+                }
+                let emitted = event_rx.try_iter().collect::<Vec<_>>();
+                assert!(matches!(&emitted[..], [
+                    DriverEvent::ReasoningDelta(reasoning),
+                    DriverEvent::RichActivity(started),
+                    DriverEvent::RichActivity(finished),
+                    DriverEvent::TextDelta(text),
+                ] if reasoning == "Inspect the project" && !started.complete && finished.complete && text == "Done."));
+            }
+        }
+    }
+
+    #[test]
+    fn deepseek_period_buffer_preserves_real_text_and_other_models() {
+        for (provider, model, deltas, text, tool_use) in [
+            (
+                "deepseek",
+                "deepseek-flash",
+                vec![".", "gitignore"],
+                ".gitignore",
+                true,
+            ),
+            ("deepseek", "deepseek-flash", vec!["."], ".", false),
+            (
+                "deepseek",
+                "deepseek-flash",
+                vec![".", ".", "."],
+                "...",
+                true,
+            ),
+            ("other", "other-model", vec!["."], ".", true),
+        ] {
+            let (pending, commands, _command_rx, mut state) = harness();
+            let (events, event_rx) = unbounded();
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                json!({"type": "message_start", "message": {"role": "assistant", "provider": provider, "model": model}}),
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+            for delta in deltas {
+                handle_pi_message(
+                    PiFlavor::OhMyPi,
+                    json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": delta}}),
+                    &pending,
+                    &commands,
+                    &events,
+                    &mut state,
+                );
+            }
+            if text != "." || provider != "deepseek" {
+                assert!(
+                    !event_rx.is_empty(),
+                    "ordinary text must stream before message_end"
+                );
+            } else {
+                assert!(
+                    event_rx.is_empty(),
+                    "a possible filler period must not flash in the transcript"
+                );
+            }
+            let mut content = vec![json!({"type": "text", "text": text})];
+            if tool_use {
+                content.push(json!({"type": "toolCall", "id": "tool-1", "name": "read"}));
+            }
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                json!({"type": "message_end", "message": {
+                    "role": "assistant", "provider": provider, "model": model,
+                    "stopReason": if tool_use { "toolUse" } else { "stop" }, "content": content
+                }}),
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+            let actual = event_rx
+                .try_iter()
+                .map(|event| match event {
+                    DriverEvent::TextDelta(text) => text,
+                    _ => panic!("unexpected event"),
+                })
+                .collect::<String>();
+            assert_eq!(actual, text);
+        }
+    }
+
+    #[test]
+    fn speculative_deepseek_tools_wait_for_the_completed_text() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        for frame in [
+            json!({"type": "message_start", "message": {"role": "assistant", "provider": "deepseek"}}),
+            json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "."}}),
+            json!({"type": "tool_execution_start", "toolCallId": "tool-1", "toolName": "read"}),
+            json!({"type": "message_end", "message": {
+                "role": "assistant", "provider": "deepseek", "stopReason": "toolUse",
+                "content": [{"type": "text", "text": "."}, {"type": "toolCall", "id": "tool-1", "name": "read"}]
+            }}),
+        ] {
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                frame,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+        assert!(matches!(
+            event_rx.try_recv().unwrap(),
+            DriverEvent::RichActivity(_)
+        ));
+        assert!(event_rx.is_empty());
+
+        for frame in [
+            json!({"type": "message_start", "message": {"role": "assistant", "provider": "deepseek"}}),
+            json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "."}}),
+            json!({"type": "tool_execution_start", "toolCallId": "tool-2", "toolName": "read"}),
+            json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "gitignore"}}),
+            json!({"type": "message_end", "message": {
+                "role": "assistant", "provider": "deepseek", "stopReason": "toolUse",
+                "content": [{"type": "text", "text": ".gitignore"}, {"type": "toolCall", "id": "tool-2", "name": "read"}]
+            }}),
+        ] {
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                frame,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+        assert!(matches!(
+            event_rx.try_recv().unwrap(),
+            DriverEvent::RichActivity(_)
+        ));
+        assert!(
+            matches!(event_rx.try_recv().unwrap(), DriverEvent::TextDelta(text) if text == ".gitignore")
+        );
+        assert!(event_rx.is_empty());
     }
 
     #[test]

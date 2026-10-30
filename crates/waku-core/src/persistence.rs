@@ -586,10 +586,13 @@ impl PersistedState {
                 session.last_reply_at,
                 session.provider_cursor.is_some(),
             );
+            let removed_placeholders =
+                crate::pi_session::remove_deepseek_tool_placeholders(session);
             session.migrate_legacy_state();
             session.backfill_last_reply_at();
             // Migration rewrote this session, so the stored row is stale.
-            if !checkpoint_totals_current
+            if removed_placeholders
+                || !checkpoint_totals_current
                 || before
                     != (
                         session.turns.len(),
@@ -1289,6 +1292,7 @@ impl StateStore {
             .filter_map(message_from_row)
             .collect();
 
+        crate::pi_session::remove_deepseek_tool_placeholders(session);
         session.detail_loaded = true;
         Ok(())
     }
@@ -1639,6 +1643,17 @@ fn write_messages(
 ) -> io::Result<HashMap<Uuid, u64>> {
     use rusqlite::types::Value;
     let session_id = session.id.to_string();
+    if written.is_empty() {
+        // The first save on this connection is a full replacement. Loading
+        // may have removed provider filler from the middle of the transcript;
+        // deleting only the old tail would leave those rows at reused positions.
+        transaction
+            .execute(
+                "DELETE FROM messages WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(to_io_error)?;
+    }
     let mut current = HashMap::with_capacity(session.messages.len());
     for (position, message) in session.messages.iter().enumerate() {
         let fingerprint = message_fingerprint(message, position);
@@ -2681,6 +2696,133 @@ mod tests {
             Some("Checking the source")
         );
         fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn hydration_removes_deepseek_tool_periods_and_preserves_activity_order() {
+        for (provider, model, removes_periods) in [
+            (ProviderKind::OhMyPi, "deepseek/deepseek-flash", true),
+            (
+                ProviderKind::Pi,
+                "openrouter/deepseek/deepseek-v4-flash",
+                true,
+            ),
+            (ProviderKind::OhMyPi, "other/model", false),
+            (ProviderKind::Codex, "deepseek/deepseek-flash", false),
+        ] {
+            let directory = temporary_directory();
+            let store = store_in(&directory);
+            let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+            let session = &mut state.sessions[0];
+            session.provider = provider;
+            session.model = Some(model.into());
+            let first_turn = session.begin_turn(".");
+            session.messages.extend(
+                (0..3).map(|_| Message::new_for_turn(MessageRole::Assistant, ".", first_turn)),
+            );
+            session.finish_active_turn(crate::model::TurnStatus::Completed);
+            let second_turn = session.begin_turn("Next task");
+            session.finish_active_turn(crate::model::TurnStatus::Completed);
+            let reasoning = ActivityItem::from_reasoning(
+                ReasoningBlock {
+                    content: "Inspect the project".into(),
+                    started_at_ms: 1,
+                    finished_at_ms: 2,
+                },
+                true,
+            );
+            let command = ActivityItem::new(
+                Some("tool-1".into()),
+                ActivityKind::Command,
+                "Run pwd",
+                None,
+                true,
+            );
+            let read = ActivityItem::new(
+                Some("tool-2".into()),
+                ActivityKind::FileRead,
+                "Read README.md",
+                None,
+                true,
+            );
+            let next = ActivityItem::new(
+                Some("tool-3".into()),
+                ActivityKind::Command,
+                "Run ls",
+                None,
+                true,
+            );
+            let activity_ids = [reasoning.id, command.id, read.id, next.id];
+            session.transcript_blocks = vec![
+                TranscriptBlock {
+                    after_message: 1,
+                    turn_id: Some(first_turn),
+                    activities: vec![reasoning],
+                },
+                TranscriptBlock {
+                    after_message: 2,
+                    turn_id: Some(first_turn),
+                    activities: vec![command],
+                },
+                TranscriptBlock {
+                    after_message: 3,
+                    turn_id: Some(first_turn),
+                    activities: vec![read],
+                },
+                TranscriptBlock {
+                    after_message: 5,
+                    turn_id: Some(second_turn),
+                    activities: vec![next],
+                },
+            ];
+            let original = session.clone();
+            store.save(&mut state).unwrap();
+            let reopened = store_in(&directory);
+            let mut restored = load_hydrated(&reopened);
+            let session = &restored.sessions[0];
+            let actual_ids = session
+                .transcript_blocks
+                .iter()
+                .flat_map(|block| block.activities.iter().map(|activity| activity.id))
+                .collect::<Vec<_>>();
+            assert_eq!(actual_ids, activity_ids);
+            if removes_periods {
+                assert_eq!(
+                    session
+                        .messages
+                        .iter()
+                        .map(|message| message.content.as_str())
+                        .collect::<Vec<_>>(),
+                    [".", ".", "Next task"]
+                );
+                assert_eq!(session.messages[0].id, original.messages[0].id);
+                assert_eq!(
+                    session.messages[1].id, original.messages[3].id,
+                    "a final period-only answer must survive"
+                );
+                assert_eq!(session.transcript_blocks.len(), 2);
+                assert_eq!(session.transcript_blocks[0].after_message, 1);
+                assert_eq!(session.transcript_blocks[0].activities.len(), 3);
+                assert_eq!(session.transcript_blocks[1].after_message, 3);
+                assert_eq!(session.transcript_blocks[1].turn_id, Some(second_turn));
+            } else {
+                assert_eq!(session.messages.len(), 5);
+                assert_eq!(session.transcript_blocks.len(), 4);
+            }
+            let session_id = session.id;
+            restored.mark_session_dirty(session_id);
+            reopened.save(&mut restored).unwrap();
+            let reloaded = load_hydrated(&store_in(&directory));
+            assert_eq!(
+                reloaded.sessions[0].messages.len(),
+                restored.sessions[0].messages.len()
+            );
+            assert_eq!(
+                reloaded.sessions[0].transcript_blocks.len(),
+                restored.sessions[0].transcript_blocks.len()
+            );
+            fs::remove_dir_all(directory).ok();
+        }
     }
 
     #[test]
