@@ -310,6 +310,12 @@ impl Waku {
             }
             DriverEvent::TurnStarted => {
                 runtime.last_driver_error = None;
+                let turn_options = self
+                    .state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .map(|session| self.turn_model_options(session));
                 if let Some(session) = self.state.session_mut(session_id) {
                     if session.active_turn_id().is_some() {
                         // Covers submissions and the optimistic pursuit turn
@@ -333,6 +339,14 @@ impl Waku {
                         session.mark_active_turn_provider_started();
                         session.status = SessionStatus::Working;
                         self.state.mark_session_dirty(session_id);
+                    }
+                    if let Some(session) = self.state.session_mut(session_id)
+                        && let Some(turn) = session.turns.last_mut()
+                        && turn.status == TurnStatus::Running
+                        && let Some((model, effort)) = turn_options
+                    {
+                        turn.model = turn.model.take().or(model);
+                        turn.reasoning_effort = turn.reasoning_effort.take().or(effort);
                     }
                 }
             }

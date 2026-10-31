@@ -1579,6 +1579,7 @@ impl Waku {
         for probe in &mut self.probes {
             probe.models = crate::model_catalog::fallback_models(probe.provider);
         }
+        self.assistant_footer_fingerprint.set(None);
         self.refresh_provider_detection(None);
         self.invalidate_composer_sources(cx);
 

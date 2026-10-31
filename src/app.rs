@@ -1505,12 +1505,12 @@ pub struct Waku {
     transcript_navigation_turns: RefCell<Rc<Vec<TranscriptNavigationTurn>>>,
     /// The row-kinds fingerprint `transcript_navigation_turns` was built from.
     transcript_navigation_turns_fingerprint: Cell<Option<u64>>,
-    /// Response-footer copy content and completion time per message index,
+    /// Response-footer copy content, model label, and completion time per message index,
     /// rebuilt when the row-kinds fingerprint moves. The row builder asks for
     /// every visible row on every frame, and the underlying turn walk and
     /// answer join are O(session). Footers exist only for settled turns,
     /// whose parts are immutable, and settling moves the fingerprint.
-    assistant_footer_cache: RefCell<HashMap<usize, (Option<SharedString>, Option<u64>)>>,
+    assistant_footer_cache: RefCell<HashMap<usize, AssistantResponseFooter>>,
     /// The row-kinds fingerprint `assistant_footer_cache` was built under.
     assistant_footer_fingerprint: Cell<Option<u64>>,
     /// The response row currently under the pointer. Response footers are

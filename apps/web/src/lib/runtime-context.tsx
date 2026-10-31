@@ -863,6 +863,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
             status: 'running',
             provider_turn_started: false,
             provider_resume_at: null,
+            model: currentSession.model,
+            reasoning_effort: currentSession.reasoning_effort,
             started_at: now,
             completed_at: null,
             checkpoint: null,

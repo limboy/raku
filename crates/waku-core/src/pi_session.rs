@@ -511,6 +511,8 @@ fn history_from_session(provider: ProviderKind, session: &ParsedSession) -> Prov
                 status: TurnStatus::Interrupted,
                 provider_turn_started: true,
                 provider_resume_at: None,
+                model: None,
+                reasoning_effort: None,
                 started_at: entry.timestamp,
                 completed_at: None,
                 checkpoint: None,

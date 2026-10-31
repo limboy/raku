@@ -20,6 +20,26 @@ const SUBMISSION = {
 }
 
 describe('promptSubmitted', () => {
+  test('captures turn metadata without relabeling older responses after a model switch', () => {
+    const session = idleSession()
+    session.model = 'gpt-5.5'
+    session.reasoning_effort = 'high'
+    session.turns[0]!.model = 'gpt-5.4'
+    session.turns[0]!.reasoning_effort = 'medium'
+
+    const submitted = apply(session, 'promptSubmitted', SUBMISSION)
+    const started = apply(submitted, 'turnStarted', null)
+    const settled = apply(started, 'turnFinished', { success: true, summary: null })
+    settled.model = 'another-model'
+    settled.reasoning_effort = 'low'
+
+    expect(settled.turns[0]).toMatchObject({ model: 'gpt-5.4', reasoning_effort: 'medium' })
+    expect(settled.turns[1]).toMatchObject({ model: 'gpt-5.5', reasoning_effort: 'high' })
+
+    const continuation = apply(settled, 'turnStarted', null)
+    expect(continuation.turns[2]).toMatchObject({ model: 'another-model', reasoning_effort: 'low' })
+  })
+
   test('a client following the runtime mirrors another client’s submission under its ids', () => {
     // The desktop stayed attached to the idle runtime after the first turn;
     // the phone then submitted the second prompt.

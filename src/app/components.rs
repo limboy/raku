@@ -197,6 +197,11 @@ impl Waku {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) struct MessageFooterControls {
+    pub copy: FocusHandle,
+    pub fork: FocusHandle,
+}
+
 pub(super) fn render_message_footer(
     theme: &Theme,
     message: &Message,
@@ -208,6 +213,8 @@ pub(super) fn render_message_footer(
     align_right: bool,
     assistant_message_action: Option<AssistantMessageAction>,
     user_message_control: Option<UserMessageControl>,
+    model_label: Option<SharedString>,
+    controls: Option<MessageFooterControls>,
     waku: gpui::WeakEntity<Waku>,
 ) -> AnyElement {
     let theme = *theme;
@@ -219,6 +226,7 @@ pub(super) fn render_message_footer(
         theme.text_ghost
     };
     let timestamp = div()
+        .flex_none()
         .h(px(27.0))
         .px(px(4.0))
         .flex()
@@ -226,16 +234,24 @@ pub(super) fn render_message_footer(
         .text_size(sp(12.5))
         .line_height(sp(14.0))
         .text_color(footer_color)
+        .when(!align_right, |element| element.ml_auto())
         .child(format_message_time(footer_time));
+    let key_copy_content = copy_content.clone();
+    let key_copy_waku = copy_waku.clone();
     let copy_button = div()
         .id(SharedString::from(format!("copy-message-{message_id}")))
         .w(px(27.0))
         .h(px(27.0))
+        .flex_none()
         .rounded(px(8.0))
         .flex()
         .items_center()
         .justify_center()
         .cursor_default()
+        .when_some(controls.as_ref(), |element, controls| {
+            element.track_focus(&controls.copy).tab_group().tab_index(0)
+        })
+        .focus_visible(|element| element.bg(theme.overlay_strong))
         .hover(|element| element.bg(theme.overlay_strong))
         .child(icon(
             if copied {
@@ -256,17 +272,31 @@ pub(super) fn render_message_footer(
             let _ = copy_waku.update(cx, |this, cx| {
                 this.show_message_copied(message_id, cx);
             });
+        })
+        .on_key_down(move |event: &KeyDownEvent, _, cx| {
+            if !event.keystroke.modifiers.modified()
+                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+            {
+                cx.write_to_clipboard(ClipboardItem::new_string(key_copy_content.to_string()));
+                let _ = key_copy_waku.update(cx, |this, cx| {
+                    this.show_message_copied(message_id, cx);
+                });
+                cx.stop_propagation();
+            }
         });
     let mut footer = div()
         .w_full()
+        .min_w_0()
         .h(px(27.0))
         .flex()
         .items_center()
         .gap(px(1.0))
         .when(!force_visible, |element| {
             element
-                .invisible()
-                .group_hover(group_name, |element| element.visible())
+                // Opacity keeps keyboard targets registered while the footer
+                // is hidden; a focused action reveals it on the next frame.
+                .opacity(0.0)
+                .group_hover(group_name, |element| element.opacity(1.0))
         })
         .when(!align_right, |element| element.ml(-px(7.0)))
         .when(align_right, |element| element.justify_end());
@@ -277,6 +307,7 @@ pub(super) fn render_message_footer(
         footer = footer.child(copy_button);
         if let Some(action) = assistant_message_action {
             let fork_waku = waku.clone();
+            let key_fork_waku = waku.clone();
             let fork_icon = if action.preparing {
                 motion::spin(icon("icons/loader-circle.svg", 14.0, footer_color))
             } else {
@@ -286,11 +317,20 @@ pub(super) fn render_message_footer(
                 .id(SharedString::from(format!("fork-response-{message_id}")))
                 .w(px(27.0))
                 .h(px(27.0))
+                .flex_none()
                 .rounded(px(8.0))
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_default()
+                .when_some(controls.as_ref(), |element, controls| {
+                    element
+                        .track_focus(&controls.fork)
+                        .tab_group()
+                        .tab_index(0)
+                        .tab_stop(action.enabled)
+                })
+                .focus_visible(|element| element.bg(theme.overlay_strong))
                 .when(!action.enabled && !action.preparing, |element| {
                     element.opacity(0.45)
                 })
@@ -312,11 +352,38 @@ pub(super) fn render_message_footer(
                             );
                         });
                     })
+                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                        if !event.keystroke.modifiers.modified()
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        {
+                            let _ = key_fork_waku.update(cx, |this, cx| {
+                                this.fork_session_from_response(
+                                    action.session_id,
+                                    action.turn_count,
+                                    cx,
+                                );
+                            });
+                            cx.stop_propagation();
+                        }
+                    })
             } else {
                 fork_button
             });
         }
-        footer = footer.child(timestamp);
+        footer = footer
+            .when_some(model_label, |element, label| {
+                element.child(
+                    div()
+                        .min_w_0()
+                        .px(px(4.0))
+                        .text_size(sp(12.5))
+                        .line_height(sp(14.0))
+                        .text_color(footer_color)
+                        .truncate()
+                        .child(label),
+                )
+            })
+            .child(timestamp);
     }
 
     if let Some(UserMessageControl { action, focus }) = user_message_control {
@@ -891,6 +958,8 @@ pub(super) fn render_message(
                     true,
                     None,
                     user_message_control,
+                    None,
+                    None,
                     waku.clone(),
                 ));
             }
@@ -924,6 +993,8 @@ pub(super) fn render_message(
                     false,
                     false,
                     assistant_message_action,
+                    None,
+                    None,
                     None,
                     waku.clone(),
                 ));

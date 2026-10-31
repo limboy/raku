@@ -1,5 +1,12 @@
 use super::*;
 
+#[derive(Clone, Default)]
+pub(super) struct AssistantResponseFooter {
+    pub copy_content: Option<SharedString>,
+    pub time: Option<u64>,
+    pub model_label: Option<SharedString>,
+}
+
 impl Waku {
     /// One list row per message plus each ordered non-message turn block.
     pub(super) fn transcript_row_count(&self) -> usize {
@@ -32,7 +39,7 @@ impl Waku {
         self.transcript_row_kinds.borrow().len()
     }
 
-    /// The response footer's copy content and timestamp for `message_index`,
+    /// The response footer's copy content, timestamp, and model for `message_index`,
     /// cached under the row-kinds fingerprint.
     ///
     /// The row builder asks for every visible row on every frame, and
@@ -45,7 +52,7 @@ impl Waku {
     pub(super) fn assistant_response_footer_cached(
         &self,
         message_index: usize,
-    ) -> (Option<SharedString>, Option<u64>) {
+    ) -> AssistantResponseFooter {
         self.refresh_transcript_row_kinds();
         let fingerprint = self.transcript_row_kinds_fingerprint.get();
         if self.assistant_footer_fingerprint.get() != fingerprint {
@@ -55,12 +62,42 @@ impl Waku {
         if let Some(cached) = self.assistant_footer_cache.borrow().get(&message_index) {
             return cached.clone();
         }
-        let value = self.selected_session().map_or((None, None), |session| {
-            (
-                assistant_response_footer(session, message_index).map(SharedString::from),
-                assistant_response_footer_time(session, message_index),
-            )
-        });
+        let value = self
+            .selected_session()
+            .map(|session| {
+                let model_label = session
+                    .messages
+                    .get(message_index)
+                    .and_then(|message| message.turn_id)
+                    .and_then(|turn_id| session.turns.iter().find(|turn| turn.id == turn_id))
+                    .and_then(|turn| {
+                        let model = turn.model.as_deref()?;
+                        let name = self.model_display_name(session.provider, Some(model));
+                        let effort = turn.reasoning_effort.as_deref().map(|effort| {
+                            self.provider_probe(session.provider)
+                                .and_then(|probe| probe.model(model))
+                                .and_then(|model| {
+                                    model
+                                        .reasoning_efforts
+                                        .iter()
+                                        .find(|option| option.id == effort)
+                                })
+                                .map(|option| option.label.as_str())
+                                .unwrap_or(effort)
+                        });
+                        Some(SharedString::from(match effort {
+                            Some(effort) => format!("{name} · {effort}"),
+                            None => name,
+                        }))
+                    });
+                AssistantResponseFooter {
+                    copy_content: assistant_response_footer(session, message_index)
+                        .map(SharedString::from),
+                    time: assistant_response_footer_time(session, message_index),
+                    model_label,
+                }
+            })
+            .unwrap_or_default();
         self.assistant_footer_cache
             .borrow_mut()
             .insert(message_index, value.clone());

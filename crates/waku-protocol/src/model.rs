@@ -810,6 +810,12 @@ pub struct AgentTurn {
     pub provider_turn_started: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_resume_at: Option<String>,
+    /// Model and reasoning effort captured for this turn. Missing on older
+    /// transcripts; never reconstruct them from the session's current options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub started_at: u64,
     pub completed_at: Option<u64>,
     #[serde(default)]
@@ -1314,6 +1320,8 @@ impl AgentSession {
                 status: TurnStatus::Completed,
                 provider_turn_started: true,
                 provider_resume_at: None,
+                model: None,
+                reasoning_effort: None,
                 started_at,
                 completed_at: Some(completed_at),
                 checkpoint: None,
@@ -1340,6 +1348,8 @@ impl AgentSession {
             status: TurnStatus::Running,
             provider_turn_started: false,
             provider_resume_at: None,
+            model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
             started_at: now,
             completed_at: None,
             checkpoint: None,
@@ -1367,6 +1377,8 @@ impl AgentSession {
             status: TurnStatus::Running,
             provider_turn_started: false,
             provider_resume_at: None,
+            model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
             started_at: now,
             completed_at: None,
             checkpoint: None,
@@ -1414,6 +1426,8 @@ impl AgentSession {
             status: TurnStatus::Running,
             provider_turn_started: false,
             provider_resume_at: None,
+            model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
             started_at: now,
             completed_at: None,
             checkpoint: None,
@@ -4765,6 +4779,57 @@ mod tests {
         let checkpoint = session.turns[0].checkpoint.as_ref().unwrap();
         assert_eq!((checkpoint.additions, checkpoint.deletions), (10, 7));
         assert!(checkpoint.totals_are_current());
+    }
+
+    #[test]
+    fn turn_model_metadata_survives_model_changes_and_persistence() {
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Claude);
+        session.model = Some("claude-opus-5".into());
+        session.reasoning_effort = Some("high".into());
+        session.begin_turn("first");
+        session.finish_active_turn(TurnStatus::Completed);
+
+        session.model = Some("claude-sonnet-5".into());
+        session.reasoning_effort = Some("medium".into());
+        session.begin_provider_turn();
+        session.finish_active_turn(TurnStatus::Completed);
+        session.adopt_submitted_prompt("third", Uuid::new_v4(), Uuid::new_v4());
+        session.model = None;
+        session.reasoning_effort = None;
+
+        let saved = serde_json::to_value(&session).unwrap();
+        let loaded: AgentSession = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded.turns[0].model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(loaded.turns[0].reasoning_effort.as_deref(), Some("high"));
+        for turn in &loaded.turns[1..] {
+            assert_eq!(turn.model.as_deref(), Some("claude-sonnet-5"));
+            assert_eq!(turn.reasoning_effort.as_deref(), Some("medium"));
+        }
+    }
+
+    #[test]
+    fn legacy_turns_do_not_inherit_the_current_model() {
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
+        session.model = Some("gpt-5.5".into());
+        session.reasoning_effort = Some("high".into());
+        session.begin_turn("first");
+        session.finish_active_turn(TurnStatus::Completed);
+        let mut saved = serde_json::to_value(&session).unwrap();
+        let turn = saved["turns"][0].as_object_mut().unwrap();
+        turn.remove("model");
+        turn.remove("reasoning_effort");
+        let mut loaded: AgentSession = serde_json::from_value(saved).unwrap();
+        loaded.migrate_legacy_state();
+
+        assert!(loaded.turns[0].model.is_none());
+        assert!(loaded.turns[0].reasoning_effort.is_none());
+
+        // Reconstructing turns for older message-only sessions is equally
+        // conservative: today's selection says nothing about those replies.
+        loaded.turns.clear();
+        loaded.migrate_legacy_state();
+        assert!(loaded.turns[0].model.is_none());
+        assert!(loaded.turns[0].reasoning_effort.is_none());
     }
 
     #[test]

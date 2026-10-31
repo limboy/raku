@@ -129,6 +129,8 @@ fn start_import_turn(history: &mut ProviderSessionHistory, timestamp: u64) -> Uu
         status: TurnStatus::Interrupted,
         provider_turn_started: true,
         provider_resume_at: None,
+        model: None,
+        reasoning_effort: None,
         started_at: timestamp,
         completed_at: None,
         checkpoint: None,

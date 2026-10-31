@@ -1546,6 +1546,7 @@ impl Waku {
             self.request_provider_model_discovery(provider);
         }
         if changed {
+            self.assistant_footer_fingerprint.set(None);
             self.request_provider_version_probes();
         }
         changed
@@ -2622,6 +2623,20 @@ impl Waku {
         }
     }
 
+    /// Resolve the same model the driver receives, including catalog defaults
+    /// for display. Called when a turn begins, never from a row builder.
+    pub(super) fn turn_model_options(
+        &self,
+        session: &AgentSession,
+    ) -> (Option<String>, Option<String>) {
+        let options = self.session_options(session);
+        let effort = options.reasoning_effort.or_else(|| {
+            self.model_metadata_for_session(session)
+                .and_then(|model| model.default_reasoning_effort.clone())
+        });
+        (options.model, effort)
+    }
+
     pub(super) fn agent_preset_for_session(&self, session: &AgentSession) -> Option<String> {
         if session.provider != ProviderKind::DeepSeek {
             return None;
@@ -3231,10 +3246,8 @@ impl Waku {
             .is_empty();
         let next_turn_count = session.turns.len() + 1;
         let provider = session.provider.id();
-        let model = self
-            .session_options(session)
-            .model
-            .unwrap_or_else(|| "default".into());
+        let (turn_model, turn_effort) = self.turn_model_options(session);
+        let model = turn_model.clone().unwrap_or_else(|| "default".into());
         let workspace_kind = if session.workspace.is_worktree() {
             "worktree"
         } else {
@@ -3289,6 +3302,10 @@ impl Waku {
                 submission.display_content.clone(),
                 submission.attachments.clone(),
             );
+            if let Some(turn) = session.turns.last_mut() {
+                turn.model = turn_model;
+                turn.reasoning_effort = turn_effort;
+            }
             session.status = SessionStatus::Connecting;
             session.updated_at = unix_time();
             selected.then_some(TranscriptAnchor {
@@ -3596,6 +3613,9 @@ impl Waku {
                 self.probes.push(probe);
             }
             changed = true;
+        }
+        if changed {
+            self.assistant_footer_fingerprint.set(None);
         }
         changed
     }

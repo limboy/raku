@@ -2,4 +2,9 @@
 import type { Checkpoint } from "./Checkpoint";
 import type { TurnStatus } from "./TurnStatus";
 
-export type AgentTurn = { id: string, turn_count: number, status: TurnStatus, provider_turn_started: boolean, provider_resume_at?: string | null, started_at: number, completed_at: number | null, checkpoint: Checkpoint | null, };
+export type AgentTurn = { id: string, turn_count: number, status: TurnStatus, provider_turn_started: boolean, provider_resume_at?: string | null,
+/**
+ * Model and reasoning effort captured for this turn. Missing on older
+ * transcripts; never reconstruct them from the session's current options.
+ */
+model?: string | null, reasoning_effort?: string | null, started_at: number, completed_at: number | null, checkpoint: Checkpoint | null, };

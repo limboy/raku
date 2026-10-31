@@ -740,6 +740,8 @@ export function beginTurn(
         status: 'running',
         provider_turn_started: false,
         provider_resume_at: null,
+        model: session.model,
+        reasoning_effort: session.reasoning_effort,
         started_at: now,
         completed_at: null,
         checkpoint: null,

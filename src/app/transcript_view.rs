@@ -1259,8 +1259,7 @@ impl Waku {
                 .cloned()
                 .map(|message| {
                     let copied = self.copied_message_feedback.contains_key(&message.id);
-                    let (assistant_footer_copy_content, assistant_footer_time) =
-                        self.assistant_response_footer_cached(message_index);
+                    let assistant_footer = self.assistant_response_footer_cached(message_index);
                     let assistant_message_action =
                         self.assistant_message_action_for_message(message_index);
                     let user_message_action = self.user_message_action_for_message(message_index);
@@ -1358,8 +1357,8 @@ impl Waku {
                         MessageRender {
                             theme: &theme,
                             message: &message,
-                            assistant_footer_copy_content,
-                            assistant_footer_time,
+                            assistant_footer_copy_content: assistant_footer.copy_content,
+                            assistant_footer_time: assistant_footer.time,
                             copied,
                             assistant_message_action,
                             user_message_control,
@@ -1403,7 +1402,7 @@ impl Waku {
                 .unwrap_or_else(|| div().into_any_element()),
             TranscriptRowKind::TurnFold(turn_id) => self.render_turn_fold_row(turn_id, &theme, cx),
             TranscriptRowKind::ResponseFooter(turn_id, message_index) => {
-                self.render_response_footer_row(turn_id, message_index, &theme, cx)
+                self.render_response_footer_row(turn_id, message_index, &theme, window, cx)
             }
             TranscriptRowKind::ChangedFiles(turn_id) => self
                 .render_changed_files_row(turn_id, &theme, cx)
@@ -1478,6 +1477,7 @@ impl Waku {
         turn_id: Uuid,
         message_index: usize,
         theme: &Theme,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(message) = self
@@ -1487,15 +1487,21 @@ impl Waku {
         else {
             return div().into_any_element();
         };
-        let (copy_content, footer_time) = self.assistant_response_footer_cached(message_index);
-        let Some(copy_content) = copy_content else {
+        let footer = self.assistant_response_footer_cached(message_index);
+        let Some(copy_content) = footer.copy_content else {
             return div().into_any_element();
         };
         let copied = self.copied_message_feedback.contains_key(&message.id);
         let action = self.assistant_message_action_for_message(message_index);
-        let force_visible = self
-            .hovered_response_row
-            .is_some_and(|(hovered_turn_id, _)| hovered_turn_id == turn_id);
+        let controls = MessageFooterControls {
+            copy: self.transcript_control_focus(format!("copy-message-{}", message.id), cx),
+            fork: self.transcript_control_focus(format!("fork-response-{}", message.id), cx),
+        };
+        let force_visible = controls.copy.is_focused(window)
+            || controls.fork.is_focused(window)
+            || self
+                .hovered_response_row
+                .is_some_and(|(hovered_turn_id, _)| hovered_turn_id == turn_id);
         let group_name = SharedString::from(format!("assistant-response-footer-{turn_id}"));
         let mut column = div()
             .w_full()
@@ -1511,7 +1517,7 @@ impl Waku {
             .child(render_message_footer(
                 theme,
                 &message,
-                footer_time.unwrap_or(message.created_at),
+                footer.time.unwrap_or(message.created_at),
                 copy_content,
                 copied,
                 group_name,
@@ -1519,6 +1525,8 @@ impl Waku {
                 false,
                 action,
                 None,
+                footer.model_label,
+                Some(controls),
                 cx.entity().downgrade(),
             ))
             .into_any_element()

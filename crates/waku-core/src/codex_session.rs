@@ -310,6 +310,8 @@ fn parse_session_history(response: &Value) -> ProviderSessionHistory {
             status,
             provider_turn_started: true,
             provider_resume_at: None,
+            model: None,
+            reasoning_effort: None,
             started_at,
             completed_at,
             checkpoint: None,

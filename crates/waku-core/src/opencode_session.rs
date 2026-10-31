@@ -221,6 +221,8 @@ fn history_from_messages(messages: &[MessageInfo]) -> ProviderSessionHistory {
                         status: TurnStatus::Completed,
                         provider_turn_started: true,
                         provider_resume_at: None,
+                        model: None,
+                        reasoning_effort: None,
                         started_at: 0,
                         completed_at: Some(0),
                         checkpoint: None,
