@@ -84,7 +84,6 @@ impl DaemonClient {
             &ClientMessage::Hello {
                 protocol_version: PROTOCOL_VERSION,
                 token,
-                client_id: Uuid::new_v4(),
                 resume_from,
             },
         )?;

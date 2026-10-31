@@ -982,9 +982,6 @@ impl Waku {
         workspace_path: Option<&Path>,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if self.daemon.is_remote() {
-            return None;
-        }
         let path: Rc<Path> = Rc::from(workspace_path?);
         let preferred = self.preferred_open_in_app()?;
         let preferred_id = preferred.id;

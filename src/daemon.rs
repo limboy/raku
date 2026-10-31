@@ -5,36 +5,13 @@ use std::path::PathBuf;
 use anyhow::{Context as _, anyhow, bail};
 
 pub fn start_process() -> anyhow::Result<waku_client::DaemonSupervisor> {
-    let address = std::env::var(waku_client::DAEMON_ADDRESS_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let token = std::env::var(waku_client::DAEMON_TOKEN_ENV)
-        .ok()
-        .filter(|value| !value.is_empty());
-    match (address, token) {
-        (Some(address), Some(token)) => {
-            return waku_client::DaemonSupervisor::connect(address.trim(), token);
-        }
-        (Some(_), None) => bail!(
-            "{} is set but {} is missing",
-            waku_client::DAEMON_ADDRESS_ENV,
-            waku_client::DAEMON_TOKEN_ENV
-        ),
-        (None, Some(_)) => bail!(
-            "{} is set but {} is missing",
-            waku_client::DAEMON_TOKEN_ENV,
-            waku_client::DAEMON_ADDRESS_ENV
-        ),
-        (None, None) => {}
-    }
     waku_client::persistence::prepare_pending_restore()
         .context("could not prepare backup restore")?;
-    let app_settings = waku_client::persistence::load_or_create_app_settings()
+    let _ = waku_client::persistence::load_or_create_app_settings()
         .context("could not load desktop daemon settings")?;
-    let daemon = waku_client::DaemonSupervisor::spawn_configured(
+    let daemon = waku_client::DaemonSupervisor::spawn(
         &daemon_executable_path()?,
         cfg!(debug_assertions),
-        app_settings.daemon_exposure,
     )?;
     waku_client::persistence::finish_pending_restore()
         .context("could not restore desktop preferences")?;

@@ -92,7 +92,6 @@ settings.general: 一般
 settings.appearance: 外観
 settings.providers: プロバイダー
 settings.usage: 使用状況
-settings.daemon: デーモン
 settings.computer_use: コンピュータ操作
 settings.general_keywords: 一般 ローカル プロジェクト 会話 プライバシー 分析 テレメトリ 匿名 共有 アップデート 自動 バージョン 数学 数式 math latex
 settings.appearance_keywords: 外観 テーマ システム ライト ダーク 言語 英語 中国語 簡体字 日本語 フォント サイズ 文字 エディタ
@@ -100,76 +99,10 @@ settings.providers_keywords: プロバイダー エージェント モデル CLI
 settings.skills: スキル
 settings.skills_keywords: スキル ライブラリ エージェント 無効 有効 削除 claude codex cursor opencode pi amp 共有
 settings.usage_keywords: 使用状況 トークン コスト 支出 キャッシュ 日別 グラフ モデル 内訳 履歴 claude codex
-settings.daemon_keywords: デーモン サーバー リモート ウェブ ネットワーク 公開 オリジン トークン ポート websocket
 settings.computer_use_keywords: コンピュータ 操作 画面収録 アクセシビリティ アプリ 制御 codex
 settings.back: 戻る
 settings.close: 設定を閉じる
 settings.search: 設定を検索
-daemon.expose_title: 管理対象デーモンを公開
-daemon.expose_description: このマシン以外の Waku クライアントから接続できるようにします。変更時はデーモンだけが再起動します。
-daemon.status_local: このマシンのみ
-daemon.status_exposed: 公開中
-daemon.status_restarting: 再起動中
-daemon.connection_title: リスナーアクセス
-daemon.connection_description: ブラウザのオリジンは完全一致が必要です。複数指定する場合はカンマで区切ります。
-daemon.port: ポート
-daemon.port_description: 公開中は、すべてのネットワークインターフェイスのこのポートで待ち受けます。
-daemon.port_placeholder: "34123"
-daemon.allowed_origins: 許可するブラウザオリジン
-daemon.allowed_origins_description: WebSocket を開ける正確な http:// または https:// オリジンです。
-daemon.allowed_origins_placeholder: https://waku.example.com, http://localhost:3001
-daemon.apply: 適用
-daemon.restarting: 再起動中…
-daemon.credentials_title: 接続情報
-daemon.credentials_description: Waku Web に入力してください。URL にはこのマシンのローカルネットワーク用ホスト名が使われます。
-daemon.websocket_url: WebSocket URL
-daemon.token: トークン
-daemon.reveal_token: トークンを表示
-daemon.hide_token: トークンを隠す
-daemon.regenerate_token: 再生成
-daemon.security_warning: このトークンは、このマシン上のタスク、ファイル、Git、添付ファイル、コーディングエージェントへの完全なアクセス権を持ちます。プライベートネットワーク外では信頼できる TLS プロキシ経由で WSS を使用してください。
-daemon.external_title: 外部デーモン
-daemon.external_description: このデスクトップは Waku の外部で管理されているデーモンに接続しています。リスナー、ブラウザオリジン、トークンは接続先ホストで設定してください。
-daemon.web_external_description: Waku Web はブラウザの外部で管理されているデーモンに接続します。リスナー、ブラウザオリジン、トークンは接続先ホストで設定してください。
-daemon.web_connection_description: このブラウザがデーモンを起動または停止することはありません。
-daemon.not_configured: 未設定
-daemon.status: 状態
-daemon.disconnect: 接続を解除
-daemon.forget: デーモンを削除
-daemon.reconnect: 再接続
-daemon.phase_booting: 起動中
-daemon.phase_disconnected: 接続解除済み
-daemon.phase_connecting: 接続中
-daemon.phase_connected: 接続済み
-daemon.phase_error: エラー
-daemon.invalid_port: 1 から 65535 のポートを入力してください
-daemon.invalid_settings: デーモン設定が無効です：%{error}
-daemon.stop_active_tasks: デーモンのアクセス設定を変更する前に実行中のタスクを停止してください
-daemon.settings_applied: デーモンのアクセス設定を更新しました
-daemon.restart_failed: デーモンを再起動できませんでした：%{error}
-daemon.url_copied: WebSocket URL をコピーしました
-daemon.token_copied: デーモントークンをコピーしました
-web.connect_title: Waku デーモンに接続
-web.connect_description: デスクトップアプリの「設定 → デーモン」に表示されるリモートリスナー URL とトークンを入力してください。
-web.token_placeholder: デーモンアクセストークン
-web.remember_device: このデバイスに保存
-web.remember_device_description: 保存しない場合、ブラウザセッションの終了時に認証情報が消去されます。
-web.connect: 接続
-web.connecting: 接続中…
-web.security_warning: ブラウザはこの WebSocket にのみトークンを送信します。プライベートネットワーク外では信頼できる TLS プロキシ経由で WSS を使用してください。
-web.starting: Waku を起動中…
-web.starting_label: Waku を起動中
-web.start_failed_label: Waku を起動できませんでした
-web.load_failed: Waku を読み込めませんでした
-web.try_again: もう一度試す
-web.daemon_connection_closed: デーモンとの接続が閉じられました
-web.daemon_not_configured: デーモンが設定されていません
-web.error_daemon_url_required: デーモン URL を入力してください
-web.error_daemon_url_invalid: 有効な ws:// または wss:// のデーモン URL を入力してください
-web.error_daemon_url_scheme: デーモン URL には ws:// または wss:// を使用してください
-web.error_daemon_url_host: デーモン URL にはホストが必要で、認証情報は含められません
-web.error_secure_websocket_required: 安全な Waku Web ページからは wss:// でのみ接続できます
-web.error_daemon_token_required: デーモントークンを入力してください
 settings.theme: テーマ
 settings.theme_description: システム、ライト、ダークのいずれかのテーマを選択します
 settings.ui_font_size: UI のフォントサイズ
@@ -203,7 +136,6 @@ common.creating: 作成中…
 
 settings.local_by_default: デフォルトでローカルに保存
 settings.local_by_default_description: プロジェクト、会話、設定はこのコンピュータに保存されます
-settings.local_by_default_web_description: プロジェクト、会話、添付ファイルは接続先デーモンのホストに保存されます。Waku Web の設定はこのブラウザに保存されます。
 settings.automatic_updates: 自動アップデート
 settings.automatic_updates_description: バックグラウンドで新しいバージョンを確認し、インストールを案内します
 settings.share_anonymous_usage_data: 匿名の使用状況データを共有
@@ -211,7 +143,6 @@ settings.share_anonymous_usage_data_description: 機能の利用状況と信頼�
 
 providers.coding_agents: コーディングエージェント
 providers.description: Waku はこのコンピュータにインストールされたエージェントの CLI を使用します。各エージェントの CLI をインストールするかログインしてから、更新してください
-providers.web_description: Waku はデーモンホストにインストールされたエージェント CLI を使用します。各エージェントの CLI をインストールするかログインしてから、更新してください
 providers.check_failed: "%{command} を確認できませんでした：%{error}"
 providers.show_settings: "%{provider} の設定を表示"
 providers.hide_settings: "%{provider} の設定を隠す"
@@ -303,7 +234,6 @@ project.your_project: あなたのプロジェクト
 
 onboarding.open_project_to_begin: プロジェクトを開いて始めましょう
 onboarding.description: Waku は選択したフォルダでコーディングエージェントを実行します。コード、タスク、履歴はこのコンピュータに保存されます
-onboarding.web_description: デーモンホスト上のパスを選ぶか、プロジェクトなしで開始してください。
 onboarding.open_project_folder: プロジェクトフォルダを開く…
 onboarding.what_should_we_build: 何を作りましょうか？
 onboarding.what_should_we_build_in: ""
@@ -650,8 +580,6 @@ composer.queue_followup: フォローアップとしてキューに追加（⏎�
 composer.message: メッセージ
 composer.queue_placeholder: フォローアップを追加…
 composer.prompt_placeholder: Waku に作業を依頼…
-composer.attach_daemon: デーモンホストからファイルまたはフォルダを添付
-composer.attach_daemon_title: デーモンホストから添付
 composer.stop: 停止
 composer.stop_confirm: もう一度 Escape を押すと停止します
 composer.steer_current: 現在のターンに指示を追加
@@ -681,7 +609,6 @@ workspace.worktree: ワークツリー
 terminal.starting: ターミナルを起動中…
 
 project.add_project: プロジェクトを追加
-errors.remote_project_picker: デーモンホスト上のプロジェクトを追加するにはリモートパス選択が必要ですが、まだ利用できません
 
 session.stopped: 停止しました
 session.turn_completed: ターンが完了しました
@@ -699,7 +626,6 @@ errors.open_session: "そのタスクを開けませんでした：%{error}"
 errors.create_projectless_task: "~/.waku/projects 内にタスクを作成できませんでした：%{error}"
 errors.save_projectless_migration: "プロジェクトなしタスクの移行を保存できませんでした：%{error}"
 errors.move_projectless_task: "以前のルート直下のプロジェクトなしタスクを ~/.waku/projects 内に移動できませんでした：%{error}"
-errors.remote_host_path: このパスはデーモンホスト上にあるため、デスクトップアプリでは開けません
 errors.change_branch: "ブランチを変更できませんでした：%{error}"
 errors.capture_pre_turn_checkpoint: "ターン開始前のチェックポイントを取得できませんでした：%{error}"
 errors.capture_turn_checkpoint: "ターンのチェックポイントを取得できませんでした：%{error}"
@@ -729,9 +655,6 @@ errors.task_not_loaded: このタスクは読み込まれていません
 errors.task_already_forking: このタスクはすでにフォーク中です
 errors.task_already_rewinding: このタスクはすでに巻き戻し中です
 errors.no_live_runtime: このタスクには実行中のエージェントがありません
-errors.unexpected_daemon_response: "デーモンから %{expected} が返るはずでしたが、%{actual} を受信しました"
-errors.daemon_disconnected: Waku デーモンに接続されていません
-errors.path_outside_workspace: このパスはデーモンホスト上の現在のワークスペース外にあります
 errors.rename_task: "タスクの名前を変更できませんでした：%{error}"
 errors.remove_task: "タスクを削除できませんでした：%{error}"
 errors.save_draft: "下書きを保存できませんでした：%{error}"
@@ -892,18 +815,12 @@ files.refresh: ファイルを更新
 files.loading: ファイルを読み込み中…
 files.workspace_files: ワークスペースのファイル
 files.loading_file: ファイルを読み込み中
-files.reading_from_daemon: デーモンホストから読み込んでいます。
 files.file_unavailable: ファイルを利用できません
 files.loading_editor: エディタを読み込み中
 files.preparing_editor: エディタを準備中…
 files.preparing_syntax: シンタックスハイライトを準備しています。
 file_picker.open_project: プロジェクトを開く
 file_picker.attach: 添付
-file_picker.daemon_folders: デーモンのフォルダ
-file_picker.daemon_items: デーモンのファイルとフォルダ
-file_picker.choose_project_folder: デーモンからプロジェクトフォルダを選択
-file_picker.attach_from_daemon: デーモンからファイルまたはフォルダを添付
-file_picker.daemon_disconnected: デーモンに接続されていません
 file_picker.locations: 場所
 file_picker.home: ホーム
 file_picker.file_system: ファイルシステム
@@ -1171,7 +1088,6 @@ backup.confirm_title: "最新のバックアップを復元して Waku を再起
 backup.confirm_detail: "%{path}\n\nWaku を再起動し、現在の会話、添付ファイル、下書き、設定をこのバックアップで置き換えます。"
 backup.restore_and_relaunch: "復元して再起動"
 backup.relaunching: "バックアップを復元するため Waku を再起動中…"
-backup.local_only: "バックアップと復元は、Waku がローカルのデーモンを管理している場合に利用できます。"
 backup.error: "バックアップ操作に失敗しました: %{error}"
 backup.invalid_response: "デーモンから無効なバックアップ応答が返されました。"
 backup.restore_failed: "復元に失敗しました。元のデータは保持されています: %{error}"

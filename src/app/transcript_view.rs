@@ -1316,7 +1316,7 @@ impl Waku {
                             )
                         })
                         .collect();
-                    let attachments_can_reveal = !self.daemon.is_remote();
+                    let attachments_can_reveal = true;
                     let menu = self.menu_handle(format!("message-{}", message.id), cx);
                     let user_message_viewport = (message.role == MessageRole::User).then(|| {
                         self.user_message_viewports

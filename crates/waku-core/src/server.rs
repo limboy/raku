@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -12,7 +12,7 @@ use subtle::ConstantTimeEq as _;
 use tungstenite::handshake::server::{
     ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
 };
-use tungstenite::http::{StatusCode, header::ORIGIN};
+use tungstenite::http::StatusCode;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket, accept_hdr_with_config};
 use uuid::Uuid;
@@ -46,18 +46,10 @@ const MAX_CACHED_RESPONSES: usize = 2048;
 /// outcomes such as a hydrated session can be megabytes, and a count-only cap
 /// would let a handful of them pin hundreds of megabytes in the daemon.
 const MAX_CACHED_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
-const NATIVE_CLIENT_HEADER: &str = "x-waku-client";
-const NATIVE_CLIENT_HEADER_VALUE: &str = "native";
-
 #[derive(Clone, Debug, Default)]
 pub struct ServerOptions {
-    /// Browser WebSocket handshakes carry an Origin header. Most native clients
-    /// do not; React Native does and identifies itself with `x-waku-client`.
-    /// An empty set therefore still permits native clients only.
-    pub allowed_origins: HashSet<String>,
     /// Only a daemon owned by the desktop process should accept the global
-    /// shutdown control message. Service-managed daemons keep running when an
-    /// authenticated client disconnects.
+    /// shutdown control message.
     pub allow_shutdown: bool,
 }
 
@@ -675,11 +667,10 @@ fn handle_connection(
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_HANDSHAKE_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_HANDSHAKE_MESSAGE_BYTES));
-    let allowed_origins = options.allowed_origins.clone();
     let mut socket = accept_hdr_with_config(
         stream,
         move |request: &HandshakeRequest, response: HandshakeResponse| {
-            validate_handshake(request, response, &allowed_origins)
+            validate_handshake(request, response)
         },
         Some(config),
     )
@@ -791,30 +782,12 @@ fn handle_connection(
 fn validate_handshake(
     request: &HandshakeRequest,
     response: HandshakeResponse,
-    allowed_origins: &HashSet<String>,
 ) -> Result<HandshakeResponse, ErrorResponse> {
     if request.uri().path() != "/v1" {
         return Err(handshake_error(
             StatusCode::NOT_FOUND,
             "unknown daemon endpoint",
         ));
-    }
-    let is_native_client = request
-        .headers()
-        .get(NATIVE_CLIENT_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value == NATIVE_CLIENT_HEADER_VALUE);
-    if let Some(origin) = request.headers().get(ORIGIN) {
-        let allowed = origin
-            .to_str()
-            .ok()
-            .is_some_and(|origin| allowed_origins.contains(origin));
-        if !allowed && !is_native_client {
-            return Err(handshake_error(
-                StatusCode::FORBIDDEN,
-                "WebSocket origin is not allowed",
-            ));
-        }
     }
     Ok(response)
 }
@@ -850,10 +823,6 @@ fn command_targets_runtime(command: &Command) -> bool {
             | Command::Fork { .. }
             | Command::ForkSessionFromResponse { .. }
             | Command::RewindSessionToMessage { .. }
-            | Command::OpenTerminal { .. }
-            | Command::WriteTerminal { .. }
-            | Command::ResizeTerminal { .. }
-            | Command::CloseTerminal
             | Command::CloseSession
             | Command::RemoveSession
     )
@@ -880,11 +849,11 @@ fn run_runtime_mailbox(
         let runtime_id = dispatched.request.runtime_id;
         let starts_runtime = matches!(
             &dispatched.request.command,
-            Command::Start { .. } | Command::OpenTerminal { .. }
+            Command::Start { .. }
         );
         let closes_runtime = matches!(
             &dispatched.request.command,
-            Command::CloseSession | Command::CloseTerminal | Command::RemoveSession
+            Command::CloseSession | Command::RemoveSession
         );
         let removes_session = matches!(&dispatched.request.command, Command::RemoveSession);
         let handled = handle_request(
@@ -996,7 +965,7 @@ fn handle_request(
     let task_catalog_action = task_catalog_action(&request.command);
     let starts_runtime = matches!(
         &request.command,
-        Command::Start { .. } | Command::OpenTerminal { .. }
+        Command::Start { .. }
     );
     let (outcome, executed) = if !notification && let Some(cached) = hub.cached_response(request_id)
     {
@@ -1139,12 +1108,10 @@ mod tests {
     #[cfg(unix)]
     use crate::settings::DaemonSettingsStore;
     use crate::{DaemonSettings, WireDriverStartOptions};
-    #[cfg(unix)]
-    use base64::Engine as _;
     use crossbeam_channel::{RecvTimeoutError, bounded};
     use serde_json::json;
     use std::path::PathBuf;
-    use waku_client::{DaemonClient, DaemonSupervisor};
+    use waku_client::DaemonClient;
 
     #[derive(Default)]
     struct TestBackend {
@@ -1170,7 +1137,7 @@ mod tests {
                 Command::GetSettings => Ok(ResponsePayload::Settings {
                     settings: DaemonSettings::default(),
                 }),
-                Command::Prompt { prompt, .. } => {
+                Command::Prompt { prompt } => {
                     events.send(WireDriverEvent::new("textDelta", json!(prompt)))?;
                     Ok(ResponsePayload::Ack)
                 }
@@ -1569,8 +1536,6 @@ mod tests {
                 runtime_id,
                 Command::Prompt {
                     prompt: "streamed from the first client".into(),
-                    turn_id: None,
-                    message_id: None,
                 },
             )
             .unwrap();
@@ -1607,268 +1572,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_supervisor_reconnects_without_losing_the_daemon_runtime() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        // Keep the address reserved between servers. If the first listener is
-        // dropped before the replacement binds, a parallel test can claim the
-        // newly freed ephemeral port and make this test fail with AddrInUse.
-        let replacement_listener = listener.try_clone().unwrap();
-        let address = listener.local_addr().unwrap();
-        let backend = Arc::new(TestBackend::default());
-        let first_shutdown = Arc::new(AtomicBool::new(false));
-        let first_server = {
-            let backend = backend.clone();
-            let shutdown = first_shutdown.clone();
-            std::thread::spawn(move || {
-                serve(
-                    listener,
-                    "secret".into(),
-                    backend,
-                    shutdown,
-                    ServerOptions::default(),
-                )
-                .unwrap()
-            })
-        };
-
-        let supervisor = DaemonSupervisor::connect(&address.to_string(), "secret".into()).unwrap();
-        let clients = supervisor.subscribe_clients();
-        let initial = clients.recv_timeout(Duration::from_secs(1)).unwrap();
-        let session_id = Uuid::new_v4();
-        let runtime_id = Uuid::new_v4();
-        initial
-            .request(
-                session_id,
-                runtime_id,
-                Command::Start {
-                    options: WireDriverStartOptions {
-                        provider: "codex".into(),
-                        binary: PathBuf::from("codex"),
-                        cwd: PathBuf::from("."),
-                        mode: "fullAccess".into(),
-                        model: None,
-                        reasoning_effort: None,
-                        service_tier: None,
-                        context_window: None,
-                        agent_preset: None,
-                        computer_use_enabled: false,
-                        provider_cursor: None,
-                    },
-                },
-            )
-            .unwrap();
-
-        first_shutdown.store(true, Ordering::Release);
-        first_server.join().unwrap();
-
-        let second_shutdown = Arc::new(AtomicBool::new(false));
-        let second_server = {
-            let backend = backend.clone();
-            let shutdown = second_shutdown.clone();
-            std::thread::spawn(move || {
-                serve(
-                    replacement_listener,
-                    "secret".into(),
-                    backend,
-                    shutdown,
-                    ServerOptions::default(),
-                )
-                .unwrap()
-            })
-        };
-
-        let replacement = clients.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(!initial.same_connection(&replacement));
-        assert!(matches!(
-            replacement
-                .request(session_id, Uuid::nil(), Command::AttachSession)
-                .unwrap(),
-            ResponsePayload::SessionRuntime {
-                runtime_id: Some(attached),
-                supports_steer: true,
-            } if attached == runtime_id
-        ));
-
-        second_shutdown.store(true, Ordering::Release);
-        second_server.join().unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn dropping_an_idle_terminal_does_not_wait_for_output() {
-        let root = std::env::temp_dir().join(format!("waku-terminal-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let hub = Arc::new(Hub::default());
-        let terminal = crate::terminal::DaemonTerminal::open_with_shell(
-            &root,
-            80,
-            24,
-            hub.event_sink(Uuid::new_v4(), Uuid::new_v4()),
-            terminal_test_shell("while IFS= read -r line; do :; done"),
-        )
-        .unwrap();
-        let (dropped, finished) = bounded(1);
-        std::thread::spawn(move || {
-            drop(terminal);
-            let _ = dropped.send(());
-        });
-
-        assert!(
-            finished.recv_timeout(Duration::from_secs(3)).is_ok(),
-            "dropping an idle daemon terminal blocked on its output reader"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn websocket_terminal_round_trip_streams_input_and_output() {
-        websocket_terminal_round_trip(false);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn websocket_terminal_close_does_not_wait_for_a_shell_ignoring_hangup() {
-        websocket_terminal_round_trip(true);
-    }
-
-    #[cfg(unix)]
-    fn terminal_test_shell(script: &str) -> alacritty_terminal::tty::Shell {
-        // Do not load the developer's or CI runner's login files, prompt
-        // plugins, or terminal capability queries in a transport test.
-        alacritty_terminal::tty::Shell::new("/bin/sh".into(), vec!["-c".into(), script.into()])
-    }
-
-    #[cfg(unix)]
-    fn websocket_terminal_round_trip(ignore_hangup: bool) {
-        let root = std::env::temp_dir().join(format!("waku-terminal-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let backend = WakuBackend::new(
-            DaemonSettingsStore::open(root.join("settings.json")).unwrap(),
-            StateStore::daemon(root.join("app.db")),
-        )
-        .unwrap()
-        .with_terminal_shell(terminal_test_shell(&format!(
-            "{}\nprintf 'ready:%s\\n' \"$$\"\nwhile IFS= read -r line; do printf 'received:%s\\n' \"$line\"; done",
-            if ignore_hangup { "trap '' HUP" } else { ":" },
-        )));
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let server_shutdown = shutdown.clone();
-        let server = std::thread::spawn(move || {
-            serve(
-                listener,
-                "secret".into(),
-                Arc::new(backend),
-                server_shutdown,
-                ServerOptions {
-                    allow_shutdown: true,
-                    ..ServerOptions::default()
-                },
-            )
-            .unwrap()
-        });
-
-        let client = DaemonClient::connect(&address.to_string(), "secret".into()).unwrap();
-        let terminal_id = Uuid::new_v4();
-        let events = client.subscribe(terminal_id, terminal_id);
-        assert!(matches!(
-            client
-                .request(
-                    terminal_id,
-                    terminal_id,
-                    Command::OpenTerminal {
-                        cwd: root.clone(),
-                        cols: 80,
-                        rows: 24,
-                    },
-                )
-                .unwrap(),
-            ResponsePayload::Ack
-        ));
-        // Wait until the shell has installed its signal handler. Receiving
-        // local echo alone does not prove that shell startup has completed.
-        let ready = terminal_output_until(&events, b"\n");
-        let child_pid: libc::pid_t = String::from_utf8_lossy(&ready)
-            .trim()
-            .strip_prefix("ready:")
-            .unwrap()
-            .parse()
-            .unwrap();
-        client
-            .request(
-                terminal_id,
-                terminal_id,
-                Command::WriteTerminal {
-                    data: b"waku-terminal-round-trip\r".to_vec(),
-                },
-            )
-            .unwrap();
-
-        // The response prefix is absent from the input, so a PTY echo cannot
-        // satisfy this assertion before the child has actually read it.
-        terminal_output_until(&events, b"received:waku-terminal-round-trip");
-
-        let (closed, finished) = bounded(1);
-        let closing_client = client.clone();
-        let close = std::thread::spawn(move || {
-            let _ = closed.send(closing_client.request(
-                terminal_id,
-                terminal_id,
-                Command::CloseTerminal,
-            ));
-        });
-        let result = finished.recv_timeout(Duration::from_secs(3));
-        if result.is_err() {
-            // Clean up the fixture even when shutdown regresses, and fail
-            // here instead of waiting for the client's 120-second timeout.
-            unsafe {
-                libc::kill(child_pid, libc::SIGKILL);
-            }
-        }
-        client.shutdown();
-        server.join().unwrap();
-        close.join().unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-        assert!(
-            matches!(result, Ok(Ok(ResponsePayload::Ack))),
-            "closing daemon terminal did not complete: {result:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    fn terminal_output_until(events: &Receiver<SequencedEvent>, marker: &[u8]) -> Vec<u8> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let mut output = Vec::new();
-        let mut seen_events = Vec::new();
-        while std::time::Instant::now() < deadline
-            && !output.windows(marker.len()).any(|window| window == marker)
-        {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            let Ok(event) = events.recv_timeout(remaining) else {
-                break;
-            };
-            seen_events.push(event.event.kind.clone());
-            if event.event.kind != "terminalOutput" {
-                continue;
-            }
-            let data = event.event.payload["data"].as_str().unwrap();
-            output.extend(
-                base64::engine::general_purpose::STANDARD
-                    .decode(data)
-                    .unwrap(),
-            );
-        }
-        assert!(
-            output.windows(marker.len()).any(|window| window == marker),
-            "daemon terminal did not return the shell marker; events={seen_events:?}, output={}",
-            String::from_utf8_lossy(&output)
-        );
-        output
-    }
-
-    #[test]
     fn nil_request_ids_execute_without_responses_or_cache_entries() {
         let (outgoing, responses) = unbounded();
         let hub = Arc::new(Hub::default());
@@ -1892,46 +1595,16 @@ mod tests {
     }
 
     #[test]
-    fn browser_origins_are_denied_unless_explicitly_allowed() {
-        let request = HandshakeRequest::builder()
-            .uri("/v1")
-            .header(ORIGIN, "https://app.waku.test")
-            .body(())
-            .unwrap();
-        let response = HandshakeResponse::new(());
+    fn handshake_requires_v1_path() {
+        let request = HandshakeRequest::builder().uri("/v1").body(()).unwrap();
+        assert!(validate_handshake(&request, HandshakeResponse::new(())).is_ok());
+
+        let invalid = HandshakeRequest::builder().uri("/invalid").body(()).unwrap();
         assert_eq!(
-            validate_handshake(&request, response, &HashSet::new())
+            validate_handshake(&invalid, HandshakeResponse::new(()))
                 .unwrap_err()
                 .status(),
-            StatusCode::FORBIDDEN
-        );
-
-        let allowed = HashSet::from(["https://app.waku.test".to_owned()]);
-        assert!(validate_handshake(&request, HandshakeResponse::new(()), &allowed).is_ok());
-        let native = HandshakeRequest::builder().uri("/v1").body(()).unwrap();
-        assert!(validate_handshake(&native, HandshakeResponse::new(()), &HashSet::new()).is_ok());
-
-        let react_native = HandshakeRequest::builder()
-            .uri("/v1")
-            .header(ORIGIN, "http://192.168.0.114:34125")
-            .header(NATIVE_CLIENT_HEADER, NATIVE_CLIENT_HEADER_VALUE)
-            .body(())
-            .unwrap();
-        assert!(
-            validate_handshake(&react_native, HandshakeResponse::new(()), &HashSet::new()).is_ok()
-        );
-
-        let forged_native = HandshakeRequest::builder()
-            .uri("/v1")
-            .header(ORIGIN, "https://attacker.example")
-            .header(NATIVE_CLIENT_HEADER, "browser")
-            .body(())
-            .unwrap();
-        assert_eq!(
-            validate_handshake(&forged_native, HandshakeResponse::new(()), &HashSet::new())
-                .unwrap_err()
-                .status(),
-            StatusCode::FORBIDDEN
+            StatusCode::NOT_FOUND
         );
     }
 
@@ -2259,8 +1932,6 @@ mod tests {
                 runtime_id: blocked_runtime_id,
                 command: Command::Prompt {
                     prompt: "after start".into(),
-                    turn_id: None,
-                    message_id: None,
                 },
             },
             second_client_outgoing,

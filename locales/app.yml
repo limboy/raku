@@ -181,8 +181,6 @@ settings.providers:
   en: Providers
 settings.usage:
   en: Usage
-settings.daemon:
-  en: Daemon
 settings.computer_use:
   en: Computer Use
 settings.general_keywords:
@@ -197,8 +195,6 @@ settings.skills_keywords:
   en: skills skill library agent disable enable delete claude codex cursor opencode pi amp shared
 settings.usage_keywords:
   en: usage tokens cost spend cache daily chart model breakdown history claude codex
-settings.daemon_keywords:
-  en: daemon server remote web network expose origin token port websocket
 settings.computer_use_keywords:
   en: computer use screen recording accessibility apps control codex
 settings.back:
@@ -207,136 +203,6 @@ settings.close:
   en: Close settings
 settings.search:
   en: Search Settings
-daemon.expose_title:
-  en: Expose managed daemon
-daemon.expose_description:
-  en: Listen beyond this machine so another Waku client can connect. Changing this restarts only the daemon.
-daemon.status_local:
-  en: Local only
-daemon.status_exposed:
-  en: Exposed
-daemon.status_restarting:
-  en: Restarting
-daemon.connection_title:
-  en: Listener access
-daemon.connection_description:
-  en: Browser origins must match exactly. Separate multiple origins with commas.
-daemon.port:
-  en: Port
-daemon.port_description:
-  en: Waku listens on all network interfaces at this port while exposure is enabled.
-daemon.port_placeholder:
-  en: "34123"
-daemon.allowed_origins:
-  en: Allowed browser origins
-daemon.allowed_origins_description:
-  en: Exact http:// or https:// origins allowed to open the WebSocket.
-daemon.allowed_origins_placeholder:
-  en: https://waku.example.com, http://localhost:3001
-daemon.apply:
-  en: Apply
-daemon.restarting:
-  en: Restarting…
-daemon.credentials_title:
-  en: Connection details
-daemon.credentials_description:
-  en: Enter these in Waku Web. The URL uses this machine’s local network hostname.
-daemon.websocket_url:
-  en: WebSocket URL
-daemon.token:
-  en: Token
-daemon.reveal_token:
-  en: Reveal token
-daemon.hide_token:
-  en: Hide token
-daemon.regenerate_token:
-  en: Regenerate
-daemon.security_warning:
-  en: The token grants full access to tasks, files, Git, attachments, and coding agents on this machine. Use WSS through a trusted TLS proxy outside a private network.
-daemon.external_title:
-  en: External daemon
-daemon.external_description:
-  en: This desktop is connected to a daemon managed outside Waku. Configure its listener, browser origins, and token on that host.
-daemon.web_external_description:
-  en: Waku Web connects to a daemon managed outside this browser. Configure its listener, browser origins, and token on that host.
-daemon.web_connection_description:
-  en: This browser never starts or stops the daemon.
-daemon.not_configured:
-  en: Not configured
-daemon.status:
-  en: Status
-daemon.disconnect:
-  en: Disconnect
-daemon.forget:
-  en: Forget daemon
-daemon.reconnect:
-  en: Reconnect
-daemon.phase_booting:
-  en: Starting
-daemon.phase_disconnected:
-  en: Disconnected
-daemon.phase_connecting:
-  en: Connecting
-daemon.phase_connected:
-  en: Connected
-daemon.phase_error:
-  en: Error
-daemon.invalid_port:
-  en: Enter a port from 1 to 65535
-daemon.invalid_settings:
-  en: "Invalid daemon settings: %{error}"
-daemon.stop_active_tasks:
-  en: Stop active tasks before changing daemon access
-daemon.settings_applied:
-  en: Daemon access updated
-daemon.restart_failed:
-  en: "Could not restart daemon: %{error}"
-daemon.url_copied:
-  en: WebSocket URL copied
-daemon.token_copied:
-  en: Daemon token copied
-web.connect_title:
-  en: Connect to Waku daemon
-web.connect_description:
-  en: Enter the remote listener URL and token from Desktop Settings → Daemon.
-web.token_placeholder:
-  en: Daemon access token
-web.remember_device:
-  en: Remember on this device
-web.remember_device_description:
-  en: Otherwise the credentials are cleared when this browser session ends.
-web.connect:
-  en: Connect
-web.connecting:
-  en: Connecting…
-web.security_warning:
-  en: The browser sends the token only to this WebSocket. Use WSS through a trusted TLS proxy outside a private network.
-web.starting:
-  en: Starting Waku…
-web.starting_label:
-  en: Starting Waku
-web.start_failed_label:
-  en: Waku could not start
-web.load_failed:
-  en: Couldn’t load Waku
-web.try_again:
-  en: Try again
-web.daemon_connection_closed:
-  en: The daemon connection closed
-web.daemon_not_configured:
-  en: No daemon has been configured
-web.error_daemon_url_required:
-  en: Enter the daemon URL
-web.error_daemon_url_invalid:
-  en: Enter a valid ws:// or wss:// daemon URL
-web.error_daemon_url_scheme:
-  en: The daemon URL must use ws:// or wss://
-web.error_daemon_url_host:
-  en: The daemon URL must contain a host and no credentials
-web.error_secure_websocket_required:
-  en: A secure Waku Web page can only connect through wss://
-web.error_daemon_token_required:
-  en: Enter the daemon token
 settings.theme:
   en: Theme
 settings.theme_description:
@@ -400,8 +266,6 @@ settings.local_by_default:
   en: Local by default
 settings.local_by_default_description:
   en: Projects, conversations, and settings are stored on this computer
-settings.local_by_default_web_description:
-  en: Projects, conversations, and attachments stay on the connected daemon host. Waku Web preferences stay in this browser.
 settings.automatic_updates:
   en: Automatic updates
 settings.automatic_updates_description:
@@ -415,8 +279,6 @@ providers.coding_agents:
   en: Coding agents
 providers.description:
   en: Waku drives agent CLIs installed on this computer. Install or sign in with each agent's own CLI, then refresh
-providers.web_description:
-  en: Waku drives agent CLIs installed on the daemon host. Install or sign in with each agent's own CLI, then refresh
 providers.check_failed:
   en: "Could not check %{command}: %{error}"
 providers.show_settings:
@@ -593,8 +455,6 @@ onboarding.open_project_to_begin:
   en: Open a project to begin
 onboarding.description:
   en: Waku runs coding agents in folders you choose. Your code, sessions, and history stay on this computer
-onboarding.web_description:
-  en: Choose a path on the daemon host, or start without a project.
 onboarding.open_project_folder:
   en: Open project folder…
 onboarding.what_should_we_build:
@@ -1272,10 +1132,6 @@ composer.queue_placeholder:
   en: Queue a follow-up…
 composer.prompt_placeholder:
   en: Ask Waku to build something…
-composer.attach_daemon:
-  en: Attach a file or folder from the daemon host
-composer.attach_daemon_title:
-  en: Attach from daemon host
 composer.stop:
   en: Stop
 composer.stop_confirm:
@@ -1328,8 +1184,6 @@ terminal.starting:
 
 project.add_project:
   en: Add project
-errors.remote_project_picker:
-  en: Adding a daemon-host project needs a remote path picker, which is not available yet
 
 session.stopped:
   en: Stopped
@@ -1362,8 +1216,6 @@ errors.save_projectless_migration:
   en: "Could not save the projectless task migration: %{error}"
 errors.move_projectless_task:
   en: "Could not move the old projectless task beneath ~/.waku/projects: %{error}"
-errors.remote_host_path:
-  en: This path belongs to the daemon host and cannot be opened by the desktop
 errors.change_branch:
   en: "Could not change branch: %{error}"
 errors.capture_pre_turn_checkpoint:
@@ -1422,12 +1274,6 @@ errors.task_already_rewinding:
   en: This task is already being rewound
 errors.no_live_runtime:
   en: This task has no live runtime
-errors.unexpected_daemon_response:
-  en: "Expected %{expected}, received %{actual} from the daemon"
-errors.daemon_disconnected:
-  en: Waku daemon is disconnected
-errors.path_outside_workspace:
-  en: This path is outside the active workspace on the daemon host
 errors.rename_task:
   en: "Could not rename the task: %{error}"
 errors.remove_task:
@@ -1741,8 +1587,6 @@ files.workspace_files:
   en: Workspace files
 files.loading_file:
   en: Loading file
-files.reading_from_daemon:
-  en: Reading from the daemon host.
 files.file_unavailable:
   en: File unavailable
 files.loading_editor:
@@ -1756,16 +1600,6 @@ file_picker.open_project:
   en: Open Project
 file_picker.attach:
   en: Attach
-file_picker.daemon_folders:
-  en: Daemon folders
-file_picker.daemon_items:
-  en: Daemon files and folders
-file_picker.choose_project_folder:
-  en: Choose a project folder from the daemon
-file_picker.attach_from_daemon:
-  en: Attach a file or folder from the daemon
-file_picker.daemon_disconnected:
-  en: The daemon is not connected
 file_picker.locations:
   en: Locations
 file_picker.home:
@@ -2293,8 +2127,6 @@ backup.restore_and_relaunch:
   en: "Restore and Relaunch"
 backup.relaunching:
   en: "Relaunching Waku to restore your backup…"
-backup.local_only:
-  en: "Backup and restore are available when Waku manages the local daemon."
 backup.error:
   en: "Backup operation failed: %{error}"
 backup.invalid_response:

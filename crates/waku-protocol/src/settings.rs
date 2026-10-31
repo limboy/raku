@@ -3,12 +3,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 
 use crate::computer_use::ComputerAppGrant;
 use crate::model::ProviderKind;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct DaemonSettings {
     pub computer_use_enabled: bool,

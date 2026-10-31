@@ -1615,11 +1615,6 @@ impl Waku {
     }
 
     pub(super) fn add_project(&mut self, cx: &mut Context<Self>) {
-        if self.daemon.is_remote() {
-            self.show_toast(tr!("errors.remote_project_picker"));
-            cx.notify();
-            return;
-        }
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,

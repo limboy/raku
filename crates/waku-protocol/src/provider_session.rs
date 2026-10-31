@@ -2,12 +2,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::model::{AgentSession, ProviderResumeCursor};
 
 /// Daemon-host native-session operation used when no live driver can fork.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "provider", rename_all = "camelCase")]
 pub enum ProviderSessionForkRequest {
     Claude {
@@ -44,7 +43,7 @@ pub enum ProviderSessionForkRequest {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSessionFork {
     pub cursor: ProviderResumeCursor,

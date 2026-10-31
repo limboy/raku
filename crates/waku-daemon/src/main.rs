@@ -18,7 +18,7 @@ fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(&arguments.bind)
         .with_context(|| format!("could not bind Waku daemon to {}", arguments.bind))?;
     let address = listener.local_addr()?;
-    ensure_bind_allowed(address, arguments.allow_non_loopback)?;
+    ensure_bind_allowed(address)?;
     let shutdown = Arc::new(AtomicBool::new(false));
     if let Some(parent_pid) = arguments.parent_pid {
         let monitor_shutdown = shutdown.clone();
@@ -58,34 +58,27 @@ fn main() -> anyhow::Result<()> {
         backend,
         shutdown,
         waku_core::ServerOptions {
-            allowed_origins: arguments.allowed_origins.into_iter().collect(),
             allow_shutdown: arguments.parent_pid.is_some(),
         },
     )
 }
 
-fn ensure_bind_allowed(address: SocketAddr, allow_non_loopback: bool) -> anyhow::Result<()> {
-    if address.ip().is_loopback() || allow_non_loopback {
+fn ensure_bind_allowed(address: SocketAddr) -> anyhow::Result<()> {
+    if address.ip().is_loopback() {
         return Ok(());
     }
-    bail!(
-        "refusing non-loopback daemon bind {address}; pass --allow-non-loopback only after configuring authentication and exact browser origins"
-    )
+    bail!("refusing non-loopback daemon bind {address}")
 }
 
 struct Arguments {
     bind: String,
     parent_pid: Option<u32>,
-    allowed_origins: Vec<String>,
-    allow_non_loopback: bool,
 }
 
 impl Arguments {
     fn parse(arguments: impl IntoIterator<Item = String>) -> anyhow::Result<Self> {
         let mut bind = "127.0.0.1:0".to_owned();
         let mut parent_pid = None;
-        let mut allowed_origins = Vec::new();
-        let mut allow_non_loopback = false;
         let mut arguments = arguments.into_iter();
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
@@ -103,19 +96,9 @@ impl Arguments {
                             .context("--parent-pid is not a valid process id")?,
                     );
                 }
-                "--allow-origin" => {
-                    let origin = arguments
-                        .next()
-                        .filter(|origin| !origin.trim().is_empty())
-                        .ok_or_else(|| anyhow!("--allow-origin requires an origin"))?;
-                    allowed_origins.push(origin);
-                }
-                "--allow-non-loopback" => {
-                    allow_non_loopback = true;
-                }
                 "--help" | "-h" => {
                     println!(
-                        "usage: {} [--bind ADDRESS] [--allow-non-loopback] [--parent-pid PID] [--allow-origin ORIGIN]...",
+                        "usage: {} [--bind ADDRESS] [--parent-pid PID]",
                         env!("CARGO_BIN_NAME")
                     );
                     std::process::exit(0);
@@ -123,12 +106,7 @@ impl Arguments {
                 unknown => bail!("unknown argument {unknown:?}"),
             }
         }
-        Ok(Self {
-            bind,
-            parent_pid,
-            allowed_origins,
-            allow_non_loopback,
-        })
+        Ok(Self { bind, parent_pid })
     }
 }
 
@@ -138,10 +116,6 @@ fn process_is_alive(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// Windows reuses process ids, so the handle is opened for the narrowest
-/// right that answers the question and closed immediately. A pid that no
-/// longer exists fails to open; one that has exited but is still held open by
-/// another handle reports an exit code instead of `STILL_ACTIVE`.
 #[cfg(windows)]
 fn process_is_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
@@ -157,8 +131,6 @@ fn process_is_alive(pid: u32) -> bool {
         let mut exit_code = 0_u32;
         let read = GetExitCodeProcess(handle, &mut exit_code);
         CloseHandle(handle);
-        // A failed read leaves the parent's state unknown; outliving the app
-        // is the safer error than shutting a live daemon down.
         read == 0 || exit_code == STILL_ACTIVE as u32
     }
 }
@@ -173,34 +145,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn non_loopback_listener_requires_an_explicit_flag() {
-        assert!(ensure_bind_allowed("127.0.0.1:3000".parse().unwrap(), false).is_ok());
-        assert!(ensure_bind_allowed("[::1]:3000".parse().unwrap(), false).is_ok());
-        assert!(ensure_bind_allowed("0.0.0.0:3000".parse().unwrap(), false).is_err());
-        assert!(ensure_bind_allowed("[::]:3000".parse().unwrap(), false).is_err());
-        assert!(ensure_bind_allowed("0.0.0.0:3000".parse().unwrap(), true).is_ok());
-    }
-
-    #[test]
-    fn parses_repeated_browser_origin_allowlist_entries() {
-        let arguments = Arguments::parse([
-            "--allow-origin".into(),
-            "https://app.waku.test".into(),
-            "--allow-origin".into(),
-            "http://localhost:3000".into(),
-        ])
-        .unwrap();
-
-        assert_eq!(
-            arguments.allowed_origins,
-            ["https://app.waku.test", "http://localhost:3000"]
-        );
-        assert!(!arguments.allow_non_loopback);
-    }
-
-    #[test]
-    fn parses_explicit_non_loopback_opt_in() {
-        let arguments = Arguments::parse(["--allow-non-loopback".into()]).unwrap();
-        assert!(arguments.allow_non_loopback);
+    fn non_loopback_listener_is_rejected() {
+        assert!(ensure_bind_allowed("127.0.0.1:3000".parse().unwrap()).is_ok());
+        assert!(ensure_bind_allowed("[::1]:3000".parse().unwrap()).is_ok());
+        assert!(ensure_bind_allowed("0.0.0.0:3000".parse().unwrap()).is_err());
+        assert!(ensure_bind_allowed("[::]:3000".parse().unwrap()).is_err());
     }
 }

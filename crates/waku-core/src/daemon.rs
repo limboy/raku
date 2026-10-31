@@ -44,9 +44,6 @@ fn trim_resident_transcripts(state: &mut PersistedState, pinned: &HashSet<Uuid>)
 
 pub struct WakuBackend {
     sessions: Mutex<HashMap<Uuid, (Uuid, DriverHandle)>>,
-    terminals: Mutex<HashMap<Uuid, (Uuid, crate::terminal::DaemonTerminal)>>,
-    #[cfg(all(test, unix))]
-    terminal_shell: Option<alacritty_terminal::tty::Shell>,
     settings: DaemonSettingsStore,
     backup_lock: Mutex<()>,
     task_store: StateStore,
@@ -81,9 +78,6 @@ impl WakuBackend {
             .to_owned();
         Ok(Self {
             sessions: Mutex::new(HashMap::new()),
-            terminals: Mutex::new(HashMap::new()),
-            #[cfg(all(test, unix))]
-            terminal_shell: None,
             settings,
             backup_lock: Mutex::new(()),
             task_store,
@@ -96,33 +90,6 @@ impl WakuBackend {
             usage_rates_dir,
             default_cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         })
-    }
-
-    #[cfg(all(test, unix))]
-    pub(crate) fn with_terminal_shell(mut self, shell: alacritty_terminal::tty::Shell) -> Self {
-        self.terminal_shell = Some(shell);
-        self
-    }
-
-    fn open_terminal(
-        &self,
-        cwd: &Path,
-        cols: u16,
-        rows: u16,
-        events: EventSink,
-    ) -> anyhow::Result<crate::terminal::DaemonTerminal> {
-        #[cfg(all(test, unix))]
-        if let Some(shell) = &self.terminal_shell {
-            return crate::terminal::DaemonTerminal::open_with_shell(
-                cwd,
-                cols,
-                rows,
-                events,
-                shell.clone(),
-            );
-        }
-        ensure_shell_environment();
-        crate::terminal::DaemonTerminal::open(cwd, cols, rows, events)
     }
 
     /// Capture and persist one ending checkpoint exactly once per daemon.
@@ -763,56 +730,6 @@ impl Backend for WakuBackend {
             Command::Workspace { operation } => Ok(ResponsePayload::Workspace {
                 result: crate::workspace::execute(operation)?,
             }),
-            Command::OpenTerminal { cwd, cols, rows } => {
-                let terminal = self.open_terminal(&cwd, cols, rows, events)?;
-                let previous = self
-                    .terminals
-                    .lock()
-                    .insert(session_id, (runtime_id, terminal));
-                drop(previous);
-                Ok(ResponsePayload::Ack)
-            }
-            Command::WriteTerminal { data } => {
-                let terminals = self.terminals.lock();
-                let (active_runtime_id, terminal) = terminals
-                    .get(&session_id)
-                    .ok_or_else(|| anyhow!("daemon terminal {session_id} is not running"))?;
-                if *active_runtime_id != runtime_id {
-                    bail!(
-                        "daemon terminal {session_id} belongs to runtime {active_runtime_id}, not {runtime_id}"
-                    );
-                }
-                terminal.write(data)?;
-                Ok(ResponsePayload::Ack)
-            }
-            Command::ResizeTerminal { cols, rows } => {
-                let terminals = self.terminals.lock();
-                let (active_runtime_id, terminal) = terminals
-                    .get(&session_id)
-                    .ok_or_else(|| anyhow!("daemon terminal {session_id} is not running"))?;
-                if *active_runtime_id != runtime_id {
-                    bail!(
-                        "daemon terminal {session_id} belongs to runtime {active_runtime_id}, not {runtime_id}"
-                    );
-                }
-                terminal.resize(cols, rows);
-                Ok(ResponsePayload::Ack)
-            }
-            Command::CloseTerminal => {
-                let removed = {
-                    let mut terminals = self.terminals.lock();
-                    if let Some((active_runtime_id, _)) = terminals.get(&session_id) {
-                        if *active_runtime_id != runtime_id {
-                            bail!(
-                                "daemon terminal {session_id} belongs to runtime {active_runtime_id}, not {runtime_id}"
-                            );
-                        }
-                    }
-                    terminals.remove(&session_id)
-                };
-                drop(removed);
-                Ok(ResponsePayload::Ack)
-            }
             Command::Start { options } => {
                 let previous = self.sessions.lock().remove(&session_id);
                 drop(previous);
@@ -885,25 +802,6 @@ impl Backend for WakuBackend {
                     }
                     driver.clone()
                 };
-                if let Command::Prompt {
-                    prompt,
-                    turn_id,
-                    message_id,
-                } = &command
-                {
-                    // Publish the submission into the runtime's event stream
-                    // before the provider can start the turn. Every attached
-                    // client mirrors the user message and its turn from this
-                    // event, so the submitting client's own save is no longer
-                    // the only record of the prompt — a follower that only
-                    // knew the provider's `turnStarted` used to persist a
-                    // projection without it, erasing the message for everyone.
-                    events.send(event_to_wire(DriverEvent::PromptSubmitted {
-                        message: prompt.clone(),
-                        turn_id: turn_id.unwrap_or_else(Uuid::new_v4),
-                        message_id: message_id.unwrap_or_else(Uuid::new_v4),
-                    })?)?;
-                }
                 handle_driver_command(&driver, command)
             }
         }
@@ -912,8 +810,6 @@ impl Backend for WakuBackend {
     fn shutdown(&self) {
         let sessions = std::mem::take(&mut *self.sessions.lock());
         drop(sessions);
-        let terminals = std::mem::take(&mut *self.terminals.lock());
-        drop(terminals);
     }
 }
 
@@ -1755,7 +1651,7 @@ fn handle_driver_command(
     command: Command,
 ) -> anyhow::Result<ResponsePayload> {
     match command {
-        Command::Prompt { prompt, .. } => driver.prompt(prompt),
+        Command::Prompt { prompt } => driver.prompt(prompt),
         Command::Steer { prompt } => driver.steer(prompt),
         Command::Cancel => driver.cancel(),
         Command::CancelComputerUse => driver.cancel_computer_use(),
@@ -1850,10 +1746,6 @@ fn handle_driver_command(
         | Command::RewindSessionToMessage { .. }
         | Command::ForkProviderSession { .. }
         | Command::Workspace { .. }
-        | Command::OpenTerminal { .. }
-        | Command::WriteTerminal { .. }
-        | Command::ResizeTerminal { .. }
-        | Command::CloseTerminal
         | Command::CloseSession => {
             bail!("daemon received a command in the wrong dispatch path")
         }
@@ -1950,14 +1842,6 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 image_url: state.image_url,
             })?,
         ),
-        DriverEvent::PromptSubmitted {
-            message,
-            turn_id,
-            message_id,
-        } => (
-            "promptSubmitted",
-            json!({ "message": message, "turnId": turn_id, "messageId": message_id }),
-        ),
         DriverEvent::SteerAccepted { message } => ("steerAccepted", json!({ "message": message })),
         DriverEvent::SteerRejected { message, reason } => (
             "steerRejected",
@@ -2035,14 +1919,6 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 image_url: state.image_url,
             })
         }
-        "promptSubmitted" => {
-            let submitted: SubmittedPromptWire = serde_json::from_value(payload)?;
-            DriverEvent::PromptSubmitted {
-                message: submitted.message,
-                turn_id: submitted.turn_id,
-                message_id: submitted.message_id,
-            }
-        }
         "steerAccepted" => {
             let steer: AcceptedSteerWire = serde_json::from_value(payload)?;
             DriverEvent::SteerAccepted {
@@ -2076,14 +1952,6 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         "processExited" => DriverEvent::ProcessExited,
         kind => bail!("daemon sent an unsupported driver event {kind:?}"),
     })
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SubmittedPromptWire {
-    message: String,
-    turn_id: Uuid,
-    message_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -2259,27 +2127,6 @@ mod tests {
         assert!(matches!(
             event_from_wire(wire).unwrap(),
             DriverEvent::TextDelta(text) if text == "hello"
-        ));
-    }
-
-    #[test]
-    fn wire_event_round_trip_preserves_prompt_submission_identity() {
-        let turn_id = Uuid::new_v4();
-        let message_id = Uuid::new_v4();
-        let wire = event_to_wire(DriverEvent::PromptSubmitted {
-            message: "ship it".into(),
-            turn_id,
-            message_id,
-        })
-        .unwrap();
-        assert_eq!(wire.kind, "promptSubmitted");
-        assert_eq!(wire.payload["message"], "ship it");
-        assert_eq!(wire.payload["turnId"], turn_id.to_string());
-        assert_eq!(wire.payload["messageId"], message_id.to_string());
-        assert!(matches!(
-            event_from_wire(wire).unwrap(),
-            DriverEvent::PromptSubmitted { message, turn_id: decoded_turn, message_id: decoded_message }
-                if message == "ship it" && decoded_turn == turn_id && decoded_message == message_id
         ));
     }
 }

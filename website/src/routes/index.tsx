@@ -101,7 +101,7 @@ const FAQ = [
   },
   {
     q: 'What is the future plan?',
-    a: 'A mobile app for remote control, and cloud agents are planned',
+    a: 'Cloud agents are planned',
   },
 ]
 

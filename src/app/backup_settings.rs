@@ -58,7 +58,7 @@ impl Waku {
         self.backup_settings.automatic_generation =
             self.backup_settings.automatic_generation.wrapping_add(1);
         let generation = self.backup_settings.automatic_generation;
-        if self.daemon.is_remote() || self.backup_settings.staged {
+        if self.backup_settings.staged {
             return;
         }
         let Some(directory) = self.state.backup_directory.clone() else {
@@ -143,9 +143,6 @@ impl Waku {
     pub(super) fn refresh_backups(&mut self, cx: &mut Context<Self>) {
         self.backup_settings.generation = self.backup_settings.generation.wrapping_add(1);
         let generation = self.backup_settings.generation;
-        if self.daemon.is_remote() {
-            return;
-        }
         let Some(directory) = self.state.backup_directory.clone() else {
             return;
         };
@@ -185,10 +182,7 @@ impl Waku {
     }
 
     fn choose_backup_directory(&mut self, cx: &mut Context<Self>) {
-        if self.backup_settings.busy.is_some()
-            || self.backup_settings.staged
-            || self.daemon.is_remote()
-        {
+        if self.backup_settings.busy.is_some() || self.backup_settings.staged {
             return;
         }
         self.backup_settings.dialog_open = true;
@@ -219,9 +213,7 @@ impl Waku {
     }
 
     fn reveal_backup_directory(&self, cx: &App) {
-        if !self.daemon.is_remote()
-            && let Some(directory) = self.state.backup_directory.as_ref()
-        {
+        if let Some(directory) = self.state.backup_directory.as_ref() {
             crate::platform::reveal_in_file_manager(directory, cx);
         }
     }
@@ -230,7 +222,6 @@ impl Waku {
         if self.backup_settings.busy.is_some()
             || self.backup_settings.loading
             || self.backup_settings.staged
-            || self.daemon.is_remote()
         {
             return;
         }
@@ -265,10 +256,7 @@ impl Waku {
     }
 
     fn start_automatic_backup(&mut self, directory: PathBuf, cx: &mut Context<Self>) {
-        if self.backup_settings.busy.is_some()
-            || self.backup_settings.staged
-            || self.daemon.is_remote()
-        {
+        if self.backup_settings.busy.is_some() || self.backup_settings.staged {
             return;
         }
         self.capture_current_composer_draft(cx);
@@ -398,8 +386,7 @@ impl Waku {
     pub(super) fn render_backup_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
         let ui = &self.backup_settings;
-        let remote = self.daemon.is_remote();
-        let unavailable = remote || ui.busy.is_some() || ui.staged;
+        let unavailable = ui.busy.is_some() || ui.staged;
         let directory = self
             .state
             .backup_directory
@@ -418,7 +405,7 @@ impl Waku {
             "backup-reveal",
             tr!("common.reveal_in_finder"),
             &ui.focus[1],
-            remote || self.state.backup_directory.is_none(),
+            self.state.backup_directory.is_none(),
             theme,
         )
         .on_activation(cx, |this, _, cx| this.reveal_backup_directory(cx));
@@ -479,14 +466,6 @@ impl Waku {
                     .text_color(theme.text_secondary)
                     .child(tr!("backup.description")),
             )
-            .when(remote, |page| {
-                page.child(
-                    div()
-                        .text_size(sp(12.5))
-                        .text_color(theme.text_secondary)
-                        .child(tr!("backup.local_only")),
-                )
-            })
             .child(
                 div()
                     .p(px(16.0))

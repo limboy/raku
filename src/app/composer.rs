@@ -2369,7 +2369,7 @@ impl Waku {
                     })
                     .flatten()
             });
-            let can_reveal = !self.daemon.is_remote();
+            let can_reveal = true;
             if attachment.is_image {
                 if let Some(attachment_image) = attachment_image.as_ref() {
                     let preview_image = attachment_image.clone();

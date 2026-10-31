@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Command, DaemonExposureSettings, DaemonSettings, DaemonSupervisor, ResponsePayload};
+use crate::{Command, DaemonSettings, DaemonSupervisor, ResponsePayload};
 use waku_protocol::computer_use::ComputerAppGrant;
 use waku_protocol::i18n::AppLanguage;
 use waku_protocol::identity::DATA_DIRECTORY_NAME;
@@ -258,7 +258,6 @@ pub struct AppSettings {
     /// applied.
     pub code_font_size: f32,
     pub render_math: bool,
-    pub daemon_exposure: DaemonExposureSettings,
     /// Preferred target of the header's "open project in app" control, by
     /// catalog id. `None` — and an id no longer installed — fall back to the
     /// platform file manager.
@@ -277,7 +276,6 @@ impl Default for AppSettings {
             ui_font_size: DEFAULT_UI_FONT_SIZE,
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
-            daemon_exposure: DaemonExposureSettings::default(),
             open_in_app: None,
             backup_directory: None,
         }
@@ -289,7 +287,6 @@ impl AppSettings {
     pub fn normalize_desktop_defaults(&mut self) {
         self.analytics_enabled = false;
         self.render_math = true;
-        self.daemon_exposure.enabled = false;
     }
 }
 
@@ -406,8 +403,6 @@ pub struct PersistedState {
     pub code_font_size: f32,
     #[serde(default = "default_render_math")]
     pub render_math: bool,
-    #[serde(default)]
-    pub daemon_exposure: DaemonExposureSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_in_app: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -485,7 +480,6 @@ impl PersistedState {
             ui_font_size: DEFAULT_UI_FONT_SIZE,
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
-            daemon_exposure: DaemonExposureSettings::default(),
             open_in_app: None,
             backup_directory: None,
             sidebar_visible: true,
@@ -637,7 +631,6 @@ impl PersistedState {
             ui_font_size: self.ui_font_size,
             code_font_size: self.code_font_size,
             render_math: self.render_math,
-            daemon_exposure: self.daemon_exposure.clone(),
             open_in_app: self.open_in_app.clone(),
             backup_directory: self.backup_directory.clone(),
         };
@@ -681,7 +674,6 @@ impl PersistedState {
         self.ui_font_size = sanitized_ui_font_size(settings.ui_font_size);
         self.code_font_size = sanitized_code_font_size(settings.code_font_size);
         self.render_math = settings.render_math;
-        self.daemon_exposure = settings.daemon_exposure;
         self.open_in_app = settings.open_in_app;
         self.backup_directory = settings.backup_directory;
     }
@@ -877,9 +869,6 @@ fn restore_desktop_documents(
     settings.backup_directory = current
         .as_ref()
         .and_then(|current| current.backup_directory.clone());
-    if let Some(current) = current {
-        settings.daemon_exposure = current.daemon_exposure;
-    }
     settings.normalize_desktop_defaults();
     write_json_atomically(settings_path, &settings)?;
     write_json_atomically(state_path, &state)
@@ -932,26 +921,13 @@ pub fn load_or_create_app_settings() -> io::Result<AppSettings> {
     let path = default_app_settings_path();
     let source = read_app_settings_source(&path, &default_legacy_settings_paths())?;
     let loaded_from_primary = source.as_ref().is_some_and(|(_, primary)| *primary);
-    let token_was_persisted = source
-        .as_ref()
-        .and_then(|(bytes, _)| serde_json::from_slice::<serde_json::Value>(bytes).ok())
-        .and_then(|value| {
-            value
-                .get("daemon_exposure")
-                .and_then(|daemon| daemon.get("token"))
-                .and_then(serde_json::Value::as_str)
-                .map(|token| !token.trim().is_empty())
-        })
-        .unwrap_or(false);
     let mut settings: AppSettings = source
         .map(|(bytes, _)| serde_json::from_slice::<AppSettings>(&bytes).map_err(to_io_error))
         .transpose()?
         .unwrap_or_default();
-    let retired_preferences =
-        settings.analytics_enabled || !settings.render_math || settings.daemon_exposure.enabled;
+    let retired_preferences = settings.analytics_enabled || !settings.render_math;
     settings.normalize_desktop_defaults();
-    let generated_token = settings.daemon_exposure.ensure_token();
-    if !loaded_from_primary || !token_was_persisted || generated_token || retired_preferences {
+    if !loaded_from_primary || retired_preferences {
         write_json_atomically(&path, &settings)?;
     }
     Ok(settings)
@@ -1313,7 +1289,6 @@ mod tests {
         let state_path = directory.join("state.json");
         let mut current = AppSettings::default();
         current.backup_directory = Some(PathBuf::from("/local/backups"));
-        let token = current.daemon_exposure.token.clone();
         write_json_atomically(&settings_path, &current).unwrap();
         let mut state = PersistedState::empty();
         state.theme = ThemePreference::Dark;
@@ -1334,7 +1309,6 @@ mod tests {
         assert_eq!(settings.language, state.language);
         assert_eq!(settings.ui_font_size, 17.0);
         assert_eq!(settings.backup_directory, current.backup_directory);
-        assert_eq!(settings.daemon_exposure.token, token);
         let restored: AppState = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
         assert_eq!(restored.selected_project, state.selected_project);
         fs::remove_dir_all(directory).unwrap();
@@ -1380,30 +1354,24 @@ mod tests {
         let mut defaults: AppSettings = serde_json::from_str(
             r#"{
             "analytics_enabled": true,
-            "render_math": false,
-            "daemon_exposure": { "enabled": true, "port": 4123, "token": "existing-token" }
+            "render_math": false
         }"#,
         )
         .unwrap();
         defaults.normalize_desktop_defaults();
         assert!(!defaults.analytics_enabled);
         assert!(defaults.render_math);
-        assert!(!defaults.daemon_exposure.enabled);
-        assert_eq!(defaults.daemon_exposure.token, "existing-token");
 
         let mut restored = PersistedState::empty();
         restored.apply_app_settings(defaults);
         assert!(!restored.analytics_enabled);
         assert!(restored.render_math);
-        assert!(!restored.daemon_exposure.enabled);
         // Saving any other setting also writes the fixed desktop defaults.
         restored.analytics_enabled = true;
         restored.render_math = false;
-        restored.daemon_exposure.enabled = true;
         let settings = restored.app_settings();
         assert!(!settings.analytics_enabled);
         assert!(settings.render_math);
-        assert!(!settings.daemon_exposure.enabled);
     }
 
     #[test]

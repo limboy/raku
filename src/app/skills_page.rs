@@ -988,13 +988,8 @@ impl Waku {
         )
         .on_click(cx.listener({
             let skill_file = skill_file.clone();
-            move |this, _, _, cx| {
-                if this.daemon.is_remote() {
-                    this.show_toast(tr!("errors.remote_host_path"));
-                    cx.notify();
-                } else {
-                    crate::platform::open_with_default_app(&skill_file, cx);
-                }
+            move |_, _, _, cx| {
+                crate::platform::open_with_default_app(&skill_file, cx);
             }
         }));
 
@@ -1005,13 +1000,8 @@ impl Waku {
         )
         .on_click(cx.listener({
             let skill_file = skill_file.clone();
-            move |this, _, _, cx| {
-                if this.daemon.is_remote() {
-                    this.show_toast(tr!("errors.remote_host_path"));
-                    cx.notify();
-                } else {
-                    crate::platform::reveal_in_file_manager(&skill_file, cx);
-                }
+            move |_, _, _, cx| {
+                crate::platform::reveal_in_file_manager(&skill_file, cx);
             }
         }));
 

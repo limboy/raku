@@ -4,12 +4,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 
 pub const AUTOMATIC_BACKUP_INTERVAL: u64 = 24 * 60 * 60;
 pub const AUTOMATIC_BACKUP_LIMIT: usize = 1;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BackupKind {
     #[default]
@@ -18,7 +17,7 @@ pub enum BackupKind {
     Safety,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupInfo {
     #[serde(default)]
@@ -39,7 +38,7 @@ pub fn next_automatic_backup_at(backups: &[BackupInfo]) -> u64 {
 }
 
 /// Opaque to the daemon: each desktop version owns its preference schema.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopBackup {
     pub settings: Value,

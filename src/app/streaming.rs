@@ -292,22 +292,6 @@ impl Waku {
                     self.composer_sources_stale = true;
                 }
             }
-            DriverEvent::PromptSubmitted {
-                message,
-                turn_id,
-                message_id,
-            } => {
-                // A prompt reached this runtime: another client's submission,
-                // or the echo of this one. The session decides whether that
-                // is news; a mirrored turn is marked for the next save so the
-                // projection this client persists carries the prompt whose
-                // reply it is about to stream.
-                if let Some(session) = self.state.session_mut(session_id)
-                    && session.adopt_submitted_prompt(&message, turn_id, message_id)
-                {
-                    self.state.mark_session_dirty(session_id);
-                }
-            }
             DriverEvent::TurnStarted => {
                 runtime.last_driver_error = None;
                 let turn_options = self

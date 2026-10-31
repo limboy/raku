@@ -88,7 +88,6 @@ settings.general: 通用
 settings.appearance: 外观
 settings.providers: 服务商
 settings.usage: 用量
-settings.daemon: 守护进程
 settings.computer_use: 电脑操作
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本 数学 公式 表达式 math latex
 settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
@@ -96,76 +95,10 @@ settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 
 settings.skills: 技能
 settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex cursor opencode pi amp 共享
 settings.usage_keywords: 用量 令牌 费用 支出 缓存 每日 图表 模型 明细 历史 claude codex
-settings.daemon_keywords: 守护进程 服务 远程 网页 网络 暴露 来源 令牌 端口 websocket
 settings.computer_use_keywords: 电脑操作 屏幕录制 辅助功能 应用 控制 codex
 settings.back: 返回
 settings.close: 关闭设置
 settings.search: 搜索设置
-daemon.expose_title: 暴露由 Waku 管理的守护进程
-daemon.expose_description: 允许本机之外的 Waku 客户端连接。更改此项只会重启守护进程。
-daemon.status_local: 仅本机
-daemon.status_exposed: 已暴露
-daemon.status_restarting: 正在重启
-daemon.connection_title: 监听访问
-daemon.connection_description: 浏览器来源必须完全匹配。多个来源请用逗号分隔。
-daemon.port: 端口
-daemon.port_description: 启用暴露后，Waku 会在所有网络接口的此端口上监听。
-daemon.port_placeholder: "34123"
-daemon.allowed_origins: 允许的浏览器来源
-daemon.allowed_origins_description: 可打开 WebSocket 的确切 http:// 或 https:// 来源。
-daemon.allowed_origins_placeholder: https://waku.example.com, http://localhost:3001
-daemon.apply: 应用
-daemon.restarting: 正在重启…
-daemon.credentials_title: 连接信息
-daemon.credentials_description: 在 Waku Web 中输入这些信息。此地址使用本机的局域网主机名。
-daemon.websocket_url: WebSocket 地址
-daemon.token: 令牌
-daemon.reveal_token: 显示令牌
-daemon.hide_token: 隐藏令牌
-daemon.regenerate_token: 重新生成
-daemon.security_warning: 此令牌可完全访问本机上的任务、文件、Git、附件和编程智能体。在私有网络之外请通过受信任的 TLS 代理使用 WSS。
-daemon.external_title: 外部守护进程
-daemon.external_description: 此桌面应用连接到由 Waku 之外管理的守护进程。请在对应主机上配置监听地址、浏览器来源和令牌。
-daemon.web_external_description: Waku Web 连接到由浏览器之外管理的守护进程。请在对应主机上配置监听地址、浏览器来源和令牌。
-daemon.web_connection_description: 此浏览器不会启动或停止守护进程。
-daemon.not_configured: 未配置
-daemon.status: 状态
-daemon.disconnect: 断开连接
-daemon.forget: 忘记守护进程
-daemon.reconnect: 重新连接
-daemon.phase_booting: 正在启动
-daemon.phase_disconnected: 已断开
-daemon.phase_connecting: 正在连接
-daemon.phase_connected: 已连接
-daemon.phase_error: 错误
-daemon.invalid_port: 请输入 1 到 65535 之间的端口
-daemon.invalid_settings: 守护进程设置无效：%{error}
-daemon.stop_active_tasks: 更改守护进程访问设置前请先停止进行中的任务
-daemon.settings_applied: 守护进程访问设置已更新
-daemon.restart_failed: 无法重启守护进程：%{error}
-daemon.url_copied: 已复制 WebSocket 地址
-daemon.token_copied: 已复制守护进程令牌
-web.connect_title: 连接 Waku 守护进程
-web.connect_description: 输入桌面应用“设置 → 守护进程”中显示的远程监听地址和令牌。
-web.token_placeholder: 守护进程访问令牌
-web.remember_device: 在此设备上记住
-web.remember_device_description: 否则，浏览器会话结束时将清除凭据。
-web.connect: 连接
-web.connecting: 正在连接…
-web.security_warning: 浏览器只会将令牌发送到此 WebSocket。在私有网络之外请通过受信任的 TLS 代理使用 WSS。
-web.starting: Waku 正在启动…
-web.starting_label: Waku 正在启动
-web.start_failed_label: Waku 无法启动
-web.load_failed: 无法加载 Waku
-web.try_again: 重试
-web.daemon_connection_closed: 与守护进程的连接已关闭
-web.daemon_not_configured: 尚未配置守护进程
-web.error_daemon_url_required: 请输入守护进程 URL
-web.error_daemon_url_invalid: 请输入有效的 ws:// 或 wss:// 守护进程 URL
-web.error_daemon_url_scheme: 守护进程 URL 必须使用 ws:// 或 wss://
-web.error_daemon_url_host: 守护进程 URL 必须包含主机，且不能包含凭据
-web.error_secure_websocket_required: 安全的 Waku Web 页面只能通过 wss:// 连接
-web.error_daemon_token_required: 请输入守护进程令牌
 settings.theme: 主题
 settings.theme_description: 选择跟随系统、浅色或深色主题
 settings.ui_font_size: 界面字号
@@ -196,14 +129,12 @@ common.retry: 重试
 common.creating: 正在创建…
 settings.local_by_default: 默认存储在本地
 settings.local_by_default_description: 项目、对话和设置均存储在这台电脑上
-settings.local_by_default_web_description: 项目、对话和附件保留在所连接的守护进程主机上。Waku Web 的偏好设置保留在此浏览器中。
 settings.automatic_updates: 自动更新
 settings.automatic_updates_description: 在后台检查新版本，并在发现更新时提示安装
 settings.share_anonymous_usage_data: 分享匿名使用数据
 settings.share_anonymous_usage_data_description: 分享功能使用情况和可靠性数据，帮助改进 Waku。不会包含提示词、回复、项目名称、文件路径等个人信息
 providers.coding_agents: 编程智能体
 providers.description: Waku 调用安装在这台电脑上的智能体命令行工具。请先安装相应工具或完成登录，然后刷新
-providers.web_description: Waku 调用安装在守护进程主机上的智能体命令行工具。请先安装相应工具或完成登录，然后刷新
 providers.check_failed: "无法检查 %{command}：%{error}"
 providers.show_settings: 显示 %{provider} 设置
 providers.hide_settings: 隐藏 %{provider} 设置
@@ -289,7 +220,6 @@ project.without_a_project: 不使用项目
 project.your_project: 你的项目
 onboarding.open_project_to_begin: 打开一个项目即可开始
 onboarding.description: Waku 会在你选择的文件夹中运行编程智能体。代码、任务和历史记录都保留在这台电脑上
-onboarding.web_description: 请选择守护进程主机上的路径，或在不使用项目的情况下开始。
 onboarding.open_project_folder: 打开项目文件夹…
 onboarding.what_should_we_build: 想构建什么？
 onboarding.what_should_we_build_in: "想在 "
@@ -621,8 +551,6 @@ composer.queue_followup: 排队为后续消息（⏎）
 composer.message: 消息
 composer.queue_placeholder: 添加后续消息…
 composer.prompt_placeholder: 让 Waku 构建些什么…
-composer.attach_daemon: 从守护进程主机附加文件或文件夹
-composer.attach_daemon_title: 从守护进程主机附加
 composer.stop: 停止
 composer.stop_confirm: 再按一次 Escape 停止
 composer.steer_current: 引导当前回合
@@ -648,7 +576,6 @@ workspace.workspace: 工作区
 workspace.worktree: 工作树
 terminal.starting: 正在启动终端…
 project.add_project: 添加项目
-errors.remote_project_picker: 添加守护进程主机上的项目需要远程路径选择器，但该功能尚不可用
 session.stopped: 已停止
 session.turn_completed: 本轮已完成
 session.turn_waiting_background: 正在等待后台任务
@@ -664,7 +591,6 @@ errors.open_session: "无法打开该任务：%{error}"
 errors.create_projectless_task: "无法在 ~/.waku/projects 下创建任务：%{error}"
 errors.save_projectless_migration: "无法保存无项目任务的迁移结果：%{error}"
 errors.move_projectless_task: "无法将旧的根目录无项目任务移至 ~/.waku/projects：%{error}"
-errors.remote_host_path: 此路径属于守护进程主机，无法在桌面应用中打开
 errors.change_branch: "无法切换分支：%{error}"
 errors.capture_pre_turn_checkpoint: "无法创建任务开始前的检查点：%{error}"
 errors.capture_turn_checkpoint: "无法创建本轮任务的检查点：%{error}"
@@ -694,9 +620,6 @@ errors.task_not_loaded: 此任务尚未加载
 errors.task_already_forking: 此任务正在派生
 errors.task_already_rewinding: 此任务正在回退
 errors.no_live_runtime: 此任务没有正在运行的智能体
-errors.unexpected_daemon_response: "预期守护进程返回 %{expected}，实际收到 %{actual}"
-errors.daemon_disconnected: Waku 守护进程未连接
-errors.path_outside_workspace: 此路径位于守护进程主机上的当前工作区之外
 errors.rename_task: "无法重命名任务：%{error}"
 errors.remove_task: "无法移除任务：%{error}"
 errors.save_draft: "无法保存草稿：%{error}"
@@ -850,18 +773,12 @@ files.refresh: 刷新文件
 files.loading: 正在加载文件…
 files.workspace_files: 工作区文件
 files.loading_file: 正在加载文件
-files.reading_from_daemon: 正在从守护进程主机读取。
 files.file_unavailable: 文件不可用
 files.loading_editor: 正在加载编辑器
 files.preparing_editor: 正在准备编辑器…
 files.preparing_syntax: 正在准备语法高亮。
 file_picker.open_project: 打开项目
 file_picker.attach: 添加附件
-file_picker.daemon_folders: 守护进程文件夹
-file_picker.daemon_items: 守护进程上的文件和文件夹
-file_picker.choose_project_folder: 从守护进程中选择项目文件夹
-file_picker.attach_from_daemon: 从守护进程中添加文件或文件夹
-file_picker.daemon_disconnected: 守护进程未连接
 file_picker.locations: 位置
 file_picker.home: 主目录
 file_picker.file_system: 文件系统
@@ -1119,7 +1036,6 @@ backup.confirm_title: "恢复最新备份并重新启动 Waku？"
 backup.confirm_detail: "%{path}\n\nWaku 将重新启动，并使用此备份替换当前的会话记录、附件、草稿和设置。"
 backup.restore_and_relaunch: "恢复并重新启动"
 backup.relaunching: "正在重新启动 Waku 以恢复备份…"
-backup.local_only: "备份与恢复仅适用于 Waku 管理的本地后台服务。"
 backup.error: "备份操作失败：%{error}"
 backup.invalid_response: "后台服务返回了无效的备份响应。"
 backup.restore_failed: "恢复失败，已保留原有数据：%{error}"
