@@ -47,6 +47,15 @@ impl ProjectPickerSite {
     }
 }
 
+/// A project row in the picker, with its activity-derived ordering and ongoing status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ProjectPickerEntry {
+    pub id: Uuid,
+    pub name: SharedString,
+    pub status: Option<SessionStatus>,
+    pub finished: bool,
+}
+
 /// A keyboard-reachable target, in drawn order: each project and its remove
 /// button, then the two pinned actions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,6 +142,7 @@ impl Waku {
                 &self.state.projects,
                 &self.state.sessions,
                 &self.state.removed_project_ids,
+                &self.finished_project_ids,
                 self.project_search.read(cx).content(),
                 &mut self.project_picker_matcher.borrow_mut(),
             )
@@ -145,10 +155,10 @@ impl Waku {
         let actions = Rc::new(
             projects
                 .iter()
-                .flat_map(|(project_id, _)| {
+                .flat_map(|entry| {
                     [
-                        ProjectPickerAction::Select(*project_id),
-                        ProjectPickerAction::Remove(*project_id),
+                        ProjectPickerAction::Select(entry.id),
+                        ProjectPickerAction::Remove(entry.id),
                     ]
                 })
                 .chain([
@@ -196,10 +206,13 @@ impl Waku {
                         .px(px(4.0))
                         .child(
                             list(list_state.clone(), move |index, _window, _cx| {
-                                let Some((project_id, name)) = list_projects.get(index) else {
+                                let Some(entry) = list_projects.get(index) else {
                                     return div().into_any_element();
                                 };
-                                let project_id = *project_id;
+                                let project_id = entry.id;
+                                let name = entry.name.clone();
+                                let status = entry.status;
+                                let finished = entry.finished;
                                 let select_weak = list_weak.clone();
                                 let remove_weak = list_weak.clone();
                                 let remove_key_weak = list_weak.clone();
@@ -213,11 +226,24 @@ impl Waku {
                                 .w_full()
                                 .child(
                                     div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
                                         .min_w_0()
                                         .flex_1()
-                                        .truncate()
-                                        .text_color(theme.text)
-                                        .child(name.clone()),
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_color(theme.text)
+                                                .child(name),
+                                        )
+                                        .when_some(
+                                            status.and_then(|s| project_picker_status_icon(s, &theme)),
+                                            |element, icon| {
+                                                element.child(div().flex_none().child(icon))
+                                            },
+                                        ),
                                 )
                                 .child(
                                     div()
@@ -244,6 +270,31 @@ impl Waku {
                                                             11.0,
                                                             theme.text_secondary,
                                                         )),
+                                                )
+                                            },
+                                        )
+                                        .when(
+                                            selected_project != Some(project_id)
+                                                && finished
+                                                && highlight != Some(index * 2 + 1),
+                                            |element| {
+                                                element.child(
+                                                    div()
+                                                        .absolute()
+                                                        .inset_0()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .group_hover(
+                                                            "project-picker-row",
+                                                            |style| style.invisible(),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .size(px(6.0))
+                                                                .rounded_full()
+                                                                .bg(theme.accent),
+                                                        ),
                                                 )
                                             },
                                         )
@@ -463,15 +514,15 @@ impl Waku {
 
     /// Keep the virtualized list's item count in step with the filtered rows.
     /// Rows have one fixed height, so a changed set only needs its count.
-    fn sync_project_picker_rows(&self, rows: &[(Uuid, SharedString)]) {
+    fn sync_project_picker_rows(&self, rows: &[ProjectPickerEntry]) {
         let mut cached = self.project_picker_row_cache.borrow_mut();
         if cached
             .iter()
-            .eq(rows.iter().map(|(project_id, _)| project_id))
+            .eq(rows.iter().map(|entry| &entry.id))
         {
             return;
         }
-        *cached = rows.iter().map(|(project_id, _)| *project_id).collect();
+        *cached = rows.iter().map(|entry| entry.id).collect();
         self.project_picker_list_state
             .reset_with_uniform_height(rows.len(), px(PROJECT_PICKER_ROW_HEIGHT));
     }
@@ -550,6 +601,7 @@ impl Waku {
         {
             return;
         }
+        self.finished_project_ids.remove(&project_id);
         // Keep the row cache in step with this deletion so the next render
         // does not reset the whole list and discard its scroll position.
         remove_project_picker_row(
@@ -621,20 +673,22 @@ fn project_picker_row(id: impl Into<ElementId>, highlighted: bool, theme: &Theme
 }
 
 /// The picker's project rows. Without a query that is every real project,
-/// newest session change first; with one, only fuzzy matches, best first. The matcher
-/// has no length penalty, so equal scores fall back to fzf's default
-/// tiebreak — the shorter name, which puts an exact name above its longer
-/// namesakes — and then to the unfiltered order.
+/// projects with ongoing sessions first, then newest session activity; with one,
+/// only fuzzy matches, best first. The matcher has no length penalty, so equal
+/// scores fall back to fzf's default tiebreak — the shorter name, which puts
+/// an exact name above its longer namesakes — and then to the unfiltered order.
 fn visible_project_entries(
     projects: &[Project],
     sessions: &[AgentSession],
     removed_project_ids: &HashSet<Uuid>,
+    finished_project_ids: &HashSet<Uuid>,
     query: &str,
     matcher: &mut Matcher,
-) -> Vec<(Uuid, SharedString)> {
+) -> Vec<ProjectPickerEntry> {
     // Aggregate lightweight session metadata once for the whole open picker,
     // never from its virtualized row builders or by hydrating transcripts.
     let mut last_changed = HashMap::<Uuid, u64>::with_capacity(projects.len());
+    let mut project_status = HashMap::<Uuid, SessionStatus>::with_capacity(projects.len());
     for session in sessions {
         if !session.has_started() {
             continue;
@@ -642,21 +696,37 @@ fn visible_project_entries(
         let timestamp = session.last_reply_at.unwrap_or(session.created_at);
         let latest = last_changed.entry(session.project_id).or_default();
         *latest = (*latest).max(timestamp);
+
+        if session.is_busy() {
+            let current = project_status.get(&session.project_id).copied();
+            if let Some(status) = resolve_ongoing_status(current, session.status) {
+                project_status.insert(session.project_id, status);
+            }
+        }
     }
     let mut ordered = projects
         .iter()
         .filter(|project| !project.is_projectless() && !removed_project_ids.contains(&project.id))
         .collect::<Vec<_>>();
-    // Stable ties preserve saved order; projects without sessions follow
+    // Stable ties preserve saved order; projects with ongoing activity lead,
+    // followed by recently active projects. Projects without sessions follow
     // projects with activity. Selection never overrides session recency.
     ordered.sort_by_key(|project| {
-        std::cmp::Reverse(last_changed.get(&project.id).copied().unwrap_or_default())
+        let is_ongoing = project_status.contains_key(&project.id);
+        let recency = last_changed.get(&project.id).copied().unwrap_or_default();
+        (std::cmp::Reverse(is_ongoing), std::cmp::Reverse(recency))
     });
     let query = query.trim();
     if query.is_empty() {
         return ordered
             .into_iter()
-            .map(|project| (project.id, project.display_name().into()))
+            .map(|project| ProjectPickerEntry {
+                id: project.id,
+                name: project.display_name().into(),
+                status: project_status.get(&project.id).copied(),
+                finished: finished_project_ids.contains(&project.id)
+                    && !project_status.contains_key(&project.id),
+            })
             .collect();
     }
 
@@ -670,8 +740,13 @@ fn visible_project_entries(
             Some((
                 score,
                 name.chars().count(),
-                project.id,
-                SharedString::from(name),
+                ProjectPickerEntry {
+                    id: project.id,
+                    name: SharedString::from(name),
+                    status: project_status.get(&project.id).copied(),
+                    finished: finished_project_ids.contains(&project.id)
+                        && !project_status.contains_key(&project.id),
+                },
             ))
         })
         .collect::<Vec<_>>();
@@ -679,8 +754,52 @@ fn visible_project_entries(
     scored.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
     scored
         .into_iter()
-        .map(|(_, _, project_id, name)| (project_id, name))
+        .map(|(_, _, entry)| entry)
         .collect()
+}
+
+fn resolve_ongoing_status(
+    current: Option<SessionStatus>,
+    incoming: SessionStatus,
+) -> Option<SessionStatus> {
+    if !incoming.is_busy() {
+        return current;
+    }
+    match (current, incoming) {
+        (None, status) => Some(status),
+        (Some(SessionStatus::Connecting | SessionStatus::Working), _) => current,
+        (_, SessionStatus::Connecting | SessionStatus::Working) => Some(incoming),
+        (Some(SessionStatus::Waiting), _) => current,
+        (_, SessionStatus::Waiting) => Some(incoming),
+        _ => Some(incoming),
+    }
+}
+
+fn project_picker_status_icon(status: SessionStatus, theme: &Theme) -> Option<AnyElement> {
+    match status {
+        SessionStatus::Connecting | SessionStatus::Working => Some(motion::spin_slow(icon(
+            "icons/loader-circle.svg",
+            12.0,
+            status_color(theme, status),
+        ))),
+        SessionStatus::Background => Some(
+            icon(
+                "icons/hourglass.svg",
+                12.0,
+                status_color(theme, status),
+            )
+            .into_any_element(),
+        ),
+        SessionStatus::Waiting => Some(
+            icon(
+                "icons/alert.svg",
+                12.0,
+                status_color(theme, status),
+            )
+            .into_any_element(),
+        ),
+        SessionStatus::Idle | SessionStatus::Failed => None,
+    }
 }
 
 #[cfg(test)]
@@ -693,8 +812,8 @@ mod tests {
         Project::from_path(PathBuf::from("/work").join(name))
     }
 
-    fn names(entries: &[(Uuid, SharedString)]) -> Vec<&str> {
-        entries.iter().map(|(_, name)| name.as_ref()).collect()
+    fn names(entries: &[ProjectPickerEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.name.as_ref()).collect()
     }
 
     #[test]
@@ -712,8 +831,14 @@ mod tests {
             session(&projects[2], 20),
         ];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        let entries =
-            visible_project_entries(&projects, &sessions, &HashSet::new(), "", &mut matcher);
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            &mut matcher,
+        );
         assert_eq!(
             names(&entries),
             vec!["before.town", "wikis", "crow", "no-sessions"]
@@ -722,8 +847,14 @@ mod tests {
         // A change to an older session promotes its project on the next render.
         sessions[3].last_reply_at = Some(100);
         sessions[3].updated_at = 100;
-        let entries =
-            visible_project_entries(&projects, &sessions, &HashSet::new(), "", &mut matcher);
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            &mut matcher,
+        );
         assert_eq!(
             names(&entries),
             vec!["crow", "before.town", "wikis", "no-sessions"]
@@ -741,9 +872,66 @@ mod tests {
 
         let sessions = vec![session(&projects[0], 50), draft];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        let entries =
-            visible_project_entries(&projects, &sessions, &HashSet::new(), "", &mut matcher);
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            &mut matcher,
+        );
         assert_eq!(names(&entries), vec!["active-project", "draft-project"]);
+    }
+
+    #[test]
+    fn ongoing_sessions_lead_the_project_picker_and_show_status() {
+        let projects = vec![
+            project("recent-idle"),
+            project("older-ongoing"),
+            project("oldest-idle"),
+        ];
+        let mut ongoing_session = session(&projects[1], 20);
+        ongoing_session.status = SessionStatus::Working;
+
+        let sessions = vec![
+            session(&projects[0], 100),
+            ongoing_session,
+            session(&projects[2], 10),
+        ];
+        let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            &mut matcher,
+        );
+        assert_eq!(
+            names(&entries),
+            vec!["older-ongoing", "recent-idle", "oldest-idle"]
+        );
+        assert_eq!(entries[0].status, Some(SessionStatus::Working));
+        assert_eq!(entries[1].status, None);
+        assert_eq!(entries[2].status, None);
+    }
+
+    #[test]
+    fn finished_projects_show_finished_dot_flag() {
+        let projects = vec![project("finished-project"), project("idle-project")];
+        let sessions = vec![session(&projects[0], 20), session(&projects[1], 10)];
+        let finished = HashSet::from([projects[0].id]);
+        let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &HashSet::new(),
+            &finished,
+            "",
+            &mut matcher,
+        );
+        assert!(entries[0].finished);
+        assert!(!entries[1].finished);
     }
 
     fn session(project: &Project, timestamp: u64) -> AgentSession {
@@ -769,6 +957,7 @@ mod tests {
             &projects,
             &sessions,
             &HashSet::new(),
+            &HashSet::new(),
             "  CROW ",
             &mut matcher,
         );
@@ -779,13 +968,25 @@ mod tests {
             vec!["crow", "crow-companion", "waku-crow-sync"]
         );
 
-        let entries = visible_project_entries(&projects, &[], &HashSet::new(), "sts", &mut matcher);
+        let entries = visible_project_entries(
+            &projects,
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            "sts",
+            &mut matcher,
+        );
         assert_eq!(names(&entries), vec!["speech-to-subtitle"]);
 
-        assert!(
-            visible_project_entries(&projects, &[], &HashSet::new(), "zzz", &mut matcher)
-                .is_empty()
-        );
+        assert!(visible_project_entries(
+            &projects,
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            "zzz",
+            &mut matcher
+        )
+        .is_empty());
     }
 
     #[test]
@@ -794,8 +995,14 @@ mod tests {
         let sessions = vec![session(&projects[0], 20), session(&projects[1], 80)];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
         // Session recency breaks equal fuzzy scores and equal name lengths.
-        let entries =
-            visible_project_entries(&projects, &sessions, &HashSet::new(), "alpha", &mut matcher);
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &HashSet::new(),
+            &HashSet::new(),
+            "alpha",
+            &mut matcher,
+        );
         assert_eq!(names(&entries), vec!["alpha-two", "alpha-one"]);
     }
 
@@ -805,14 +1012,33 @@ mod tests {
         let sessions = vec![session(&projects[0], 80), session(&projects[1], 20)];
         let mut removed = HashSet::from([projects[0].id]);
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        let entries = visible_project_entries(&projects, &sessions, &removed, "", &mut matcher);
-        assert_eq!(names(&entries), vec!["waku"]);
-        assert!(
-            visible_project_entries(&projects, &sessions, &removed, "crow", &mut matcher)
-                .is_empty()
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &removed,
+            &HashSet::new(),
+            "",
+            &mut matcher,
         );
+        assert_eq!(names(&entries), vec!["waku"]);
+        assert!(visible_project_entries(
+            &projects,
+            &sessions,
+            &removed,
+            &HashSet::new(),
+            "crow",
+            &mut matcher
+        )
+        .is_empty());
         removed.remove(&projects[0].id);
-        let entries = visible_project_entries(&projects, &sessions, &removed, "crow", &mut matcher);
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &removed,
+            &HashSet::new(),
+            "crow",
+            &mut matcher,
+        );
         assert_eq!(names(&entries), vec!["crow"]);
     }
 
@@ -854,10 +1080,11 @@ mod tests {
                 &projects,
                 &[],
                 &HashSet::from([removed_id]),
+                &HashSet::new(),
                 "",
                 &mut Matcher::new(nucleo_matcher::Config::DEFAULT),
             );
-            assert!(rows.iter().eq(entries.iter().map(|(id, _)| id)));
+            assert!(rows.iter().eq(entries.iter().map(|entry| &entry.id)));
         }
     }
 

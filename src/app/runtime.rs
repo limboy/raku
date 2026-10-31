@@ -1280,14 +1280,25 @@ impl Waku {
         outcome: crate::analytics::TurnOutcome,
     ) -> Option<(Uuid, usize)> {
         let event = self.active_turn_finished_event(session_id, outcome);
+        let project_id = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.project_id);
         let result = self
             .state
             .session_mut(session_id)?
             .finish_active_turn(status);
-        if result.is_some()
-            && let Some(event) = event
-        {
-            self.analytics.track(event);
+        if result.is_some() {
+            if let Some(project_id) = project_id {
+                if self.state.selected_project != Some(project_id) {
+                    self.finished_project_ids.insert(project_id);
+                }
+            }
+            if let Some(event) = event {
+                self.analytics.track(event);
+            }
         }
         result
     }

@@ -1227,6 +1227,8 @@ pub struct Waku {
     project_picker_row_cache: RefCell<Vec<Uuid>>,
     project_picker_scrollbar: Rc<ScrollbarState>,
     project_picker_matcher: RefCell<nucleo_matcher::Matcher>,
+    /// Projects with a completed turn that has not been selected yet.
+    finished_project_ids: HashSet<Uuid>,
     /// Git subprocess results per concrete workspace path. Render only reads
     /// this in-memory cache; misses are fulfilled on the background executor.
     branch_snapshots: QueryCache<PathBuf, Result<Option<BranchSnapshot>, String>>,
@@ -2727,6 +2729,7 @@ impl Waku {
                 project_picker_matcher: RefCell::new(nucleo_matcher::Matcher::new(
                     nucleo_matcher::Config::DEFAULT,
                 )),
+                finished_project_ids: HashSet::new(),
                 branch_snapshots: QueryCache::new(MAX_CACHED_WORKSPACES),
                 visible_branch_snapshot: None,
                 branch_operation_pending: false,

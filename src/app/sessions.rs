@@ -20,6 +20,7 @@ impl Waku {
 
     pub(super) fn select_project(&mut self, project_id: Uuid, cx: &mut Context<Self>) {
         self.state.selected_project = Some(project_id);
+        self.finished_project_ids.remove(&project_id);
         self.create_session_for(project_id, self.state.last_provider, cx);
     }
 
