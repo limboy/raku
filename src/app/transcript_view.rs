@@ -13,6 +13,7 @@ const ACTIVITY_DIFF_MAX_HEIGHT: f32 = 400.0;
 /// Aligns a hunk separator with the line numbers in the rows below it; see
 /// `DiffRowStyle::ACTIVITY`.
 const ACTIVITY_DIFF_GUTTER_WIDTH: f32 = 52.0;
+const WORK_FRAME_CORNER_RADIUS: f32 = 8.0;
 
 #[derive(Clone, Debug)]
 struct ConversationNavigationRailSnapshot {
@@ -1212,21 +1213,29 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::current(cx);
-        let palette = MarkdownPalette::from_theme(&theme);
         let composer = self.composer.clone();
         let waku = cx.entity().downgrade();
         // Both from the cache `sync_transcript_rows` refreshed at the top of
         // this frame. Recomputing the row list here would rebuild the whole
         // transcript's row kinds — several allocations proportional to the
         // session — once for every visible row, every frame.
-        let (row_count, kind) = {
+        let (row_count, kind, is_work_row, ends_work) = {
             let kinds = self.transcript_row_kinds.borrow();
+            let work_rows = self.transcript_work_rows.borrow();
             let kind = kinds
                 .get(index)
                 .copied()
                 .unwrap_or(TranscriptRowKind::Message(index));
-            (kinds.len(), kind)
+            let is_work_row = work_rows.contains(&kind);
+            let ends_work = is_work_row
+                && kinds
+                    .get(index + 1)
+                    .is_none_or(|next| !work_rows.contains(next));
+            (kinds.len(), kind, is_work_row, ends_work)
         };
+        let palette = MarkdownPalette::from_theme(&theme);
+        let opens_work = matches!(kind, TranscriptRowKind::TurnFold(turn_id)
+            if self.expanded_turns.contains(&turn_id));
         let response_turn_id = self
             .selected_session()
             .and_then(|session| response_row_turn_id(session, kind));
@@ -1400,6 +1409,26 @@ impl Waku {
                 .unwrap_or_else(|| div().into_any_element()),
             TranscriptRowKind::WorkingIndicator => self.render_working_indicator_row(&theme),
         };
+        let inner = if is_work_row {
+            div()
+                .w_full()
+                .min_w_0()
+                .border_l_1()
+                .border_r_1()
+                .border_color(theme.border)
+                .px(px(12.0))
+                .py(px(8.0))
+                .when(ends_work, |section| {
+                    section
+                        .border_b_1()
+                        .rounded_bl(px(WORK_FRAME_CORNER_RADIUS))
+                        .rounded_br(px(WORK_FRAME_CORNER_RADIUS))
+                })
+                .child(inner)
+                .into_any_element()
+        } else {
+            inner
+        };
         let mut row = div()
             .id(("transcript-row", index))
             .w_full()
@@ -1407,6 +1436,9 @@ impl Waku {
             .justify_center()
             .px(px(20.0))
             .py(px(8.0))
+            .when(is_work_row, |row| row.py(px(0.0)))
+            .when(opens_work, |row| row.pb(px(0.0)))
+            .when(ends_work, |row| row.pb(px(8.0)))
             .when(
                 matches!(kind, TranscriptRowKind::ResponseFooter(_, _)),
                 |element| element.pt(px(0.0)),
@@ -1775,6 +1807,7 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let expanded = self.expanded_turns.contains(&turn_id);
+        let focus = self.transcript_control_focus(format!("turn-fold-{turn_id}"), cx);
         let label = self
             .selected_session()
             .map(|session| turn_fold_label(session, turn_id))
@@ -1785,12 +1818,30 @@ impl Waku {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .child(div().h(px(1.0)).flex_1().bg(theme.border))
+            .child(
+                div()
+                    .flex_1()
+                    .when(expanded, |line| {
+                        // The centered rule turns into the frame's top edge.
+                        // Draw each corner with its adjacent horizontal and
+                        // vertical edges so a straight rule cannot overlap it.
+                        line.h(px(12.5))
+                            .self_end()
+                            .border_t_1()
+                            .border_l_1()
+                            .border_color(theme.border)
+                            .rounded_tl(px(WORK_FRAME_CORNER_RADIUS))
+                    })
+                    .when(!expanded, |line| line.h(px(1.0)).bg(theme.border)),
+            )
             .child(
                 div()
                     .id(SharedString::from(format!("turn-fold-{turn_id}")))
+                    .track_focus(&focus)
+                    .tab_index(0)
                     .h(px(24.0))
                     .px(px(2.0))
+                    .rounded(px(4.0))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -1800,6 +1851,8 @@ impl Waku {
                     .line_height(sp(18.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_tertiary)
+                    .focus_visible(|style| style.bg(theme.overlay).text_color(theme.text))
+                    .hover(|style| style.text_color(theme.text))
                     .child(SharedString::from(label))
                     .child(icon(
                         if expanded {
@@ -1812,9 +1865,31 @@ impl Waku {
                     ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_turn_fold(turn_id, expanded, cx);
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        let key = event.keystroke.key.as_str();
+                        if matches!(key, "enter" | "space")
+                            || (key == "right" && !expanded)
+                            || (key == "left" && expanded)
+                        {
+                            this.toggle_turn_fold(turn_id, expanded, cx);
+                            cx.stop_propagation();
+                        }
                     })),
             )
-            .child(div().h(px(1.0)).flex_1().bg(theme.border))
+            .child(
+                div()
+                    .flex_1()
+                    .when(expanded, |line| {
+                        line.h(px(12.5))
+                            .self_end()
+                            .border_t_1()
+                            .border_r_1()
+                            .border_color(theme.border)
+                            .rounded_tr(px(WORK_FRAME_CORNER_RADIUS))
+                    })
+                    .when(!expanded, |line| line.h(px(1.0)).bg(theme.border)),
+            )
             .into_any_element()
     }
 

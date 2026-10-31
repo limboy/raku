@@ -11,16 +11,16 @@ use super::{
     append_text_delta_to_session, assistant_response_footer, assistant_response_footer_index,
     assistant_response_footer_time, compact_driver_error, disclosure_leading_space, fenced_code,
     fitted_file_tree_width, fitted_panel_widths, folded_transcript_row_kinds,
-    format_worked_duration, format_working_elapsed, maintain_transcript_anchor, message_opens_turn,
-    message_starts_followup_turn, navigation_preview_snippet, navigation_rail_fade_visibility,
-    navigation_rail_height, navigation_rail_scale, paused_toast_duration, pop_stream_batch,
-    push_transcript_activity, response_footer_message_index, response_row_turn_id,
-    session_accepts_turn_output, session_is_reapable, should_refresh_branch_after_activity,
-    should_show_navigation_rail, should_show_scroll_to_bottom, task_id_from_notification_tag,
-    task_notification_tag, transcript_anchor_end_space, transcript_navigation_turns,
-    transcript_rests_at_tail, transcript_row_kinds, transcript_row_splice,
-    transcript_rows_fingerprint, widened_panel_width_for_file_editor,
-    widened_panel_width_for_review,
+    folded_transcript_rows, format_worked_duration, format_working_elapsed,
+    maintain_transcript_anchor, message_opens_turn, message_starts_followup_turn,
+    navigation_preview_snippet, navigation_rail_fade_visibility, navigation_rail_height,
+    navigation_rail_scale, paused_toast_duration, pop_stream_batch, push_transcript_activity,
+    response_footer_message_index, response_row_turn_id, session_accepts_turn_output,
+    session_is_reapable, should_refresh_branch_after_activity, should_show_navigation_rail,
+    should_show_scroll_to_bottom, task_id_from_notification_tag, task_notification_tag,
+    transcript_anchor_end_space, transcript_navigation_turns, transcript_rests_at_tail,
+    transcript_row_kinds, transcript_row_splice, transcript_rows_fingerprint,
+    widened_panel_width_for_file_editor, widened_panel_width_for_review,
 };
 use crate::git_branch::BranchEntry;
 use crate::model::{
@@ -1435,6 +1435,15 @@ fn a_settled_turn_folds_all_of_its_work_above_the_answer() {
     session.push_message(MessageRole::Assistant, "Done. The change is ready.");
     session.finish_active_turn(TurnStatus::Completed);
 
+    let (_, collapsed_work) = folded_transcript_rows(&session, &HashSet::new());
+    assert!(collapsed_work.is_empty());
+    let (_, expanded_work) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
+    assert_eq!(
+        expanded_work,
+        HashSet::from([TurnBlock(0), Message(1), TurnBlock(1)]),
+        "interim commentary and tools share the work section; the final answer does not"
+    );
+
     // The summary opens the turn and everything the agent did before its
     // answer sits behind it — reasoning, tool activity and interim commentary
     // alike. A divider between two pieces of work would read as a cut-off
@@ -1485,6 +1494,13 @@ fn consecutive_trailing_text_parts_all_stay_out_of_the_fold() {
     session.push_message(MessageRole::Assistant, "Second half of the answer.");
     session.finish_active_turn(TurnStatus::Completed);
 
+    let (_, work_rows) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
+    assert_eq!(
+        work_rows,
+        HashSet::from([TurnBlock(0)]),
+        "every trailing answer part must stay outside the work section"
+    );
+
     assert_eq!(
         folded_transcript_row_kinds(&session, &HashSet::new()),
         vec![
@@ -1517,6 +1533,9 @@ fn a_turn_without_an_answer_folds_completely() {
     // The streaming placeholder never received any text.
     session.push_message(MessageRole::Assistant, "");
     session.finish_active_turn(TurnStatus::Interrupted);
+
+    let (_, work_rows) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
+    assert_eq!(work_rows, HashSet::from([TurnBlock(0), Message(1)]));
 
     assert_eq!(
         folded_transcript_row_kinds(&session, &HashSet::new()),
@@ -1791,6 +1810,12 @@ fn a_busy_turn_pins_the_working_indicator_after_the_last_row() {
     let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
     let turn_id = session.begin_turn("Build it");
     session.status = SessionStatus::Working;
+
+    let (_, work_rows) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
+    assert!(
+        work_rows.is_empty(),
+        "live turns have no settled work section"
+    );
 
     // No chunks yet: the indicator alone follows the prompt.
     assert_eq!(

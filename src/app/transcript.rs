@@ -21,17 +21,15 @@ impl Waku {
                 transcript_rows_fingerprint(session, &self.expanded_turns)
             });
         if self.transcript_row_kinds_fingerprint.get() != Some(fingerprint) {
-            let next_kinds = self.selected_transcript_row_kinds();
+            let (next_kinds, work_rows) = self
+                .selected_session()
+                .map(|session| folded_transcript_rows(session, &self.expanded_turns))
+                .unwrap_or_default();
             *self.transcript_row_kinds.borrow_mut() = next_kinds;
+            *self.transcript_work_rows.borrow_mut() = work_rows;
             self.transcript_row_kinds_fingerprint.set(Some(fingerprint));
         }
         self.transcript_row_kinds.borrow().len()
-    }
-
-    pub(super) fn selected_transcript_row_kinds(&self) -> Vec<TranscriptRowKind> {
-        self.selected_session().map_or_else(Vec::new, |session| {
-            folded_transcript_row_kinds(session, &self.expanded_turns)
-        })
     }
 
     /// The response footer's copy content and timestamp for `message_index`,
@@ -815,7 +813,7 @@ pub(super) fn transcript_row_kinds(
     rows
 }
 
-/// Fingerprint of every field [`folded_transcript_row_kinds`] reads, so a frame
+/// Fingerprint of every field [`folded_transcript_rows`] reads, so a frame
 /// can tell a settled transcript from a changed one without refolding it.
 ///
 /// Keep this in step with that function and with [`row_turn_id`]. A field they
@@ -904,12 +902,15 @@ fn mix_turn_id(hash: u64, turn_id: Option<Uuid>) -> u64 {
 /// 19 seconds" with more work listed below it, as if the response had been cut
 /// in half. Expanding it restores the turn's full order in place.
 ///
+/// Return the visible row kinds and the revealed work rows together so paint
+/// can distinguish process from answer without repeating the turn walk.
+///
 /// Every field this reads is fingerprinted by [`transcript_rows_fingerprint`]
 /// so frames can skip the fold; consult a new one and that must learn it too.
-pub(super) fn folded_transcript_row_kinds(
+pub(super) fn folded_transcript_rows(
     session: &AgentSession,
     expanded_turns: &HashSet<Uuid>,
-) -> Vec<TranscriptRowKind> {
+) -> (Vec<TranscriptRowKind>, HashSet<TranscriptRowKind>) {
     let anchors = session
         .transcript_blocks
         .iter()
@@ -917,6 +918,7 @@ pub(super) fn folded_transcript_row_kinds(
         .collect::<Vec<_>>();
     let raw_rows = transcript_row_kinds(session.messages.len(), &anchors);
     let mut hidden_rows = HashSet::new();
+    let mut work_rows = HashSet::new();
     let mut fold_anchors = HashMap::new();
     let mut response_footers = HashMap::new();
 
@@ -934,6 +936,9 @@ pub(super) fn folded_transcript_row_kinds(
         };
         fold_anchors.insert(anchor, turn.id);
         hidden_rows.extend(hidden.iter().copied());
+        if expanded_turns.contains(&turn.id) {
+            work_rows.extend(hidden.iter().copied());
+        }
     }
 
     let mut rows = Vec::with_capacity(raw_rows.len() + fold_anchors.len() + 1);
@@ -999,7 +1004,7 @@ pub(super) fn folded_transcript_row_kinds(
     // disclosure. The message index supplies stable copy/fork identity without
     // deciding the footer's position.
     if response_footers.is_empty() {
-        return rows;
+        return (rows, work_rows);
     }
 
     let mut last_row_by_turn = HashMap::new();
@@ -1026,7 +1031,15 @@ pub(super) fn folded_transcript_row_kinds(
             with_footers.push(TranscriptRowKind::ResponseFooter(turn_id, message_index));
         }
     }
-    with_footers
+    (with_footers, work_rows)
+}
+
+#[cfg(test)]
+pub(super) fn folded_transcript_row_kinds(
+    session: &AgentSession,
+    expanded_turns: &HashSet<Uuid>,
+) -> Vec<TranscriptRowKind> {
+    folded_transcript_rows(session, expanded_turns).0
 }
 
 /// The rows the turn *produced*, in transcript order: its assistant text parts

@@ -1491,6 +1491,9 @@ pub struct Waku {
     sidebar_date_boundaries: Option<SidebarDateBoundaries>,
     sidebar_date_task: Option<gpui::Task<()>>,
     transcript_row_kinds: RefCell<Vec<TranscriptRowKind>>,
+    /// Rows revealed by an expanded work summary, excluding the final answer.
+    /// Built alongside row kinds so visible rows only need a set lookup.
+    transcript_work_rows: RefCell<HashSet<TranscriptRowKind>>,
     /// Fingerprint of the transcript inputs `transcript_row_kinds` was folded
     /// from, so an unchanged transcript costs nothing on a frame. `None` until
     /// the first fold. See `transcript_rows_fingerprint`.
@@ -2875,6 +2878,7 @@ impl Waku {
                 sidebar_date_boundaries: None,
                 sidebar_date_task: None,
                 transcript_row_kinds: RefCell::new(Vec::new()),
+                transcript_work_rows: RefCell::new(HashSet::new()),
                 transcript_row_kinds_fingerprint: Cell::new(None),
                 transcript_navigation_turns: RefCell::new(Rc::new(Vec::new())),
                 transcript_navigation_turns_fingerprint: Cell::new(None),
