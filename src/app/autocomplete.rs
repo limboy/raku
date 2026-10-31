@@ -34,6 +34,11 @@ use super::*;
 const AUTOCOMPLETE_CONTEXT: &str = "ComposerAutocomplete > TextInput";
 const AUTOCOMPLETE_LOADING_CONTEXT: &str = "ComposerAutocompleteLoading > TextInput";
 
+pub(super) struct FileIndex {
+    entries: Vec<FileEntry>,
+    links: Arc<md::file_links::FileLinks>,
+}
+
 /// Bind the popup's keys. Must run after [`crate::input::init`]: `enter` and
 /// the arrows tie with the field's own bindings at the `ComposerInput` depth,
 /// and the tie goes to whichever was registered last.
@@ -122,6 +127,7 @@ impl Waku {
             self.mention_file_index = Rc::new(Vec::new());
             self.mention_file_index_path = None;
             self.mention_file_index_loading = false;
+            self.markdown_file_links = None;
             return;
         };
         let provider = self
@@ -192,7 +198,8 @@ impl Waku {
 
         match self.mention_files.read(&project_path) {
             Query::Ready(files) => {
-                self.mention_file_index = files.as_ref().clone().into();
+                self.mention_file_index = files.entries.clone().into();
+                self.markdown_file_links = Some(files.links.clone());
                 self.mention_file_index_path = Some(project_path);
                 self.mention_file_index_loading = false;
             }
@@ -201,6 +208,7 @@ impl Waku {
                 if self.mention_file_index_path.as_ref() != Some(&project_path) {
                     self.mention_file_index = Rc::new(Vec::new());
                     self.mention_file_index_path = None;
+                    self.markdown_file_links = None;
                 }
             }
             Query::Missing(token) => {
@@ -208,6 +216,7 @@ impl Waku {
                 if self.mention_file_index_path.as_ref() != Some(&project_path) {
                     self.mention_file_index = Rc::new(Vec::new());
                     self.mention_file_index_path = None;
+                    self.markdown_file_links = None;
                 }
                 let path = project_path.clone();
                 let workspace = waku_client::WorkspaceClient::new(self.daemon.client());
@@ -215,9 +224,9 @@ impl Waku {
                     let files = cx
                         .background_executor()
                         .spawn(async move {
-                            match workspace.request(
+                            let entries = match workspace.request(
                                 waku_client::WorkspaceOperation::ListProjectFiles {
-                                    root: path,
+                                    root: path.clone(),
                                     cap: FILE_INDEX_CAP,
                                 },
                             ) {
@@ -225,7 +234,15 @@ impl Waku {
                                     entries
                                 }
                                 Ok(_) | Err(_) => Vec::new(),
-                            }
+                            };
+                            let links = Arc::new(md::file_links::FileLinks::new(
+                                &path,
+                                entries
+                                    .iter()
+                                    .filter(|entry| !entry.is_dir)
+                                    .map(|entry| entry.path.as_str()),
+                            ));
+                            FileIndex { entries, links }
                         })
                         .await;
                     waku.update(cx, |waku, cx| {

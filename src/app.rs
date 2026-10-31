@@ -1264,11 +1264,12 @@ pub struct Waku {
     slash_command_index: Rc<Vec<SlashCommand>>,
     slash_command_index_key: Option<(ProviderKind, PathBuf, Option<String>)>,
     slash_command_index_loading: bool,
-    /// Workspace file index per project root, for `@` mentions.
-    mention_files: QueryCache<PathBuf, Vec<FileEntry>>,
+    /// Workspace file index per project root, shared by mentions and Markdown.
+    mention_files: QueryCache<PathBuf, autocomplete::FileIndex>,
     mention_file_index: Rc<Vec<FileEntry>>,
     mention_file_index_path: Option<PathBuf>,
     mention_file_index_loading: bool,
+    markdown_file_links: Option<Arc<md::file_links::FileLinks>>,
     /// Set when a driver reports its command registry mid-drain; the drain
     /// has no `Context` to rebuild the drawn index itself.
     composer_sources_stale: bool,
@@ -2746,6 +2747,7 @@ impl Waku {
                 mention_file_index: Rc::new(Vec::new()),
                 mention_file_index_path: None,
                 mention_file_index_loading: false,
+                markdown_file_links: None,
                 composer_sources_stale: false,
                 composer_autocomplete: autocomplete::AutocompleteUi::new(),
                 composer_attachments,

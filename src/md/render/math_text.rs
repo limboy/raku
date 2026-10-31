@@ -23,7 +23,6 @@ pub struct MathSpan {
 pub struct MathData {
     spans: Vec<MathSpan>,
     cache: RefCell<LayoutCache>,
-    active_link: Rc<Cell<Option<usize>>>,
 }
 
 impl MathData {
@@ -31,7 +30,6 @@ impl MathData {
         Self {
             spans,
             cache: RefCell::new(LayoutCache::default()),
-            active_link: Rc::new(Cell::new(None)),
         }
     }
 }
@@ -235,7 +233,6 @@ pub(super) fn element(flat: Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement
     if !flat.links.is_empty() {
         // Keep link activation in source coordinates, exactly like selection.
         // A focused paragraph cycles its links with arrows and opens with Enter.
-        let focused_link = flat.math.as_ref().unwrap().active_link.clone();
         let links = flat.links.clone();
         let handler = ctx.link_handler.clone();
         let hit = geometry.clone();
@@ -261,29 +258,7 @@ pub(super) fn element(flat: Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement
                 }
             }
         });
-        let links = flat.links.clone();
-        let handler = ctx.link_handler.clone();
-        wrapper = wrapper.on_key_down(move |event, window, cx| {
-            let current = focused_link.get().unwrap_or(0).min(links.len() - 1);
-            match event.keystroke.key.as_str() {
-                "right" | "down" => focused_link.set(Some((current + 1) % links.len())),
-                "left" | "up" => focused_link.set(Some((current + links.len() - 1) % links.len())),
-                "home" => focused_link.set(Some(0)),
-                "end" => focused_link.set(Some(links.len() - 1)),
-                "escape" => focused_link.set(None),
-                "enter" | "space" => {
-                    let url = &links[current].1;
-                    if let Some(handler) = &handler {
-                        handler(url, window, cx);
-                    } else {
-                        cx.open_url(url);
-                    }
-                }
-                _ => return,
-            }
-            cx.stop_propagation();
-            cx.notify(window.current_view());
-        });
+        wrapper = wrapper.on_key_down(link_key_handler(&flat, ctx.link_handler.clone()));
     }
     let has_links = !flat.links.is_empty();
     let has_menu = ctx.math_menu.is_some();
@@ -542,7 +517,11 @@ impl Element for MathText {
                 wash(rect, self.palette.selection, 0.0, window);
             }
         }
-        if let Some(index) = self.flat.math.as_ref().unwrap().active_link.get()
+        if let Some(index) = self
+            .flat
+            .active_link
+            .as_ref()
+            .and_then(|active| active.get())
             && let Some((range, _)) = self.flat.links.get(index)
         {
             for rect in self.geometry.range_rects(range) {
@@ -1102,7 +1081,7 @@ mod tests {
                 panic!()
             };
             let palette = Palette::from_theme(&Theme::dark());
-            let flat = flatten(runs, &palette, FontWeight::NORMAL, palette.text);
+            let flat = flatten(runs, &palette, FontWeight::NORMAL, palette.text, None);
             let data = flat.math.as_ref().unwrap();
             let metrics = [Some(math::Metrics {
                 width: 30.0,

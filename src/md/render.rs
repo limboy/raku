@@ -23,6 +23,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -34,6 +35,7 @@ use gpui::{
 };
 use regex::Regex;
 
+use super::file_links::FileLinks;
 use super::highlight::{self, Lang, TokenClass};
 use super::mend::PENDING_LINK_URL;
 use super::parser::{Block, IncrementalParser, InlineRun, ListItem, TableAlign, TopBlock};
@@ -292,6 +294,7 @@ pub struct FlatText {
     pub links: Vec<(Range<usize>, String)>,
     pub code_ranges: Vec<Range<usize>>,
     pub math: Option<Rc<math_text::MathData>>,
+    pub(crate) active_link: Option<Rc<Cell<Option<usize>>>>,
 }
 
 /// One literal find-in-page hit inside a shaped markdown text element.
@@ -320,6 +323,7 @@ pub fn flatten(
     palette: &Palette,
     base_weight: FontWeight,
     base_color: Hsla,
+    file_links: Option<&FileLinks>,
 ) -> FlatText {
     let mut text = String::new();
     let mut out: Vec<TextRun> = Vec::with_capacity(runs.len());
@@ -365,7 +369,11 @@ pub fn flatten(
                 _ => code_ranges.push(start..end),
             }
         }
-        if let Some(url) = &run.style.link {
+        let file_target = (run.style.code && run.style.link.is_none())
+            .then(|| file_links.and_then(|index| index.resolve(&run.text)))
+            .flatten();
+        let link = run.style.link.as_ref().or(file_target.as_ref());
+        if let Some(url) = link {
             // A still-streaming link keeps link styling — so the URL settling
             // changes nothing visually — but must not become clickable.
             if url != PENDING_LINK_URL {
@@ -387,7 +395,7 @@ pub fn flatten(
             // Inline code's wash is painted as *rounded* quads by the canvas
             // underlay; a run background could only ever be a square box.
             background_color: None,
-            underline: run.style.link.is_some().then_some(UnderlineStyle {
+            underline: link.is_some().then_some(UnderlineStyle {
                 color: Some(palette.tertiary),
                 thickness: px(1.0),
                 wavy: false,
@@ -399,12 +407,14 @@ pub fn flatten(
         });
     }
 
+    let active_link = (!links.is_empty()).then(|| Rc::new(Cell::new(None)));
     FlatText {
         text: text.into(),
         runs: out,
         links,
         code_ranges,
         math: (!math.is_empty()).then(|| Rc::new(math_text::MathData::new(math))),
+        active_link,
     }
 }
 
@@ -436,6 +446,7 @@ pub fn flatten_plain(
         links: Vec::new(),
         code_ranges: Vec::new(),
         math: None,
+        active_link: None,
     }
 }
 
@@ -459,6 +470,9 @@ pub struct MarkdownView {
     /// a theme switch has to drop them or the transcript keeps painting the old
     /// palette.
     style: Cell<Option<(Palette, Metrics)>>,
+    /// Index changes refresh settled links once. A weak reference preserves
+    /// identity without off-screen rows keeping obsolete file indexes alive.
+    file_links: RefCell<Option<Weak<FileLinks>>>,
     /// Per-element opacity spans for the live response. Text is committed to
     /// layout immediately; only these paint colors animate.
     veil: RefCell<RowVeil>,
@@ -483,6 +497,7 @@ impl MarkdownView {
             flats: RefCell::new(HashMap::new()),
             volatile_from: Cell::new(0),
             style: Cell::new(None),
+            file_links: RefCell::new(None),
             veil: RefCell::new(RowVeil::default()),
             copied_code_blocks: Rc::new(RefCell::new(HashMap::new())),
             streaming: Cell::new(false),
@@ -562,6 +577,21 @@ impl MarkdownView {
         }
     }
 
+    fn sync_file_links(&self, links: Option<&Arc<FileLinks>>) {
+        let mut previous = self.file_links.borrow_mut();
+        let unchanged = match (previous.as_ref(), links) {
+            (None, None) => true,
+            (Some(previous), Some(current)) => {
+                std::ptr::eq(previous.as_ptr(), Arc::as_ptr(current))
+            }
+            _ => false,
+        };
+        if !unchanged {
+            *previous = links.map(Arc::downgrade);
+            self.flats.borrow_mut().clear();
+        }
+    }
+
     /// Flattened inline content for the element at `ordinal`, built on miss.
     fn flat(&self, ordinal: usize, build: impl FnOnce() -> FlatText) -> Rc<FlatText> {
         self.flats
@@ -599,6 +629,7 @@ pub struct Ctx<'a> {
     selection: TranscriptSelection,
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
+    file_links: Option<Arc<FileLinks>>,
     /// Cross-frame flatten cache, when this render has one to consult.
     cache: Option<&'a MarkdownView>,
     next_ordinal: Cell<usize>,
@@ -625,6 +656,7 @@ impl<'a> Ctx<'a> {
             selection,
             search: None,
             link_handler: None,
+            file_links: None,
             cache: None,
             next_ordinal: Cell::new(0),
             starts_block: Cell::new(true),
@@ -642,6 +674,11 @@ impl<'a> Ctx<'a> {
 
     pub fn with_link_handler(mut self, handler: LinkHandler) -> Self {
         self.link_handler = Some(handler);
+        self
+    }
+
+    pub fn with_file_links(mut self, links: Option<Arc<FileLinks>>) -> Self {
+        self.file_links = links;
         self
     }
 
@@ -682,6 +719,7 @@ impl<'a> Ctx<'a> {
             selection: self.selection.clone(),
             search: self.search.clone(),
             link_handler: self.link_handler.clone(),
+            file_links: self.file_links.clone(),
             cache: Some(view),
             next_ordinal: Cell::new(self.next_ordinal.get()),
             starts_block: Cell::new(self.starts_block.get()),
@@ -716,6 +754,47 @@ impl<'a> Ctx<'a> {
 
 // ── The shared text primitive ──────────────────────────────────────────────
 
+fn link_key_handler(
+    flat: &FlatText,
+    handler: Option<LinkHandler>,
+) -> impl Fn(&KeyDownEvent, &mut Window, &mut gpui::App) + 'static {
+    let links = flat.links.clone();
+    let active = flat
+        .active_link
+        .as_ref()
+        .expect("clickable links have keyboard state")
+        .clone();
+    move |event, window, cx| {
+        if links.is_empty() || event.keystroke.modifiers != Default::default() {
+            return;
+        }
+        let current = active.get().filter(|index| *index < links.len());
+        match event.keystroke.key.as_str() {
+            "right" | "down" => {
+                active.set(Some(current.map_or(0, |index| (index + 1) % links.len())))
+            }
+            "left" | "up" => active.set(Some(current.map_or(links.len() - 1, |index| {
+                (index + links.len() - 1) % links.len()
+            }))),
+            "home" => active.set(Some(0)),
+            "end" => active.set(Some(links.len() - 1)),
+            "escape" => active.set(None),
+            "enter" | "space" => {
+                let url = &links[current.unwrap_or(0)].1;
+                if let Some(handler) = &handler {
+                    handler(url, window, cx);
+                } else {
+                    cx.open_url(url);
+                }
+            }
+            _ => return,
+        }
+        window.prevent_default();
+        cx.stop_propagation();
+        window.refresh();
+    }
+}
+
 /// One selectable, decorated text element.
 ///
 /// The `canvas` underlay is an *earlier sibling* than the text, so GPUI paints
@@ -733,6 +812,7 @@ fn text_element_with_selection(
     selection_wash: Hsla,
     search_match_wash: Hsla,
     active_search_match_wash: Hsla,
+    link_focus_color: Hsla,
     block_break: bool,
 ) -> AnyElement {
     let styled = StyledText::new(flat.text.clone()).with_runs(runs);
@@ -743,10 +823,15 @@ fn text_element_with_selection(
     } else {
         let (ranges, urls): (Vec<_>, Vec<_>) = flat.links.iter().cloned().unzip();
         let id = SharedString::from(format!("{}-t{}", key.row, key.index));
+        let handler = link_handler.clone();
+        let selection = selection.clone();
         InteractiveText::new(id, styled)
             .on_click(ranges, move |clicked, window, cx| {
+                if !selection.selection.borrow().is_empty() {
+                    return;
+                }
                 if let Some(url) = urls.get(clicked) {
-                    if let Some(handler) = &link_handler {
+                    if let Some(handler) = &handler {
                         handler(url, window, cx);
                     } else {
                         cx.open_url(url);
@@ -761,6 +846,8 @@ fn text_element_with_selection(
         let code_ranges = flat.code_ranges.clone();
         let layout = layout.clone();
         let key = key.clone();
+        let links = flat.links.clone();
+        let active_link = flat.active_link.clone();
         move |_, _, window, _| {
             for range in &code_ranges {
                 for rect in range_rects(&layout, range, CODE_WASH_PAD_X, CODE_WASH_INSET_Y) {
@@ -811,6 +898,20 @@ fn text_element_with_selection(
                     ));
                 }
             }
+            if let Some(index) = active_link.as_ref().and_then(|active| active.get())
+                && let Some((range, _)) = links.get(index)
+            {
+                for rect in range_rects(&layout, range, 1.0, 0.0) {
+                    window.paint_quad(quad(
+                        rect,
+                        px(2.0),
+                        gpui::transparent_black(),
+                        px(1.0),
+                        link_focus_color,
+                        BorderStyle::default(),
+                    ));
+                }
+            }
             // Paint order is document order, so simply appending here
             // rebuilds the frame's selection continuity.
             selection.registry.borrow_mut().push(RegisteredText {
@@ -824,14 +925,30 @@ fn text_element_with_selection(
     .absolute()
     .size_full();
 
-    div()
+    let wrapper = div()
         .relative()
         .w_full()
         .min_w_0()
         .cursor(CursorStyle::IBeam)
         .child(underlay)
-        .child(body)
-        .into_any_element()
+        .child(body);
+    if flat.links.is_empty() {
+        wrapper.into_any_element()
+    } else {
+        // GPUI retains an internal focus handle for this stable element ID
+        // when tab_index makes it focusable.
+        wrapper
+            .id(SharedString::from(format!(
+                "links-{}-{}",
+                key.row, key.index
+            )))
+            .tab_group()
+            .tab_index(0)
+            .tab_stop(true)
+            .focus_visible(|style| style.bg(selection_wash))
+            .on_key_down(link_key_handler(flat, link_handler))
+            .into_any_element()
+    }
 }
 
 fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
@@ -862,6 +979,7 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
         ctx.palette.selection,
         ctx.palette.search_match,
         ctx.palette.active_search_match,
+        ctx.palette.accent,
         ctx.take_block_break(),
     )
 }
@@ -891,6 +1009,7 @@ pub fn selectable_flat_text(
         selection_wash,
         gpui::transparent_black(),
         gpui::transparent_black(),
+        selection_wash,
         block_break,
     )
 }
@@ -1293,6 +1412,7 @@ fn markdown_capped<'a>(
     };
 
     view.sync_style(ctx.palette, &ctx.metrics);
+    view.sync_file_links(ctx.file_links.as_ref());
     let ctx = ctx.with_cache(view);
     if ctx.animate_streaming && view.streaming.get() {
         view.veil.borrow_mut().begin_frame();
@@ -1350,7 +1470,13 @@ fn render_block(block: &Block, ctx: &Ctx) -> AnyElement {
         Block::Paragraph { runs } => {
             let key = ctx.next_key();
             let flat = ctx.flat(key.index, || {
-                flatten(runs, ctx.palette, FontWeight::NORMAL, ctx.palette.text)
+                flatten(
+                    runs,
+                    ctx.palette,
+                    FontWeight::NORMAL,
+                    ctx.palette.text,
+                    ctx.file_links.as_deref(),
+                )
             });
             div()
                 .w_full()
@@ -1364,7 +1490,13 @@ fn render_block(block: &Block, ctx: &Ctx) -> AnyElement {
             let (size, line_height, weight) = heading_metrics(*level, &ctx.metrics);
             let key = ctx.next_key();
             let flat = ctx.flat(key.index, || {
-                flatten(runs, ctx.palette, weight, ctx.palette.text)
+                flatten(
+                    runs,
+                    ctx.palette,
+                    weight,
+                    ctx.palette.text,
+                    ctx.file_links.as_deref(),
+                )
             });
             div()
                 .w_full()
@@ -1696,6 +1828,7 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
             links: Vec::new(),
             code_ranges: Vec::new(),
             math: None,
+            active_link: None,
         }
     });
     let label = language
@@ -1934,7 +2067,13 @@ fn table_row(
     for (index, cell) in cells.iter().enumerate() {
         let key = ctx.next_key();
         let flat = ctx.flat(key.index, || {
-            flatten(cell, ctx.palette, weight, ctx.palette.text)
+            flatten(
+                cell,
+                ctx.palette,
+                weight,
+                ctx.palette.text,
+                ctx.file_links.as_deref(),
+            )
         });
         let alignment = align.get(index).copied().unwrap_or_default();
         row = row.child(
@@ -2079,6 +2218,7 @@ mod tests {
             &palette(),
             FontWeight::NORMAL,
             palette().text,
+            None,
         );
         assert_runs_tile(&flat);
         assert_eq!(flat.text.as_ref(), "plain bold code link gone");
@@ -2096,12 +2236,206 @@ mod tests {
     }
 
     #[test]
+    fn inline_filenames_link_without_changing_text_or_explicit_links() {
+        let source = "Changed **`src/lib/utils.server.ts`**, `articles/new.astro:12`, \
+            and `remainingPosts`. [`README.md`](https://example.com/readme) \
+            stays explicit; src/lib/utils.server.ts stays prose.";
+        let files = FileLinks::new(
+            std::path::Path::new("/workspace"),
+            [
+                "src/lib/utils.server.ts",
+                "src/pages/articles/new.astro",
+                "README.md",
+            ],
+        );
+        let runs = runs_of(source);
+        let plain = flatten(&runs, &palette(), FontWeight::NORMAL, palette().text, None);
+        let linked = flatten(
+            &runs,
+            &palette(),
+            FontWeight::NORMAL,
+            palette().text,
+            Some(&files),
+        );
+        assert_runs_tile(&linked);
+        assert_eq!(linked.text, plain.text);
+        assert_eq!(linked.code_ranges, plain.code_ranges);
+        assert_eq!(
+            linked
+                .links
+                .iter()
+                .map(|(range, target)| (&linked.text[range.clone()], target.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "src/lib/utils.server.ts",
+                    "file:///workspace/src/lib/utils.server.ts"
+                ),
+                (
+                    "articles/new.astro:12",
+                    "file:///workspace/src/pages/articles/new.astro:12"
+                ),
+                ("README.md", "https://example.com/readme"),
+            ]
+        );
+        assert_eq!(
+            linked
+                .runs
+                .iter()
+                .map(|run| (&run.font, run.len))
+                .collect::<Vec<_>>(),
+            plain
+                .runs
+                .iter()
+                .map(|run| (&run.font, run.len))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn file_index_updates_refresh_settled_links_and_reuse_unchanged_flats() {
+        let view = MarkdownView::new();
+        let runs = runs_of("Open `README.md`.");
+        let build = |files: Option<&FileLinks>| {
+            flatten(&runs, &palette(), FontWeight::NORMAL, palette().text, files)
+        };
+        let pending = view.flat(0, || build(None));
+        assert!(pending.links.is_empty());
+
+        let files = Arc::new(FileLinks::new(
+            std::path::Path::new("/workspace"),
+            ["README.md"],
+        ));
+        view.sync_file_links(Some(&files));
+        assert_eq!(
+            Arc::strong_count(&files),
+            1,
+            "rows must not retain old indexes"
+        );
+        let linked = view.flat(0, || build(Some(&files)));
+        assert!(!Rc::ptr_eq(&pending, &linked));
+        assert_eq!(linked.links[0].1, "file:///workspace/README.md");
+        view.sync_file_links(Some(&files));
+        assert!(Rc::ptr_eq(
+            &linked,
+            &view.flat(0, || panic!("unchanged file index must reuse flats"))
+        ));
+
+        let other = Arc::new(FileLinks::new(
+            std::path::Path::new("/other"),
+            ["README.md"],
+        ));
+        view.sync_file_links(Some(&other));
+        let switched = view.flat(0, || build(Some(&other)));
+        assert_eq!(switched.links[0].1, "file:///other/README.md");
+        view.sync_file_links(None);
+        assert!(view.flat(0, || build(None)).links.is_empty());
+    }
+
+    #[gpui::test]
+    fn inline_file_links_support_keyboard_clicks_and_text_selection(cx: &mut TestAppContext) {
+        struct Harness {
+            markdown: MarkdownView,
+            selection: TranscriptSelection,
+            files: Arc<FileLinks>,
+            opened: Rc<RefCell<Vec<String>>>,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let palette = Palette::from_theme(&Theme::dark());
+                let opened = self.opened.clone();
+                let selection = self.selection.clone();
+                let ctx = Ctx::new(
+                    "file-link-input",
+                    &palette,
+                    Metrics::BODY,
+                    self.selection.clone(),
+                )
+                .with_file_links(Some(self.files.clone()))
+                .with_link_handler(Rc::new(move |target, _, _| {
+                    opened.borrow_mut().push(target.into())
+                }));
+                div()
+                    .w(px(600.0))
+                    .child(frame_reset(self.selection.clone()))
+                    .children(markdown(&self.markdown, &ctx))
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, _, window, _| {
+                                install_selection_input(window, &selection);
+                            },
+                        )
+                        .absolute()
+                        .w(px(0.0))
+                        .h(px(0.0)),
+                    )
+            }
+        }
+        for source in [
+            "Open `a.rs` then `b.rs`.",
+            "Open `a.rs` and $x$ then `b.rs`.",
+        ] {
+            let mut markdown = MarkdownView::new();
+            markdown.set_text(source, false);
+            let opened = Rc::new(RefCell::new(Vec::new()));
+            let (view, cx) = cx.add_window_view(|_, _| Harness {
+                markdown,
+                selection: TranscriptSelection::default(),
+                files: Arc::new(FileLinks::new(
+                    std::path::Path::new("/workspace"),
+                    ["a.rs", "b.rs"],
+                )),
+                opened: opened.clone(),
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| window.focus_next(cx));
+            cx.simulate_keystrokes("enter end space home right enter home enter escape left enter");
+            assert_eq!(
+                *opened.borrow(),
+                ["a.rs", "b.rs", "b.rs", "a.rs", "b.rs"]
+                    .map(|file| format!("file:///workspace/{file}")),
+                "{source}",
+            );
+
+            let bounds = view.read_with(cx, |view, _| {
+                let registry = view.selection.registry.borrow();
+                let entry = &registry.entries()[0];
+                let start = entry.text.find("a.rs").unwrap();
+                text_range_bounds(&entry.geometry, &(start..start + 4))[0]
+            });
+            cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+            assert_eq!(
+                opened.borrow().len(),
+                6,
+                "click should open the filename: {source}"
+            );
+            assert_eq!(opened.borrow()[5], "file:///workspace/a.rs");
+
+            let start = point(bounds.left() + px(1.0), bounds.center().y);
+            let end = point(bounds.right() - px(1.0), bounds.center().y);
+            cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_move(end, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::none());
+            assert_eq!(
+                opened.borrow().len(),
+                6,
+                "selecting a filename must not open it: {source}"
+            );
+            view.read_with(cx, |view, _| {
+                assert!(!view.selection.selection.borrow().is_empty())
+            });
+        }
+    }
+
+    #[test]
     fn a_streaming_link_is_styled_but_not_clickable() {
         let flat = flatten(
             &runs_of(&format!("see [docs]({PENDING_LINK_URL})")),
             &palette(),
             FontWeight::NORMAL,
             palette().text,
+            None,
         );
         assert_runs_tile(&flat);
         assert!(
@@ -2121,6 +2455,7 @@ mod tests {
             &palette(),
             FontWeight::NORMAL,
             palette().text,
+            None,
         );
         assert_runs_tile(&flat);
         assert_eq!(flat.links.len(), 1, "one link, not one per styled run");

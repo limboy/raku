@@ -1,3 +1,4 @@
+pub mod file_links;
 pub mod highlight;
 mod math;
 pub mod mend;

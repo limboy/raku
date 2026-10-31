@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::md::file_links::strip_file_location;
 
 const TAB_SCROLL_FADE_WIDTH: f32 = 24.0;
 const REVIEW_DIFF_FILE_HEADER_HEIGHT: f32 = 36.0;
@@ -25,47 +26,6 @@ enum TranscriptLinkRoute {
     ProjectFile(String),
     Finder(PathBuf),
     External,
-}
-
-fn positive_number(value: &str) -> bool {
-    !value.is_empty()
-        && value.bytes().all(|byte| byte.is_ascii_digit())
-        && value.parse::<usize>().is_ok_and(|value| value > 0)
-}
-
-fn line_fragment(fragment: &str) -> bool {
-    let Some(location) = fragment.strip_prefix('L') else {
-        return false;
-    };
-    match location.split_once('C') {
-        Some((line, column)) => positive_number(line) && positive_number(column),
-        None => positive_number(location),
-    }
-}
-
-/// Removes the `:line`, `:line:column`, or `#LlineCcolumn` suffixes Codex uses
-/// in clickable local-file references. The location is not yet consumed by
-/// Waku's compact editor, but it must not become part of the filesystem path.
-fn strip_file_location(target: &str) -> &str {
-    if let Some((path, fragment)) = target.rsplit_once('#')
-        && line_fragment(fragment)
-    {
-        return path;
-    }
-
-    let Some((before_last, last)) = target.rsplit_once(':') else {
-        return target;
-    };
-    if !positive_number(last) {
-        return target;
-    }
-    if let Some((path, line)) = before_last.rsplit_once(':')
-        && positive_number(line)
-    {
-        path
-    } else {
-        before_last
-    }
 }
 
 fn hex_value(byte: u8) -> Option<u8> {
@@ -498,6 +458,7 @@ fn review_diff_flat_text(line: &crate::review_diff::Line, theme: &Theme) -> md::
         links: Vec::new(),
         code_ranges: Vec::new(),
         math: None,
+        active_link: None,
     }
 }
 
@@ -1119,6 +1080,25 @@ mod tests {
             transcript_link_route("https://example.com/file.rs:12", Some(workspace)),
             TranscriptLinkRoute::External
         );
+    }
+
+    #[test]
+    fn inline_file_references_open_the_resolved_workspace_file() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let files = md::file_links::FileLinks::new(
+            workspace,
+            ["src/pages/articles/new.astro", "docs/配额%20#notes.md"],
+        );
+        for (reference, path) in [
+            ("articles/new.astro:12:4", "src/pages/articles/new.astro"),
+            ("配额%20#notes.md", "docs/配额%20#notes.md"),
+        ] {
+            let target = files.resolve(reference).expect("indexed file");
+            assert_eq!(
+                transcript_link_route(&target, Some(workspace)),
+                TranscriptLinkRoute::ProjectFile(path.into()),
+            );
+        }
     }
 
     /// Selection resolves rows by key, so a repeated key makes a drag jump
