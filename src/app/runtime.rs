@@ -1291,9 +1291,19 @@ impl Waku {
             .session_mut(session_id)?
             .finish_active_turn(status);
         if result.is_some() {
-            if let Some(project_id) = project_id {
-                if self.state.selected_project != Some(project_id) {
-                    self.finished_project_ids.insert(project_id);
+            if status == TurnStatus::Completed {
+                if let Some(project_id) = project_id {
+                    if self.state.selected_project != Some(project_id) {
+                        self.finished_project_ids.insert(project_id);
+                    }
+                }
+                let is_current_session = self.state.selected_session == Some(session_id)
+                    || self
+                        .pending_session_activation
+                        .map(|pending| pending.session_id)
+                        == Some(session_id);
+                if !is_current_session {
+                    self.finished_session_ids.insert(session_id);
                 }
             }
             if let Some(event) = event {

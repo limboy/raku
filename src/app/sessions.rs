@@ -25,6 +25,7 @@ impl Waku {
     }
 
     pub(super) fn select_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        self.finished_session_ids.remove(&session_id);
         self.request_session_activation(session_id, SessionActivationTransition::Visit, cx);
     }
 
@@ -42,6 +43,7 @@ impl Waku {
         {
             return;
         }
+        self.finished_session_ids.remove(&session_id);
         self.reveal_sidebar_session(session_id);
         let needs_hydration = self
             .state
@@ -168,6 +170,7 @@ impl Waku {
     }
 
     fn activate_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        self.finished_session_ids.remove(&session_id);
         let session_changed = self.state.selected_session != Some(session_id);
         if session_changed {
             self.capture_and_save_current_composer_draft(cx);
@@ -301,6 +304,7 @@ impl Waku {
             cx.notify();
             return;
         }
+        self.finished_session_ids.remove(&session_id);
         let Some(index) = self
             .state
             .sessions

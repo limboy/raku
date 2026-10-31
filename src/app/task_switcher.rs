@@ -530,7 +530,31 @@ impl Waku {
                     )
                     .when_some(status_icon, |row, icon_path| {
                         row.child(icon(icon_path, 12.0, status_color(&theme, session.status)))
-                    }),
+                    })
+                    .when(
+                        super::sidebar::sidebar_session_indicates_finished(
+                            &self.finished_session_ids,
+                            self.state.selected_session == Some(session.id),
+                            session.status,
+                            session.id,
+                        ),
+                        |row| {
+                            row.child(
+                                div()
+                                    .size(px(12.0))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .size(px(6.0))
+                                            .rounded_full()
+                                            .bg(theme.accent),
+                                    ),
+                            )
+                        },
+                    ),
             )
             .child(
                 div()

@@ -1161,7 +1161,31 @@ impl Waku {
                             12.0,
                             status_color(&theme, session.status),
                         ))
-                    }),
+                    })
+                    .when(
+                        sidebar_session_indicates_finished(
+                            &self.finished_session_ids,
+                            selected,
+                            session.status,
+                            session_id,
+                        ),
+                        |element| {
+                            element.child(
+                                div()
+                                    .size(px(12.0))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .size(px(6.0))
+                                            .rounded_full()
+                                            .bg(theme.accent),
+                                    ),
+                            )
+                        },
+                    ),
             )
             .when(!renaming, |element| {
                 element
@@ -1506,6 +1530,15 @@ fn sidebar_session_selected(
     pending_session.map_or(selected_session == Some(session_id), |pending| {
         pending == session_id
     })
+}
+
+pub(super) fn sidebar_session_indicates_finished(
+    finished_session_ids: &HashSet<Uuid>,
+    selected: bool,
+    status: SessionStatus,
+    session_id: Uuid,
+) -> bool {
+    !selected && status == SessionStatus::Idle && finished_session_ids.contains(&session_id)
 }
 
 #[cfg(test)]
@@ -1939,5 +1972,71 @@ mod tests {
             .fold(Pixels::ZERO, |height, row| height + row)
             - offset.offset_in_item;
         assert_eq!(visible_height, px(200.0));
+    }
+
+    #[test]
+    fn sidebar_session_indicates_finished_only_when_idle_unselected_and_finished() {
+        let session_id = Uuid::from_u128(42);
+        let mut finished = HashSet::new();
+        finished.insert(session_id);
+
+        // When in finished set, unselected, and idle: returns true
+        assert!(sidebar_session_indicates_finished(
+            &finished,
+            false,
+            SessionStatus::Idle,
+            session_id
+        ));
+
+        // When currently selected: returns false
+        assert!(!sidebar_session_indicates_finished(
+            &finished,
+            true,
+            SessionStatus::Idle,
+            session_id
+        ));
+
+        // When working or connecting: returns false
+        assert!(!sidebar_session_indicates_finished(
+            &finished,
+            false,
+            SessionStatus::Working,
+            session_id
+        ));
+        assert!(!sidebar_session_indicates_finished(
+            &finished,
+            false,
+            SessionStatus::Connecting,
+            session_id
+        ));
+
+        // When waiting or background or failed: returns false
+        assert!(!sidebar_session_indicates_finished(
+            &finished,
+            false,
+            SessionStatus::Waiting,
+            session_id
+        ));
+        assert!(!sidebar_session_indicates_finished(
+            &finished,
+            false,
+            SessionStatus::Background,
+            session_id
+        ));
+        assert!(!sidebar_session_indicates_finished(
+            &finished,
+            false,
+            SessionStatus::Failed,
+            session_id
+        ));
+
+        // When not in finished set: returns false
+        let other_session = Uuid::from_u128(99);
+        assert!(!sidebar_session_indicates_finished(
+            &finished,
+            false,
+            SessionStatus::Idle,
+            other_session
+        ));
     }
 }

@@ -602,6 +602,12 @@ impl Waku {
             return;
         }
         self.finished_project_ids.remove(&project_id);
+        self.finished_session_ids.retain(|id| {
+            self.state
+                .sessions
+                .iter()
+                .any(|session| session.id == *id && session.project_id != project_id)
+        });
         // Keep the row cache in step with this deletion so the next render
         // does not reset the whole list and discard its scroll position.
         remove_project_picker_row(
