@@ -2244,3 +2244,48 @@ usage_error.unknown_error:
   en: unknown error
 usage_error.curl_no_status:
   en: curl returned no HTTP status line
+
+settings.backups:
+  en: "Backup & Restore"
+backup.description:
+  en: "Back up Waku conversations, attachments, drafts, and settings. Project files and provider sign-ins are managed separately."
+backup.directory:
+  en: "Backup directory"
+backup.choose_directory:
+  en: "Choose Directory"
+backup.no_directory:
+  en: "Choose a directory to save your backup."
+backup.restore:
+  en: "Restore"
+backup.empty:
+  en: "No backup yet. Waku will create one automatically after you choose a directory."
+backup.loading:
+  en: "Checking the latest backup…"
+backup.creating:
+  en: "Creating backup…"
+backup.preparing_restore:
+  en: "Checking backup and preparing restore…"
+backup.created:
+  en: "Backup saved to %{path}"
+backup.snapshot_detail:
+  en: "%{projects} projects · %{sessions} conversations · %{size}"
+backup.confirm_title:
+  en: "Restore the latest backup and relaunch Waku?"
+backup.confirm_detail:
+  en: "%{path}\n\nWaku will relaunch to replace your current conversations, attachments, drafts, and settings with this backup."
+backup.restore_and_relaunch:
+  en: "Restore and Relaunch"
+backup.relaunching:
+  en: "Relaunching Waku to restore your backup…"
+backup.local_only:
+  en: "Backup and restore are available when Waku manages the local daemon."
+backup.error:
+  en: "Backup operation failed: %{error}"
+backup.invalid_response:
+  en: "The daemon returned an invalid backup response."
+backup.restore_failed:
+  en: "Restore failed. Your original data was kept: %{error}"
+backup.automatic_description:
+  en: "Backs up automatically every 24 hours while Waku is open, or on the next launch if overdue. Only the latest backup is kept."
+backup.latest:
+  en: "Latest backup"

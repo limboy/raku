@@ -20,6 +20,7 @@ macro_rules! tr {
 pub mod acp_session;
 pub mod amp_session;
 pub mod attachments;
+pub mod backup;
 pub mod blob_store;
 pub mod checkpoint;
 mod claude_metadata;

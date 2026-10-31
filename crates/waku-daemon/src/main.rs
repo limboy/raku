@@ -19,14 +19,6 @@ fn main() -> anyhow::Result<()> {
         .with_context(|| format!("could not bind Waku daemon to {}", arguments.bind))?;
     let address = listener.local_addr()?;
     ensure_bind_allowed(address, arguments.allow_non_loopback)?;
-    let ready = DaemonReady {
-        address: address.to_string(),
-        protocol_version: PROTOCOL_VERSION,
-        pid: std::process::id(),
-    };
-    println!("{}", serde_json::to_string(&ready)?);
-    std::io::stdout().flush()?;
-
     let shutdown = Arc::new(AtomicBool::new(false));
     if let Some(parent_pid) = arguments.parent_pid {
         let monitor_shutdown = shutdown.clone();
@@ -44,16 +36,26 @@ fn main() -> anyhow::Result<()> {
     }
 
     let task_path = waku_core::persistence::StateStore::default_path();
+    waku_core::backup::restore_on_startup(&task_path, &waku_core::DaemonSettings::default_path())
+        .context("could not finish Waku backup recovery")?;
     let settings = waku_core::DaemonSettingsStore::open_with_legacy(
         waku_core::DaemonSettings::default_path(),
         [task_path.with_file_name("settings.json")],
     )
     .context("could not load daemon settings")?;
     let task_store = waku_core::persistence::StateStore::daemon(task_path);
+    let backend = Arc::new(waku_core::daemon::WakuBackend::new(settings, task_store)?);
+    let ready = DaemonReady {
+        address: address.to_string(),
+        protocol_version: PROTOCOL_VERSION,
+        pid: std::process::id(),
+    };
+    println!("{}", serde_json::to_string(&ready)?);
+    std::io::stdout().flush()?;
     waku_core::serve(
         listener,
         token,
-        Arc::new(waku_core::daemon::WakuBackend::new(settings, task_store)?),
+        backend,
         shutdown,
         waku_core::ServerOptions {
             allowed_origins: arguments.allowed_origins.into_iter().collect(),

@@ -201,6 +201,11 @@ struct RuntimeMailbox {
 struct RequestDispatcher {
     backend: Arc<dyn Backend>,
     hub: Arc<Hub>,
+    /// Ordinary streaming saves are notifications. Keep their commit order
+    /// so an awaited save can act as a barrier before taking a backup,
+    /// without copying every resident transcript on the UI thread. Snapshot
+    /// I/O remains independent and never holds this writer's queue up.
+    task_save_mailbox: Mutex<Option<Sender<DispatchedRequest>>>,
     /// A live provider runtime is an actor owned by the daemon, not by any
     /// particular WebSocket connection. One mailbox per session preserves
     /// lifecycle order across desktop and web clients without serializing
@@ -431,6 +436,7 @@ impl RequestDispatcher {
         Self {
             backend,
             hub,
+            task_save_mailbox: Mutex::new(None),
             runtime_mailboxes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -441,10 +447,61 @@ impl RequestDispatcher {
         outgoing: Sender<ServerMessage>,
         source_subscriber_id: u64,
     ) {
-        if command_targets_runtime(&request.command) {
+        if matches!(&request.command, Command::SaveTaskState { .. }) {
+            self.dispatch_task_save(request, outgoing, source_subscriber_id);
+        } else if command_targets_runtime(&request.command) {
             self.dispatch_runtime(request, outgoing, source_subscriber_id);
         } else {
             self.dispatch_independent(request, outgoing, source_subscriber_id);
+        }
+    }
+
+    fn dispatch_task_save(
+        &self,
+        request: Request,
+        outgoing: Sender<ServerMessage>,
+        source_subscriber_id: u64,
+    ) {
+        let mut mailbox = self.task_save_mailbox.lock();
+        let mut dispatched = DispatchedRequest {
+            request,
+            outgoing,
+            source_subscriber_id,
+        };
+        if let Some(sender) = mailbox.as_ref() {
+            match sender.send(dispatched) {
+                Ok(()) => return,
+                Err(error) => dispatched = error.0,
+            }
+        }
+        let request_id = dispatched.request.request_id;
+        let outgoing = dispatched.outgoing.clone();
+        let (sender, requests) = unbounded::<DispatchedRequest>();
+        sender
+            .send(dispatched)
+            .expect("a new task-save mailbox has its receiver");
+        let backend = self.backend.clone();
+        let hub = self.hub.clone();
+        match std::thread::Builder::new()
+            .name("waku-task-state-writer".into())
+            .spawn(move || {
+                for dispatched in requests {
+                    handle_request(
+                        dispatched.request,
+                        dispatched.outgoing,
+                        dispatched.source_subscriber_id,
+                        backend.clone(),
+                        hub.clone(),
+                    );
+                }
+            }) {
+            Ok(_) => *mailbox = Some(sender),
+            Err(error) => send_dispatch_error(
+                request_id,
+                outgoing,
+                &self.hub,
+                format!("could not start task-state writer: {error}"),
+            ),
         }
     }
 
@@ -2010,6 +2067,56 @@ mod tests {
     struct BlockingProbeBackend {
         probe_started: Sender<()>,
         release_probe: Receiver<()>,
+    }
+
+    struct BlockingTaskSaveBackend {
+        saves: AtomicUsize,
+        first_started: Sender<()>,
+        release_first: Receiver<()>,
+    }
+
+    impl Backend for BlockingTaskSaveBackend {
+        fn handle(&self, _: Request, _: EventSink) -> anyhow::Result<ResponsePayload> {
+            if self.saves.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.first_started.send(()).unwrap();
+                self.release_first.recv().unwrap();
+            }
+            Ok(ResponsePayload::Ack)
+        }
+    }
+
+    #[test]
+    fn awaited_task_save_waits_for_preceding_notified_saves() {
+        let (outgoing, responses) = unbounded();
+        let (first_started, started) = bounded(1);
+        let (release, release_first) = bounded(1);
+        let backend = Arc::new(BlockingTaskSaveBackend {
+            saves: AtomicUsize::new(0),
+            first_started,
+            release_first,
+        });
+        let dispatcher = RequestDispatcher::new(backend.clone(), Arc::new(Hub::default()));
+        let save = |request_id| Request {
+            request_id,
+            session_id: Uuid::nil(),
+            runtime_id: Uuid::nil(),
+            command: Command::SaveTaskState {
+                projects: Vec::new(),
+                live_session_ids: Vec::new(),
+                sessions: Vec::new(),
+            },
+        };
+        dispatcher.dispatch(save(Uuid::nil()), outgoing.clone(), 0);
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        let barrier_id = Uuid::new_v4();
+        dispatcher.dispatch(save(barrier_id), outgoing, 0);
+        assert!(responses.recv_timeout(Duration::from_millis(30)).is_err());
+        assert_eq!(backend.saves.load(Ordering::SeqCst), 1);
+        release.send(()).unwrap();
+        assert!(
+            matches!(responses.recv_timeout(Duration::from_secs(1)).unwrap(), ServerMessage::Response { request_id, .. } if request_id == barrier_id)
+        );
+        assert_eq!(backend.saves.load(Ordering::SeqCst), 2);
     }
 
     impl Backend for BlockingProbeBackend {

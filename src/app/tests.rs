@@ -1869,6 +1869,7 @@ fn settings_navigation_contains_only_supported_pages() {
     if cfg!(debug_assertions) {
         expected.push(SettingsPage::ComputerUse);
     }
+    expected.push(SettingsPage::Backups);
     assert_eq!(
         visible_settings_pages()
             .map(|(page, ..)| page)

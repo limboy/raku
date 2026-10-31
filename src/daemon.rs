@@ -27,20 +27,30 @@ pub fn start_process() -> anyhow::Result<waku_client::DaemonSupervisor> {
         ),
         (None, None) => {}
     }
+    waku_client::persistence::prepare_pending_restore()
+        .context("could not prepare backup restore")?;
     let app_settings = waku_client::persistence::load_or_create_app_settings()
         .context("could not load desktop daemon settings")?;
-    waku_client::DaemonSupervisor::spawn_configured(
+    let daemon = waku_client::DaemonSupervisor::spawn_configured(
         &daemon_executable_path()?,
         cfg!(debug_assertions),
         app_settings.daemon_exposure,
-    )
+    )?;
+    waku_client::persistence::finish_pending_restore()
+        .context("could not restore desktop preferences")?;
+    Ok(daemon)
 }
 
 fn daemon_executable_path() -> anyhow::Result<PathBuf> {
     if let Some(path) = std::env::var_os("WAKU_DAEMON_PATH").filter(|path| !path.is_empty()) {
         return Ok(path.into());
     }
-    let executable = format!("waku-daemon{}", std::env::consts::EXE_SUFFIX);
+    let name = if cfg!(debug_assertions) {
+        "waku-debug-daemon"
+    } else {
+        "waku-daemon"
+    };
+    let executable = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let current = std::env::current_exe().context("could not locate the Waku executable")?;
 
     // Development keeps the daemon beside Cargo's debug artifacts rather than

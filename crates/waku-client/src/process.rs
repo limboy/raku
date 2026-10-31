@@ -194,7 +194,18 @@ impl DaemonProcess {
                 let _ = ready_tx.send(result);
             })
             .context("could not start Waku daemon readiness reader")?;
-        let ready = match ready_rx.recv_timeout(START_TIMEOUT) {
+        let restoring = crate::persistence::StateStore::default_path()
+            .with_file_name(waku_protocol::backup::READY_RESTORE)
+            .exists()
+            || crate::persistence::StateStore::default_path()
+                .with_file_name(".restore-journal.json")
+                .exists();
+        let timeout = if restoring {
+            Duration::from_secs(30 * 60)
+        } else {
+            START_TIMEOUT
+        };
+        let ready = match ready_rx.recv_timeout(timeout) {
             Ok(Ok(ready)) => ready,
             Ok(Err(error)) => {
                 let _ = child.kill();
@@ -444,6 +455,26 @@ impl DaemonSupervisor {
         self.inner.settings.lock().clone()
     }
 
+    /// Stop the desktop-owned daemon and its restart loop before a restore
+    /// relaunch. Run off the UI thread; process teardown can wait for exit.
+    pub fn shutdown_for_relaunch(&self) -> anyhow::Result<()> {
+        self.inner
+            .executable
+            .as_ref()
+            .context("the connected daemon is managed outside Waku Desktop")?;
+        let _restart = self.inner.restart.lock();
+        self.inner.running.store(false, Ordering::Release);
+        let previous = {
+            let mut target = self.inner.target.lock();
+            let disconnected = target.client();
+            std::mem::replace(&mut *target, DaemonTarget::Restarting(disconnected))
+        };
+        // UI readers can still acquire the target while the old process
+        // shuts down. Returning guarantees that its writers have exited.
+        drop(previous);
+        Ok(())
+    }
+
     /// Restart only the desktop-managed daemon with a new listener policy.
     /// The caller should run this off the UI thread.
     pub fn reconfigure(&self, exposure: DaemonExposureSettings) -> anyhow::Result<()> {
@@ -573,6 +604,9 @@ fn monitor_daemon(
             continue;
         }
         let _restart = inner.restart.lock();
+        if !inner.running.load(Ordering::Acquire) {
+            return;
+        }
         let Some(exposure) = inner.exposure.lock().clone() else {
             return;
         };
@@ -597,6 +631,9 @@ fn replace_local_daemon(
     executable: &Path,
     exposure: &DaemonExposureSettings,
 ) -> anyhow::Result<()> {
+    if !inner.running.load(Ordering::Acquire) {
+        bail!("the daemon supervisor has been stopped");
+    }
     let previous = {
         let mut target = inner.target.lock();
         match &*target {
@@ -689,6 +726,89 @@ fn persist_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_relaunch_stops_the_old_process_without_blocking_ui_readers() {
+        use crossbeam_channel::bounded;
+        use std::net::TcpListener;
+        use waku_protocol::{ClientMessage, ServerMessage};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        // The stand-in writer exits when the test server closes its input.
+        let mut child = ProcessCommand::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let input = child.stdin.take().unwrap();
+        let (shutdown_seen, shutdown) = bounded(1);
+        let (release, release_rx) = bounded(1);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let hello: ClientMessage =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert!(matches!(hello, ClientMessage::Hello { .. }));
+            socket
+                .send(tungstenite::Message::Text(
+                    serde_json::to_string(&ServerMessage::Hello {
+                        protocol_version: PROTOCOL_VERSION,
+                        daemon_version: "test".into(),
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .unwrap();
+            let message: ClientMessage =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert!(matches!(message, ClientMessage::Shutdown));
+            shutdown_seen.send(()).unwrap();
+            let _ = release_rx.recv();
+            drop(input);
+        });
+        let client = DaemonClient::connect(&address.to_string(), "test-token".into()).unwrap();
+        let (settings_updates, _settings_rx) = unbounded();
+        let supervisor = DaemonSupervisor {
+            inner: Arc::new(SupervisorInner {
+                executable: Some(PathBuf::from("/bin/cat")),
+                target: Mutex::new(DaemonTarget::Local(DaemonProcess { client, child })),
+                exposure: Mutex::new(Some(DaemonExposureSettings::default())),
+                restart: Mutex::new(()),
+                settings: Mutex::new(DaemonSettings::default()),
+                persisted_settings: Mutex::new(None),
+                settings_updates,
+                client_updates: Mutex::new(Vec::new()),
+                running: AtomicBool::new(true),
+            }),
+        };
+        let stopping = supervisor.clone();
+        let stop = std::thread::spawn(move || stopping.shutdown_for_relaunch());
+        shutdown.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Teardown is waiting on process exit, but frame/action readers can
+        // still acquire the active-client store immediately.
+        let target = supervisor
+            .inner
+            .target
+            .try_lock()
+            .expect("UI client store must stay available");
+        assert!(matches!(&*target, DaemonTarget::Restarting(_)));
+        drop(target);
+        assert!(!supervisor.inner.running.load(Ordering::Acquire));
+        release.send(()).unwrap();
+        stop.join().unwrap().unwrap();
+        server.join().unwrap();
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
 
     #[test]
     fn browser_origins_are_exact_and_deduplicated() {

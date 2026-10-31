@@ -49,6 +49,9 @@ impl Waku {
         if page == SettingsPage::Skills {
             self.ensure_skills_catalog(false, cx);
         }
+        if page == SettingsPage::Backups {
+            self.refresh_backups(cx);
+        }
         cx.notify();
     }
 

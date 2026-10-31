@@ -166,6 +166,19 @@ impl DaemonClient {
         runtime_id: Uuid,
         command: Command,
     ) -> anyhow::Result<ResponsePayload> {
+        // Copying a large local snapshot can outlive an ordinary RPC. Keep
+        // the UI asynchronous without reporting a timeout while the daemon
+        // is still publishing a valid backup or restore handoff.
+        let timeout = if matches!(
+            &command,
+            Command::CreateBackup { .. }
+                | Command::CreateAutomaticBackup { .. }
+                | Command::StageRestore { .. }
+        ) {
+            Duration::from_secs(30 * 60)
+        } else {
+            REQUEST_TIMEOUT
+        };
         if self.inner.disconnected.load(Ordering::Acquire) {
             bail!("Waku daemon is disconnected");
         }
@@ -187,7 +200,7 @@ impl DaemonClient {
             self.inner.pending.lock().remove(&request_id);
             bail!("Waku daemon connection is closed");
         }
-        match response_rx.recv_timeout(REQUEST_TIMEOUT) {
+        match response_rx.recv_timeout(timeout) {
             Ok(Ok(payload)) => Ok(payload),
             Ok(Err(error)) => Err(anyhow!(error.message)),
             Err(error) => {

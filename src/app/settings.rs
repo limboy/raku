@@ -17,7 +17,7 @@ const SETTINGS_CONTEXT: &str = "Settings";
 const SETTINGS_USAGE_MAX_WIDTH: f32 = 1024.0;
 
 /// The remaining settings sections, in navigation order.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str); 6] = [
     (
         SettingsPage::Appearance,
         "settings.appearance",
@@ -38,6 +38,11 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
         SettingsPage::ComputerUse,
         "settings.computer_use",
         "icons/cursor-spark.svg",
+    ),
+    (
+        SettingsPage::Backups,
+        "settings.backups",
+        "icons/cloud-upload.svg",
     ),
 ];
 
@@ -327,6 +332,7 @@ impl Waku {
             SettingsPage::Skills => tr!("settings.skills"),
             SettingsPage::Usage => tr!("settings.usage"),
             SettingsPage::ComputerUse => tr!("settings.computer_use"),
+            SettingsPage::Backups => tr!("settings.backups"),
         };
         let header = div()
             .h(px(58.0))
@@ -365,6 +371,7 @@ impl Waku {
                     SettingsPage::Providers => self.render_providers_settings(cx),
                     SettingsPage::Usage => self.render_usage_settings(cx),
                     SettingsPage::ComputerUse => self.render_computer_use_settings(cx),
+                    SettingsPage::Backups => self.render_backup_settings(cx),
                     SettingsPage::Skills => unreachable!(),
                 });
             div()

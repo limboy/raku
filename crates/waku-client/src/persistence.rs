@@ -263,6 +263,7 @@ pub struct AppSettings {
     /// catalog id. `None` — and an id no longer installed — fall back to the
     /// platform file manager.
     pub open_in_app: Option<String>,
+    pub backup_directory: Option<PathBuf>,
 }
 
 impl Default for AppSettings {
@@ -278,6 +279,7 @@ impl Default for AppSettings {
             render_math: true,
             daemon_exposure: DaemonExposureSettings::default(),
             open_in_app: None,
+            backup_directory: None,
         }
     }
 }
@@ -402,6 +404,8 @@ pub struct PersistedState {
     pub daemon_exposure: DaemonExposureSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_in_app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_directory: Option<PathBuf>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
     #[serde(default = "default_right_panel_visibility")]
@@ -476,6 +480,7 @@ impl PersistedState {
             render_math: true,
             daemon_exposure: DaemonExposureSettings::default(),
             open_in_app: None,
+            backup_directory: None,
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -593,6 +598,28 @@ impl PersistedState {
         self.daemon_settings_extra = settings.extra;
     }
 
+    pub fn desktop_backup(&self) -> io::Result<waku_protocol::backup::DesktopBackup> {
+        Ok(waku_protocol::backup::DesktopBackup {
+            settings: serde_json::to_value(self.app_settings()).map_err(to_io_error)?,
+            state: serde_json::to_value(self.app_state()).map_err(to_io_error)?,
+        })
+    }
+
+    /// A backup must wait for the user's current edits to reach SQLite,
+    /// rather than race the ordinary fire-and-forget streaming save.
+    fn backup_task_save(&self) -> Command {
+        Command::SaveTaskState {
+            projects: self.projects.clone(),
+            live_session_ids: self.sessions.iter().map(|session| session.id).collect(),
+            sessions: self
+                .sessions
+                .iter()
+                .filter(|session| self.dirty_sessions.contains(&session.id))
+                .cloned()
+                .collect(),
+        }
+    }
+
     fn app_settings(&self) -> AppSettings {
         let mut settings = AppSettings {
             analytics_enabled: self.analytics_enabled,
@@ -605,6 +632,7 @@ impl PersistedState {
             render_math: self.render_math,
             daemon_exposure: self.daemon_exposure.clone(),
             open_in_app: self.open_in_app.clone(),
+            backup_directory: self.backup_directory.clone(),
         };
         settings.normalize_desktop_defaults();
         settings
@@ -647,6 +675,7 @@ impl PersistedState {
         self.render_math = settings.render_math;
         self.daemon_exposure = settings.daemon_exposure;
         self.open_in_app = settings.open_in_app;
+        self.backup_directory = settings.backup_directory;
     }
 
     fn apply_app_state(&mut self, app_state: AppState) {
@@ -769,6 +798,77 @@ fn default_app_state_path() -> PathBuf {
     StateStore::default_path().with_file_name("state.json")
 }
 
+/// Arm only on a new desktop launch. Rebuilding the child daemon while the
+/// desktop is still running must never replace data under its live model.
+pub fn prepare_pending_restore() -> io::Result<()> {
+    use waku_protocol::backup::{PENDING_RESTORE, READY_RESTORE};
+    let directory = StateStore::default_path().parent().unwrap().to_owned();
+    let pending = directory.join(PENDING_RESTORE);
+    if pending.try_exists()? {
+        fs::rename(pending, directory.join(READY_RESTORE))?;
+    }
+    Ok(())
+}
+
+pub fn finish_pending_restore() -> io::Result<()> {
+    let path = StateStore::default_path().with_file_name(waku_protocol::backup::RESTORED_DESKTOP);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    restore_desktop_documents(
+        &default_app_settings_path(),
+        &default_app_state_path(),
+        &bytes,
+    )?;
+    fs::remove_file(path)
+}
+
+pub fn take_restore_error() -> io::Result<Option<String>> {
+    let path = StateStore::default_path().with_file_name(waku_protocol::backup::RESTORE_ERROR);
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let error = serde_json::from_slice(&bytes).map_err(to_io_error)?;
+            fs::remove_file(path)?;
+            Ok(Some(error))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn restore_desktop_documents(
+    settings_path: &Path,
+    state_path: &Path,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let desktop: waku_protocol::backup::DesktopBackup =
+        serde_json::from_slice(bytes).map_err(to_io_error)?;
+    let mut settings: AppSettings =
+        serde_json::from_value(desktop.settings).map_err(to_io_error)?;
+    let state: AppState = serde_json::from_value(desktop.state).map_err(to_io_error)?;
+    if state.app_state_version != APP_STATE_VERSION {
+        return Err(io::Error::other(
+            "unsupported desktop state version in backup",
+        ));
+    }
+    // These locate this installation and must survive moving a backup between
+    // machines. Apply the same desktop defaults as a normal preferences load.
+    let current: Option<AppSettings> = fs::read(settings_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    settings.backup_directory = current
+        .as_ref()
+        .and_then(|current| current.backup_directory.clone());
+    if let Some(current) = current {
+        settings.daemon_exposure = current.daemon_exposure;
+    }
+    settings.normalize_desktop_defaults();
+    write_json_atomically(settings_path, &settings)?;
+    write_json_atomically(state_path, &state)
+}
+
 fn read_app_state_file(path: &Path) -> Option<AppState> {
     let bytes = fs::read(path).ok()?;
     let app_state = serde_json::from_slice::<AppState>(&bytes).ok()?;
@@ -857,6 +957,16 @@ pub struct StateStore {
 }
 
 impl StateStore {
+    pub fn backup_task_save(&self, state: &PersistedState) -> io::Result<Command> {
+        if !self.task_state_loaded.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "task state was not loaded; refusing to overwrite daemon data before backup",
+            ));
+        }
+        Ok(state.backup_task_save())
+    }
+
     pub fn default_path() -> PathBuf {
         if cfg!(debug_assertions) {
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1166,6 +1276,76 @@ fn restore_task_state_skeletons(sessions: &mut [AgentSession]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_directory_is_optional_and_round_trips_in_desktop_settings() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(defaults.backup_directory.is_none());
+        let mut state = PersistedState::empty();
+        state.backup_directory = Some(PathBuf::from("/backups/Waku"));
+        let documents = state.desktop_backup().unwrap();
+        let mut restored = PersistedState::empty();
+        restored.apply_app_settings(serde_json::from_value(documents.settings).unwrap());
+        assert_eq!(restored.backup_directory, state.backup_directory);
+    }
+
+    #[test]
+    fn restore_preferences_and_navigation_but_keep_local_backup_path_and_token() {
+        let directory =
+            std::env::temp_dir().join(format!("waku-desktop-restore-{}", Uuid::new_v4()));
+        let settings_path = directory.join("app.json");
+        let state_path = directory.join("state.json");
+        let mut current = AppSettings::default();
+        current.backup_directory = Some(PathBuf::from("/local/backups"));
+        let token = current.daemon_exposure.token.clone();
+        write_json_atomically(&settings_path, &current).unwrap();
+        let mut state = PersistedState::empty();
+        state.theme = ThemePreference::Dark;
+        state.language = AppLanguage::SimplifiedChinese;
+        state.ui_font_size = 17.0;
+        state.backup_directory = Some(PathBuf::from("/old-machine/backups"));
+        state.selected_project = Some(Uuid::new_v4());
+        let documents = state.desktop_backup().unwrap();
+        restore_desktop_documents(
+            &settings_path,
+            &state_path,
+            &serde_json::to_vec(&documents).unwrap(),
+        )
+        .unwrap();
+        let settings: AppSettings =
+            serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+        assert_eq!(settings.theme, ThemePreference::Dark);
+        assert_eq!(settings.language, state.language);
+        assert_eq!(settings.ui_font_size, 17.0);
+        assert_eq!(settings.backup_directory, current.backup_directory);
+        assert_eq!(settings.daemon_exposure.token, token);
+        let restored: AppState = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(restored.selected_project, state.selected_project);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn invalid_desktop_backup_does_not_replace_existing_documents() {
+        let directory =
+            std::env::temp_dir().join(format!("waku-desktop-restore-{}", Uuid::new_v4()));
+        let settings_path = directory.join("app.json");
+        let state_path = directory.join("state.json");
+        write_json_atomically(&settings_path, &AppSettings::default()).unwrap();
+        let original = fs::read(&settings_path).unwrap();
+        let mut documents = PersistedState::empty().desktop_backup().unwrap();
+        documents.state["app_state_version"] = serde_json::json!(999);
+        assert!(
+            restore_desktop_documents(
+                &settings_path,
+                &state_path,
+                &serde_json::to_vec(&documents).unwrap()
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&settings_path).unwrap(), original);
+        assert!(!state_path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn model_picker_favorites_filter_defaults_off_and_persists() {

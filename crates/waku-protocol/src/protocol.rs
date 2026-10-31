@@ -6,6 +6,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::attachments::{AttachmentUpload, StoredAttachment};
+use crate::backup::{BackupInfo, DesktopBackup};
 use crate::computer_use::ComputerPermissions;
 use crate::model::{
     AgentSession, GoalOperation, Project, ProviderKind, ProviderProbe, ProviderResumeCursor,
@@ -141,6 +142,22 @@ pub enum Command {
     UpdateSettings {
         settings: DaemonSettings,
     },
+    ListBackups {
+        directory: PathBuf,
+    },
+    CreateBackup {
+        directory: PathBuf,
+        desktop: DesktopBackup,
+    },
+    CreateAutomaticBackup {
+        directory: PathBuf,
+        desktop: DesktopBackup,
+    },
+    /// Validates and copies a backup for application at the next desktop launch.
+    StageRestore {
+        path: PathBuf,
+    },
+    CancelRestore,
     ProbeProvider {
         provider: ProviderKind,
         binary_override: Option<String>,
@@ -390,6 +407,19 @@ pub enum ResponsePayload {
     },
     Settings {
         settings: DaemonSettings,
+    },
+    Backups {
+        backups: Vec<BackupInfo>,
+    },
+    BackupCreated {
+        backup: BackupInfo,
+    },
+    AutomaticBackup {
+        backup: Option<BackupInfo>,
+        next_backup_at: u64,
+    },
+    RestoreStaged {
+        backup: BackupInfo,
     },
     ProviderProbe {
         probe: ProviderProbe,

@@ -215,6 +215,7 @@ enum SettingsPage {
     Skills,
     Usage,
     ComputerUse,
+    Backups,
 }
 
 impl SettingsPage {
@@ -1089,7 +1090,8 @@ pub struct Waku {
     model_search: Entity<TextInput>,
     settings_focus: FocusHandle,
     settings_close_focus: FocusHandle,
-    settings_tab_focus: [FocusHandle; 5],
+    settings_tab_focus: [FocusHandle; 6],
+    backup_settings: backup_settings::BackupSettings,
     settings_previous_focus: Option<FocusHandle>,
     settings_focus_generation: u64,
     sidebar_settings_focus: FocusHandle,
@@ -1616,6 +1618,7 @@ pub struct Waku {
 mod activity_diff;
 mod autocomplete;
 mod background_work;
+mod backup_settings;
 mod branches;
 mod command_palette;
 mod commit_dialog;
@@ -1871,6 +1874,7 @@ impl Waku {
     ) -> Entity<Self> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let store = StateStore::remote(daemon.clone());
+        let restore_error = crate::persistence::take_restore_error().ok().flatten();
         let composer_draft_store = ComposerDraftStore::remote(daemon.clone());
         let composer_drafts = composer_draft_store.load().unwrap_or_default();
         let mut state = store.load_or_fresh(cwd);
@@ -2377,17 +2381,22 @@ impl Waku {
             // made inside the debounce window is durable before the process
             // exits. Filesystem work still stays off the UI thread.
             cx.on_app_quit(|this, cx| {
-                this.capture_current_composer_draft(cx);
-                this.composer_draft_save_generation =
-                    this.composer_draft_save_generation.saturating_add(1);
-                let generation = this.composer_draft_save_generation;
-                let store = this.composer_draft_store.clone();
-                let drafts = this.composer_drafts.clone();
-                let save = cx
-                    .background_executor()
-                    .spawn(async move { store.save(drafts, generation) });
+                // A restore has already stopped the old daemon. Its checked
+                // snapshot owns the next launch's drafts and preferences.
+                let save = (!this.backup_settings.is_restoring()).then(|| {
+                    this.capture_current_composer_draft(cx);
+                    this.composer_draft_save_generation =
+                        this.composer_draft_save_generation.saturating_add(1);
+                    let generation = this.composer_draft_save_generation;
+                    let store = this.composer_draft_store.clone();
+                    let drafts = this.composer_drafts.clone();
+                    cx.background_executor()
+                        .spawn(async move { store.save(drafts, generation) })
+                });
                 async move {
-                    let _ = save.await;
+                    if let Some(save) = save {
+                        let _ = save.await;
+                    }
                 }
             })
             .detach();
@@ -2395,7 +2404,9 @@ impl Waku {
             // Window-frame changes are only mirrored in memory; the quit save
             // is what lands the final position and size on disk.
             cx.on_app_quit(|this, _| {
-                this.save();
+                if !this.backup_settings.is_restoring() {
+                    this.save();
+                }
                 async {}
             })
             .detach();
@@ -2642,6 +2653,7 @@ impl Waku {
                 settings_focus,
                 settings_close_focus: cx.focus_handle(),
                 settings_tab_focus: std::array::from_fn(|_| cx.focus_handle()),
+                backup_settings: backup_settings::BackupSettings::new(cx),
                 settings_previous_focus: None,
                 settings_focus_generation: 0,
                 sidebar_settings_focus: cx.focus_handle(),
@@ -2925,7 +2937,13 @@ impl Waku {
         // that there is an entity to notify and deliberately not before the
         // first frame.
         entity.update(cx, |this, cx| {
+            if let Some(error) = restore_error {
+                let message = tr!("backup.restore_failed", error = error);
+                this.backup_settings.set_error(message.clone());
+                this.show_toast(message);
+            }
             this.start_sidebar_date_clock(cx);
+            this.schedule_automatic_backups(cx);
             this.restart_task_state_sync();
             for session_id in startup_live_session_ids {
                 this.start_runtime_attachment(session_id, cx);

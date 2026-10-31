@@ -48,6 +48,7 @@ pub struct WakuBackend {
     #[cfg(all(test, unix))]
     terminal_shell: Option<alacritty_terminal::tty::Shell>,
     settings: DaemonSettingsStore,
+    backup_lock: Mutex<()>,
     task_store: StateStore,
     task_state: Mutex<PersistedState>,
     removed_session_ids: Mutex<HashSet<Uuid>>,
@@ -84,6 +85,7 @@ impl WakuBackend {
             #[cfg(all(test, unix))]
             terminal_shell: None,
             settings,
+            backup_lock: Mutex::new(()),
             task_store,
             task_state: Mutex::new(task_state),
             removed_session_ids: Mutex::new(HashSet::new()),
@@ -245,6 +247,45 @@ impl Backend for WakuBackend {
             }),
             Command::UpdateSettings { settings } => {
                 self.settings.replace(settings)?;
+                Ok(ResponsePayload::Ack)
+            }
+            Command::ListBackups { directory } => Ok(ResponsePayload::Backups {
+                backups: crate::backup::list(&directory)?,
+            }),
+            Command::CreateBackup { directory, desktop } => {
+                let _backup = self.backup_lock.lock();
+                Ok(ResponsePayload::BackupCreated {
+                    backup: crate::backup::create(
+                        self.task_store.path(),
+                        &self.settings.get(),
+                        &directory,
+                        &desktop,
+                    )?,
+                })
+            }
+            Command::StageRestore { path } => {
+                let _backup = self.backup_lock.lock();
+                Ok(ResponsePayload::RestoreStaged {
+                    backup: crate::backup::stage_restore(self.task_store.path(), &path)?,
+                })
+            }
+            Command::CreateAutomaticBackup { directory, desktop } => {
+                let _backup = self.backup_lock.lock();
+                let (backup, next_backup_at) = crate::backup::create_automatic(
+                    self.task_store.path(),
+                    &self.settings.get(),
+                    &directory,
+                    &desktop,
+                    crate::model::unix_time(),
+                )?;
+                Ok(ResponsePayload::AutomaticBackup {
+                    backup,
+                    next_backup_at,
+                })
+            }
+            Command::CancelRestore => {
+                let _backup = self.backup_lock.lock();
+                crate::backup::cancel_restore(self.task_store.path())?;
                 Ok(ResponsePayload::Ack)
             }
             Command::ProbeProvider {
@@ -1777,6 +1818,11 @@ fn handle_driver_command(
         | Command::Start { .. }
         | Command::GetSettings
         | Command::UpdateSettings { .. }
+        | Command::ListBackups { .. }
+        | Command::CreateBackup { .. }
+        | Command::CreateAutomaticBackup { .. }
+        | Command::StageRestore { .. }
+        | Command::CancelRestore
         | Command::ProbeProvider { .. }
         | Command::FetchPlanUsage { .. }
         | Command::ProbeComputerPermissions { .. }
