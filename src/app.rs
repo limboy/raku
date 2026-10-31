@@ -1629,6 +1629,7 @@ mod project_picker;
 mod render;
 mod right_panel;
 mod runtime;
+mod session_export;
 mod sessions;
 mod settings;
 mod sidebar;

@@ -48,6 +48,8 @@ structured protocol and session continuity.
 - Switch models, reasoning effort, and access modes from a shared interface.
 - Queue or steer follow-up messages while an agent is working.
 - Rewind Git-backed tasks with conversation-aware checkpoints.
+- Export a session as Markdown from its context menu or File menu using
+  Export Conversation or Export All (including reasoning and tools).
 - Store app state locally, with no Waku account or remote service required.
 
 ## Architecture

@@ -40,6 +40,7 @@ mod md;
 mod platform;
 mod query;
 mod review_diff;
+mod session_export;
 mod terminal;
 mod theme;
 mod ui;
@@ -65,6 +66,8 @@ actions!(
         CloseWindow,
         NewSession,
         NewProject,
+        ExportConversation,
+        ExportAll,
         OpenSettings,
         CheckForUpdates,
         ToggleSidebar,
@@ -438,6 +441,9 @@ pub(crate) fn set_app_menus(cx: &mut App, updater_available: bool) {
             items: vec![
                 MenuItem::action(tr!("menu.new_task"), NewSession),
                 MenuItem::action(tr!("menu.new_project"), NewProject),
+                MenuItem::separator(),
+                MenuItem::action(tr!("session.export_conversation"), ExportConversation),
+                MenuItem::action(tr!("session.export_all"), ExportAll),
             ],
         },
         Menu {

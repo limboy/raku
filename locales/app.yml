@@ -14,6 +14,16 @@ menu.new_task:
   en: New Task
 menu.new_project:
   en: New Project…
+session.export_conversation:
+  en: Export Conversation
+session.export_all:
+  en: Export All
+session.exported:
+  en: "Session exported to %{path}"
+errors.export_session:
+  en: "Could not export session: %{error}"
+errors.export_session_missing:
+  en: The session is no longer available.
 menu.edit:
   en: Edit
 menu.undo:

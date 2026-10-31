@@ -1151,11 +1151,32 @@ impl Waku {
                 &menu,
                 move |_| {
                     let rename_waku = waku.clone();
+                    let export_conversation_waku = waku.clone();
+                    let export_all_waku = waku.clone();
                     let remove_waku = waku.clone();
                     vec![
                         MenuItem::new(tr!("common.rename"), move |window, cx| {
                             let _ = rename_waku.update(cx, |waku, cx| {
                                 waku.begin_session_rename(session_id, window, cx);
+                            });
+                        }),
+                        MenuItem::Separator,
+                        MenuItem::new(tr!("session.export_conversation"), move |_, cx| {
+                            let _ = export_conversation_waku.update(cx, |waku, cx| {
+                                waku.export_session(
+                                    session_id,
+                                    crate::session_export::ExportScope::Conversation,
+                                    cx,
+                                );
+                            });
+                        }),
+                        MenuItem::new(tr!("session.export_all"), move |_, cx| {
+                            let _ = export_all_waku.update(cx, |waku, cx| {
+                                waku.export_session(
+                                    session_id,
+                                    crate::session_export::ExportScope::All,
+                                    cx,
+                                );
                             });
                         }),
                         MenuItem::Separator,

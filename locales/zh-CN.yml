@@ -7,6 +7,11 @@ menu.quit: 退出 %{app}
 menu.file: 文件
 menu.new_task: 新建任务
 menu.new_project: 新建项目…
+session.export_conversation: 导出对话
+session.export_all: 导出全部内容
+session.exported: "会话已导出到 %{path}"
+errors.export_session: "无法导出会话：%{error}"
+errors.export_session_missing: 该会话已不存在。
 menu.edit: 编辑
 menu.undo: 撤销
 menu.redo: 重做
