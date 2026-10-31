@@ -87,8 +87,8 @@ impl Waku {
             let _ = weak.update(cx, |this, cx| {
                 this.project_picker_highlight = None;
                 if open {
-                    // Forces the next sync to reset the list, which also
-                    // scrolls the current project back into view.
+                    // Forces the next sync to reset the list, showing the
+                    // most recently changed projects at the top.
                     this.project_picker_row_cache.borrow_mut().clear();
                     search.update(cx, |input, cx| input.clear(cx));
                 } else {
@@ -131,8 +131,8 @@ impl Waku {
         let projects = Rc::new(if handle.is_open() {
             visible_project_entries(
                 &self.state.projects,
+                &self.state.sessions,
                 &self.state.removed_project_ids,
-                selected_project,
                 self.project_search.read(cx).content(),
                 &mut self.project_picker_matcher.borrow_mut(),
             )
@@ -620,30 +620,42 @@ fn project_picker_row(id: impl Into<ElementId>, highlighted: bool, theme: &Theme
         .active(|element| element.opacity(0.85))
 }
 
-/// The picker's project rows. Without a query that is every real project, the
-/// current one first; with one, only fuzzy matches, best first. The matcher
+/// The picker's project rows. Without a query that is every real project,
+/// newest session change first; with one, only fuzzy matches, best first. The matcher
 /// has no length penalty, so equal scores fall back to fzf's default
 /// tiebreak — the shorter name, which puts an exact name above its longer
 /// namesakes — and then to the unfiltered order.
 fn visible_project_entries(
     projects: &[Project],
+    sessions: &[AgentSession],
     removed_project_ids: &HashSet<Uuid>,
-    selected: Option<Uuid>,
     query: &str,
     matcher: &mut Matcher,
 ) -> Vec<(Uuid, SharedString)> {
-    let ordered = projects
+    // Aggregate lightweight session metadata once for the whole open picker,
+    // never from its virtualized row builders or by hydrating transcripts.
+    let mut last_changed = HashMap::<Uuid, u64>::with_capacity(projects.len());
+    for session in sessions {
+        if !session.has_started() {
+            continue;
+        }
+        let timestamp = session.last_reply_at.unwrap_or(session.created_at);
+        let latest = last_changed.entry(session.project_id).or_default();
+        *latest = (*latest).max(timestamp);
+    }
+    let mut ordered = projects
         .iter()
-        .filter(|project| Some(project.id) == selected)
-        .chain(
-            projects
-                .iter()
-                .filter(|project| Some(project.id) != selected),
-        )
-        .filter(|project| !project.is_projectless() && !removed_project_ids.contains(&project.id));
+        .filter(|project| !project.is_projectless() && !removed_project_ids.contains(&project.id))
+        .collect::<Vec<_>>();
+    // Stable ties preserve saved order; projects without sessions follow
+    // projects with activity. Selection never overrides session recency.
+    ordered.sort_by_key(|project| {
+        std::cmp::Reverse(last_changed.get(&project.id).copied().unwrap_or_default())
+    });
     let query = query.trim();
     if query.is_empty() {
         return ordered
+            .into_iter()
             .map(|project| (project.id, project.display_name().into()))
             .collect();
     }
@@ -651,6 +663,7 @@ fn visible_project_entries(
     let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
     let mut utf32 = Vec::new();
     let mut scored = ordered
+        .into_iter()
         .filter_map(|project| {
             let name = project.display_name();
             let score = pattern.score(Utf32Str::new(&name, &mut utf32), matcher)?;
@@ -685,17 +698,61 @@ mod tests {
     }
 
     #[test]
-    fn project_picker_lists_the_current_project_first() {
-        let projects = vec![project("before.town"), project("wikis"), project("crow")];
+    fn project_picker_orders_by_each_projects_latest_session_change() {
+        let projects = vec![
+            project("before.town"),
+            project("wikis"),
+            project("crow"),
+            project("no-sessions"),
+        ];
+        let mut sessions = vec![
+            session(&projects[0], 40),
+            session(&projects[1], 60),
+            session(&projects[0], 80),
+            session(&projects[2], 20),
+        ];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        let entries = visible_project_entries(
-            &projects,
-            &HashSet::new(),
-            Some(projects[1].id),
-            "",
-            &mut matcher,
+        let entries =
+            visible_project_entries(&projects, &sessions, &HashSet::new(), "", &mut matcher);
+        assert_eq!(
+            names(&entries),
+            vec!["before.town", "wikis", "crow", "no-sessions"]
         );
-        assert_eq!(names(&entries), vec!["wikis", "before.town", "crow"]);
+
+        // A change to an older session promotes its project on the next render.
+        sessions[3].last_reply_at = Some(100);
+        sessions[3].updated_at = 100;
+        let entries =
+            visible_project_entries(&projects, &sessions, &HashSet::new(), "", &mut matcher);
+        assert_eq!(
+            names(&entries),
+            vec!["crow", "before.town", "wikis", "no-sessions"]
+        );
+    }
+
+    #[test]
+    fn unstarted_draft_sessions_do_not_promote_projects() {
+        let projects = vec![project("active-project"), project("draft-project")];
+        let mut draft = AgentSession::new(projects[1].id, ProviderKind::Codex);
+        draft.created_at = 100;
+        draft.updated_at = 100;
+        draft.last_reply_at = Some(100);
+        assert!(!draft.has_started());
+
+        let sessions = vec![session(&projects[0], 50), draft];
+        let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
+        let entries =
+            visible_project_entries(&projects, &sessions, &HashSet::new(), "", &mut matcher);
+        assert_eq!(names(&entries), vec!["active-project", "draft-project"]);
+    }
+
+    fn session(project: &Project, timestamp: u64) -> AgentSession {
+        let mut session = AgentSession::new(project.id, ProviderKind::Codex);
+        session.push_message(MessageRole::User, "Started task");
+        session.created_at = timestamp;
+        session.last_reply_at = Some(timestamp);
+        session.updated_at = timestamp;
+        session
     }
 
     #[test]
@@ -707,8 +764,14 @@ mod tests {
             project("waku-crow-sync"),
         ];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        let entries =
-            visible_project_entries(&projects, &HashSet::new(), None, "  CROW ", &mut matcher);
+        let sessions = vec![session(&projects[0], 80), session(&projects[2], 20)];
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &HashSet::new(),
+            "  CROW ",
+            &mut matcher,
+        );
         // Every match survives, the exact name ranks above its longer
         // namesakes, and the non-matching project is gone.
         assert_eq!(
@@ -716,12 +779,11 @@ mod tests {
             vec!["crow", "crow-companion", "waku-crow-sync"]
         );
 
-        let entries =
-            visible_project_entries(&projects, &HashSet::new(), None, "sts", &mut matcher);
+        let entries = visible_project_entries(&projects, &[], &HashSet::new(), "sts", &mut matcher);
         assert_eq!(names(&entries), vec!["speech-to-subtitle"]);
 
         assert!(
-            visible_project_entries(&projects, &HashSet::new(), None, "zzz", &mut matcher)
+            visible_project_entries(&projects, &[], &HashSet::new(), "zzz", &mut matcher)
                 .is_empty()
         );
     }
@@ -729,31 +791,28 @@ mod tests {
     #[test]
     fn project_picker_ties_keep_the_unfiltered_order() {
         let projects = vec![project("alpha-one"), project("alpha-two")];
+        let sessions = vec![session(&projects[0], 20), session(&projects[1], 80)];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        // The current project leads ties the same way it leads the full list.
-        let entries = visible_project_entries(
-            &projects,
-            &HashSet::new(),
-            Some(projects[1].id),
-            "alpha",
-            &mut matcher,
-        );
+        // Session recency breaks equal fuzzy scores and equal name lengths.
+        let entries =
+            visible_project_entries(&projects, &sessions, &HashSet::new(), "alpha", &mut matcher);
         assert_eq!(names(&entries), vec!["alpha-two", "alpha-one"]);
     }
 
     #[test]
-    fn removed_projects_stay_out_of_the_picker_even_when_selected_or_searched() {
+    fn removed_projects_stay_out_of_the_picker_even_with_recent_activity_or_search() {
         let projects = vec![project("crow"), project("waku")];
+        let sessions = vec![session(&projects[0], 80), session(&projects[1], 20)];
         let mut removed = HashSet::from([projects[0].id]);
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
-        let entries =
-            visible_project_entries(&projects, &removed, Some(projects[0].id), "", &mut matcher);
+        let entries = visible_project_entries(&projects, &sessions, &removed, "", &mut matcher);
         assert_eq!(names(&entries), vec!["waku"]);
         assert!(
-            visible_project_entries(&projects, &removed, None, "crow", &mut matcher).is_empty()
+            visible_project_entries(&projects, &sessions, &removed, "crow", &mut matcher)
+                .is_empty()
         );
         removed.remove(&projects[0].id);
-        let entries = visible_project_entries(&projects, &removed, None, "crow", &mut matcher);
+        let entries = visible_project_entries(&projects, &sessions, &removed, "crow", &mut matcher);
         assert_eq!(names(&entries), vec!["crow"]);
     }
 
@@ -793,8 +852,8 @@ mod tests {
             // reset that used to jump this viewport back to the first row.
             let entries = visible_project_entries(
                 &projects,
+                &[],
                 &HashSet::from([removed_id]),
-                None,
                 "",
                 &mut Matcher::new(nucleo_matcher::Config::DEFAULT),
             );
