@@ -18,6 +18,10 @@ session.export_conversation:
   en: Export Conversation
 session.export_all:
   en: Export All
+session.pin:
+  en: Pin
+session.unpin:
+  en: Unpin
 session.exported:
   en: "Session exported to %{path}"
 errors.export_session:
@@ -501,6 +505,8 @@ session.new_task:
 
 sidebar.today:
   en: Today
+sidebar.pinned:
+  en: Pinned
 sidebar.search:
   en: Search
 sidebar.options:

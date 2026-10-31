@@ -324,6 +324,8 @@ struct AppState {
     removed_project_ids: HashSet<Uuid>,
     #[serde(default)]
     selected_session: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pinned_session_ids: HashSet<Uuid>,
     #[serde(default = "default_provider")]
     last_provider: ProviderKind,
     #[serde(default)]
@@ -373,6 +375,10 @@ pub struct PersistedState {
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub removed_project_ids: HashSet<Uuid>,
     pub selected_session: Option<Uuid>,
+    /// Desktop sidebar pins. Kept separately from daemon-owned transcripts so
+    /// pinning a session never needs to hydrate or rewrite its history.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub pinned_session_ids: HashSet<Uuid>,
     pub last_provider: ProviderKind,
     #[serde(default)]
     pub last_runtime_mode: RuntimeMode,
@@ -464,6 +470,7 @@ impl PersistedState {
             selected_project: None,
             removed_project_ids: HashSet::new(),
             selected_session: None,
+            pinned_session_ids: HashSet::new(),
             last_provider: ProviderKind::Codex,
             last_runtime_mode: RuntimeMode::default(),
             last_model: None,
@@ -645,6 +652,7 @@ impl PersistedState {
             selected_project: self.selected_project,
             removed_project_ids: self.removed_project_ids.clone(),
             selected_session: self.persistable_selected_session(),
+            pinned_session_ids: self.pinned_session_ids.clone(),
             last_provider: self.last_provider,
             last_runtime_mode: self.last_runtime_mode,
             last_model: self.last_model.clone(),
@@ -683,6 +691,7 @@ impl PersistedState {
         self.selected_project = app_state.selected_project;
         self.removed_project_ids = app_state.removed_project_ids;
         self.selected_session = app_state.selected_session;
+        self.pinned_session_ids = app_state.pinned_session_ids;
         self.last_provider = app_state.last_provider;
         self.last_runtime_mode = app_state.last_runtime_mode;
         self.last_model = app_state.last_model;
@@ -728,6 +737,13 @@ impl PersistedState {
     }
 
     fn migrate_loaded(&mut self) {
+        let session_ids = self
+            .sessions
+            .iter()
+            .map(|session| session.id)
+            .collect::<HashSet<_>>();
+        self.pinned_session_ids
+            .retain(|id| session_ids.contains(id));
         for session in &mut self.sessions {
             let checkpoint_totals_current = session.turns.iter().all(|turn| {
                 turn.checkpoint
@@ -1426,6 +1442,34 @@ mod tests {
         assert_eq!(state.sidebar_ordering, SidebarOrdering::Newest);
         assert_eq!(state.last_runtime_mode, RuntimeMode::FullAccess);
         assert!(state.removed_project_ids.is_empty());
+        assert!(state.pinned_session_ids.is_empty());
+    }
+
+    #[test]
+    fn sidebar_pins_survive_reload_without_hydrating_sessions_and_drop_deleted_ids() {
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        state.sessions[0].push_message(waku_protocol::model::MessageRole::User, "Started task");
+        let session_id = state.sessions[0].id;
+        let deleted_id = Uuid::new_v4();
+        state.pinned_session_ids = HashSet::from([session_id, deleted_id]);
+        let encoded = serde_json::to_vec(&state.app_state()).unwrap();
+
+        let mut restored = PersistedState::empty();
+        restored.sessions = state
+            .sessions
+            .iter()
+            .map(AgentSession::list_projection)
+            .collect();
+        restored.apply_app_state(serde_json::from_slice(&encoded).unwrap());
+        restored.migrate_loaded();
+        assert_eq!(restored.pinned_session_ids, HashSet::from([session_id]));
+        assert!(!restored.sessions[0].detail_loaded);
+        assert!(restored.sessions[0].messages.is_empty());
+
+        restored.pinned_session_ids.remove(&session_id);
+        let encoded = serde_json::to_vec(&restored.app_state()).unwrap();
+        state.apply_app_state(serde_json::from_slice(&encoded).unwrap());
+        assert!(state.pinned_session_ids.is_empty());
     }
 
     #[test]

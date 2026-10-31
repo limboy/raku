@@ -171,6 +171,8 @@ pub(super) fn format_time_ago(seconds: u64) -> String {
 /// One row of the virtualized sidebar session history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SidebarRow {
+    /// Non-interactive heading for sessions kept above the date groups.
+    PinnedHeader,
     /// Non-interactive calendar heading for the following sessions.
     DateHeader(SidebarDateGroup),
     /// A started session.
@@ -180,10 +182,22 @@ pub(super) enum SidebarRow {
 fn grouped_sidebar_rows(
     sessions: &[&AgentSession],
     dates: Option<SidebarDateBoundaries>,
+    pinned_session_ids: &HashSet<Uuid>,
 ) -> Vec<SidebarRow> {
-    let mut rows = Vec::with_capacity(sessions.len() + 6);
+    let mut rows = Vec::with_capacity(sessions.len() + 7);
+    for session in sessions {
+        if pinned_session_ids.contains(&session.id) {
+            if rows.is_empty() {
+                rows.push(SidebarRow::PinnedHeader);
+            }
+            rows.push(SidebarRow::Session(session.id));
+        }
+    }
     let mut previous_group = None;
     for session in sessions {
+        if pinned_session_ids.contains(&session.id) {
+            continue;
+        }
         if let Some(dates) = dates {
             let group = dates.group(sidebar_session_timestamp(session));
             if previous_group != Some(group) {
@@ -232,7 +246,9 @@ fn sidebar_row_height(row: SidebarRow) -> Pixels {
     px(match row {
         // Keep headings the same height as session rows so off-screen height
         // hints and nearest-edge selection reveal remain exact.
-        SidebarRow::DateHeader(_) | SidebarRow::Session(_) => SIDEBAR_SESSION_ROW_HEIGHT,
+        SidebarRow::PinnedHeader | SidebarRow::DateHeader(_) | SidebarRow::Session(_) => {
+            SIDEBAR_SESSION_ROW_HEIGHT
+        }
     })
 }
 
@@ -835,6 +851,9 @@ impl Waku {
             fingerprint = mix_uuid(fingerprint, session.project_id);
             fingerprint = mix(fingerprint, sidebar_session_timestamp(session));
         }
+        for session_id in &self.state.pinned_session_ids {
+            fingerprint = mix_uuid(fingerprint, *session_id);
+        }
         for project in &self.state.projects {
             fingerprint = mix_uuid(fingerprint, project.id);
         }
@@ -854,7 +873,11 @@ impl Waku {
             projectless_root.as_deref(),
             self.state.sidebar_ordering,
         );
-        grouped_sidebar_rows(&sessions, self.sidebar_date_boundaries)
+        grouped_sidebar_rows(
+            &sessions,
+            self.sidebar_date_boundaries,
+            &self.state.pinned_session_ids,
+        )
     }
 
     /// Keep the virtualized list in sync with the current row snapshot.
@@ -913,7 +936,12 @@ impl Waku {
 
     fn sidebar_row(&self, index: usize, rows: &[SidebarRow], cx: &mut Context<Self>) -> AnyElement {
         match rows.get(index) {
-            Some(row @ SidebarRow::DateHeader(group)) => {
+            Some(row @ (SidebarRow::PinnedHeader | SidebarRow::DateHeader(_))) => {
+                let label = match row {
+                    SidebarRow::PinnedHeader => tr!("sidebar.pinned"),
+                    SidebarRow::DateHeader(group) => group.label(),
+                    SidebarRow::Session(_) => unreachable!(),
+                };
                 let theme = Theme::current(cx);
                 div()
                     .w_full()
@@ -926,7 +954,7 @@ impl Waku {
                     .line_height(sp(16.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_tertiary)
-                    .child(group.label())
+                    .child(label)
                     .into_any_element()
             }
             Some(SidebarRow::Session(session_id)) => {
@@ -934,6 +962,22 @@ impl Waku {
             }
             None => div().into_any_element(),
         }
+    }
+
+    fn toggle_session_pin(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        if !self
+            .state
+            .sessions
+            .iter()
+            .any(|session| session.id == session_id && session.has_started())
+        {
+            return;
+        }
+        if !self.state.pinned_session_ids.remove(&session_id) {
+            self.state.pinned_session_ids.insert(session_id);
+        }
+        self.save();
+        cx.notify();
     }
 
     fn begin_session_rename(
@@ -1019,6 +1063,7 @@ impl Waku {
             session.status,
             SessionStatus::Connecting | SessionStatus::Working
         );
+        let pinned = self.state.pinned_session_ids.contains(&session_id);
         let rename_input =
             (self.session_rename == Some(session_id)).then(|| self.session_rename_input.clone());
         let renaming = rename_input.is_some();
@@ -1086,6 +1131,9 @@ impl Waku {
                     .overflow_hidden()
                     .line_height(sp(18.0))
                     .child(title)
+                    .when(pinned, |element| {
+                        element.child(icon("icons/pin.svg", 12.0, theme.text_tertiary))
+                    })
                     .when(working, |element| {
                         element.child(motion::spin_slow(icon(
                             "icons/loader-circle.svg",
@@ -1150,6 +1198,7 @@ impl Waku {
                 SharedString::from(format!("session-menu-{session_id}")),
                 &menu,
                 move |_| {
+                    let pin_waku = waku.clone();
                     let rename_waku = waku.clone();
                     let export_conversation_waku = waku.clone();
                     let export_all_waku = waku.clone();
@@ -1160,6 +1209,18 @@ impl Waku {
                                 waku.begin_session_rename(session_id, window, cx);
                             });
                         }),
+                        MenuItem::Separator,
+                        MenuItem::new(
+                            if pinned {
+                                tr!("session.unpin")
+                            } else {
+                                tr!("session.pin")
+                            },
+                            move |_, cx| {
+                                let _ = pin_waku
+                                    .update(cx, |waku, cx| waku.toggle_session_pin(session_id, cx));
+                            },
+                        ),
                         MenuItem::Separator,
                         MenuItem::new(tr!("session.export_conversation"), move |_, cx| {
                             let _ = export_conversation_waku.update(cx, |waku, cx| {
@@ -1546,6 +1607,7 @@ mod tests {
             session
         });
         let mut sorted = sessions.iter().collect::<Vec<_>>();
+        let unpinned = HashSet::new();
         sort_sidebar_sessions(&mut sorted, SidebarOrdering::Newest);
         let newest = vec![
             SidebarRow::DateHeader(Today),
@@ -1556,11 +1618,14 @@ mod tests {
             SidebarRow::DateHeader(Earlier),
             SidebarRow::Session(sessions[3].id),
         ];
-        assert_eq!(grouped_sidebar_rows(&sorted, Some(dates)), newest);
+        assert_eq!(
+            grouped_sidebar_rows(&sorted, Some(dates), &unpinned),
+            newest
+        );
 
         sort_sidebar_sessions(&mut sorted, SidebarOrdering::Oldest);
         assert_eq!(
-            grouped_sidebar_rows(&sorted, Some(dates)),
+            grouped_sidebar_rows(&sorted, Some(dates), &unpinned),
             vec![
                 SidebarRow::DateHeader(Earlier),
                 SidebarRow::Session(sessions[3].id),
@@ -1571,13 +1636,81 @@ mod tests {
                 SidebarRow::Session(sessions[0].id),
             ]
         );
-        assert!(grouped_sidebar_rows(&[], Some(dates)).is_empty());
+        assert!(grouped_sidebar_rows(&[], Some(dates), &unpinned).is_empty());
         assert_eq!(
-            grouped_sidebar_rows(&sorted, None),
+            grouped_sidebar_rows(&sorted, None, &unpinned),
             sorted
                 .iter()
                 .map(|session| SidebarRow::Session(session.id))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sidebar_pins_stay_above_dates_within_the_selected_project() {
+        let projects =
+            ["first", "second"].map(|name| Project::from_path(Path::new("/work").join(name)));
+        let dates = SidebarDateBoundaries::at(calendar_time(2026, 10, 30, 12));
+        let sessions = [(0, 30), (0, 29), (0, 28), (1, 30)].map(|(project, day)| {
+            let mut session = AgentSession::new(projects[project].id, ProviderKind::Codex);
+            session.push_message(MessageRole::User, "Started task");
+            session.created_at = calendar_time(2026, 10, day, 10).timestamp() as u64;
+            session
+        });
+        let mut pins = HashSet::from([sessions[0].id, sessions[2].id, sessions[3].id]);
+        for (ordering, pinned_order) in [
+            (SidebarOrdering::Newest, [0, 2]),
+            (SidebarOrdering::Oldest, [2, 0]),
+        ] {
+            let history = selected_sidebar_sessions(
+                &sessions,
+                &projects,
+                Some(projects[0].id),
+                None,
+                ordering,
+            );
+            assert_eq!(
+                grouped_sidebar_rows(&history, Some(dates), &pins),
+                vec![
+                    SidebarRow::PinnedHeader,
+                    SidebarRow::Session(sessions[pinned_order[0]].id),
+                    SidebarRow::Session(sessions[pinned_order[1]].id),
+                    SidebarRow::DateHeader(SidebarDateGroup::Yesterday),
+                    SidebarRow::Session(sessions[1].id),
+                ]
+            );
+        }
+
+        let history = selected_sidebar_sessions(
+            &sessions,
+            &projects,
+            Some(projects[0].id),
+            None,
+            SidebarOrdering::Newest,
+        );
+        // Pins are visible even before the background calendar lookup lands.
+        assert_eq!(
+            grouped_sidebar_rows(&history, None, &pins),
+            vec![
+                SidebarRow::PinnedHeader,
+                SidebarRow::Session(sessions[0].id),
+                SidebarRow::Session(sessions[2].id),
+                SidebarRow::Session(sessions[1].id),
+            ]
+        );
+        pins.remove(&sessions[0].id);
+        pins.remove(&sessions[2].id);
+        // A pin in another project must not leave an empty heading behind.
+        assert_eq!(
+            grouped_sidebar_rows(&history, Some(dates), &pins),
+            vec![
+                SidebarRow::DateHeader(SidebarDateGroup::Today),
+                SidebarRow::Session(sessions[0].id),
+                SidebarRow::DateHeader(SidebarDateGroup::Yesterday),
+                SidebarRow::Session(sessions[1].id),
+                SidebarRow::DateHeader(SidebarDateGroup::ThisWeek),
+                SidebarRow::Session(sessions[2].id),
+            ]
         );
     }
 

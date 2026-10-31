@@ -9,6 +9,8 @@ menu.new_task: 新建任务
 menu.new_project: 新建项目…
 session.export_conversation: 导出对话
 session.export_all: 导出全部内容
+session.pin: 置顶
+session.unpin: 取消置顶
 session.exported: "会话已导出到 %{path}"
 errors.export_session: "无法导出会话：%{error}"
 errors.export_session_missing: 该会话已不存在。
@@ -244,6 +246,7 @@ common.remove: 移除
 common.rename: 重命名
 session.new_task: 新任务
 sidebar.today: 今天
+sidebar.pinned: 已置顶
 sidebar.search: 搜索
 sidebar.options: 侧边栏选项
 sidebar.grouping: 分组

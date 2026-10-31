@@ -9,6 +9,8 @@ menu.new_task: 新規タスク
 menu.new_project: 新規プロジェクト…
 session.export_conversation: 会話をエクスポート
 session.export_all: すべてエクスポート
+session.pin: ピン留め
+session.unpin: ピン留めを解除
 session.exported: "セッションを %{path} にエクスポートしました"
 errors.export_session: "セッションをエクスポートできませんでした：%{error}"
 errors.export_session_missing: このセッションは存在しません。
@@ -256,6 +258,7 @@ common.rename: 名前を変更
 session.new_task: 新規タスク
 
 sidebar.today: 今日
+sidebar.pinned: ピン留め
 sidebar.search: 検索
 sidebar.options: サイドバーオプション
 sidebar.grouping: グループ化

@@ -1019,6 +1019,7 @@ impl Waku {
             |session_id| runtime_ids.contains(&session_id),
         );
         for session_id in &removed {
+            self.state.pinned_session_ids.remove(session_id);
             self.runtime_attach_pending.remove(session_id);
             self.runtime_attach_misses.remove(session_id);
             self.runtimes.remove(session_id);
