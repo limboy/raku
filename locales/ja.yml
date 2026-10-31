@@ -358,6 +358,11 @@ activity.running: 実行中：%{activities}
 activity.detail: アクティビティの詳細
 activity.named_content: "%{name} の内容"
 activity.ran: 実行済み：%{activities}
+activity.total_one: "%{count} 件のアクティビティ"
+activity.total: "%{count} 件のアクティビティ"
+activity.status_completed: 完了
+activity.status_running: 実行中
+activity.status_failed: 失敗
 activity.action_think: 思考
 activity.action_run: 実行
 activity.action_edit: 編集

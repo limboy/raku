@@ -1126,7 +1126,14 @@ pub(super) fn activity_header_title(
         );
     }
 
-    activity_summary(activities)
+    tr!(
+        if activities.len() == 1 {
+            "activity.total_one"
+        } else {
+            "activity.total"
+        },
+        count = activities.len()
+    )
 }
 
 fn tool_name_leaf(name: &str) -> &str {
@@ -1376,7 +1383,19 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
     match activity.kind {
         ActivityKind::Reasoning => activity.reasoning.as_ref().map_or_else(
             || activity.title.clone(),
-            |reasoning| reasoning_activity_title(reasoning, reasoning_live),
+            |reasoning| {
+                if reasoning_live {
+                    String::new()
+                } else {
+                    format_worked_duration(
+                        reasoning
+                            .finished_at_ms
+                            .saturating_sub(reasoning.started_at_ms)
+                            .div_ceil(1000)
+                            .max(1),
+                    )
+                }
+            },
         ),
         ActivityKind::Command => activity
             .display_description
@@ -1397,11 +1416,11 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
             .map(activity_path_name)
             .or_else(custom_title)
             .unwrap_or_default(),
-        ActivityKind::FileSearch => activity_display_title(activity),
-        ActivityKind::Search => activity.display_target.as_deref().map_or_else(
-            || custom_title().unwrap_or_default(),
-            |query| tr!("activity.search_for", query = query),
-        ),
+        ActivityKind::FileSearch | ActivityKind::Search => activity
+            .display_target
+            .clone()
+            .or_else(custom_title)
+            .unwrap_or_default(),
         ActivityKind::Plan => custom_title().unwrap_or_default(),
         ActivityKind::Tool if is_ask_user_question(activity) => String::new(),
         ActivityKind::Tool => {
@@ -1955,8 +1974,15 @@ mod message_time_tests {
         assert!(!activity_group_is_live(true, true, 1, 2));
         assert_eq!(
             activity_header_title(&activities, false, None),
-            "Ran 1 thought · 1 command"
+            "2 activities"
         );
+        assert_eq!(activity_summary(&activities), "Ran 1 thought · 1 command");
+        assert_eq!(
+            activity_header_title(&activities[..1], false, None),
+            "1 activity"
+        );
+        assert_eq!(activity_row_detail(&activities[0], false), "1 second");
+        assert_eq!(activity_row_detail(&activities[0], true), "");
         assert!(!activity_group_is_live(true, false, 1, 1));
         assert!(!activity_group_is_live(false, true, 1, 1));
         assert_eq!(activity_action_label(&activities[1]), "Run");
@@ -2046,6 +2072,7 @@ mod message_time_tests {
             activity_display_title(&search),
             "Searched files for ActivityKind"
         );
+        assert_eq!(activity_row_detail(&search, false), "ActivityKind");
 
         let list = ActivityItem::new(
             Some("list-1".into()),

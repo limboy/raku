@@ -340,6 +340,11 @@ activity.running: 正在执行：%{activities}
 activity.detail: 活动详情
 activity.named_content: "%{name}内容"
 activity.ran: 已执行：%{activities}
+activity.total_one: "%{count} 项活动"
+activity.total: "%{count} 项活动"
+activity.status_completed: 已完成
+activity.status_running: 进行中
+activity.status_failed: 失败
 activity.action_think: 思考
 activity.action_run: 运行
 activity.action_edit: 编辑

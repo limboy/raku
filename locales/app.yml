@@ -699,6 +699,16 @@ activity.named_content:
   en: "%{name} content"
 activity.ran:
   en: Ran %{activities}
+activity.total_one:
+  en: "%{count} activity"
+activity.total:
+  en: "%{count} activities"
+activity.status_completed:
+  en: Completed
+activity.status_running:
+  en: Running
+activity.status_failed:
+  en: Failed
 activity.action_think:
   en: Think
 activity.action_run:
