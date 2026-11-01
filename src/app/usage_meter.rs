@@ -366,19 +366,6 @@ impl Waku {
             Some(percent) if percent >= 80.0 => theme.warning,
             _ => theme.gauge,
         };
-        let tooltip = match (&error, percent) {
-            (Some(error), _) => SharedString::from(tr!("usage.refresh_failed", error = error)),
-            (None, Some(percent)) => SharedString::from(tr!(
-                "usage.context_used",
-                percent = format!("{percent:.0}"),
-                shortcut = crate::platform::primary_shortcut("⌘U", "Ctrl+U")
-            )),
-            (None, None) => SharedString::from(tr!(
-                "usage.shortcut",
-                shortcut = crate::platform::primary_shortcut("⌘U", "Ctrl+U")
-            )),
-        };
-
         let trigger = div()
             .id("usage-meter")
             .h(px(20.0))
@@ -390,7 +377,23 @@ impl Waku {
             .cursor_default()
             .hover(|element| element.bg(theme.overlay))
             .when(handle.is_open(), |element| element.bg(theme.overlay_strong))
-            .tooltip(Tooltip::text(tooltip))
+            .when(!handle.is_open(), |element| {
+                let tooltip = match (&error, percent) {
+                    (Some(error), _) => {
+                        SharedString::from(tr!("usage.refresh_failed", error = error))
+                    }
+                    (None, Some(percent)) => SharedString::from(tr!(
+                        "usage.context_used",
+                        percent = format!("{percent:.0}"),
+                        shortcut = crate::platform::primary_shortcut("⌘U", "Ctrl+U"),
+                    )),
+                    (None, None) => SharedString::from(tr!(
+                        "usage.shortcut",
+                        shortcut = crate::platform::primary_shortcut("⌘U", "Ctrl+U"),
+                    )),
+                };
+                element.tooltip(Tooltip::text(tooltip))
+            })
             .child(context_gauge(percent, theme.border_strong, fill));
 
         Some(popover(
