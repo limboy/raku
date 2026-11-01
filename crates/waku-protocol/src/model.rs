@@ -2436,19 +2436,33 @@ impl ActivityItem {
 
     pub fn with_tool_name(mut self, name: Option<&str>) -> Self {
         if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
-            if let Some((server, tool)) = name
-                .strip_prefix("mcp__")
-                .and_then(|name| name.split_once("__"))
-                && !server.is_empty()
-                && !tool.is_empty()
-            {
-                self.mcp_server = Some(server.to_owned());
-                self.tool_name = Some(tool.to_owned());
-            } else {
-                self.tool_name = Some(name.to_owned());
+            // Keep an unwrapped `xd://` target tool name when the outer
+            // transport (`write` / `read`) attaches its own name afterwards.
+            let keeps_unwrapped_xdev_tool = matches!(name, "write" | "read")
+                && self
+                    .tool_name
+                    .as_deref()
+                    .is_some_and(|existing| !matches!(existing, "write" | "read"));
+            if !keeps_unwrapped_xdev_tool {
+                self.apply_tool_name(name);
             }
         }
         self
+    }
+
+    fn apply_tool_name(&mut self, name: &str) {
+        if let Some((server, tool)) = name
+            .strip_prefix("mcp__")
+            .and_then(|name| name.split_once("__"))
+            && !server.is_empty()
+            && !tool.is_empty()
+        {
+            self.mcp_server = Some(server.to_owned());
+            self.tool_name = Some(tool.to_owned());
+        } else {
+            self.mcp_server = None;
+            self.tool_name = Some(name.to_owned());
+        }
     }
 
     pub fn with_mcp_server(mut self, server: Option<&str>) -> Self {
@@ -2502,7 +2516,13 @@ impl ActivityItem {
             .filter(|source| !source.is_empty());
         if let Some(source) = source {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(source) {
-                self.refresh_activity_metadata_from_value(&value);
+                if let Some(unwrapped) = self.reclassify_xdev_tool_call(&value) {
+                    if !unwrapped.is_null() {
+                        self.refresh_activity_metadata_from_value(&unwrapped);
+                    }
+                } else {
+                    self.refresh_activity_metadata_from_value(&value);
+                }
             } else if self.kind == ActivityKind::FileChange {
                 let extracted = parse_patch_file_changes(source);
                 if !extracted.is_empty() {
@@ -2545,6 +2565,61 @@ impl ActivityItem {
         self.display_description = None;
     }
 
+    /// Unwrap an Oh My Pi `xd://<tool>` virtual device call dispatched through
+    /// `read` or `write` so it presents as the target tool rather than a file
+    /// read or edit.
+    fn reclassify_xdev_tool_call(
+        &mut self,
+        source: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let raw_path = source.get("path").and_then(serde_json::Value::as_str)?;
+        let (device, has_query) = parse_xdev_uri(raw_path)?;
+
+        self.file_changes.clear();
+        self.display_target = None;
+        self.display_description = None;
+
+        if !device.is_empty() && !has_query && source.get("content").is_some() {
+            self.kind = ActivityKind::from_tool_name(device);
+            self.apply_tool_name(device);
+            if let Some(content) = source.get("content").and_then(serde_json::Value::as_str) {
+                let trimmed = content.trim();
+                if let Ok(inner) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    self.arguments = serde_json::to_string_pretty(&inner)
+                        .ok()
+                        .or_else(|| Some(trimmed.to_owned()));
+                    if let Some(inner_title) = find_activity_string(&inner, &["title"], 0) {
+                        self.title = compact_activity_target(&inner_title);
+                    } else if is_generic_file_tool_title(&self.title) {
+                        self.title = device.to_owned();
+                    }
+                    return Some(inner);
+                }
+                self.arguments = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
+            if is_generic_file_tool_title(&self.title) {
+                self.title = device.to_owned();
+            }
+            return Some(serde_json::Value::Null);
+        }
+
+        self.kind = ActivityKind::Tool;
+        if !device.is_empty() {
+            self.apply_tool_name(device);
+        } else {
+            self.mcp_server = None;
+            self.tool_name = Some("xdev".to_owned());
+        }
+        if is_generic_file_tool_title(&self.title) {
+            self.title = if device.is_empty() {
+                "xd://".to_owned()
+            } else {
+                device.to_owned()
+            };
+        }
+        Some(serde_json::Value::Null)
+    }
+
     fn refresh_activity_metadata_from_value(&mut self, source: &serde_json::Value) {
         if self.kind == ActivityKind::FileChange {
             let mut extracted = Vec::new();
@@ -2574,6 +2649,35 @@ impl ActivityItem {
                 .and_then(normalize_command_activity_output);
         }
     }
+}
+
+/// Parses an Oh My Pi `xd://` virtual tool device URI into `(device, has_query)`.
+///
+/// `xd://` or `xd://?q=...` addresses the catalog (`device == ""`);
+/// `xd://<tool>` addresses `<tool>`, with `?` requesting help rather than
+/// execution.
+pub fn parse_xdev_uri(raw_path: &str) -> Option<(&str, bool)> {
+    let rest = raw_path
+        .trim()
+        .strip_prefix("xd://")?
+        .trim_start_matches('/');
+    let (device_part, has_query) = match rest.split_once('?') {
+        Some((device, _)) => (device, true),
+        None => (rest, false),
+    };
+    Some((device_part.trim_end_matches('/').trim(), has_query))
+}
+
+fn is_generic_file_tool_title(title: &str) -> bool {
+    let trimmed = title.trim();
+    trimmed.is_empty()
+        || matches!(
+            trimmed,
+            "write" | "read" | "edit" | "Write file" | "Read file" | "Edit file"
+        )
+        || trimmed == tr!("activity.write_file")
+        || trimmed == tr!("activity.read_file")
+        || trimmed == tr!("activity.edit_file")
 }
 
 fn normalize_command_activity_command(source: String) -> Option<String> {
@@ -3013,7 +3117,7 @@ fn structured_file_change(
     .find_map(|key| object.get(key).and_then(serde_json::Value::as_str))
     .or(fallback_path)?
     .trim();
-    if path.is_empty() {
+    if path.is_empty() || path.starts_with("xd://") {
         return None;
     }
 
@@ -5104,6 +5208,54 @@ mod tests {
         assert_eq!(item.completed_at_ms, Some(5));
         assert!(activity.complete);
         assert!(!activity.failed);
+    }
+
+    #[test]
+    fn xdev_virtual_tool_device_calls_reclassify_as_tools_without_file_diffs() {
+        let mut activity = ActivityItem::new(
+            Some("tool_xdev_probe".into()),
+            ActivityKind::FileChange,
+            "Write file",
+            None,
+            true,
+        )
+        .with_arguments(Some(
+            r#"{"content":"{}","i":"Reading delegate_batch schema","path":"xd://delegate_batch"}"#
+                .into(),
+        ))
+        .with_tool_name(Some("write"));
+
+        assert_eq!(activity.kind, ActivityKind::Tool);
+        assert_eq!(activity.title, "delegate_batch");
+        assert_eq!(activity.tool_name.as_deref(), Some("delegate_batch"));
+        assert!(activity.file_changes.is_empty());
+        assert_eq!(activity.display_target, None);
+        assert_eq!(activity.arguments.as_deref(), Some("{}"));
+
+        // Simulate a legacy persisted row that stored `file_changes` and
+        // `display_target` for `xd://delegate_batch`.
+        activity.kind = ActivityKind::FileChange;
+        activity.title = "Write file".into();
+        activity.tool_name = Some("write".into());
+        activity.arguments = Some(
+            r#"{"content":"{\"request_key\":\"books\",\"tasks\":[]}","path":"xd://delegate_batch"}"#
+                .into(),
+        );
+        activity.file_changes = vec![ActivityFileChange {
+            path: "xd://delegate_batch".into(),
+            additions: Some(1),
+            deletions: Some(0),
+            status: None,
+            diff: Some("@@ -0,0 +1,1 @@\n+{}\n".into()),
+        }];
+        activity.display_target = Some("xd://delegate_batch".into());
+        activity.refresh_activity_metadata();
+
+        assert_eq!(activity.kind, ActivityKind::Tool);
+        assert_eq!(activity.title, "delegate_batch");
+        assert_eq!(activity.tool_name.as_deref(), Some("delegate_batch"));
+        assert!(activity.file_changes.is_empty());
+        assert_eq!(activity.display_target, None);
     }
 }
 

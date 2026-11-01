@@ -39,130 +39,6 @@ use crate::model::{
 /// answer: the capability is not there to be requested.
 const REVIEW_READ_ONLY_TOOLS: &str = "read,grep,glob,lsp,web_search";
 
-/// The tool names the CLI itself ships with.
-///
-/// A parent session must keep every built-in tool and *add* Waku's two
-/// delegation tools, but `--tools` is a strict allowlist that replaces the
-/// defaults. The CLI prints its own list when asked for an unknown tool, which
-/// is the only version-accurate source: Oh My Pi ships a different set from
-/// Pi, and both grow over time.
-fn builtin_tool_names(binary: &Path, cwd: &Path) -> Option<Vec<String>> {
-    use std::collections::HashMap;
-    use std::sync::LazyLock;
-
-    // Keyed by working directory too: tool availability follows the project's
-    // own configuration, so one project's answer is not another's.
-    static TOOL_CACHE: LazyLock<parking_lot::Mutex<HashMap<(PathBuf, PathBuf), Vec<String>>>> =
-        LazyLock::new(Default::default);
-    let key = (binary.to_path_buf(), cwd.to_path_buf());
-
-    if let Some(cached) = TOOL_CACHE.lock().get(&key) {
-        return Some(cached.clone());
-    }
-
-    let output = crate::command_env::plain_command(binary)
-        .args(["--mode", "rpc", "--tools", "-waku-delegation-probe"])
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    let mut names = parse_builtin_tools(&text)?;
-
-    // The first probe lists every tool the CLI knows; some of them are disabled
-    // for this session and are rejected if named. A second probe with the list
-    // reveals that difference, and the result is cached, so this costs one
-    // extra process per binary per daemon lifetime.
-    for _ in 0..4 {
-        let Ok(output) = crate::command_env::plain_command(binary)
-            .args(["--mode", "rpc", "--tools", &names.join(",")])
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::null())
-            .output()
-        else {
-            break;
-        };
-        let mut again = String::from_utf8_lossy(&output.stdout).into_owned();
-        again.push_str(&String::from_utf8_lossy(&output.stderr));
-        let unavailable = parse_unavailable_tools(&again);
-        if unavailable.is_empty() {
-            break;
-        }
-        // Each pass can reveal more disabled tools, so repeat until the CLI
-        // accepts the list or stops naming any.
-        names.retain(|name| !unavailable.contains(name));
-        if names.is_empty() {
-            return None;
-        }
-    }
-    TOOL_CACHE.lock().insert(key, names.clone());
-    Some(names)
-}
-
-/// Read the `Built-in tools:` list out of a CLI's unknown-tool diagnostic.
-///
-/// One line packs several lists: the CLI's own tools, then `Other registered
-/// tools:` (extensions and MCP servers). Only the first is wanted — the second
-/// names tools the session keeps whether or not they are allowed.
-fn parse_builtin_tools(text: &str) -> Option<Vec<String>> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let line = normalized.split("Built-in tools:").nth(1)?;
-    let builtins = split_tool_list(
-        line.split("Other registered tools:")
-            .next()
-            .unwrap_or(line)
-            .split("Built-in tools unavailable")
-            .next()
-            .unwrap_or(line),
-    );
-    (!builtins.is_empty()).then_some(builtins)
-}
-
-/// Read `Built-in tools unavailable in this session: …`, which the CLI reports
-/// when a named tool exists but is disabled here. Naming one of those in
-/// `--tools` is an error, so they must be dropped from the allowlist.
-fn parse_unavailable_tools(text: &str) -> Vec<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    normalized
-        .split("Built-in tools unavailable in this session:")
-        .nth(1)
-        .or_else(|| {
-            normalized
-                .split("Built-in tool unavailable in this session:")
-                .nth(1)
-        })
-        // The CLI follows the list with a usage hint; that prose must not be
-        // read as part of the last tool name.
-        .map(|list| list.split("Run `omp --help`").next().unwrap_or(list))
-        .map(split_tool_list)
-        .unwrap_or_default()
-}
-
-fn split_tool_list(text: &str) -> Vec<String> {
-    text.trim()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim_end_matches('.')
-        .split(',')
-        .map(str::trim)
-        .map(|name| name.trim_end_matches('.'))
-        .filter(|name| !name.is_empty() && name.chars().all(is_tool_name_char))
-        .map(str::to_owned)
-        .collect()
-}
-
-/// Tool names are identifiers; anything else in the diagnostic is prose that
-/// must not end up in an allowlist.
-fn is_tool_name_char(character: char) -> bool {
-    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | ':')
-}
-
-/// The delegation tools the extension registers, named so a parent session can
-/// enable them explicitly.
-const DELEGATION_TOOL_NAMES: [&str; 2] = ["delegate_batch", "wait_delegates"];
-
 /// The arguments a review subtask is launched with. No `--approve` / `--yolo`:
 /// those would auto-approve exactly the writes the allowlist removes.
 fn review_read_only_args() -> [&'static str; 4] {
@@ -525,14 +401,14 @@ pub struct PiDriver {
 ///
 /// Pi cannot inherit an MCP server the way Codex does, so the tools arrive as
 /// an extension that spawns `waku-daemon mcp-agent-tools` itself; the session
-/// registration file tells that bridge whose turn this is. Without the
-/// extension the task still runs, so a missing asset is reported and skipped
-/// rather than failing the launch.
+/// registration file tells that bridge whose turn this is. The extension marks
+/// both tools `loadMode: "essential"`, so Oh My Pi keeps their full schemas at
+/// top level without needing `--tools`. Without the extension the task still
+/// runs, so a missing asset is reported and skipped rather than failing the
+/// launch.
 fn configure_pi_delegation_command(
     command: &mut std::process::Command,
     flavor: PiFlavor,
-    binary: &Path,
-    cwd: &Path,
     session_path: Option<&Path>,
     extension: impl FnOnce() -> anyhow::Result<PathBuf>,
 ) {
@@ -542,18 +418,6 @@ fn configure_pi_delegation_command(
     match extension() {
         Ok(extension) => {
             let daemon = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
-            // `--tools` replaces the default tool set, so it must carry the
-            // CLI's own built-ins as well as ours — otherwise enabling
-            // delegation would silently take away editing and shell access.
-            if let Some(mut tools) = builtin_tool_names(binary, cwd) {
-                tools.extend(DELEGATION_TOOL_NAMES.iter().map(|name| (*name).to_owned()));
-                command.arg("--tools").arg(tools.join(","));
-            } else {
-                eprintln!(
-                    "{} cannot list its built-in tools, so delegation stays unavailable",
-                    flavor.display_name()
-                );
-            }
             command
                 .arg("--extension")
                 .arg(extension)
@@ -676,8 +540,6 @@ impl PiDriver {
         configure_pi_delegation_command(
             &mut command,
             flavor,
-            &binary,
-            &cwd,
             delegation_session_path.as_deref(),
             crate::delegation::pi_extension_path,
         );
@@ -1786,6 +1648,7 @@ fn clone_ohmypi_session(
 struct PiTrackedTool {
     kind: ActivityKind,
     title: String,
+    tool_name: Option<String>,
     saw_end: bool,
     settled_async: Option<(Value, bool)>,
 }
@@ -2280,41 +2143,47 @@ fn handle_pi_message(
                 .get("toolCallId")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            let tool_name = value.get("toolName").and_then(Value::as_str);
-            let tracked = id
+            let raw_tool_name = value.get("toolName").and_then(Value::as_str);
+            let xdev_call = resolve_pi_xdev_tool(&value);
+            let tracked = id.as_ref().and_then(|id| state.tools.get(id)).cloned();
+            let resolved_tool_name = tracked
                 .as_ref()
-                .and_then(|id| state.tools.get(id))
-                .cloned();
+                .and_then(|tool| tool.tool_name.clone())
+                .or_else(|| xdev_call.as_ref().map(|call| call.tool_name.clone()))
+                .or_else(|| raw_tool_name.map(str::to_owned));
             let (kind, mut title) = tracked
                 .as_ref()
                 .map(|tool| (tool.kind, tool.title.clone()))
+                .or_else(|| {
+                    xdev_call
+                        .as_ref()
+                        .map(|call| (call.kind, call.title.clone()))
+                })
                 .unwrap_or_else(|| {
-                    tool_name
+                    resolved_tool_name
+                        .as_deref()
                         .map(|tool_name| (classify_tool(tool_name), tool_title(tool_name)))
                         .unwrap_or_else(|| (ActivityKind::Tool, tr!("activity.tool")))
                 });
+            let effective_args = xdev_call
+                .as_ref()
+                .and_then(|call| call.arguments.as_ref())
+                .or_else(|| value.get("args"));
             if (event_type == "tool_execution_start" || tracked.is_none())
-                && let Some(input_title) = activity::input_title(value.get("args"))
+                && let Some(input_title) = activity::input_title(effective_args)
             {
                 title = input_title;
             }
             if let Some(id) = id.as_ref() {
-                if event_type == "tool_execution_start" {
+                if event_type == "tool_execution_start"
+                    || (tracked.is_none() && event_type == "tool_execution_update")
+                {
                     state.tools.insert(
                         id.clone(),
                         PiTrackedTool {
                             kind,
                             title: title.clone(),
-                            saw_end: false,
-                            settled_async: None,
-                        },
-                    );
-                } else if tracked.is_none() && event_type == "tool_execution_update" {
-                    state.tools.insert(
-                        id.clone(),
-                        PiTrackedTool {
-                            kind,
-                            title: title.clone(),
+                            tool_name: resolved_tool_name.clone(),
                             saw_end: false,
                             settled_async: None,
                         },
@@ -2322,7 +2191,7 @@ fn handle_pi_message(
                 }
             }
             let arguments = (event_type == "tool_execution_start")
-                .then(|| value.get("args"))
+                .then_some(effective_args)
                 .flatten();
             let mut output = match event_type {
                 "tool_execution_update" => value.get("partialResult").cloned(),
@@ -2395,7 +2264,7 @@ fn handle_pi_message(
                 failed,
                 complete,
             )
-            .with_tool_name(tool_name);
+            .with_tool_name(resolved_tool_name.as_deref());
             if async_state == Some("running") && !complete {
                 item.complete = false;
             }
@@ -2525,6 +2394,83 @@ fn pi_error_message(flavor: PiFlavor, value: &Value) -> String {
                 provider = flavor.display_name()
             )
         })
+}
+
+struct PiXdevCall {
+    kind: ActivityKind,
+    title: String,
+    tool_name: String,
+    arguments: Option<Value>,
+}
+
+/// Unwraps Oh My Pi's `xd://<tool>` virtual device transport (`read xd://...`
+/// for help/catalog and `write xd://<tool>` with JSON `content` for execution)
+/// into the underlying tool identity and arguments.
+fn resolve_pi_xdev_tool(value: &Value) -> Option<PiXdevCall> {
+    if let Some(args) = value.get("args")
+        && let Some(raw_path) = args.get("path").and_then(Value::as_str)
+        && let Some((device, has_query)) = crate::model::parse_xdev_uri(raw_path)
+    {
+        if !device.is_empty() && !has_query && args.get("content").is_some() {
+            let arguments = args
+                .get("content")
+                .and_then(Value::as_str)
+                .and_then(|content| serde_json::from_str::<Value>(content.trim()).ok());
+            return Some(PiXdevCall {
+                kind: classify_tool(device),
+                title: tool_title(device),
+                tool_name: device.to_owned(),
+                arguments,
+            });
+        }
+        return Some(PiXdevCall {
+            kind: ActivityKind::Tool,
+            title: if device.is_empty() {
+                "xd://".to_owned()
+            } else {
+                tool_title(device)
+            },
+            tool_name: if device.is_empty() {
+                "xdev".to_owned()
+            } else {
+                device.to_owned()
+            },
+            arguments: None,
+        });
+    }
+
+    let xdev = value
+        .pointer("/partialResult/details/xdev")
+        .or_else(|| value.pointer("/result/details/xdev"))?;
+    let device = xdev
+        .get("tool")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|device| !device.is_empty())?;
+    let mode = xdev.get("mode").and_then(Value::as_str);
+    if mode == Some("execute") && device != "*" {
+        Some(PiXdevCall {
+            kind: classify_tool(device),
+            title: tool_title(device),
+            tool_name: device.to_owned(),
+            arguments: xdev.get("args").cloned(),
+        })
+    } else {
+        Some(PiXdevCall {
+            kind: ActivityKind::Tool,
+            title: if device == "*" {
+                "xd://".to_owned()
+            } else {
+                tool_title(device)
+            },
+            tool_name: if device == "*" {
+                "xdev".to_owned()
+            } else {
+                device.to_owned()
+            },
+            arguments: None,
+        })
+    }
 }
 
 fn classify_tool(name: &str) -> ActivityKind {
@@ -4377,8 +4323,6 @@ mod delegation_tests {
         configure_pi_delegation_command(
             &mut command,
             PiFlavor::OhMyPi,
-            Path::new("/nonexistent/omp"),
-            Path::new("/tmp"),
             Some(Path::new("/tmp/registration.json")),
             || Ok(PathBuf::from("/bundle/delegation/pi-extension.ts")),
         );
@@ -4386,6 +4330,7 @@ mod delegation_tests {
         let args = args(&command);
         let flag = args.iter().position(|arg| arg == "--extension").unwrap();
         assert_eq!(args[flag + 1], "/bundle/delegation/pi-extension.ts");
+        assert!(!args.iter().any(|arg| arg == "--tools"));
         assert_eq!(
             env(&command, "WAKU_DELEGATION_SESSION_PATH").as_deref(),
             Some("/tmp/registration.json")
@@ -4405,14 +4350,9 @@ mod delegation_tests {
     #[test]
     fn a_session_without_targets_spawns_no_extension() {
         let mut command = command();
-        configure_pi_delegation_command(
-            &mut command,
-            PiFlavor::Pi,
-            Path::new("/nonexistent/pi"),
-            Path::new("/tmp"),
-            None,
-            || panic!("the extension must not be probed without a registration"),
-        );
+        configure_pi_delegation_command(&mut command, PiFlavor::Pi, None, || {
+            panic!("the extension must not be probed without a registration")
+        });
         assert!(args(&command).is_empty());
         assert!(env(&command, "WAKU_AGENT_TOOLS_SERVER").is_none());
     }
@@ -4448,66 +4388,104 @@ mod delegation_tests {
         configure_pi_delegation_command(
             &mut command,
             PiFlavor::Pi,
-            Path::new("/nonexistent/pi"),
-            Path::new("/tmp"),
             Some(Path::new("/tmp/registration.json")),
             || anyhow::bail!("asset missing"),
         );
         assert!(args(&command).is_empty());
     }
+
+    #[test]
+    fn bundled_pi_extensions_mark_tools_essential_for_oh_my_pi() {
+        let delegation_source = include_str!("../../../../resources/delegation/pi-extension.ts");
+        assert!(delegation_source.contains("name: \"delegate_batch\""));
+        assert!(delegation_source.contains("name: \"wait_delegates\""));
+        assert_eq!(
+            delegation_source
+                .matches("loadMode: \"essential\",")
+                .count(),
+            2,
+            "both delegation tools must declare loadMode: \"essential\" so Oh My Pi keeps their schemas top-level"
+        );
+
+        let computer_use_source =
+            include_str!("../../../../resources/computer-use/pi-extension.ts");
+        assert!(computer_use_source.contains("name: \"js\""));
+        assert!(computer_use_source.contains("name: \"js_reset\""));
+        assert_eq!(
+            computer_use_source
+                .matches("loadMode: \"essential\",")
+                .count(),
+            2,
+            "both Computer Use tools must declare loadMode: \"essential\" so Oh My Pi keeps their schemas top-level"
+        );
+    }
 }
 
 #[cfg(test)]
-mod builtin_tool_tests {
-    use super::{parse_builtin_tools, parse_unavailable_tools};
+mod xdev_tool_tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+    use serde_json::json;
 
     #[test]
-    fn the_cli_diagnostic_yields_its_builtin_tool_names() {
-        // Shape taken from a real `omp --mode rpc --tools -probe` run.
-        let text = "Error: Unknown tool in --tools: -probe.\nBuilt-in tools: read, bash, edit, ast_grep, glob, grep, lsp, task, wait, todo, web_search, write.\nOther registered tools: goal, mcp__server_tool.\nRun `omp --help` for available flags.\n";
-        let names = parse_builtin_tools(text).expect("the list is present");
-        assert_eq!(names.first().map(String::as_str), Some("read"));
-        assert!(names.iter().any(|name| name == "write"));
-        assert!(names.iter().any(|name| name == "task"));
-        // Only the CLI's own tools: another registered tool is not part of the
-        // set a parent session would otherwise lose.
-        assert!(!names.iter().any(|name| name == "goal"));
-        assert!(!names.iter().any(|name| name.starts_with("mcp__")));
-    }
+    fn xdev_write_tool_events_unwrap_target_tool_identity_and_arguments() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (commands, _command_rx) = unbounded();
+        let (events, event_rx) = unbounded();
+        let mut state = PiStreamState::default();
 
-    #[test]
-    fn the_other_registered_tools_are_not_taken_for_builtins() {
-        // Real shape: both lists share one line, which is why a naive split
-        // produced names like "goal" that the CLI then rejected.
-        let text = "Error: Unknown tool in --tools: -probe.\nBuilt-in tools: read, bash, write. Other registered tools: goal, mcp__server_tool.\n";
-        let names = parse_builtin_tools(text).expect("the list is present");
-        assert_eq!(names, vec!["read", "bash", "write"]);
-    }
+        for frame in [
+            json!({
+                "type": "tool_execution_start",
+                "toolCallId": "tool_xdev_1",
+                "toolName": "write",
+                "args": {
+                    "i": "Reading delegate_batch schema",
+                    "path": "xd://delegate_batch",
+                    "content": "{}"
+                }
+            }),
+            json!({
+                "type": "tool_execution_end",
+                "toolCallId": "tool_xdev_1",
+                "toolName": "write",
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": "Invalid args for xd://delegate_batch: Validation failed"
+                    }]
+                },
+                "isError": true
+            }),
+        ] {
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                frame,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
 
-    #[test]
-    fn builtins_that_are_unavailable_here_are_dropped() {
-        // The CLI answers a second time when a named tool exists but is
-        // disabled here; naming it is an error, so it must not reach the
-        // allowlist. This text is the real shape, wrapped mid-list.
-        let text = "Error: Built-in tools unavailable in this session: ast_grep, ask,\nida, github, find.\nRun `omp --help` for available flags.\n";
-        let unavailable = parse_unavailable_tools(text);
-        assert_eq!(
-            unavailable,
-            vec!["ast_grep", "ask", "ida", "github", "find"]
-        );
-    }
+        let DriverEvent::RichActivity(started) = event_rx.recv().unwrap() else {
+            panic!("expected started RichActivity");
+        };
+        assert_eq!(started.kind, ActivityKind::Tool);
+        assert_eq!(started.title, "delegate_batch");
+        assert_eq!(started.tool_name.as_deref(), Some("delegate_batch"));
+        assert!(started.file_changes.is_empty());
+        assert_eq!(started.arguments.as_deref(), Some("{}"));
+        assert!(!started.complete);
 
-    #[test]
-    fn prose_never_becomes_a_tool_name() {
-        let text = "Built-in tools: read, bash, write. Other registered tools: goal. Run `omp --help` for available flags.\n";
-        let names = parse_builtin_tools(text).expect("the list is present");
-        assert_eq!(names, vec!["read", "bash", "write"]);
-        assert!(!names.iter().any(|name| name.contains(' ')));
-    }
-
-    #[test]
-    fn an_unexpected_diagnostic_is_not_guessed_at() {
-        assert!(parse_builtin_tools("Error: something else entirely").is_none());
-        assert!(parse_builtin_tools("Built-in tools: \n").is_none());
+        let DriverEvent::RichActivity(ended) = event_rx.recv().unwrap() else {
+            panic!("expected completed RichActivity");
+        };
+        assert_eq!(ended.kind, ActivityKind::Tool);
+        assert_eq!(ended.title, "delegate_batch");
+        assert_eq!(ended.tool_name.as_deref(), Some("delegate_batch"));
+        assert!(ended.file_changes.is_empty());
+        assert!(ended.complete);
+        assert!(ended.failed);
     }
 }

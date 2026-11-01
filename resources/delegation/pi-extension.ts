@@ -17,6 +17,22 @@ import { Type } from "typebox";
 
 type JsonObject = Record<string, unknown>;
 
+type EssentialToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0] & {
+  /**
+   * Oh My Pi (`omp`) mounts `"discoverable"` extension tools under `xd://` with
+   * no parameter schema in the initial prompt. Marking delegation tools
+   * `"essential"` keeps their full schemas top-level on turn 1.
+   */
+  loadMode: "essential";
+};
+
+function registerEssentialTool(
+  pi: ExtensionAPI,
+  definition: EssentialToolDefinition,
+) {
+  pi.registerTool(definition);
+}
+
 class WakuDelegationClient {
   private child: ChildProcessWithoutNullStreams | undefined;
   private starting: Promise<void> | undefined;
@@ -169,9 +185,10 @@ function toolResult(result: JsonObject) {
 export default function wakuDelegation(pi: ExtensionAPI) {
   const client = new WakuDelegationClient();
 
-  pi.registerTool({
+  registerEssentialTool(pi, {
     name: "delegate_batch",
     label: "Delegate",
+    loadMode: "essential",
     description:
       "Run independent subtasks on the models the user marked with ^, in parallel. Pass one task per target; each task's `target_ref` is a target id from the delegation block of the user's message. Returns a group id for `wait_delegates`.",
     parameters: Type.Object(
@@ -211,9 +228,10 @@ export default function wakuDelegation(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  registerEssentialTool(pi, {
     name: "wait_delegates",
     label: "Wait for delegates",
+    loadMode: "essential",
     description:
       "Wait for a delegated group. Returns as soon as every subtask in the group has settled, or with their current progress when the timeout elapses — call it again to keep waiting. Concluded subtasks carry their full conclusion.",
     parameters: Type.Object(

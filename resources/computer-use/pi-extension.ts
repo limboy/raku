@@ -5,6 +5,22 @@ import { Type } from "typebox";
 
 type JsonObject = Record<string, unknown>;
 
+type EssentialToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0] & {
+  /**
+   * Oh My Pi (`omp`) mounts `"discoverable"` extension tools under `xd://` with
+   * no parameter schema in the initial prompt. Marking Computer Use tools
+   * `"essential"` keeps their full schemas top-level on turn 1.
+   */
+  loadMode: "essential";
+};
+
+function registerEssentialTool(
+  pi: ExtensionAPI,
+  definition: EssentialToolDefinition,
+) {
+  pi.registerTool(definition);
+}
+
 const jsToolDescription =
   "Run JavaScript in Waku's persistent QuickJS kernel for Computer Use. Initialize `cua` with `await setupComputerUseRuntime({ globals: globalThis })`, then call native tools directly, such as `cua.list_apps()` and `cua.click(arguments)`. The bundled Computer Use skill documents the method signatures; call the methods directly. Calls time out after 30000 ms (30 seconds) unless `timeout_ms` is provided. Use `jsRepl.write(...)` for text and `await jsRepl.emitImage(...)` for images. Bindings and scheduled timers persist until the JavaScript kernel is reset.";
 
@@ -155,9 +171,10 @@ function toolResult(result: JsonObject) {
 export default function wakuComputerUse(pi: ExtensionAPI) {
   const client = new WakuMcpClient();
 
-  pi.registerTool({
+  registerEssentialTool(pi, {
     name: "js",
     label: "JavaScript",
+    loadMode: "essential",
     description: jsToolDescription,
     parameters: Type.Object(
       {
@@ -189,9 +206,10 @@ export default function wakuComputerUse(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  registerEssentialTool(pi, {
     name: "js_reset",
     label: "Reset JavaScript",
+    loadMode: "essential",
     description:
       "Reset the persistent JavaScript kernel and clear all bindings created by prior `js` calls. The `jsRepl` helpers and lazy `setupComputerUseRuntime(...)` entrypoint are installed again automatically; `cua` remains unset until setup is called.",
     parameters: Type.Object({}, { additionalProperties: false }),
