@@ -4,11 +4,10 @@ How each session in the sidebar gets its name: who writes the title, how Waku
 learns about it, and when.
 
 The governing rule is that **the provider names its own session wherever it
-can**. Every coding agent except Codex already generates a title for its own
-UI, on its own cheap model, as part of work it is doing anyway. Waku's job is
-to find that title and show it promptly — not to pay for a second opinion.
-Generating one ourselves is the exception, and it exists for exactly one
-provider that does not.
+can**. Waku reads those native titles and explicitly requests native naming
+when a headless transport does not enable it automatically. Oh My Pi, for
+example, enables automatic titles in its TUI but not RPC. Codex is the one
+provider for which Waku runs its own title-generation turn.
 
 ## The two title fields
 
@@ -50,8 +49,11 @@ last-stage normalizer. `AutoTitleUpdated` is in the `force_save` set
 What differs is how the title reaches that event:
 
 1. **Pushed on the provider's own stream.** The agent sends a title event and
-   the driver forwards it. Nothing to poll, nothing to schedule. OpenCode, Pi,
-   Oh My Pi, Kimi Code, DeepSeek, and Codex's native paths work this way.
+   the driver forwards it. Nothing to poll, nothing to schedule. OpenCode,
+   Kimi Code, DeepSeek, and Codex's native paths work this way. Oh My Pi uses
+   the same delivery shape after Waku explicitly requests native naming. Pi
+   also pushes name changes, but its built-in rename support does not generate
+   a name automatically.
 2. **Polled from a native store.** The agent writes the title to disk (or to a
    store reachable by CLI) but never puts it on the wire. The driver polls with
    [`NativeTitleRefresh`](../crates/waku-core/src/driver/title_refresh.rs) on a
@@ -80,11 +82,12 @@ title near when the provider writes it, and long enough to survive a slow start.
 | Amp | Amp | `amp threads list --json` subprocess | poll at turn end | [title_refresh.rs:53](../crates/waku-core/src/driver/title_refresh.rs#L53) |
 | Grok Build | Grok | `summary.json` on disk | poll at turn end | [title_refresh.rs:53](../crates/waku-core/src/driver/title_refresh.rs#L53) |
 | OpenCode | OpenCode | SSE stream | connect, `session.renamed` | [opencode.rs:515](../crates/waku-core/src/driver/opencode.rs#L515), [opencode.rs:1568](../crates/waku-core/src/driver/opencode.rs#L1568) |
-| Pi | Pi | NDJSON stream | connect, `session_info_changed` | [pi.rs:472](../crates/waku-core/src/driver/pi.rs#L472), [pi.rs:1214](../crates/waku-core/src/driver/pi.rs#L1214) |
-| Oh My Pi | Oh My Pi | NDJSON stream | connect, `session_info_update` | [pi.rs:472](../crates/waku-core/src/driver/pi.rs#L472), [pi.rs:1214](../crates/waku-core/src/driver/pi.rs#L1214) |
+| Pi | user or extension; no built-in automatic generator in installed 1.4.0 | NDJSON stream | connect, explicit `session_info_changed` | [pi.rs](../crates/waku-core/src/driver/pi.rs) |
+| Oh My Pi | Oh My Pi's configured title model | NDJSON stream | first assistant message while unnamed → native `/rename` → `session_info_update`, or direct `/rename` on reattached history | [pi.rs](../crates/waku-core/src/driver/pi.rs) |
 | DeepSeek | Harness | stream + projections | `session/title`, projection replay | [deepseek.rs:782](../crates/waku-core/src/driver/deepseek.rs#L782), [deepseek.rs:1139](../crates/waku-core/src/driver/deepseek.rs#L1139) |
 | Kimi Code | Kimi (placeholder) | ACP stream | `session_info_update` | [acp.rs:1305](../crates/waku-core/src/driver/acp.rs#L1305) |
 | Cursor CLI | — | — | — | none; fallback only |
+| Fx | not verified | generic ACP title updates only | `session_info_update` if sent | [acp.rs](../crates/waku-core/src/driver/acp.rs) |
 
 ### Claude Code
 
@@ -193,7 +196,8 @@ runtime supplies.
 
 ### OpenCode, Pi, DeepSeek
 
-All three push titles on their own streams, so there is nothing to schedule.
+These providers deliver titles on their own streams. Oh My Pi requires an
+explicit request before it generates one in RPC mode.
 
 - **OpenCode** — the session's `title` at connect and after every reconnect,
   then `session.renamed` → `data.title`. Titles beginning with
@@ -206,11 +210,49 @@ All three push titles on their own streams, so there is nothing to schedule.
   `session_info_update` with it under `title`, and `PiFlavor` resolves both
   ([pi.rs:69](../crates/waku-core/src/driver/pi.rs#L69)). Either may send an
   empty value, which becomes `AutoTitleUpdated(None)` and clears the title back
-  to the fallback.
+  to the fallback. This event alone does not establish automatic generation.
 - **DeepSeek** — the Harness `session/title` event, plus a `title` projection
   replayed from history at connect, so a reattached session gets its title
   without waiting for a new one.
 
+**Pi naming gap.** The installed upstream Pi 1.4.0 has `setSessionName`, the
+`set_session_name` RPC, and the explicit `/name <name>` command. Its built-in
+session and mode code contains no automatic title-generation call. Waku
+currently forwards name changes but does not generate a missing Pi name.
+Both existing Pi conversations checked during the audit retained their prompt
+fallback and had no native `session_info` name entries. An extension can supply
+a name; built-in rename support is not automatic naming.
+
+**Oh My Pi RPC naming.** Verified against installed OMP 18.14.0: its
+`AgentSessionConfig.autoTitle` defaults to false, and the CLI enables it only
+for the interactive TUI. A `session_info_update` event is evidence of a
+completed rename, not a promise that RPC will start generating a title.
+
+Waku requests the native `/rename` command when an unnamed session's first
+assistant message begins, or as soon as an older unnamed conversation's native
+history is reattached. Review subtasks do not request titles.
+During a live turn, an asynchronous `get_state` immediately before that command
+preserves any existing native name; on session reattachment, `initialize`'s
+`get_state` check has already verified the session is unnamed, so `/rename` is
+issued directly without a redundant round trip.
+
+OMP chooses its configured title model, generates the title in the background,
+persists it with native `titleSource: "user"`, and sends `session_info_update`.
+Unless configured with `title.icons: "boring"`, OMP heads generated titles with
+a Title Card (`<icon> <CODE>: <title>`). Waku sanitizes any Private Use Area
+(PUA) glyphs produced under custom `symbolPreset: "nerd"` configs so titles
+never render as missing glyphs in macOS GUI fonts, while preserving standard
+Unicode emoji and task codes. Neither request blocks the provider writer, so
+Stop and steering remain available while the model is naming the session.
+
+Internal rename acknowledgements do not start or settle a Waku turn, and
+the native rename reports are consumed without entering the transcript even
+if the attempt was cancelled or settled after turn end. Standalone background
+command outputs that arrive while idle complete immediately rather than leaving
+a turn hanging. A failed attempt leaves the prompt fallback in place and can
+retry on the next user prompt; stale attempts cannot supersede a newer one.
+Explicit `/rename` commands retain their normal output, existing native names
+are kept, and Waku's user-owned `title` continues to take display precedence.
 ### Kimi Code
 
 Kimi is the first provider to actually exercise the generic ACP
@@ -237,9 +279,10 @@ is no evidence in Cursor's protocol traffic that it ever sends one.
 
 In order of preference:
 
-1. **Does the agent already generate a title?** Nearly all do — for their own
-   UI, on their own cheap model. Find where it surfaces before writing any
-   model call.
+1. **Does the agent already generate a title?** Several do — for their own
+   UI, on their own cheap model. Verify the active transport actually enables
+   generation; a title field or rename event is not sufficient evidence.
+   Find where it surfaces before writing any model call.
 2. **Does it push that title on the stream?** Then forward it and stop. Prefer
    trimming and dropping the provider's own placeholder strings, as OpenCode
    does.

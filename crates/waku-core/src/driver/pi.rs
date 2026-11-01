@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use waku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
@@ -300,6 +300,10 @@ impl PiFlavor {
 
 enum CommandMessage {
     Compact(CompactionRequest),
+    AutoTitle {
+        request: AutoTitleRequest,
+        phase: AutoTitlePhase,
+    },
     Prompt(String),
     Steer(String),
     Cancel,
@@ -318,11 +322,187 @@ enum CommandMessage {
 
 enum PendingResponse {
     Compact(ContextCompaction),
+    AutoTitle {
+        request: AutoTitleRequest,
+        phase: AutoTitlePhase,
+    },
     Request(Sender<Result<Value, String>>),
     Prompt,
 }
 
 type PendingResponses = Arc<Mutex<HashMap<String, PendingResponse>>>;
+
+#[derive(Clone, Copy)]
+enum AutoTitlePhase {
+    CheckName,
+    Generate,
+}
+
+#[derive(Clone)]
+struct AutoTitleRequest {
+    session_id: String,
+    started: Instant,
+}
+
+/// OMP enables automatic naming only in its TUI. RPC hosts have to ask its
+/// native `/rename` command to use the configured title model themselves.
+/// This state belongs to the native session, not to an individual agent turn:
+/// the background rename can finish after `agent_end`.
+#[derive(Clone, Default)]
+struct PiAutoTitle {
+    state: Arc<Mutex<PiAutoTitleState>>,
+    disabled: bool,
+}
+
+#[derive(Default)]
+struct PiAutoTitleState {
+    session_id: Option<String>,
+    named: bool,
+    attempted: bool,
+    in_flight: Option<Instant>,
+    suppress_rename_output: bool,
+}
+
+impl PiAutoTitle {
+    fn mark_generating(&self) {
+        let mut state = self.state.lock();
+        state.suppress_rename_output = true;
+    }
+
+    fn observe_state(&self, flavor: PiFlavor, response: &Value) {
+        if flavor != PiFlavor::OhMyPi || self.disabled {
+            return;
+        }
+        let Some(session_id) = response.pointer("/data/sessionId").and_then(Value::as_str) else {
+            return;
+        };
+        let mut state = self.state.lock();
+        if state.session_id.as_deref() != Some(session_id) {
+            *state = PiAutoTitleState {
+                session_id: Some(session_id.to_owned()),
+                ..Default::default()
+            };
+        }
+        state.named = response
+            .pointer("/data/sessionName")
+            .and_then(Value::as_str)
+            .is_some_and(|title| !title.trim().is_empty());
+    }
+
+    fn prepare_prompt(&self, prompt: &str) {
+        let mut state = self.state.lock();
+        if prompt.split_whitespace().next() == Some("/rename") {
+            // The explicit command owns both the title and its output. OMP's
+            // title revision also invalidates an older background rename.
+            state.in_flight = None;
+            state.suppress_rename_output = false;
+            state.attempted = true;
+        } else {
+            state.attempted = false;
+            if state
+                .in_flight
+                .is_some_and(|started| started.elapsed() >= Duration::from_secs(60))
+            {
+                state.in_flight = None;
+                state.suppress_rename_output = false;
+            }
+        }
+    }
+
+    fn cancel(&self) {
+        let mut state = self.state.lock();
+        state.in_flight = None;
+        state.attempted = true;
+    }
+
+    fn start_restored(&self, response: &Value) -> Option<AutoTitleRequest> {
+        response
+            .pointer("/data/messageCount")
+            .and_then(Value::as_u64)
+            .filter(|count| *count > 0)?;
+        self.start()
+    }
+
+    fn start(&self) -> Option<AutoTitleRequest> {
+        if self.disabled {
+            return None;
+        }
+        let mut state = self.state.lock();
+        if state.named || state.attempted || state.in_flight.is_some() {
+            return None;
+        }
+        let session_id = state.session_id.clone()?;
+        let started = Instant::now();
+        state.attempted = true;
+        state.in_flight = Some(started);
+        Some(AutoTitleRequest {
+            session_id,
+            started,
+        })
+    }
+
+    fn is_current(&self, request: &AutoTitleRequest) -> bool {
+        let state = self.state.lock();
+        state.session_id.as_deref() == Some(&request.session_id)
+            && state.in_flight == Some(request.started)
+    }
+
+    fn finish(&self, request: &AutoTitleRequest) {
+        let mut state = self.state.lock();
+        if state.session_id.as_deref() == Some(&request.session_id)
+            && state.in_flight == Some(request.started)
+        {
+            state.in_flight = None;
+            state.suppress_rename_output = false;
+        }
+    }
+
+    fn observe_title(&self, session_id: Option<&str>, title: Option<&str>) -> bool {
+        let mut state = self.state.lock();
+        if let (Some(received), Some(current)) = (session_id, state.session_id.as_deref())
+            && received != current
+        {
+            return false;
+        }
+        state.named = title.is_some();
+        if title.is_some() {
+            state.in_flight = None;
+        }
+        true
+    }
+
+    fn consume_output(&self, text: &str) -> bool {
+        let mut state = self.state.lock();
+        // RPC command_output has no request id. Match only OMP's native
+        // rename reports so unrelated user commands continue to render.
+        let renamed = text.starts_with("Session renamed to ");
+        if !renamed
+            && text != "Could not generate a session title. Use /rename <title> to set one."
+            && text != "Session name not changed (a user-set name takes precedence)."
+            && !text.starts_with("Rename failed: ")
+        {
+            return false;
+        }
+        if !state.suppress_rename_output && state.in_flight.is_none() {
+            return false;
+        }
+        state.suppress_rename_output = false;
+        state.in_flight = None;
+        if !renamed {
+            eprintln!("Oh My Pi automatic title: {text}");
+        }
+        true
+    }
+}
+
+fn sanitize_ohmypi_title(title: &str) -> Option<String> {
+    let sanitized: String = title
+        .chars()
+        .filter(|c| !matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{10ffff}'))
+        .collect();
+    let trimmed = sanitized.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
 
 fn interrupt_pending_compactions(pending: &PendingResponses, events: &impl DriverEventSink) {
     for entry in pending.lock().values_mut() {
@@ -523,6 +703,11 @@ impl PiDriver {
 
         let (commands, command_rx) = unbounded();
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let auto_title = PiAutoTitle {
+            disabled: review_read_only,
+            ..Default::default()
+        };
+        let reader_auto_title = auto_title.clone();
         let reader_pending = pending.clone();
         let reader_commands = commands.clone();
         let reader_events = events.clone();
@@ -530,7 +715,10 @@ impl PiDriver {
             thread::Builder::new()
                 .name("waku-pi-reader".into())
                 .spawn(move || {
-                    let mut stream_state = PiStreamState::default();
+                    let mut stream_state = PiStreamState {
+                        auto_title: reader_auto_title,
+                        ..Default::default()
+                    };
                     let mut chunks = ChunkAssembly::default();
                     for line in BufReader::new(stdout).lines() {
                         match line {
@@ -704,6 +892,7 @@ impl PiDriver {
                     });
                     return;
                 };
+                auto_title.observe_state(flavor, &state);
                 let initial_usage = send_request(
                     &mut stdin,
                     &writer_pending,
@@ -727,8 +916,30 @@ impl PiDriver {
                     .and_then(Value::as_str)
                     .filter(|title| !title.trim().is_empty())
                 {
+                    let title = if flavor == PiFlavor::OhMyPi {
+                        sanitize_ohmypi_title(title)
+                    } else {
+                        Some(title.to_owned())
+                    };
                     let _ =
-                        writer_events.send(DriverEvent::AutoTitleUpdated(Some(title.to_owned())));
+                        writer_events.send(DriverEvent::AutoTitleUpdated(title));
+                }
+
+                // Repair older unnamed conversations when their native
+                // history is reattached, without waiting for another reply.
+                // The session state was already verified to be unnamed above.
+                if let Some(request) = auto_title.start_restored(&state)
+                    && let Err(error) = send_auto_title_request(
+                        &mut stdin,
+                        &writer_pending,
+                        &mut next_request_id,
+                        &auto_title,
+                        request.clone(),
+                        AutoTitlePhase::Generate,
+                    )
+                {
+                    auto_title.finish(&request);
+                    eprintln!("Oh My Pi automatic title: {error}");
                 }
 
                 // Pi reports extension commands, prompts and skills on request;
@@ -753,6 +964,26 @@ impl PiDriver {
                 let mut current_effort = reasoning_effort;
                 while let Ok(message) = command_rx.recv() {
                     match message {
+                        CommandMessage::AutoTitle { request, phase } => {
+                            if !auto_title.is_current(&request) {
+                                continue;
+                            }
+                            if matches!(phase, AutoTitlePhase::Generate) && auto_title.state.lock().named {
+                                auto_title.finish(&request);
+                                continue;
+                            }
+                            if let Err(error) = send_auto_title_request(
+                                &mut stdin,
+                                &writer_pending,
+                                &mut next_request_id,
+                                &auto_title,
+                                request.clone(),
+                                phase,
+                            ) {
+                                auto_title.finish(&request);
+                                eprintln!("Oh My Pi automatic title: {error}");
+                            }
+                        }
                         CommandMessage::Compact(request) => {
                             next_request_id += 1;
                             let rpc_id = format!("waku-{}", next_request_id);
@@ -768,6 +999,7 @@ impl PiDriver {
                             }
                         }
                         CommandMessage::Prompt(prompt) => {
+                            auto_title.prepare_prompt(&prompt);
                             let result = send_prompt(
                                 &mut stdin,
                                 &writer_pending,
@@ -810,6 +1042,7 @@ impl PiDriver {
                             }
                         }
                         CommandMessage::Cancel => {
+                            auto_title.cancel();
                             interrupt_pending_compactions(&writer_pending, &writer_events);
                             if let Err(error) = send_request(
                                 &mut stdin,
@@ -1134,6 +1367,36 @@ fn send_request_with_timeout(
     }
 }
 
+fn send_auto_title_request(
+    stdin: &mut impl Write,
+    pending: &PendingResponses,
+    next_request_id: &mut u64,
+    auto_title: &PiAutoTitle,
+    request: AutoTitleRequest,
+    phase: AutoTitlePhase,
+) -> Result<(), String> {
+    if matches!(phase, AutoTitlePhase::Generate) {
+        auto_title.mark_generating();
+    }
+    *next_request_id += 1;
+    let id = format!("waku-{}", next_request_id);
+    pending
+        .lock()
+        .insert(id.clone(), PendingResponse::AutoTitle { request, phase });
+    let mut request = match phase {
+        AutoTitlePhase::CheckName => json!({"type": "get_state"}),
+        AutoTitlePhase::Generate => json!({"type": "prompt", "message": "/rename"}),
+    };
+    request["id"] = json!(id);
+    // Both the name check and /rename admission are asynchronous. Waiting for
+    // the title model here would keep the writer from sending Stop or steer.
+    if let Err(error) = write_json_line(stdin, &request) {
+        pending.lock().remove(&id);
+        return Err(format!("transport write failed: {error}"));
+    }
+    Ok(())
+}
+
 fn send_prompt(
     stdin: &mut impl Write,
     pending: &PendingResponses,
@@ -1148,7 +1411,9 @@ fn send_prompt(
         pending.retain(|_, response| {
             matches!(
                 response,
-                PendingResponse::Request(_) | PendingResponse::Compact(_)
+                PendingResponse::Request(_)
+                    | PendingResponse::Compact(_)
+                    | PendingResponse::AutoTitle { .. }
             )
         });
         pending.insert(id.clone(), PendingResponse::Prompt);
@@ -1519,6 +1784,7 @@ fn clone_ohmypi_session(
 
 #[derive(Default)]
 struct PiStreamState {
+    auto_title: PiAutoTitle,
     compaction: CompactionTracker,
     run_started: bool,
     message_saw_text: bool,
@@ -1531,6 +1797,13 @@ struct PiStreamState {
 }
 
 impl PiStreamState {
+    fn reset_turn(&mut self) {
+        *self = Self {
+            auto_title: self.auto_title.clone(),
+            ..Default::default()
+        };
+    }
+
     fn reasoning_block(
         &mut self,
         index: u64,
@@ -1589,6 +1862,55 @@ fn handle_pi_message(
         let Some(id) = value.get("id").and_then(Value::as_str) else {
             return;
         };
+        let title_response = {
+            let mut pending = pending.lock();
+            if matches!(pending.get(id), Some(PendingResponse::AutoTitle { .. })) {
+                pending.remove(id)
+            } else {
+                None
+            }
+        };
+        if let Some(PendingResponse::AutoTitle { request, phase }) = title_response {
+            if !state.auto_title.is_current(&request) {
+                return;
+            }
+            if value.get("success").and_then(Value::as_bool) != Some(true) {
+                state.auto_title.finish(&request);
+                eprintln!(
+                    "Oh My Pi automatic title: {}",
+                    value.get("error").unwrap_or(&Value::Null)
+                );
+                return;
+            }
+            if let AutoTitlePhase::CheckName = phase {
+                if value.pointer("/data/sessionId").and_then(Value::as_str)
+                    != Some(&request.session_id)
+                {
+                    state.auto_title.finish(&request);
+                    return;
+                }
+                state.auto_title.observe_state(flavor, &value);
+                if let Some(title) = value
+                    .pointer("/data/sessionName")
+                    .and_then(Value::as_str)
+                    .filter(|title| !title.trim().is_empty())
+                {
+                    state.auto_title.finish(&request);
+                    let title = if flavor == PiFlavor::OhMyPi {
+                        sanitize_ohmypi_title(title)
+                    } else {
+                        Some(title.to_owned())
+                    };
+                    let _ = events.send(DriverEvent::AutoTitleUpdated(title));
+                } else {
+                    let _ = commands.send(CommandMessage::AutoTitle {
+                        request,
+                        phase: AutoTitlePhase::Generate,
+                    });
+                }
+            }
+            return;
+        }
         let compact = {
             let mut pending = pending.lock();
             if matches!(pending.get(id), Some(PendingResponse::Compact(_))) {
@@ -1671,13 +1993,16 @@ fn handle_pi_message(
                 success,
                 summary: error,
             });
-            *state = PiStreamState::default();
+            state.reset_turn();
             return;
         }
         let Some(PendingResponse::Request(response)) = pending.lock().remove(id) else {
             return;
         };
         if value.get("success").and_then(Value::as_bool) == Some(true) {
+            if value.get("command").and_then(Value::as_str) == Some("get_state") {
+                state.auto_title.observe_state(flavor, &value);
+            }
             let _ = response.send(Ok(value));
         } else {
             let error = value
@@ -1703,8 +2028,20 @@ fn handle_pi_message(
             .get(flavor.session_info_title_field())
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .map(str::to_owned);
+            .filter(|title| !title.is_empty());
+        let title = if flavor == PiFlavor::OhMyPi {
+            title.and_then(sanitize_ohmypi_title)
+        } else {
+            title.map(str::to_owned)
+        };
+        if flavor == PiFlavor::OhMyPi
+            && !state.auto_title.observe_title(
+                value.get("sessionId").and_then(Value::as_str),
+                title.as_deref(),
+            )
+        {
+            return;
+        }
         let _ = events.send(DriverEvent::AutoTitleUpdated(title));
         return;
     }
@@ -1721,7 +2058,9 @@ fn handle_pi_message(
             pending.lock().retain(|_, response| {
                 matches!(
                     response,
-                    PendingResponse::Request(_) | PendingResponse::Compact(_)
+                    PendingResponse::Request(_)
+                        | PendingResponse::Compact(_)
+                        | PendingResponse::AutoTitle { .. }
                 )
             });
             let success = !state.failed;
@@ -1735,7 +2074,7 @@ fn handle_pi_message(
                 }),
             });
         }
-        *state = PiStreamState::default();
+        state.reset_turn();
         return;
     }
 
@@ -1775,18 +2114,39 @@ fn handle_pi_message(
             );
         }
         "command_output" => {
+            if flavor == PiFlavor::OhMyPi
+                && value
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| state.auto_title.consume_output(text))
+            {
+                return;
+            }
             if let Some(text) = value
                 .get("text")
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
             {
-                if !state.run_started {
-                    state.run_started = true;
+                let was_idle = !state.run_started;
+                if was_idle {
                     let _ = events.send(DriverEvent::TurnStarted);
                 }
                 // Each command_output is a complete output block, unlike
                 // assistant deltas. Keep successive reports separated.
                 let _ = events.send(DriverEvent::TextDelta(format!("{text}\n\n")));
+                if was_idle
+                    && !pending
+                        .lock()
+                        .values()
+                        .any(|response| matches!(response, PendingResponse::Prompt))
+                {
+                    let _ = events.send(DriverEvent::TurnFinished {
+                        success: true,
+                        summary: None,
+                    });
+                } else if was_idle {
+                    state.run_started = true;
+                }
             }
         }
         "agent_start" | "turn_start" => {
@@ -1798,6 +2158,14 @@ fn handle_pi_message(
         }
         "message_start" => {
             if value.pointer("/message/role").and_then(Value::as_str) == Some("assistant") {
+                if flavor == PiFlavor::OhMyPi
+                    && let Some(request) = state.auto_title.start()
+                {
+                    let _ = commands.send(CommandMessage::AutoTitle {
+                        request,
+                        phase: AutoTitlePhase::CheckName,
+                    });
+                }
                 flush_pending_message_text(events, state);
                 state.message_saw_text = false;
                 state.message_saw_reasoning = false;
@@ -2611,6 +2979,161 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an installed, authenticated omp"]
+    fn ohmypi_automatic_title_against_the_real_rpc() {
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let driver = PiDriver::start(
+            PiFlavor::OhMyPi,
+            DriverStartOptions {
+                binary: crate::command_env::find_executable("omp").expect("omp is not installed"),
+                cwd: std::env::temp_dir(),
+                mode: RuntimeMode::FullAccess,
+                model: std::env::var("WAKU_TEST_OMP_MODEL").ok(),
+                reasoning_effort: Some("low".into()),
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                execution_policy: Default::default(),
+                computer_use_enabled: false,
+                provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
+            },
+            events,
+        )
+        .expect("the Oh My Pi RPC session should start");
+        let prompt = "请用一句话解释怎样优化长对话列表的滚动性能，不要使用任何工具。";
+        driver.prompt(prompt.into());
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut title = None;
+        let mut native_file = None;
+        let mut transcript = String::new();
+        let mut starts = 0;
+        let mut finishes = 0;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            let Ok(event) = event_rx.recv_timeout(remaining) else {
+                break;
+            };
+            match event {
+                DriverEvent::Connected {
+                    provider_cursor: Some(ProviderResumeCursor::OhMyPi { session_file, .. }),
+                } => native_file = session_file,
+                DriverEvent::AutoTitleUpdated(Some(value)) => title = Some(value),
+                DriverEvent::TextDelta(value) => transcript.push_str(&value),
+                DriverEvent::TurnStarted => starts += 1,
+                DriverEvent::TurnFinished { success, .. } => {
+                    assert!(success, "Oh My Pi should finish the probe turn");
+                    finishes += 1;
+                }
+                DriverEvent::Error(error) => panic!("Oh My Pi reported: {error}"),
+                _ => {}
+            }
+            if title.is_some() && finishes > 0 {
+                break;
+            }
+        }
+        assert_eq!(starts, 1);
+        assert_eq!(finishes, 1);
+        let title = title.expect("Oh My Pi should replace the prompt with a generated title");
+        assert_ne!(title, prompt);
+        assert!(!title.trim().is_empty());
+        assert!(!transcript.is_empty());
+        assert!(!transcript.contains("Session renamed to"));
+        let native = std::fs::read_to_string(native_file.expect("native session file")).unwrap();
+        let slot: Value = serde_json::from_str(native.lines().next().unwrap()).unwrap();
+        assert_eq!(slot["title"], title);
+        eprintln!("OMP generated title: {title}");
+        drop(driver);
+    }
+
+    #[test]
+    #[ignore = "requires an installed, authenticated omp"]
+    fn ohmypi_titles_unnamed_history_on_resume_without_a_new_turn() {
+        let directory =
+            std::env::temp_dir().join(format!("waku-omp-title-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_file = directory.join("history.jsonl");
+        let entries = [
+            json!({"type":"session", "version":3, "id":session_id,
+                "timestamp":"2026-10-31T11:00:00Z", "cwd":directory}),
+            json!({"type":"message", "id":"user-1", "parentId":null,
+                "timestamp":"2026-10-31T11:00:01Z", "message": {"role":"user",
+                "content":[{"type":"text", "text":"如果想一次把 prompt 发给多个模型，可以怎么做？"}], "timestamp":1793444401000_u64}}),
+        ];
+        std::fs::write(
+            &session_file,
+            entries
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let driver = PiDriver::start(
+            PiFlavor::OhMyPi,
+            DriverStartOptions {
+                binary: crate::command_env::find_executable("omp").expect("omp is not installed"),
+                cwd: directory.clone(),
+                mode: RuntimeMode::FullAccess,
+                model: std::env::var("WAKU_TEST_OMP_MODEL").ok(),
+                reasoning_effort: Some("low".into()),
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                execution_policy: Default::default(),
+                computer_use_enabled: false,
+                provider_cursor: Some(ProviderResumeCursor::OhMyPi {
+                    session_id,
+                    session_file: Some(session_file.clone()),
+                }),
+                delegation_session_path: None,
+                delegation_registry_dir: None,
+            },
+            events,
+        )
+        .expect("the old unnamed conversation should resume");
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut generated = None;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            match event_rx.recv_timeout(remaining) {
+                Ok(DriverEvent::AutoTitleUpdated(Some(title))) => {
+                    generated = Some(title);
+                    break;
+                }
+                Ok(
+                    DriverEvent::TurnStarted
+                    | DriverEvent::TurnFinished { .. }
+                    | DriverEvent::TextDelta(_),
+                ) => panic!("repairing a title must not create a conversation turn"),
+                Ok(DriverEvent::Error(error)) => panic!("Oh My Pi reported: {error}"),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        let title = generated.expect(
+            "an old unnamed conversation should receive a title without another user prompt",
+        );
+        assert!(!title.trim().is_empty());
+        eprintln!("OMP restored title: {title}");
+        drop(driver);
+        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(10)) {
+            if matches!(event, DriverEvent::ProcessExited) {
+                break;
+            }
+            assert!(!matches!(
+                event,
+                DriverEvent::TurnStarted
+                    | DriverEvent::TurnFinished { .. }
+                    | DriverEvent::TextDelta(_)
+            ));
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn ohmypi_branches_where_pi_forks_and_never_asks_it_to_clone() {
         let messages = [
             json!({"entryId": "turn-1"}),
@@ -2702,6 +3225,379 @@ mod tests {
             event_rx.try_recv().unwrap(),
             DriverEvent::AutoTitleUpdated(Some(title)) if title == "Named by Oh My Pi"
         ));
+    }
+
+    #[test]
+    fn ohmypi_asks_for_a_title_without_settling_or_polluting_the_turn() {
+        let (pending, commands, command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        state.auto_title.observe_state(
+            PiFlavor::OhMyPi,
+            &json!({"data": {"sessionId": "session-1"}}),
+        );
+        let auto_title = state.auto_title.clone();
+        let mut wire = Vec::new();
+        let mut next = 0;
+        send_prompt(
+            &mut wire,
+            &pending,
+            &mut next,
+            "Improve transcript scrolling",
+        )
+        .unwrap();
+        let mut handle = |value| {
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            )
+        };
+        handle(json!({"type": "agent_start"}));
+        handle(json!({"type": "message_start", "message": {"role": "assistant"}}));
+        handle(json!({"type": "message_start", "message": {"role": "assistant"}}));
+        let CommandMessage::AutoTitle {
+            request,
+            phase: AutoTitlePhase::CheckName,
+        } = command_rx.try_recv().unwrap()
+        else {
+            panic!("expected a native name check")
+        };
+        assert!(
+            command_rx.try_recv().is_err(),
+            "one request per user prompt"
+        );
+        send_auto_title_request(
+            &mut wire,
+            &pending,
+            &mut next,
+            &auto_title,
+            request,
+            AutoTitlePhase::CheckName,
+        )
+        .unwrap();
+        handle(json!({"type": "response", "id": "waku-2", "success": true,
+            "data": {"sessionId": "session-1", "sessionName": ""}}));
+        let CommandMessage::AutoTitle {
+            request,
+            phase: AutoTitlePhase::Generate,
+        } = command_rx.try_recv().unwrap()
+        else {
+            panic!("expected native /rename")
+        };
+        send_auto_title_request(
+            &mut wire,
+            &pending,
+            &mut next,
+            &auto_title,
+            request,
+            AutoTitlePhase::Generate,
+        )
+        .unwrap();
+        handle(json!({"type": "response", "id": "waku-3", "success": true,
+            "data": {"agentInvoked": false}}));
+        handle(json!({"type": "message_update", "assistantMessageEvent": {
+            "type": "text_delta", "delta": "Use a virtualized list."}}));
+        handle(json!({"type": "agent_end", "isTerminal": true}));
+        // A background title can land after the normal turn has already ended.
+        handle(
+            json!({"type": "session_info_update", "sessionId": "old-session", "title": "Stale title"}),
+        );
+        handle(
+            json!({"type": "session_info_update", "sessionId": "session-1", "title": "Improve Transcript Scrolling"}),
+        );
+        handle(
+            json!({"type": "command_output", "text": "Session renamed to Improve Transcript Scrolling."}),
+        );
+        handle(json!({"type": "message_start", "message": {"role": "assistant"}}));
+        assert!(
+            command_rx.try_recv().is_err(),
+            "named sessions must stay named"
+        );
+        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
+        assert!(
+            matches!(event_rx.recv().unwrap(), DriverEvent::TextDelta(text) if text == "Use a virtualized list.")
+        );
+        assert!(matches!(
+            event_rx.recv().unwrap(),
+            DriverEvent::TurnFinished { success: true, .. }
+        ));
+        assert!(
+            matches!(event_rx.recv().unwrap(), DriverEvent::AutoTitleUpdated(Some(title)) if title == "Improve Transcript Scrolling")
+        );
+        assert!(event_rx.try_recv().is_err());
+        assert!(pending.lock().is_empty());
+        let wire: Vec<Value> = String::from_utf8(wire)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(wire[1]["type"], "get_state");
+        assert_eq!(wire[2]["message"], "/rename");
+    }
+
+    #[test]
+    fn ohmypi_rechecks_the_native_name_before_generating() {
+        let (pending, commands, command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        state.auto_title.observe_state(
+            PiFlavor::OhMyPi,
+            &json!({"data": {"sessionId": "session-1"}}),
+        );
+        let request = state.auto_title.start().unwrap();
+        send_auto_title_request(
+            &mut Vec::new(),
+            &pending,
+            &mut 0,
+            &state.auto_title,
+            request,
+            AutoTitlePhase::CheckName,
+        )
+        .unwrap();
+        handle_pi_message(
+            PiFlavor::OhMyPi,
+            json!({"type": "response", "id": "waku-1", "success": true,
+                "data": {"sessionId": "session-1", "sessionName": "User's native name"}}),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        assert!(command_rx.try_recv().is_err());
+        assert!(state.auto_title.start().is_none());
+        assert!(
+            matches!(event_rx.recv().unwrap(), DriverEvent::AutoTitleUpdated(Some(title)) if title == "User's native name")
+        );
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn automatic_title_failure_is_retried_only_on_a_later_prompt() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        state.auto_title.observe_state(
+            PiFlavor::OhMyPi,
+            &json!({"data": {"sessionId": "session-1"}}),
+        );
+        let old = state.auto_title.start().unwrap();
+        send_auto_title_request(
+            &mut Vec::new(),
+            &pending,
+            &mut 0,
+            &state.auto_title,
+            old.clone(),
+            AutoTitlePhase::Generate,
+        )
+        .unwrap();
+        state.run_started = true;
+        handle_pi_message(
+            PiFlavor::OhMyPi,
+            json!({"type": "response", "id": "waku-1", "success": false, "error": "Title model unavailable"}),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "best-effort title failure cannot fail the main turn"
+        );
+        assert!(state.run_started);
+        assert!(state.auto_title.start().is_none());
+        state.auto_title.prepare_prompt("Try another task");
+        let next = state.auto_title.start().unwrap();
+        state.auto_title.finish(&old);
+        assert!(!state.auto_title.is_current(&old));
+        assert!(
+            state.auto_title.is_current(&next),
+            "an older response cannot retire a newer attempt"
+        );
+    }
+
+    #[test]
+    fn automatic_titles_preserve_explicit_renames_and_other_command_output() {
+        let title = PiAutoTitle::default();
+        title.observe_state(
+            PiFlavor::OhMyPi,
+            &json!({"data": {"sessionId": "session-1"}}),
+        );
+        let request = title.start().unwrap();
+        assert!(!title.consume_output("Context usage: 500 tokens"));
+        assert!(title.is_current(&request));
+        title.prepare_prompt("/rename My name");
+        assert!(!title.is_current(&request));
+        assert!(!title.consume_output("Session renamed to My name."));
+        assert!(title.start().is_none());
+
+        let title = PiAutoTitle::default();
+        title.observe_state(
+            PiFlavor::OhMyPi,
+            &json!({"data": {"sessionId": "named", "sessionName": "Already named"}}),
+        );
+        assert!(title.start().is_none());
+        let pi = PiAutoTitle::default();
+        pi.observe_state(PiFlavor::Pi, &json!({"data": {"sessionId": "pi-session"}}));
+        assert!(
+            pi.start().is_none(),
+            "upstream Pi has its own title behavior"
+        );
+    }
+
+    #[test]
+    fn restored_unnamed_sessions_get_titles_and_stopped_attempts_can_retry() {
+        let restored = json!({"data": {"sessionId": "restored", "messageCount": 12}});
+        let title = PiAutoTitle::default();
+        title.observe_state(PiFlavor::OhMyPi, &restored);
+        assert!(
+            title
+                .start_restored(&json!({"data": {"messageCount": 0}}))
+                .is_none()
+        );
+        let old = title
+            .start_restored(&restored)
+            .expect("restored history can be named without another turn");
+        title.cancel();
+        title.prepare_prompt("Continue the task");
+        let retry = title.start().expect("Stop must not leave naming in flight");
+        title.finish(&old);
+        assert!(title.is_current(&retry));
+
+        assert!(
+            title.consume_output(
+                "Could not generate a session title. Use /rename <title> to set one."
+            )
+        );
+        assert!(!title.is_current(&retry));
+        assert!(
+            title.start().is_none(),
+            "a failed model response must not retry within the same prompt"
+        );
+
+        let review = PiAutoTitle {
+            disabled: true,
+            ..Default::default()
+        };
+        review.observe_state(PiFlavor::OhMyPi, &restored);
+        assert!(
+            review.observe_title(Some("restored"), Some("Provider-supplied title")),
+            "native title events still pass through when generation is disabled"
+        );
+        assert!(
+            review.start_restored(&restored).is_none(),
+            "review subtasks must not pay for hidden title requests"
+        );
+    }
+
+    #[test]
+    fn sanitizes_nerd_font_pua_from_ohmypi_titles() {
+        assert_eq!(
+            sanitize_ohmypi_title("\u{ea76} TSK: Fix title polling").as_deref(),
+            Some("TSK: Fix title polling")
+        );
+        assert_eq!(
+            sanitize_ohmypi_title("🧠 TSK: Fix title polling").as_deref(),
+            Some("🧠 TSK: Fix title polling")
+        );
+        assert_eq!(
+            sanitize_ohmypi_title("Fix title polling").as_deref(),
+            Some("Fix title polling")
+        );
+        assert_eq!(sanitize_ohmypi_title("\u{ea76}   "), None);
+    }
+
+    #[test]
+    fn cancelled_auto_title_output_is_still_consumed_and_does_not_leak() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        state.auto_title.observe_state(
+            PiFlavor::OhMyPi,
+            &json!({"data": {"sessionId": "session-1"}}),
+        );
+        let request = state.auto_title.start().unwrap();
+        send_auto_title_request(
+            &mut Vec::new(),
+            &pending,
+            &mut 0,
+            &state.auto_title,
+            request,
+            AutoTitlePhase::Generate,
+        )
+        .unwrap();
+        state.auto_title.cancel();
+        // A late background rename output after cancellation must be consumed
+        // without entering the transcript or wedging TurnStarted.
+        handle_pi_message(
+            PiFlavor::OhMyPi,
+            json!({"type": "command_output", "text": "Session renamed to Cancelled Task."}),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        assert!(event_rx.try_recv().is_err());
+        assert!(!state.run_started);
+    }
+
+    #[test]
+    fn standalone_command_output_while_idle_settles_immediately() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        // Standalone user-facing command output when no prompt or turn is
+        // active must open and immediately settle the turn.
+        handle_pi_message(
+            PiFlavor::OhMyPi,
+            json!({"type": "command_output", "text": "Session renamed to Explicit Name."}),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
+        assert!(
+            matches!(event_rx.recv().unwrap(), DriverEvent::TextDelta(text) if text == "Session renamed to Explicit Name.\n\n")
+        );
+        assert!(matches!(
+            event_rx.recv().unwrap(),
+            DriverEvent::TurnFinished { success: true, summary: None }
+        ));
+        assert!(event_rx.try_recv().is_err());
+        assert!(!state.run_started);
+    }
+
+    #[test]
+    fn observe_title_clears_in_flight_without_waiting_for_command_output() {
+        let title = PiAutoTitle::default();
+        title.observe_state(
+            PiFlavor::OhMyPi,
+            &json!({"data": {"sessionId": "session-1"}}),
+        );
+        let request = title.start().unwrap();
+        assert!(title.is_current(&request));
+        title.mark_generating();
+        // session_info_update arrives first in OMP
+        assert!(title.observe_title(Some("session-1"), Some("Generated Title")));
+        assert!(!title.is_current(&request));
+        // command_output arrives subsequently and is still consumed
+        assert!(title.consume_output("Session renamed to Generated Title."));
+    }
+
+    #[test]
+    fn prepare_prompt_resets_attempted_for_subsequent_prompts() {
+        let title = PiAutoTitle::default();
+        title.observe_state(
+            PiFlavor::OhMyPi,
+            &json!({"data": {"sessionId": "session-1"}}),
+        );
+        let first = title.start().unwrap();
+        title.finish(&first);
+        // While within the same turn, attempted is true
+        assert!(title.start().is_none());
+        // A new user prompt arrives, resetting attempted
+        title.prepare_prompt("A new user task");
+        let second = title.start().expect("new prompt can attempt title generation");
+        assert!(title.is_current(&second));
     }
 
     #[test]
