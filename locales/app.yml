@@ -1587,6 +1587,10 @@ files.could_not_save_read_only:
   en: "Could not save %{path}: file is not editable"
 files.could_not_save:
   en: "Could not save %{path}: %{error}"
+files.actions:
+  en: File actions
+files.open_in_default_app:
+  en: Open in Default App
 files.preview_markdown:
   en: Preview markdown
 files.edit_markdown_source:

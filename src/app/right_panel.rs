@@ -13,6 +13,20 @@ const RIGHT_TITLEBAR_INSET: f32 = 14.0;
 const RIGHT_TITLEBAR_GAP: f32 = 6.0;
 const MAX_ATTACHMENT_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 
+fn file_menu_items(path: PathBuf) -> Vec<MenuItem> {
+    let open_path = path.clone();
+    vec![
+        MenuItem::new(tr!("files.open_in_default_app"), move |_, cx| {
+            crate::platform::open_with_default_app(&open_path, cx);
+        })
+        .icon("icons/external-link.svg"),
+        MenuItem::new(tr!("common.reveal_in_finder"), move |_, cx| {
+            crate::platform::reveal_in_file_manager(&path, cx);
+        })
+        .icon("icons/folder.svg"),
+    ]
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AttachmentFile {
     path: PathBuf,
@@ -3195,9 +3209,33 @@ impl Waku {
                     cx.notify();
                 })))
             } else {
-                list.child(row.on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_right_panel_file(relative_path.clone(), cx);
-                })))
+                let menu_id = SharedString::from(format!(
+                    "right-panel-file-menu-{}",
+                    absolute_path.display()
+                ));
+                let menu = self.menu_handle(menu_id.clone(), cx);
+                let keyboard_menu = menu.clone();
+                let keyboard_path = relative_path.clone();
+                let row = row
+                    .track_focus(menu.trigger_focus_handle())
+                    .tab_index(0)
+                    .focus_visible(|style| style.border_1().border_color(theme.accent))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_right_panel_file(relative_path.clone(), cx);
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                        let key = event.keystroke.key.as_str();
+                        if matches!(key, "enter" | "space") {
+                            this.open_right_panel_file(keyboard_path.clone(), cx);
+                            cx.stop_propagation();
+                        } else if key == "f10" && event.keystroke.modifiers.shift {
+                            keyboard_menu.open_context_menu(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }));
+                list.child(context_menu(row, menu_id, &menu, move |_| {
+                    file_menu_items(absolute_path.clone())
+                }))
             };
         }
 
@@ -3375,6 +3413,29 @@ impl Waku {
                     }
                 }))
         });
+        let file_actions = attachment
+            .as_ref()
+            .map(|attachment| attachment.path.clone())
+            .or_else(|| {
+                self.selected_workspace_path()
+                    .map(|workspace| workspace.join(&relative_path))
+            })
+            .map(|path| {
+                let menu_id =
+                    SharedString::from(format!("right-panel-file-actions-{}", path.display()));
+                let menu = self.menu_handle(menu_id.clone(), cx);
+                dropdown_menu(
+                    icon_button(menu_id.clone(), "icons/ellipsis.svg", theme)
+                        .size(px(26.0))
+                        .flex_none()
+                        .focus_visible(|style| style.border_1().border_color(theme.accent))
+                        .tooltip(Tooltip::text(tr!("files.actions"))),
+                    menu_id,
+                    &menu,
+                    MenuAlign::BelowRight,
+                    move |_| file_menu_items(path.clone()),
+                )
+            });
 
         let editor = div()
             .flex_1()
@@ -3402,7 +3463,8 @@ impl Waku {
                             .text_color(theme.text_secondary)
                             .child(display_path),
                     )
-                    .children(preview_toggle),
+                    .children(preview_toggle)
+                    .children(file_actions),
             )
             .child(body);
 
