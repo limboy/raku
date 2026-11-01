@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.0.2] - 2026-11-02
+
+- Open files in their default app or reveal them in the file manager from the right sidebar
+- Refresh context usage after Pi and Oh My Pi compaction and preserve accurate token counts
+- Show a readable archived-history notice in compaction details and conversation exports
+
 ## [2.0.1] - 2026-11-01
 
 - Fork and rewind Antigravity tasks at a selected turn, with new forks appearing above their source tasks in the sidebar
