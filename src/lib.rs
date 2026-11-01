@@ -48,7 +48,7 @@ mod updater;
 
 pub use waku_client::{
     checkpoint, command_env, composer_complete, delegation, git_branch, git_commit, i18n, identity,
-    model, model_catalog, persistence, projectless, skills, usage, usage_history, worktree,
+    model, model_catalog, persistence, projectless, skills, usage, worktree,
 };
 
 use gpui::{

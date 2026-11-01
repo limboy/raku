@@ -91,14 +91,12 @@ language.description: 选择 Waku 的界面语言
 settings.general: 通用
 settings.appearance: 外观
 settings.providers: 服务商
-settings.usage: 用量
 settings.computer_use: 电脑操作
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本 数学 公式 表达式 math latex
 settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
 settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex opencode pi deepseek ohmypi antigravity agy
 settings.skills: 技能
 settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex opencode pi antigravity agy 共享
-settings.usage_keywords: 用量 令牌 费用 支出 缓存 每日 图表 模型 明细 历史 claude codex
 settings.computer_use_keywords: 电脑操作 屏幕录制 辅助功能 应用 控制 codex
 settings.back: 返回
 settings.close: 关闭设置
@@ -120,7 +118,6 @@ input.search_branches: 搜索分支
 input.search_projects: 搜索项目
 input.new_branch_name: 新分支名称
 input.detected_automatically: 自动检测
-input.filter_projects: 筛选项目
 input.search_or_enter_address: 搜索或输入网址
 input.find: 查找
 input.replace: 替换
@@ -904,81 +901,6 @@ duration.seconds_short: "%{count} 秒"
 duration.minutes_short: "%{count} 分"
 duration.hours_short: "%{count} 小时"
 duration.two_units: "%{first} %{second}"
-usage.scan_summary: 已扫描 %{scanned} 份对话记录（%{skipped} 份不在所选时段内）· %{records} 条用量记录 · %{seconds} 秒
-usage.daily: 每日
-usage.monthly: 每月
-usage.projects: 项目
-usage.scanning: 正在扫描服务商的对话记录…
-usage.rescan: 重新扫描服务商的对话记录
-usage.range: "%{start} 至 %{end}"
-usage.full_api_rate_note: "* 按完整 API 费率估算"
-usage.sessions_summary: 汇总 %{count} 个任务的输入、缓存读取和输出
-usage.raw_token_cost: 原始令牌费用
-usage.processed_tokens_upper: 已处理令牌
-usage.cost_share: 占费用的 %{share} · %{tokens} 个令牌
-usage.token_share: 占令牌的 %{share} · %{cost}
-usage.no_activity_window: 所选时段内没有活动
-usage.cost_upper: 费用
-usage.tokens_upper: 令牌
-usage.daily_cost: 每日费用
-usage.daily_processed_tokens: 每日已处理令牌
-usage.model_upper: 模型
-usage.day_upper: 日期
-usage.breakdown: 明细
-usage.no_projects_match: 没有符合筛选条件的项目
-usage.by_project: 按项目
-usage.projects_caption: "%{projects} · %{tokens} 个令牌 · %{sessions}"
-usage.projects_shown: "共 %{projects}，当前显示 %{shown} 个"
-usage.percent_of_cost: 占费用的 %{share}
-usage.token_count: "%{count} 个令牌"
-usage.last_active: 最后活跃于 %{date}
-usage.show_models: 查看 %{models}的费用明细
-usage.other_sessions: 其他任务
-usage.rates_unavailable: 模型费率暂不可用；费率表加载完成前，相关费用会显示为未定价
-usage.total: 总计
-usage.processed_tokens: 已处理令牌
-usage.per_active_day: 每个活跃日 %{count}
-usage.cached_input: 缓存输入
-usage.observed_input_share: 占已统计输入的 %{share}
-usage.uncached_input: 未缓存输入
-usage.cache_writes: "%{count} 个缓存写入令牌"
-usage.output: 输出
-usage.includes_reasoning: 其中推理令牌 %{count}
-usage.cache_savings: 缓存节省
-usage.raw_cost_multiple: 相当于原始令牌费用的 %{multiple} 倍
-usage.vs_full_input_rates: 与完整输入费率相比
-usage.model: 模型
-usage.cost: 费用
-usage.share: 占比
-usage.tokens: 令牌
-usage.day: 日期
-usage.cost_quality: 费用可信度
-usage.provider_reported: 服务商报告
-usage.model_priced: 按模型定价
-usage.unpriced: 未定价
-usage.no_activity_12_months: 过去 12 个月内没有活动
-usage.last_12_months: 过去 12 个月
-usage.so_far: 截至目前
-usage.no_activity: 没有活动
-usage.models_by_spend: "%{models} · 按费用排序"
-usage.tokens_and_sessions: "%{tokens} 个令牌 · %{sessions}"
-usage.month_caption: "%{tokens} 个令牌 · %{sessions} · %{days}"
-usage.last_7_days: 过去 7 天
-usage.last_30_days: 过去 30 天
-usage.last_90_days: 过去 90 天
-usage.this_month: 本月
-usage.last_month: 上月
-usage.custom: 自定义
-usage.project_one: "%{count} 个项目"
-usage.project_many: "%{count} 个项目"
-usage.session_one: "%{count} 个任务"
-usage.session_many: "%{count} 个任务"
-usage.model_one: "%{count} 个模型"
-usage.model_many: "%{count} 个模型"
-usage.active_day_one: "%{count} 个活跃日"
-usage.active_day_many: "%{count} 个活跃日"
-usage.filter_projects: 筛选项目…
-usage.chart_description: Claude Code 与 Codex 的每日%{metric}分布。
 usage.refresh_failed: "用量刷新失败：%{error}"
 usage.context_used: 上下文窗口已使用 %{percent}%（%{shortcut}）
 usage.shortcut: 用量（%{shortcut}）

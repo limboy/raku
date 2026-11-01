@@ -51,9 +51,7 @@ pub struct WakuBackend {
     removed_session_ids: Mutex<HashSet<Uuid>>,
     composer_drafts: ComposerDraftStore,
     attachments: AttachmentStore,
-    usage_scan_cache: Mutex<crate::usage_history::ScanCache>,
     checkpoint_capture_locks: Mutex<HashMap<(PathBuf, Uuid, usize), Arc<Mutex<()>>>>,
-    usage_rates_dir: std::path::PathBuf,
     default_cwd: std::path::PathBuf,
     hub: Arc<crate::server::Hub>,
     delegation: crate::delegation::DelegationManager,
@@ -73,11 +71,6 @@ impl WakuBackend {
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("attachments"),
         );
-        let usage_rates_dir = task_store
-            .path()
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_owned();
         let settings = Arc::new(settings);
         let hub = Arc::new(crate::server::Hub::default());
         let delegation = crate::delegation::DelegationManager::new(
@@ -94,9 +87,7 @@ impl WakuBackend {
             removed_session_ids: Mutex::new(HashSet::new()),
             composer_drafts,
             attachments,
-            usage_scan_cache: Mutex::new(HashMap::new()),
             checkpoint_capture_locks: Mutex::new(HashMap::new()),
-            usage_rates_dir,
             default_cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             hub,
             delegation,
@@ -343,19 +334,6 @@ impl Backend for WakuBackend {
                 Ok(ResponsePayload::ComputerPermissions {
                     permissions: crate::computer_use::probe_permissions(prompt)?,
                 })
-            }
-            Command::LoadUsageHistory {
-                window,
-                project_roots,
-            } => {
-                let rates = crate::usage_history::load_rate_table(&self.usage_rates_dir);
-                let history = crate::usage_history::scan(
-                    &mut self.usage_scan_cache.lock(),
-                    &rates,
-                    window,
-                    &project_roots,
-                );
-                Ok(ResponsePayload::UsageHistory { history })
             }
             Command::LoadSkills { projects } => {
                 let locations = crate::skills::skill_locations(&projects);
@@ -1788,7 +1766,6 @@ fn handle_driver_command(
         | Command::ProbeProvider { .. }
         | Command::FetchPlanUsage { .. }
         | Command::ProbeComputerPermissions { .. }
-        | Command::LoadUsageHistory { .. }
         | Command::LoadSkills { .. }
         | Command::SetSkillsEnabled { .. }
         | Command::TrashSkills { .. }

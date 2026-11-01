@@ -41,8 +41,7 @@ Search and Settings hand off focus with `window.defer` in the opening effect
 cycle, before the first draw. Waiting for two `on_next_frame` callbacks paints
 an unfocused popup and then forces another full-window refresh when focus
 arrives. Keep the generation checks so a dismissed or replaced popup cannot
-steal focus. Settings starts its history scan when the Usage tab opens;
-opening Appearance does not need that scan.
+steal focus.
 
 The one exception to that fan-out is the 200 ms panel slide: its display-rate
 root notifies would price every tick at a three-island rebuild, so while

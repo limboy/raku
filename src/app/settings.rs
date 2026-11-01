@@ -12,12 +12,8 @@ const SETTINGS_POPUP_MAX_WIDTH: f32 = 1120.0;
 const SETTINGS_POPUP_MAX_HEIGHT: f32 = 760.0;
 const SETTINGS_CONTEXT: &str = "Settings";
 
-/// The Usage page is a dashboard, not a form; it mirrors T3 Code's wide
-/// two-column layout and needs the extra room for the chart.
-const SETTINGS_USAGE_MAX_WIDTH: f32 = 1024.0;
-
 /// The remaining settings sections, in navigation order.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str); 6] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
     (
         SettingsPage::Appearance,
         "settings.appearance",
@@ -29,11 +25,6 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str); 6] = [
         "icons/bot.svg",
     ),
     (SettingsPage::Skills, "settings.skills", "icons/package.svg"),
-    (
-        SettingsPage::Usage,
-        "settings.usage",
-        "icons/chart-column.svg",
-    ),
     (
         SettingsPage::ComputerUse,
         "settings.computer_use",
@@ -73,6 +64,20 @@ fn settings_popup_size(viewport_width: f32, viewport_height: f32) -> (f32, f32) 
 }
 
 impl Waku {
+    pub(super) fn open_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        self.settings_page = Some(page);
+        // Each page starts at its own top; a scroll position carried over
+        // from the previous page would land mid-content.
+        self.settings_scroll.set_offset(gpui::Point::default());
+        if page == SettingsPage::Skills {
+            self.ensure_skills_catalog(false, cx);
+        }
+        if page == SettingsPage::Backups {
+            self.refresh_backups(cx);
+        }
+        cx.notify();
+    }
+
     pub(super) fn settings_pane_content(
         &mut self,
         window: &mut Window,
@@ -330,7 +335,6 @@ impl Waku {
             SettingsPage::Appearance => tr!("settings.appearance"),
             SettingsPage::Providers => tr!("settings.providers"),
             SettingsPage::Skills => tr!("settings.skills"),
-            SettingsPage::Usage => tr!("settings.usage"),
             SettingsPage::ComputerUse => tr!("settings.computer_use"),
             SettingsPage::Backups => tr!("settings.backups"),
         };
@@ -350,26 +354,13 @@ impl Waku {
                 .min_h_0()
                 .child(self.render_skills_settings(cx))
         } else {
-            let fills_viewport = page == SettingsPage::Usage
-                && matches!(
-                    self.usage_view,
-                    UsageViewMode::Monthly | UsageViewMode::Projects
-                );
             let inner = div()
                 .w_full()
-                .max_w(px(if page == SettingsPage::Usage {
-                    SETTINGS_USAGE_MAX_WIDTH
-                } else {
-                    SETTINGS_CONTENT_MAX_WIDTH
-                }))
+                .max_w(px(SETTINGS_CONTENT_MAX_WIDTH))
                 .mx_auto()
-                .when(fills_viewport, |element| {
-                    element.h_full().min_h_0().flex().flex_col()
-                })
                 .child(match page {
                     SettingsPage::Appearance => self.render_appearance_settings(cx),
                     SettingsPage::Providers => self.render_providers_settings(cx),
-                    SettingsPage::Usage => self.render_usage_settings(cx),
                     SettingsPage::ComputerUse => self.render_computer_use_settings(cx),
                     SettingsPage::Backups => self.render_backup_settings(cx),
                     SettingsPage::Skills => unreachable!(),
@@ -383,23 +374,15 @@ impl Waku {
                         .id("settings-content-scroll")
                         .size_full()
                         .px(px(24.0))
-                        .when(!fills_viewport, |element| {
-                            element
-                                .overflow_y_scroll()
-                                .track_scroll(&self.settings_scroll)
-                                .pb(px(24.0))
-                        })
-                        .when(fills_viewport, |element| {
-                            element.min_h_0().flex().flex_col()
-                        })
+                        .overflow_y_scroll()
+                        .track_scroll(&self.settings_scroll)
+                        .pb(px(24.0))
                         .child(inner),
                 )
-                .when(!fills_viewport, |element| {
-                    element.child(scrollbar::vertical(
-                        &self.settings_scroll,
-                        &self.settings_scrollbar,
-                    ))
-                })
+                .child(scrollbar::vertical(
+                    &self.settings_scroll,
+                    &self.settings_scrollbar,
+                ))
         };
         div()
             .flex_1()
@@ -1563,9 +1546,6 @@ impl Waku {
         });
         self.provider_path_input.update(cx, |input, cx| {
             input.set_placeholder(tr!("input.detected_automatically"), cx)
-        });
-        self.usage_project_filter.update(cx, |input, cx| {
-            input.set_placeholder(tr!("input.filter_projects"), cx)
         });
         self.refresh_command_palette_localized_text(cx);
         self.refresh_file_search_localized_text(cx);

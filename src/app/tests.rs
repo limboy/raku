@@ -1952,7 +1952,6 @@ fn settings_navigation_contains_only_supported_pages() {
         SettingsPage::Appearance,
         SettingsPage::Providers,
         SettingsPage::Skills,
-        SettingsPage::Usage,
     ];
     if cfg!(debug_assertions) {
         expected.push(SettingsPage::ComputerUse);

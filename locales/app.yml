@@ -187,8 +187,6 @@ settings.appearance:
   en: Appearance
 settings.providers:
   en: Providers
-settings.usage:
-  en: Usage
 settings.computer_use:
   en: Computer Use
 settings.general_keywords:
@@ -201,8 +199,6 @@ settings.skills:
   en: Skills
 settings.skills_keywords:
   en: skills skill library agent disable enable delete claude codex opencode pi antigravity agy shared
-settings.usage_keywords:
-  en: usage tokens cost spend cache daily chart model breakdown history claude codex
 settings.computer_use_keywords:
   en: computer use screen recording accessibility apps control codex
 settings.back:
@@ -246,8 +242,6 @@ input.new_branch_name:
   en: New branch name
 input.detected_automatically:
   en: Detected automatically
-input.filter_projects:
-  en: Filter projects
 input.search_or_enter_address:
   en: Search or enter address
 input.find:
@@ -1861,157 +1855,6 @@ duration.hours_short:
   en: "%{count}h"
 duration.two_units:
   en: "%{first} %{second}"
-
-usage.scan_summary:
-  en: Scanned %{scanned} transcripts (%{skipped} outside the window) · %{records} usage records · %{seconds}s
-usage.daily:
-  en: Daily
-usage.monthly:
-  en: Monthly
-usage.projects:
-  en: Projects
-usage.scanning:
-  en: Scanning provider transcripts…
-usage.rescan:
-  en: Rescan provider transcripts
-usage.range:
-  en: "%{start} to %{end}"
-usage.full_api_rate_note:
-  en: "* if billed at full API rate"
-usage.sessions_summary:
-  en: Input, cache reads and output across %{count} sessions
-usage.raw_token_cost:
-  en: RAW TOKEN COST
-usage.processed_tokens_upper:
-  en: PROCESSED TOKENS
-usage.cost_share:
-  en: "%{share} of cost · %{tokens} tokens"
-usage.token_share:
-  en: "%{share} of tokens · %{cost}"
-usage.no_activity_window:
-  en: No activity in this window
-usage.cost_upper:
-  en: COST
-usage.tokens_upper:
-  en: TOKENS
-usage.daily_cost:
-  en: Daily cost
-usage.daily_processed_tokens:
-  en: Daily processed tokens
-usage.model_upper:
-  en: MODEL
-usage.day_upper:
-  en: DAY
-usage.breakdown:
-  en: Breakdown
-usage.no_projects_match:
-  en: No projects match the filter
-usage.by_project:
-  en: By project
-usage.projects_caption:
-  en: "%{projects} · %{tokens} tokens · %{sessions}"
-usage.projects_shown:
-  en: "%{shown} of %{projects} shown"
-usage.percent_of_cost:
-  en: "%{share} of cost"
-usage.token_count:
-  en: "%{count} tokens"
-usage.last_active:
-  en: last active %{date}
-usage.show_models:
-  en: Show %{models} with spend details
-usage.other_sessions:
-  en: Other sessions
-usage.rates_unavailable:
-  en: Model rates are unavailable, so costs read as unpriced until the rate table loads
-usage.total:
-  en: Total
-usage.processed_tokens:
-  en: Processed tokens
-usage.per_active_day:
-  en: "%{count} per active day"
-usage.cached_input:
-  en: Cached input
-usage.observed_input_share:
-  en: "%{share} of observed input"
-usage.uncached_input:
-  en: Uncached input
-usage.cache_writes:
-  en: "%{count} cache writes"
-usage.output:
-  en: Output
-usage.includes_reasoning:
-  en: includes %{count} reasoning
-usage.cache_savings:
-  en: Cache savings
-usage.raw_cost_multiple:
-  en: "%{multiple}x the raw token cost"
-usage.vs_full_input_rates:
-  en: vs full input rates
-usage.model:
-  en: Model
-usage.cost:
-  en: Cost
-usage.share:
-  en: Share
-usage.tokens:
-  en: Tokens
-usage.day:
-  en: Day
-usage.cost_quality:
-  en: Cost quality
-usage.provider_reported:
-  en: Provider reported
-usage.model_priced:
-  en: Model priced
-usage.unpriced:
-  en: Unpriced
-usage.no_activity_12_months:
-  en: No activity in the last 12 months
-usage.last_12_months:
-  en: Last 12 months
-usage.so_far:
-  en: so far
-usage.no_activity:
-  en: No activity
-usage.models_by_spend:
-  en: "%{models} · by spend"
-usage.tokens_and_sessions:
-  en: "%{tokens} tokens · %{sessions}"
-usage.month_caption:
-  en: "%{tokens} tokens · %{sessions} · %{days}"
-usage.last_7_days:
-  en: Last 7 days
-usage.last_30_days:
-  en: Last 30 days
-usage.last_90_days:
-  en: Last 90 days
-usage.this_month:
-  en: This month
-usage.last_month:
-  en: Last month
-usage.custom:
-  en: Custom
-usage.project_one:
-  en: "%{count} project"
-usage.project_many:
-  en: "%{count} projects"
-usage.session_one:
-  en: "%{count} session"
-usage.session_many:
-  en: "%{count} sessions"
-usage.model_one:
-  en: "%{count} model"
-usage.model_many:
-  en: "%{count} models"
-usage.active_day_one:
-  en: "%{count} active day"
-usage.active_day_many:
-  en: "%{count} active days"
-usage.filter_projects:
-  en: Filter projects…
-usage.chart_description:
-  en: Daily %{metric} split between Claude Code and Codex.
 
 usage.refresh_failed:
   en: "Usage refresh failed: %{error}"
