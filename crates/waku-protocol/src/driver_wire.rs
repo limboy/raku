@@ -38,6 +38,21 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
         DriverEvent::TurnParked => ("turnParked", Value::Null),
         DriverEvent::TextDelta(text) => ("textDelta", Value::String(text)),
         DriverEvent::ReasoningDelta(text) => ("reasoningDelta", Value::String(text)),
+        DriverEvent::ReasoningStarted { id, timestamp_ms } => (
+            "reasoningStarted",
+            json!({ "id": id, "timestampMs": timestamp_ms }),
+        ),
+        DriverEvent::ReasoningBlockDelta { id, delta } => {
+            ("reasoningBlockDelta", json!({ "id": id, "delta": delta }))
+        }
+        DriverEvent::ReasoningCompleted {
+            id,
+            timestamp_ms,
+            content,
+        } => (
+            "reasoningCompleted",
+            json!({ "id": id, "timestampMs": timestamp_ms, "content": content }),
+        ),
         DriverEvent::Activity {
             id,
             kind,
@@ -129,6 +144,28 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         "turnParked" => DriverEvent::TurnParked,
         "textDelta" => DriverEvent::TextDelta(serde_json::from_value(payload)?),
         "reasoningDelta" => DriverEvent::ReasoningDelta(serde_json::from_value(payload)?),
+        "reasoningStarted" => {
+            let value: ReasoningLifecycleWire = serde_json::from_value(payload)?;
+            DriverEvent::ReasoningStarted {
+                id: value.id,
+                timestamp_ms: value.timestamp_ms,
+            }
+        }
+        "reasoningBlockDelta" => {
+            let value: ReasoningDeltaWire = serde_json::from_value(payload)?;
+            DriverEvent::ReasoningBlockDelta {
+                id: value.id,
+                delta: value.delta,
+            }
+        }
+        "reasoningCompleted" => {
+            let value: ReasoningLifecycleWire = serde_json::from_value(payload)?;
+            DriverEvent::ReasoningCompleted {
+                id: value.id,
+                timestamp_ms: value.timestamp_ms,
+                content: value.content,
+            }
+        }
         "activity" => {
             let activity: ActivityWire = serde_json::from_value(payload)?;
             DriverEvent::Activity {
@@ -209,6 +246,21 @@ struct ActivityWire {
     title: String,
     detail: Option<String>,
     complete: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReasoningLifecycleWire {
+    id: String,
+    timestamp_ms: u64,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReasoningDeltaWire {
+    id: String,
+    delta: String,
 }
 
 #[derive(Deserialize)]

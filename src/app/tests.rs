@@ -843,6 +843,38 @@ fn stream_batches_commit_full_adjacent_text_and_preserve_event_order() {
 }
 
 #[test]
+fn reasoning_batches_preserve_block_ids_and_lifecycle_boundaries() {
+    let delta = |id: &str, text: &str| DriverEvent::ReasoningBlockDelta {
+        id: id.into(),
+        delta: text.into(),
+    };
+    let mut events = VecDeque::from([
+        delta("one", "**Checking "),
+        delta("one", "settings**"),
+        delta("two", "**Initializing daemon**"),
+        DriverEvent::ReasoningCompleted {
+            id: "two".into(),
+            timestamp_ms: 8000,
+            content: None,
+        },
+        delta("two", "late"),
+    ]);
+    assert!(
+        matches!(pop_stream_batch(&mut events, StreamDeltaKind::ReasoningBlock),
+        Some(DriverEvent::ReasoningBlockDelta { id, delta }) if id == "one" && delta == "**Checking settings**")
+    );
+    assert!(
+        matches!(pop_stream_batch(&mut events, StreamDeltaKind::ReasoningBlock),
+        Some(DriverEvent::ReasoningBlockDelta { id, delta }) if id == "two" && delta == "**Initializing daemon**")
+    );
+    assert!(matches!(
+        events.front(),
+        Some(DriverEvent::ReasoningCompleted { .. })
+    ));
+    assert_eq!(events.len(), 2);
+}
+
+#[test]
 fn stream_parts_keep_targeting_the_running_session_after_selection_changes() {
     let project_id = uuid::Uuid::new_v4();
     let mut running = AgentSession::new(project_id, ProviderKind::Codex);

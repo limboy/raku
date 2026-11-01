@@ -187,6 +187,7 @@ enum StreamPhase {
 enum StreamDeltaKind {
     Text,
     Reasoning,
+    ReasoningBlock,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

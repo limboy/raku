@@ -2036,17 +2036,14 @@ impl Waku {
                 })
         });
         let live_reasoning_id = (self
-            .selected_runtime()
-            .is_some_and(|runtime| runtime.stream_phase == Some(StreamPhase::Reasoning))
-            && self
-                .selected_session()
-                .is_some_and(|session| session.status == SessionStatus::Working)
+            .selected_session()
+            .is_some_and(|session| session.status == SessionStatus::Working)
             && block_index + 1 == self.selected_transcript_blocks().len())
         .then(|| {
             activities
                 .iter()
                 .rev()
-                .find(|activity| activity.reasoning.is_some())
+                .find(|activity| activity.reasoning.is_some() && !activity.complete)
                 .map(|activity| activity.id)
         })
         .flatten();

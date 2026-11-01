@@ -8,7 +8,8 @@ use waku_client::delegation::{
 };
 
 use super::streaming::{
-    append_session_reasoning, complete_session_reasoning, finish_session_messages,
+    append_session_reasoning, append_session_reasoning_block, complete_session_reasoning,
+    finish_session_messages, finish_session_reasoning_block, start_session_reasoning,
     update_session_activity,
 };
 use super::transcript_view::{ActivityClusterPart, ActivityRenderContext};
@@ -142,11 +143,40 @@ impl DetailOutput {
                 }
                 self.phase = Some(StreamPhase::Reasoning);
             }
+            DriverEvent::ReasoningStarted { id, timestamp_ms } => {
+                start_session_reasoning(&mut self.session, self.phase, id, timestamp_ms);
+                self.phase = Some(StreamPhase::Reasoning);
+            }
+            DriverEvent::ReasoningBlockDelta { id, delta } => {
+                append_session_reasoning_block(
+                    &mut self.session,
+                    self.phase,
+                    id,
+                    delta,
+                    timestamp_ms,
+                );
+                self.phase = Some(StreamPhase::Reasoning);
+            }
+            DriverEvent::ReasoningCompleted {
+                id,
+                timestamp_ms,
+                content,
+            } => {
+                finish_session_reasoning_block(
+                    &mut self.session,
+                    self.phase,
+                    id,
+                    content,
+                    timestamp_ms,
+                );
+            }
             DriverEvent::RichActivity(mut item) => {
                 // Provider IDs are not UI identities across isolated task panes.
                 item.id = Uuid::new_v4();
-                update_session_activity(&mut self.session, self.phase, item);
-                self.phase = Some(StreamPhase::Activity);
+                let (_, inserted) = update_session_activity(&mut self.session, self.phase, item);
+                if inserted {
+                    self.phase = Some(StreamPhase::Activity);
+                }
             }
             DriverEvent::Activity {
                 id,
@@ -155,12 +185,14 @@ impl DetailOutput {
                 detail,
                 complete,
             } => {
-                update_session_activity(
+                let (_, inserted) = update_session_activity(
                     &mut self.session,
                     self.phase,
                     ActivityItem::new(id, kind, title, detail, complete),
                 );
-                self.phase = Some(StreamPhase::Activity);
+                if inserted {
+                    self.phase = Some(StreamPhase::Activity);
+                }
             }
             _ => return false,
         }
@@ -387,13 +419,13 @@ impl DelegationDetailState {
     }
 
     fn live_reasoning_id(&self, block: usize) -> Option<Uuid> {
-        (self.live_group(block) && self.output.phase == Some(StreamPhase::Reasoning))
+        self.live_group(block)
             .then(|| {
                 self.output.session.transcript_blocks[block]
                     .activities
                     .iter()
                     .rev()
-                    .find(|activity| activity.reasoning.is_some())
+                    .find(|activity| activity.reasoning.is_some() && !activity.complete)
                     .map(|activity| activity.id)
             })
             .flatten()
@@ -1114,6 +1146,160 @@ mod tests {
             next_sequence,
             has_more: false,
         }
+    }
+
+    fn payload_event(sequence: u64, kind: &str, payload: serde_json::Value) -> DelegatedTaskEvent {
+        let mut event = event(sequence, kind, "");
+        event.event.payload = payload;
+        event
+    }
+
+    #[test]
+    fn native_thinking_blocks_survive_background_tool_updates_and_replay_delay() {
+        let mut output = DetailOutput::default();
+        let first = "**Checking settings definition**\n\n**Checking default-path references**";
+        let second = "**Implementing daemon monitoring**\n\n**Initializing daemon state**";
+        let tool = |complete| {
+            serde_json::to_value(ActivityItem::new(
+                Some("earlier-tool".into()),
+                ActivityKind::Command,
+                "Run command",
+                None,
+                complete,
+            ))
+            .unwrap()
+        };
+        output.append_page(page(vec![
+            payload_event(1, "richActivity", tool(false)),
+            payload_event(2, "reasoningStarted", serde_json::json!({"id":"first","timestampMs":5000})),
+            payload_event(3, "reasoningBlockDelta", serde_json::json!({"id":"first","delta":"**Checking settings definition**"})),
+            payload_event(4, "richActivity", tool(true)),
+            payload_event(5, "reasoningBlockDelta", serde_json::json!({"id":"first","delta":"\n\n**Checking default-path references**"})),
+        ], 5));
+        let activities = &output.session.transcript_blocks[0].activities;
+        assert_eq!(
+            activities.len(),
+            2,
+            "background progress cannot split a thought"
+        );
+        assert!(!activities[1].complete);
+        assert_eq!(activities[1].reasoning.as_ref().unwrap().content, first);
+        output.append_page(page(
+            vec![
+                payload_event(
+                    6,
+                    "reasoningCompleted",
+                    serde_json::json!({"id":"first","timestampMs":47000,"content":first}),
+                ),
+                payload_event(
+                    7,
+                    "reasoningStarted",
+                    serde_json::json!({"id":"second","timestampMs":48000}),
+                ),
+                payload_event(
+                    8,
+                    "reasoningBlockDelta",
+                    serde_json::json!({"id":"second","delta":"**partial**"}),
+                ),
+                payload_event(
+                    9,
+                    "reasoningCompleted",
+                    serde_json::json!({"id":"second","timestampMs":65000,"content":second}),
+                ),
+            ],
+            9,
+        ));
+        let activities = &output.session.transcript_blocks[0].activities;
+        assert_eq!(
+            activities.len(),
+            3,
+            "independent provider blocks cannot merge"
+        );
+        assert!(activities.iter().all(|activity| activity.complete));
+        let reasoning = activities[1].reasoning.as_ref().unwrap();
+        assert_eq!(reasoning.finished_at_ms - reasoning.started_at_ms, 42000);
+        assert_eq!(activities[2].reasoning.as_ref().unwrap().content, second);
+    }
+
+    #[test]
+    fn earlier_tool_updates_preserve_legacy_reasoning_and_text_continuity() {
+        let mut output = DetailOutput::default();
+        let tool = || {
+            serde_json::to_value(ActivityItem::new(
+                Some("tool".into()),
+                ActivityKind::Command,
+                "Run command",
+                None,
+                false,
+            ))
+            .unwrap()
+        };
+        output.append_page(page(
+            vec![
+                payload_event(1, "richActivity", tool()),
+                event(2, "reasoningDelta", "first"),
+                payload_event(3, "richActivity", tool()),
+                event(4, "reasoningDelta", " second"),
+            ],
+            4,
+        ));
+        assert_eq!(output.phase, Some(StreamPhase::Reasoning));
+        let activities = &output.session.transcript_blocks[0].activities;
+        assert_eq!(activities.len(), 2);
+        assert!(!activities[1].complete);
+        assert_eq!(
+            activities[1].reasoning.as_ref().unwrap().content,
+            "first second"
+        );
+        output.append_page(page(
+            vec![
+                event(5, "textDelta", "answer"),
+                payload_event(6, "richActivity", tool()),
+                event(7, "textDelta", " continues"),
+            ],
+            7,
+        ));
+        assert_eq!(output.phase, Some(StreamPhase::Text));
+        assert_eq!(output.session.messages.len(), 1);
+        assert_eq!(output.session.messages[0].content, "answer continues");
+    }
+
+    #[gpui::test]
+    fn completed_provider_thought_is_not_running_while_the_task_continues(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut state = detail_state(cx);
+            state.history_loaded = true;
+            state.output.append_page(page(
+                vec![
+                    payload_event(
+                        1,
+                        "reasoningStarted",
+                        serde_json::json!({"id":"thought","timestampMs":1000}),
+                    ),
+                    payload_event(
+                        2,
+                        "reasoningBlockDelta",
+                        serde_json::json!({"id":"thought","delta":"checking"}),
+                    ),
+                ],
+                2,
+            ));
+            let task = task_summary(DelegatedTaskStatus::Running);
+            state.sync_document(&task);
+            assert!(state.live_reasoning_id(0).is_some());
+            state.output.append_page(page(
+                vec![payload_event(
+                    3,
+                    "reasoningCompleted",
+                    serde_json::json!({"id":"thought","timestampMs":16000,"content":"checked"}),
+                )],
+                3,
+            ));
+            state.document_dirty = true;
+            state.sync_document(&task);
+            assert!(state.rendered_live);
+            assert_eq!(state.live_reasoning_id(0), None);
+        });
     }
 
     fn detail_state(cx: &mut App) -> DelegationDetailState {

@@ -25,6 +25,7 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityKind, DriverEvent, ExecutionPolicy, ProviderResumeCursor, ReportedCommand, RuntimeMode,
+    unix_time_millis,
 };
 
 /// The tool allowlist a review subtask is launched with.
@@ -1482,8 +1483,52 @@ struct PiStreamState {
     message_saw_reasoning: bool,
     message_is_deepseek: bool,
     message_pending_text: String,
+    reasoning_blocks: HashMap<u64, (String, bool)>,
     failed: bool,
     tools: HashMap<String, (ActivityKind, String)>,
+}
+
+impl PiStreamState {
+    fn reasoning_block(
+        &mut self,
+        index: u64,
+        events: &impl DriverEventSink,
+    ) -> &mut (String, bool) {
+        self.reasoning_block_at(index, unix_time_millis(), events)
+    }
+
+    fn reasoning_block_at(
+        &mut self,
+        index: u64,
+        timestamp_ms: u64,
+        events: &impl DriverEventSink,
+    ) -> &mut (String, bool) {
+        self.reasoning_blocks.entry(index).or_insert_with(|| {
+            let id = format!("pi-reasoning-{}", uuid::Uuid::new_v4());
+            let _ = events.send(DriverEvent::ReasoningStarted {
+                id: id.clone(),
+                timestamp_ms,
+            });
+            (id, false)
+        })
+    }
+
+    fn finish_reasoning_block(
+        &mut self,
+        index: u64,
+        content: Option<String>,
+        events: &impl DriverEventSink,
+    ) {
+        let (id, complete) = self.reasoning_block_at(index, 0, events);
+        if !*complete {
+            *complete = true;
+            let _ = events.send(DriverEvent::ReasoningCompleted {
+                id: id.clone(),
+                timestamp_ms: unix_time_millis(),
+                content,
+            });
+        }
+    }
 }
 
 fn handle_pi_message(
@@ -1624,6 +1669,7 @@ fn handle_pi_message(
                 flush_pending_message_text(events, state);
                 state.message_saw_text = false;
                 state.message_saw_reasoning = false;
+                state.reasoning_blocks.clear();
                 state.message_is_deepseek = value
                     .get("message")
                     .is_some_and(crate::pi_session::is_deepseek_message);
@@ -1636,6 +1682,11 @@ fn handle_pi_message(
                 .or_else(|| update.get("partial"))
                 .is_some_and(crate::pi_session::is_deepseek_message);
             match update.get("type").and_then(Value::as_str) {
+                Some("thinking_start") => {
+                    if let Some(index) = update.get("contentIndex").and_then(Value::as_u64) {
+                        state.reasoning_block(index, events);
+                    }
+                }
                 Some("text_delta") => {
                     if let Some(delta) = update
                         .get("delta")
@@ -1666,7 +1717,30 @@ fn handle_pi_message(
                     {
                         flush_pending_message_text(events, state);
                         state.message_saw_reasoning = true;
-                        let _ = events.send(DriverEvent::ReasoningDelta(delta.to_owned()));
+                        if let Some(index) = update.get("contentIndex").and_then(Value::as_u64) {
+                            let (id, complete) = state.reasoning_block_at(index, 0, events);
+                            if !*complete {
+                                let _ = events.send(DriverEvent::ReasoningBlockDelta {
+                                    id: id.clone(),
+                                    delta: delta.to_owned(),
+                                });
+                            }
+                        } else {
+                            let _ = events.send(DriverEvent::ReasoningDelta(delta.to_owned()));
+                        }
+                    }
+                }
+                Some("thinking_end") => {
+                    if let Some(index) = update.get("contentIndex").and_then(Value::as_u64) {
+                        flush_pending_message_text(events, state);
+                        state.finish_reasoning_block(
+                            index,
+                            update
+                                .get("content")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            events,
+                        );
                     }
                 }
                 Some("error") => {
@@ -1816,7 +1890,7 @@ fn emit_completed_message_fallback(
     };
     let emit_text = !state.message_saw_text && !placeholder;
     let emit_reasoning = !state.message_saw_reasoning;
-    for block in content {
+    for (index, block) in content.iter().enumerate() {
         match block.get("type").and_then(Value::as_str) {
             Some("text") if emit_text => {
                 if let Some(text) = block
@@ -1828,15 +1902,18 @@ fn emit_completed_message_fallback(
                     let _ = events.send(DriverEvent::TextDelta(text.to_owned()));
                 }
             }
-            Some("thinking") if emit_reasoning => {
-                if let Some(thinking) = block
-                    .get("thinking")
-                    .and_then(Value::as_str)
-                    .filter(|thinking| !thinking.is_empty())
-                {
-                    state.message_saw_reasoning = true;
-                    let _ = events.send(DriverEvent::ReasoningDelta(thinking.to_owned()));
-                }
+            Some("thinking") if !state.reasoning_blocks.is_empty() || emit_reasoning => {
+                // Snapshot-only blocks have no observed start. Preserve their
+                // boundaries and final text without inventing a one-second duration.
+                state.reasoning_block_at(index as u64, 0, events);
+                state.finish_reasoning_block(
+                    index as u64,
+                    block
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    events,
+                );
             }
             _ => {}
         }
@@ -2561,12 +2638,29 @@ mod tests {
                     handle_pi_message(flavor, frame, &pending, &commands, &events, &mut state);
                 }
                 let emitted = event_rx.try_iter().collect::<Vec<_>>();
-                assert!(matches!(&emitted[..], [
-                    DriverEvent::ReasoningDelta(reasoning),
+                let tools = if streamed {
+                    assert!(
+                        matches!(&emitted[0], DriverEvent::ReasoningDelta(text) if text == "Inspect the project")
+                    );
+                    &emitted[1..]
+                } else {
+                    assert!(matches!(
+                        &emitted[0],
+                        DriverEvent::ReasoningStarted {
+                            timestamp_ms: 0,
+                            ..
+                        }
+                    ));
+                    assert!(
+                        matches!(&emitted[1], DriverEvent::ReasoningCompleted { content: Some(text), .. } if text == "Inspect the project")
+                    );
+                    &emitted[2..]
+                };
+                assert!(matches!(tools, [
                     DriverEvent::RichActivity(started),
                     DriverEvent::RichActivity(finished),
                     DriverEvent::TextDelta(text),
-                ] if reasoning == "Inspect the project" && !started.complete && finished.complete && text == "Done."));
+                ] if !started.complete && finished.complete && text == "Done."));
             }
         }
     }
@@ -2727,14 +2821,85 @@ mod tests {
             &mut state,
         );
 
-        assert!(matches!(
-            event_rx.recv().unwrap(),
-            DriverEvent::ReasoningDelta(value) if value == "reason"
-        ));
+        let DriverEvent::ReasoningStarted {
+            id,
+            timestamp_ms: 0,
+        } = event_rx.recv().unwrap()
+        else {
+            panic!("snapshot-only reasoning has an unknown start time");
+        };
+        assert!(matches!(event_rx.recv().unwrap(),
+            DriverEvent::ReasoningCompleted { id: finished, content: Some(value), .. }
+            if finished == id && value == "reason"));
         assert!(matches!(
             event_rx.recv().unwrap(),
             DriverEvent::TextDelta(value) if value == "answer"
         ));
+    }
+
+    #[test]
+    fn indexed_thinking_preserves_native_blocks_and_authoritative_completions() {
+        for flavor in [PiFlavor::Pi, PiFlavor::OhMyPi] {
+            let (pending, commands, _command_rx, mut state) = harness();
+            let (events, received) = unbounded();
+            let first = "**Checking settings definition**\n\n**Checking default-path references**";
+            let second = "**Implementing daemon monitoring**\n\n**Initializing daemon state**";
+            for value in [
+                json!({"type":"message_start","message":{"role":"assistant"}}),
+                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}),
+                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"**Checking settings definition**"}}),
+                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":first}}),
+                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":1}}),
+                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":1,"delta":second}}),
+                json!({"type":"message_end","message":{"role":"assistant","content":[
+                    {"type":"thinking","thinking":first},{"type":"thinking","thinking":second}
+                ]}}),
+            ] {
+                handle_pi_message(flavor, value, &pending, &commands, &events, &mut state);
+            }
+            let emitted = received.try_iter().collect::<Vec<_>>();
+            let [
+                DriverEvent::ReasoningStarted {
+                    id: a,
+                    timestamp_ms: start,
+                },
+                DriverEvent::ReasoningBlockDelta { id: a_delta, .. },
+                DriverEvent::ReasoningCompleted {
+                    id: a_end,
+                    timestamp_ms: end,
+                    content: Some(a_text),
+                },
+                DriverEvent::ReasoningStarted { id: b, .. },
+                DriverEvent::ReasoningBlockDelta { id: b_delta, .. },
+                DriverEvent::ReasoningCompleted {
+                    id: b_end,
+                    content: Some(b_text),
+                    ..
+                },
+            ] = &emitted[..]
+            else {
+                panic!("unexpected lifecycle: {emitted:?}")
+            };
+            assert_eq!(a, a_delta);
+            assert_eq!(a, a_end);
+            assert_ne!(a, b);
+            assert_eq!(b, b_delta);
+            assert_eq!(b, b_end);
+            assert!(*start > 0 && end >= start);
+            assert_eq!(a_text, first);
+            assert_eq!(b_text, second);
+
+            // contentIndex starts over in the next assistant message.
+            for value in [
+                json!({"type":"message_start","message":{"role":"assistant"}}),
+                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}),
+            ] {
+                handle_pi_message(flavor, value, &pending, &commands, &events, &mut state);
+            }
+            assert!(
+                matches!(received.recv().unwrap(), DriverEvent::ReasoningStarted { id, .. } if &id != a && &id != b)
+            );
+        }
     }
 
     #[test]

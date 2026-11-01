@@ -132,6 +132,10 @@ moment any scrollbar became visible.
   publishes once pagination catches up, so opening a task never plays old
   thoughts as live output. Events reduce into ordered messages and activity
   blocks using the main agent's reducers; tool snapshots merge by source ID.
+  Provider-owned thinking block IDs, start times, and completions survive the
+  wire and replay. Only adjacent deltas for the same ID coalesce; updating an
+  earlier tool never closes or splits the current thought or assistant text.
+  Snapshot-only thoughts omit elapsed time when their start was not observed.
   Transcript rows and expanded activity items use `list()`, sharing the main
   activity renderer and its 6 KiB target / 18 KiB maximum live reasoning
   window. Selection, disclosure, Markdown and scroll state belong to the

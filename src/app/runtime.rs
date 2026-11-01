@@ -3732,7 +3732,11 @@ impl Waku {
                 // second, sailing straight past the 120 ms commit floor.
                 markdown_changed |= matches!(
                     event,
-                    DriverEvent::TextDelta(_) | DriverEvent::ReasoningDelta(_)
+                    DriverEvent::TextDelta(_)
+                        | DriverEvent::ReasoningDelta(_)
+                        | DriverEvent::ReasoningStarted { .. }
+                        | DriverEvent::ReasoningBlockDelta { .. }
+                        | DriverEvent::ReasoningCompleted { .. }
                 );
                 if background_output_delta {
                     // The registry batches log text into SharedString at 10Hz;

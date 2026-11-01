@@ -54,21 +54,19 @@ impl Waku {
     ) {
         if let Some(session) = self.state.session_mut(session_id) {
             let replaced = !item.file_changes.is_empty();
-            let id = update_session_activity(session, runtime.stream_phase, item);
+            let (id, inserted) = update_session_activity(session, runtime.stream_phase, item);
+            if inserted {
+                runtime.stream_phase = Some(StreamPhase::Activity);
+            }
             if replaced {
                 self.activity_diffs.borrow_mut().remove(&id);
             }
         }
-        runtime.stream_phase = Some(StreamPhase::Activity);
     }
 
     pub(super) fn complete_turn_blocks(&mut self, session_id: Uuid) {
         if let Some(session) = self.state.session_mut(session_id) {
-            for block in &mut session.transcript_blocks {
-                for activity in &mut block.activities {
-                    activity.complete = true;
-                }
-            }
+            finish_session_activities(session, unix_time_millis());
         }
     }
 
@@ -283,6 +281,45 @@ impl Waku {
             DriverEvent::ReasoningDelta(delta) => {
                 if self.accepts_turn_output(session_id) {
                     self.append_reasoning_delta(session_id, runtime, delta);
+                }
+            }
+            DriverEvent::ReasoningStarted { id, timestamp_ms } => {
+                if self.accepts_turn_output(session_id)
+                    && let Some(session) = self.state.session_mut(session_id)
+                {
+                    start_session_reasoning(session, runtime.stream_phase, id, timestamp_ms);
+                    runtime.stream_phase = Some(StreamPhase::Reasoning);
+                }
+            }
+            DriverEvent::ReasoningBlockDelta { id, delta } => {
+                if self.accepts_turn_output(session_id)
+                    && let Some(session) = self.state.session_mut(session_id)
+                {
+                    append_session_reasoning_block(
+                        session,
+                        runtime.stream_phase,
+                        id,
+                        delta,
+                        unix_time_millis(),
+                    );
+                    runtime.stream_phase = Some(StreamPhase::Reasoning);
+                }
+            }
+            DriverEvent::ReasoningCompleted {
+                id,
+                timestamp_ms,
+                content,
+            } => {
+                if self.accepts_turn_output(session_id)
+                    && let Some(session) = self.state.session_mut(session_id)
+                {
+                    finish_session_reasoning_block(
+                        session,
+                        runtime.stream_phase,
+                        id,
+                        content,
+                        timestamp_ms,
+                    );
                 }
             }
             DriverEvent::Activity {
@@ -822,6 +859,7 @@ pub(super) fn stream_delta_kind(event: &DriverEvent) -> Option<StreamDeltaKind> 
     match event {
         DriverEvent::TextDelta(_) => Some(StreamDeltaKind::Text),
         DriverEvent::ReasoningDelta(_) => Some(StreamDeltaKind::Reasoning),
+        DriverEvent::ReasoningBlockDelta { .. } => Some(StreamDeltaKind::ReasoningBlock),
         _ => None,
     }
 }
@@ -830,6 +868,9 @@ pub(super) fn stream_delta_text(event: &DriverEvent, kind: StreamDeltaKind) -> O
     match (kind, event) {
         (StreamDeltaKind::Text, DriverEvent::TextDelta(text))
         | (StreamDeltaKind::Reasoning, DriverEvent::ReasoningDelta(text)) => Some(text),
+        (StreamDeltaKind::ReasoningBlock, DriverEvent::ReasoningBlockDelta { delta, .. }) => {
+            Some(delta)
+        }
         _ => None,
     }
 }
@@ -865,17 +906,35 @@ pub(super) fn pop_stream_batch(
 ) -> Option<DriverEvent> {
     let mut chunk = String::new();
     let mut latest_cursor = None;
+    let reasoning_id = match events.front() {
+        Some(DriverEvent::ReasoningBlockDelta { id, .. }) => Some(id.clone()),
+        _ => None,
+    };
     loop {
         match events.front() {
             Some(DriverEvent::RuntimeEventCursorAdvanced(_)) => {
                 latest_cursor = events.pop_front();
             }
-            Some(event) if stream_delta_text(event, kind).is_some() => {
+            Some(event)
+                if stream_delta_text(event, kind).is_some()
+                    && match event {
+                        DriverEvent::ReasoningBlockDelta { id, .. } => {
+                            reasoning_id.as_ref() == Some(id)
+                        }
+                        _ => true,
+                    } =>
+            {
                 let event = events.pop_front()?;
                 match (kind, event) {
                     (StreamDeltaKind::Text, DriverEvent::TextDelta(text))
                     | (StreamDeltaKind::Reasoning, DriverEvent::ReasoningDelta(text)) => {
                         chunk.push_str(&text);
+                    }
+                    (
+                        StreamDeltaKind::ReasoningBlock,
+                        DriverEvent::ReasoningBlockDelta { delta, .. },
+                    ) => {
+                        chunk.push_str(&delta);
                     }
                     _ => unreachable!("the stream kind was checked before removing the event"),
                 }
@@ -889,6 +948,10 @@ pub(super) fn pop_stream_batch(
     match kind {
         StreamDeltaKind::Text => Some(DriverEvent::TextDelta(chunk)),
         StreamDeltaKind::Reasoning => Some(DriverEvent::ReasoningDelta(chunk)),
+        StreamDeltaKind::ReasoningBlock => Some(DriverEvent::ReasoningBlockDelta {
+            id: reasoning_id?,
+            delta: chunk,
+        }),
     }
 }
 
@@ -936,14 +999,113 @@ pub(super) fn finish_session_messages(session: &mut AgentSession) {
     }
 }
 
+pub(super) fn finish_session_activities(session: &mut AgentSession, now: u64) {
+    for block in &mut session.transcript_blocks {
+        for activity in &mut block.activities {
+            if !activity.complete
+                && activity.source_id.is_some()
+                && let Some(reasoning) = activity.reasoning.as_mut()
+            {
+                reasoning.finished_at_ms = now.max(reasoning.started_at_ms);
+            }
+            activity.complete = true;
+        }
+    }
+}
+
 pub(super) fn complete_session_reasoning(session: &mut AgentSession) {
     if let Some(activity) = session
         .transcript_blocks
         .iter_mut()
         .rev()
         .flat_map(|block| block.activities.iter_mut().rev())
-        .find(|activity| activity.reasoning.is_some() && !activity.complete)
+        .find(|activity| {
+            activity.reasoning.is_some() && activity.source_id.is_none() && !activity.complete
+        })
     {
+        activity.complete = true;
+        session.updated_at = unix_time();
+    }
+}
+
+fn reasoning_activity_mut<'a>(
+    session: &'a mut AgentSession,
+    id: &str,
+) -> Option<&'a mut ActivityItem> {
+    session
+        .transcript_blocks
+        .iter_mut()
+        .rev()
+        .flat_map(|block| block.activities.iter_mut().rev())
+        .find(|activity| activity.reasoning.is_some() && activity.source_id.as_deref() == Some(id))
+}
+
+pub(super) fn start_session_reasoning(
+    session: &mut AgentSession,
+    previous_phase: Option<StreamPhase>,
+    id: String,
+    now: u64,
+) {
+    if reasoning_activity_mut(session, &id).is_some() {
+        return;
+    }
+    finish_session_messages(session);
+    complete_session_reasoning(session);
+    let mut activity = ActivityItem::from_reasoning(
+        ReasoningBlock {
+            content: String::new(),
+            started_at_ms: now,
+            finished_at_ms: now,
+        },
+        false,
+    );
+    activity.source_id = Some(id);
+    push_transcript_activity(
+        session,
+        activity,
+        matches!(
+            previous_phase,
+            Some(StreamPhase::Reasoning | StreamPhase::Activity)
+        ),
+    );
+    session.updated_at = unix_time();
+}
+
+pub(super) fn append_session_reasoning_block(
+    session: &mut AgentSession,
+    previous_phase: Option<StreamPhase>,
+    id: String,
+    delta: String,
+    now: u64,
+) {
+    start_session_reasoning(session, previous_phase, id.clone(), 0);
+    if let Some(activity) = reasoning_activity_mut(session, &id)
+        && !activity.complete
+        && let Some(reasoning) = activity.reasoning.as_mut()
+    {
+        reasoning.content.push_str(&delta);
+        reasoning.finished_at_ms = now;
+        session.updated_at = unix_time();
+    }
+}
+
+pub(super) fn finish_session_reasoning_block(
+    session: &mut AgentSession,
+    previous_phase: Option<StreamPhase>,
+    id: String,
+    content: Option<String>,
+    now: u64,
+) {
+    start_session_reasoning(session, previous_phase, id.clone(), 0);
+    if let Some(activity) = reasoning_activity_mut(session, &id)
+        && let Some(reasoning) = activity.reasoning.as_mut()
+    {
+        if let Some(content) = content {
+            reasoning.content = content;
+        }
+        if !activity.complete {
+            reasoning.finished_at_ms = now.max(reasoning.started_at_ms);
+        }
         activity.complete = true;
         session.updated_at = unix_time();
     }
@@ -968,6 +1130,7 @@ pub(super) fn append_session_reasoning(
             .transcript_blocks
             .last_mut()
             .and_then(|block| block.activities.last_mut())
+            .filter(|activity| activity.source_id.is_none() && !activity.complete)
             .and_then(|activity| activity.reasoning.as_mut())
     {
         reasoning.content.push_str(&delta);
@@ -998,13 +1161,7 @@ pub(super) fn update_session_activity(
     session: &mut AgentSession,
     previous_phase: Option<StreamPhase>,
     item: ActivityItem,
-) -> Uuid {
-    if previous_phase == Some(StreamPhase::Text) {
-        finish_session_messages(session);
-    }
-    if previous_phase == Some(StreamPhase::Reasoning) {
-        complete_session_reasoning(session);
-    }
+) -> (Uuid, bool) {
     for block in session.transcript_blocks.iter_mut().rev() {
         if let Some(activity) = block.activities.iter_mut().rev().find(|activity| {
             item.source_id
@@ -1051,8 +1208,16 @@ pub(super) fn update_session_activity(
                 activity.reasoning = item.reasoning;
             }
             session.updated_at = unix_time();
-            return activity.id;
+            return (activity.id, false);
         }
+    }
+    // Updating an earlier tool is background progress, not a new transcript
+    // boundary. Only a newly inserted activity can close legacy prose/thought.
+    if previous_phase == Some(StreamPhase::Text) {
+        finish_session_messages(session);
+    }
+    if previous_phase == Some(StreamPhase::Reasoning) {
+        complete_session_reasoning(session);
     }
     let id = item.id;
     push_transcript_activity(
@@ -1064,5 +1229,5 @@ pub(super) fn update_session_activity(
         ),
     );
     session.updated_at = unix_time();
-    id
+    (id, true)
 }

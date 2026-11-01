@@ -1455,7 +1455,7 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
         ActivityKind::Reasoning => activity.reasoning.as_ref().map_or_else(
             || activity.title.clone(),
             |reasoning| {
-                if reasoning_live {
+                if reasoning_live || reasoning.started_at_ms == 0 {
                     String::new()
                 } else {
                     format_worked_duration(
@@ -1510,6 +1510,8 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
 pub(super) fn reasoning_activity_title(reasoning: &ReasoningBlock, live: bool) -> String {
     if live {
         tr!("transcript.thinking")
+    } else if reasoning.started_at_ms == 0 {
+        tr!("activity.action_think")
     } else {
         tr!(
             "transcript.thought_for",
@@ -2008,6 +2010,23 @@ mod message_time_tests {
         assert_eq!(activity_action_label(&activity), "Ask questions");
         assert_eq!(activity_row_detail(&activity, false), "");
         assert_eq!(activity_display_title(&activity), "Ask questions");
+    }
+
+    #[test]
+    fn snapshot_only_reasoning_does_not_invent_a_duration() {
+        let activity = ActivityItem::from_reasoning(
+            ReasoningBlock {
+                content: "summary".into(),
+                started_at_ms: 0,
+                finished_at_ms: 1_000_000,
+            },
+            true,
+        );
+        assert_eq!(activity_row_detail(&activity, false), "");
+        assert_eq!(
+            reasoning_activity_title(activity.reasoning.as_ref().unwrap(), false),
+            "Think"
+        );
     }
 
     #[test]

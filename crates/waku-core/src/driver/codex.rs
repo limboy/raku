@@ -1852,11 +1852,22 @@ fn handle_codex_message(
                     });
                 if let Some(part) = part {
                     let previous = stream_state.reasoning_part.replace(part.clone());
-                    if previous.is_some_and(|previous| previous != part) {
-                        let _ = events.send(DriverEvent::ReasoningDelta("\n\n".to_owned()));
+                    if previous.is_some_and(|previous| previous.0 == part.0 && previous.1 != part.1)
+                    {
+                        let _ = events.send(DriverEvent::ReasoningBlockDelta {
+                            id: part.0,
+                            delta: "\n\n".to_owned(),
+                        });
                     }
                 }
-                let _ = events.send(DriverEvent::ReasoningDelta(delta.to_owned()));
+                if let Some(id) = params.get("itemId").and_then(Value::as_str) {
+                    let _ = events.send(DriverEvent::ReasoningBlockDelta {
+                        id: id.to_owned(),
+                        delta: delta.to_owned(),
+                    });
+                } else {
+                    let _ = events.send(DriverEvent::ReasoningDelta(delta.to_owned()));
+                }
             }
         }
         "item/commandExecution/outputDelta" => {
@@ -1877,6 +1888,39 @@ fn handle_codex_message(
             if let Some(item) = params.get("item") {
                 stream_state.capture_citations(item);
                 let complete = method == "item/completed";
+                if item.get("type").and_then(Value::as_str) == Some("reasoning")
+                    && let Some(id) = item.get("id").and_then(Value::as_str)
+                {
+                    let event = if complete {
+                        let text = |key| {
+                            item.get(key)
+                                .and_then(Value::as_array)
+                                .map(|parts| {
+                                    parts
+                                        .iter()
+                                        .filter_map(|part| {
+                                            part.as_str().or_else(|| {
+                                                part.get("text").and_then(Value::as_str)
+                                            })
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n\n")
+                                })
+                                .filter(|text| !text.is_empty())
+                        };
+                        DriverEvent::ReasoningCompleted {
+                            id: id.to_owned(),
+                            timestamp_ms: unix_time_millis(),
+                            content: text("summary").or_else(|| text("content")),
+                        }
+                    } else {
+                        DriverEvent::ReasoningStarted {
+                            id: id.to_owned(),
+                            timestamp_ms: unix_time_millis(),
+                        }
+                    };
+                    let _ = events.send(event);
+                }
                 if let Some(work) = codex_command_work(item, complete) {
                     let _ = events.send(DriverEvent::BackgroundWork(BackgroundWorkEvent::Upsert(
                         work,
@@ -3287,6 +3331,48 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_items_keep_their_own_lifecycles_and_final_summaries() {
+        let harness = GoalHarness::new();
+        for (id, title) in [
+            ("first", "Checking settings"),
+            ("second", "Initializing daemon"),
+        ] {
+            harness.handle(json!({"method":"item/started","params":{"item":{
+                "type":"reasoning","id":id,"summary":[],"content":[]
+            }}}));
+            harness.handle(json!({"method":"item/reasoning/summaryTextDelta","params":{
+                "itemId":id,"summaryIndex":0,"delta":"partial"
+            }}));
+            harness.handle(json!({"method":"item/completed","params":{"item":{
+                "type":"reasoning","id":id,"summary":[title,"Next step"],"content":[]
+            }}}));
+            let DriverEvent::ReasoningStarted {
+                id: started,
+                timestamp_ms: start,
+            } = harness.received.recv().unwrap()
+            else {
+                panic!("missing reasoning start")
+            };
+            assert_eq!(started, id);
+            assert!(
+                matches!(harness.received.recv().unwrap(), DriverEvent::ReasoningBlockDelta { id: delta_id, delta } if delta_id == id && delta == "partial")
+            );
+            let DriverEvent::ReasoningCompleted {
+                id: finished,
+                timestamp_ms: end,
+                content: Some(content),
+            } = harness.received.recv().unwrap()
+            else {
+                panic!("missing reasoning completion")
+            };
+            assert_eq!(finished, id);
+            assert_eq!(content, format!("{title}\n\nNext step"));
+            assert!(start > 0 && end >= start);
+        }
+        assert!(harness.received.is_empty());
+    }
+
+    #[test]
     fn reasoning_parts_are_separated_from_each_other() {
         // Codex numbers reasoning parts but sends no separator with the deltas, so
         // appending them verbatim runs the headers together as `**one****two**`.
@@ -3334,7 +3420,10 @@ mod tests {
         let mut reasoning = String::new();
         while let Ok(event) = event_rx.try_recv() {
             match event {
-                DriverEvent::ReasoningDelta(delta) => reasoning.push_str(&delta),
+                DriverEvent::ReasoningBlockDelta { id, delta } => {
+                    assert_eq!(id, "item-1");
+                    reasoning.push_str(&delta);
+                }
                 other => panic!("expected reasoning deltas, got {other:?}"),
             }
         }

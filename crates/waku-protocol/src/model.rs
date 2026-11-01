@@ -1861,7 +1861,23 @@ pub enum DriverEvent {
     /// `TurnStarted` continues it — and the session shows it is waiting.
     TurnParked,
     TextDelta(String),
+    /// Legacy streams without provider-owned reasoning block identities.
     ReasoningDelta(String),
+    ReasoningStarted {
+        id: String,
+        timestamp_ms: u64,
+    },
+    ReasoningBlockDelta {
+        id: String,
+        delta: String,
+    },
+    /// Final content is authoritative when the provider supplies it. Receipt
+    /// timestamps travel with the lifecycle so replay never times the UI pump.
+    ReasoningCompleted {
+        id: String,
+        timestamp_ms: u64,
+        content: Option<String>,
+    },
     Activity {
         id: Option<String>,
         kind: ActivityKind,
@@ -3385,6 +3401,8 @@ fn merge_file_change(changes: &mut Vec<ActivityFileChange>, change: ActivityFile
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ReasoningBlock {
     pub content: String,
+    /// Zero when only a final snapshot was available; no elapsed time can be
+    /// inferred from the arrival of a summary alone.
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
 }
