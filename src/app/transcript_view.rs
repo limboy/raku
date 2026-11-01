@@ -2072,6 +2072,167 @@ impl Waku {
         )
     }
 
+    fn render_compaction_row(
+        &self,
+        activity: &ActivityItem,
+        surface: &ActivityRenderContext<'_>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use waku_protocol::compaction::{CompactionStatus, CompactionTrigger};
+        let item = activity.compaction.as_ref().expect("compaction row");
+        if surface.part == ActivityClusterPart::Item {
+            return div().into_any_element();
+        }
+        let id = activity.id;
+        let detail_generation = surface.detail_generation;
+        let expanded = surface.expanded_items.get(&id).copied().unwrap_or(false);
+        let has_detail = item.summary.as_ref().is_some_and(|text| !text.is_empty())
+            || item.error.is_some()
+            || item.notice.is_some();
+        let color = if item.status == CompactionStatus::Failed {
+            theme.danger
+        } else {
+            theme.text_secondary
+        };
+        let title = tr!(match item.status {
+            CompactionStatus::Running => "activity.compacting_context",
+            CompactionStatus::Completed => "activity.compacted_context",
+            CompactionStatus::Unconfirmed => "compaction.unconfirmed",
+            CompactionStatus::Failed => "activity.compaction_failed",
+            CompactionStatus::Interrupted => "compaction.interrupted",
+        });
+        let mut metadata = Vec::new();
+        if let Some(trigger) = item.trigger {
+            metadata.push(tr!(match trigger {
+                CompactionTrigger::Auto => "compaction.auto",
+                CompactionTrigger::Manual => "compaction.manual",
+            }));
+        }
+        if let (Some(before), Some(after)) = (item.before_tokens, item.after_tokens) {
+            metadata.push(format!(
+                "{} → {}{}",
+                crate::usage::format_tokens(before),
+                if item.after_tokens_estimated {
+                    "≈"
+                } else {
+                    ""
+                },
+                crate::usage::format_tokens(after)
+            ));
+        }
+        if item.started_at_ms > 0
+            && let Some(end) = item.completed_at_ms
+        {
+            metadata.push(format!(
+                "{:.1}s",
+                end.saturating_sub(item.started_at_ms) as f64 / 1000.0
+            ));
+        }
+        let focus = self.transcript_control_focus(format!("compaction-{id}"), cx);
+        let status_icon = match item.status {
+            CompactionStatus::Running => {
+                crate::ui::motion::spin_slow(icon("icons/loader-circle.svg", 13.0, color))
+            }
+            status => icon(
+                match status {
+                    CompactionStatus::Failed => "icons/x.svg",
+                    CompactionStatus::Completed => "icons/check.svg",
+                    CompactionStatus::Interrupted => "icons/stop.svg",
+                    _ => "icons/info.svg",
+                },
+                13.0,
+                color,
+            )
+            .into_any_element(),
+        };
+        let mut card = div()
+            .w_full()
+            .min_w_0()
+            .my(px(8.0))
+            .border_y_1()
+            .border_color(theme.border)
+            .py(px(6.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .id(SharedString::from(format!("compaction-toggle-{id}")))
+                    .track_focus(&focus)
+                    .tab_index(0)
+                    .tab_stop(has_detail)
+                    .min_h(px(30.0))
+                    .px(px(6.0))
+                    .rounded(px(5.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .text_size(sp(12.0))
+                    .text_color(color)
+                    .focus_visible(|style| style.bg(theme.overlay))
+                    .when(has_detail, |row| row.hover(|style| style.bg(theme.overlay)))
+                    .child(status_icon)
+                    .child(div().min_w_0().truncate().child(title))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme.text_tertiary)
+                            .child(metadata.join(" · ")),
+                    )
+                    .when(has_detail, |row| {
+                        row.child(icon(
+                            if expanded {
+                                "icons/chevron-down.svg"
+                            } else {
+                                "icons/chevron-right.svg"
+                            },
+                            10.0,
+                            theme.text_tertiary,
+                        ))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if has_detail {
+                            this.toggle_activity_surface_item(detail_generation, id, expanded, cx);
+                        }
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        if has_detail && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.toggle_activity_surface_item(detail_generation, id, expanded, cx);
+                            cx.stop_propagation();
+                        }
+                    })),
+            );
+        if expanded && has_detail {
+            let palette = MarkdownPalette::from_theme(theme);
+            let ctx = self.activity_surface_markdown_ctx(
+                surface,
+                format!("compaction-summary-{id}"),
+                &palette,
+                self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
+                false,
+            );
+            let mut views = surface.markdown.borrow_mut();
+            let view = views.entry(id).or_default();
+            let content = item
+                .error
+                .as_deref()
+                .or(item.notice.as_deref())
+                .or(item.summary.as_deref())
+                .unwrap_or_default();
+            view.set_text(content, false);
+            card = card.child(
+                div()
+                    .min_w_0()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .children(md::render::markdown(view, &ctx)),
+            );
+        }
+        card.into_any_element()
+    }
+
     pub(super) fn render_activity_cluster(
         &self,
         activities: &[ActivityItem],
@@ -2081,6 +2242,11 @@ impl Waku {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let [activity] = activities
+            && activity.compaction.is_some()
+        {
+            return self.render_compaction_row(activity, &surface, theme, cx);
+        }
         let ActivityRenderContext {
             live_group,
             live_reasoning_id,

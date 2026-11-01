@@ -234,6 +234,10 @@ impl RemoteDriverControl {
 }
 
 impl DriverControl for RemoteDriverControl {
+    fn compact(&self, request: waku_protocol::compaction::CompactionRequest) {
+        self.notify(waku_client::Command::Compact { request });
+    }
+
     fn prompt(&self, prompt: String) {
         self.notify(waku_client::Command::Prompt {
             prompt,

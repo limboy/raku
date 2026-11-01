@@ -62,6 +62,49 @@ provider-agnostic rows. Tool titles prefer a `title` argument when the tool
 supplies one, then fall back to the command, the query, or a de-camel-cased
 tool name.
 
+### Context compaction
+
+Compaction belongs to the provider's native session. Waku offers a manual
+`/compact` command, a usage-panel action, and a command-palette action for
+Codex, Claude Code, OpenCode, Pi and Oh My Pi. Pi, Oh My Pi and Claude accept
+optional focus instructions; Codex and OpenCode reject that argument instead
+of silently discarding it. Other providers keep their native command handling.
+
+The driver contract carries `CompactionRequest` and complete
+`CompactionUpdated` snapshots. Manual requests use Codex's
+`thread/compact/start`, OpenCode's `POST /api/session/{id}/compact`, Pi/OMP's
+`compact` RPC, or Claude's native `/compact` user message. An acknowledgement
+is not completion. Codex's `contextCompaction` items, OpenCode's
+`session.compaction.*`, Pi's compaction events/results (including older
+`auto_compaction_*` events), and Claude's status/compact-boundary messages
+supply the lifecycle. A failed or disconnected operation terminalizes too.
+
+Each operation has its own stable identity. OpenCode uses `inputID` or the
+opening event ID transformed from `evt_` to `msg_`, matching its stored history.
+Summary deltas accumulate in the driver before it emits a snapshot; tool-output
+snapshots keep their replacement semantics. Reconnection repairs only the
+observed, still-running OpenCode operation with the same native ID. It never
+replays an unrelated historical boundary as a live event. Cold import retains
+public compaction metadata at its original message boundary, while excluding
+provider-private checkpoints and control state.
+
+Compaction activities have their own transcript blocks and remain visible when
+a turn's ordinary work folds. Summary/error detail is collapsed and keyboard
+operable. Trigger, duration and token counts appear only when known; estimated
+after counts are marked as estimates. The occupancy gauge waits for a measured
+usage report instead of presenting a summary estimate or stale pre-compaction
+count as current usage. Completed snapshots replay idempotently.
+
+Manual compaction can start an idle/cold runtime without creating a user prompt.
+New messages queue while compaction runs. Completion resumes that queue; failure
+or Stop retains it for the user. Provider-native compaction turns do not create
+conversation turns, completion notifications, or Git checkpoints. Claude command
+success without a compact boundary is shown as unconfirmed, with its returned
+message preserved; it does not claim the context was reduced. Standalone
+compaction stays busy across list-only reloads, and forced cleanup terminalizes
+both its transcript row and lifecycle metadata. Provider configuration and
+automatic thresholds remain owned by the installed CLI.
+
 ### Runtime lifetime in the app
 
 A driver is created lazily per session by `ensure_driver`
@@ -587,7 +630,8 @@ follow-up queue.
 | `permission.asked` | `Permission` |
 | `form.created` | `UserInputRequested`, one question per form field |
 | `session.shell.started` / `ended` | `BackgroundWork` |
-| `session.compaction.*`, `session.retry.scheduled`, a retrying `session.status` | one upserted activity row each |
+| `session.compaction.*` | `CompactionUpdated`, an independent transcript milestone |
+| `session.retry.scheduled`, a retrying `session.status` | one upserted activity row each |
 | `session.deleted` | `Error`, then `ProcessExited` |
 
 **Approvals** — `POST /api/session/{id}/permission/{requestID}/reply` with

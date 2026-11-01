@@ -586,10 +586,11 @@ struct RemoteTaskStateSnapshot {
     sessions: Vec<AgentSession>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct EscapeStopTarget {
     session_id: Uuid,
     turn_id: Option<Uuid>,
+    compaction_id: Option<String>,
 }
 
 impl EscapeStopTarget {
@@ -597,17 +598,18 @@ impl EscapeStopTarget {
         Self {
             session_id: session.id,
             turn_id: session.active_turn_id(),
+            compaction_id: session.active_compaction.clone(),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum EscapeStopPress {
     Arm(EscapeStopArm),
     Stop,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct EscapeStopArm {
     target: EscapeStopTarget,
     expires_at: Instant,
@@ -622,6 +624,7 @@ impl EscapeStopConfirmation {
     fn press(&mut self, target: EscapeStopTarget, now: Instant) -> EscapeStopPress {
         if self
             .arm
+            .as_ref()
             .is_some_and(|arm| arm.target == target && now < arm.expires_at)
         {
             self.arm = None;
@@ -631,18 +634,29 @@ impl EscapeStopConfirmation {
                 target,
                 expires_at: now + ESCAPE_STOP_CONFIRMATION_TIMEOUT,
             };
-            self.arm = Some(arm);
+            self.arm = Some(arm.clone());
             EscapeStopPress::Arm(arm)
         }
     }
 
-    fn is_armed_for(&self, target: EscapeStopTarget, now: Instant) -> bool {
+    #[cfg(test)]
+    fn is_armed_for(&self, target: &EscapeStopTarget, now: Instant) -> bool {
         self.arm
-            .is_some_and(|arm| arm.target == target && now < arm.expires_at)
+            .as_ref()
+            .is_some_and(|arm| &arm.target == target && now < arm.expires_at)
+    }
+
+    fn is_armed_for_session(&self, session: &AgentSession, now: Instant) -> bool {
+        self.arm.as_ref().is_some_and(|arm| {
+            arm.target.session_id == session.id
+                && arm.target.turn_id == session.active_turn_id()
+                && arm.target.compaction_id == session.active_compaction
+                && now < arm.expires_at
+        })
     }
 
     fn expire(&mut self, arm: EscapeStopArm) -> bool {
-        if self.arm != Some(arm) {
+        if self.arm.as_ref() != Some(&arm) {
             return false;
         }
         self.arm = None;
@@ -1262,6 +1276,7 @@ pub struct Waku {
     /// attach to the provider thread, not to any turn, so `/goal` on a fresh
     /// task starts the provider and these drain once it installs.
     pending_goal_operations: HashMap<Uuid, Vec<crate::model::GoalOperation>>,
+    pending_compactions: HashMap<Uuid, waku_protocol::compaction::CompactionRequest>,
     /// Sessions whose runtime is being started by a goal operation rather
     /// than a submission. Submissions queue behind this instead of racing a
     /// second provider process into existence.
@@ -1660,6 +1675,7 @@ mod backup_settings;
 mod branches;
 mod command_palette;
 mod commit_dialog;
+mod compaction;
 mod components;
 mod composer;
 mod delegation;
@@ -2046,7 +2062,7 @@ impl Waku {
         let mut startup_live_session_ids = state
             .sessions
             .iter()
-            .filter(|session| session.status.is_busy())
+            .filter(|session| session.is_busy())
             .map(|session| session.id)
             .collect::<Vec<_>>();
         if let Some(selected) = state.selected_session
@@ -2060,13 +2076,14 @@ impl Waku {
             startup_live_session_ids.push(selected);
         }
         let mut interrupted_turn_checkpoints = Vec::new();
+        let mut interrupted_compaction_sessions = Vec::new();
         for session in &mut state.sessions {
             session.migrate_legacy_state();
             // A provider runtime belongs to the daemon and may still be
             // streaming after this desktop process restarted. Leave its
             // persisted projection intact until the background attachment
             // check proves there is no live runtime to resume.
-            if session.status.is_busy() {
+            if session.is_busy() {
                 continue;
             }
             if session.status != SessionStatus::Idle {
@@ -2103,6 +2120,9 @@ impl Waku {
             for message in &mut session.messages {
                 message.streaming = false;
             }
+            if session.interrupt_compactions(unix_time_millis()) {
+                interrupted_compaction_sessions.push(session.id);
+            }
             for block in &mut session.transcript_blocks {
                 block.activities.retain(|activity| {
                     activity
@@ -2117,6 +2137,9 @@ impl Waku {
             session
                 .transcript_blocks
                 .retain(|block| !block.activities.is_empty());
+        }
+        for id in interrupted_compaction_sessions {
+            state.mark_session_dirty(id);
         }
         let initial_composer_draft = state
             .selected_session
@@ -2775,6 +2798,7 @@ impl Waku {
                 goal_dialog: None,
                 goal_dialog_request: None,
                 pending_goal_operations: HashMap::new(),
+                pending_compactions: HashMap::new(),
                 goal_runtime_starts: HashSet::new(),
                 goal_observed_at: HashMap::new(),
                 commit_operation: None,

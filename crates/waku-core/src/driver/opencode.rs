@@ -48,6 +48,7 @@ use crossbeam_channel::{Sender, bounded, unbounded};
 use serde_json::{Value, json};
 
 use super::activity;
+use super::compaction::CompactionTracker;
 use super::opencode_computer_use::{INSTRUCTION_KEY, OpenCodeComputerUse};
 use super::support::{self, OpenCodePermissionRequest, OpenCodePermissionState};
 use crate::driver::{
@@ -65,6 +66,9 @@ use crate::opencode_api::{
     ToolContent, ToolState,
 };
 use crate::opencode_service::{self, HubFrame, OpenCodeService, Subscription};
+use waku_protocol::compaction::{
+    CompactionRequest, CompactionStatus as ContextCompactionStatus, CompactionTrigger,
+};
 
 /// A one-shot user action posted onto the worker waits this long before Waku
 /// gives up on it. Comfortably past the API layer's own fork budget, so a slow
@@ -124,6 +128,7 @@ impl ContextWindows for HashMap<String, u64> {
 }
 
 enum DriverCommand {
+    Compact(CompactionRequest),
     Prompt(String),
     Steer(String),
     Cancel,
@@ -232,6 +237,7 @@ struct PendingInput {
 }
 
 struct StreamState {
+    compaction: CompactionTracker,
     session_id: String,
     mode: RuntimeMode,
     execution_policy: ExecutionPolicy,
@@ -278,6 +284,7 @@ impl StreamState {
         generation: u64,
     ) -> Self {
         Self {
+            compaction: CompactionTracker::default(),
             session_id,
             mode,
             execution_policy,
@@ -728,6 +735,10 @@ impl OpenCodeDriver {
 }
 
 impl DriverControl for OpenCodeDriver {
+    fn compact(&self, request: CompactionRequest) {
+        let _ = self.commands.send(DriverCommand::Compact(request));
+    }
+
     fn prompt(&self, prompt: String) {
         let _ = self.commands.send(DriverCommand::Prompt(prompt));
     }
@@ -1016,6 +1027,19 @@ fn handle_command(worker: &Worker, message: DriverCommand, state: &mut StreamSta
     let endpoint = worker.service.endpoint();
     let events = &worker.events;
     match message {
+        DriverCommand::Compact(request) => {
+            state
+                .compaction
+                .start(Some(&request.id), Some(CompactionTrigger::Manual), events);
+            if let Err(error) = opencode_api::compact(&endpoint, &worker.session_id, &request.id) {
+                state.compaction.finish(
+                    ContextCompactionStatus::Failed,
+                    None,
+                    Some(error.to_string()),
+                    events,
+                );
+            }
+        }
         DriverCommand::Prompt(text) => {
             // The user moved on; a run they stopped earlier is theirs again.
             state.stop_pending = false;
@@ -1150,7 +1174,10 @@ fn handle_command(worker: &Worker, message: DriverCommand, state: &mut StreamSta
         DriverCommand::Fork { turns, reply } => {
             let _ = reply.send(fork_session(&endpoint, worker, turns));
         }
-        DriverCommand::Shutdown => return false,
+        DriverCommand::Shutdown => {
+            state.compaction.interrupt(events);
+            return false;
+        }
     }
     true
 }
@@ -1222,6 +1249,25 @@ fn reconcile(worker: &Worker, state: &mut StreamState, generation: u64) {
         }
         Err(_) => None,
     };
+
+    // Compaction may have finished while the stream was down. Reuse its
+    // native message ID so this updates the existing milestone in place.
+    if state
+        .compaction
+        .current
+        .as_ref()
+        .filter(|item| item.status == waku_protocol::compaction::CompactionStatus::Running)
+        .is_some()
+        && let Ok((messages, _)) =
+            opencode_api::list_messages(&endpoint, &worker.session_id, Order::Desc, Some(20), None)
+    {
+        state.compaction.reconcile(
+            messages
+                .iter()
+                .filter_map(crate::opencode_session::compaction_from_message),
+            events,
+        );
+    }
 
     if let Some(session) = session.as_ref() {
         if let Some(title) = generated_title(session.title.as_deref()) {
@@ -1809,19 +1855,78 @@ fn handle_event(
         "session.status" | "session.retry.scheduled" => retry_activity(kind, data, state, events),
         "session.shell.started" => shell_work(data, events, true),
         "session.shell.ended" => shell_work(data, events, false),
-        // Compaction deltas carry NO `assistantMessageID` and NO ordinal, so
-        // routing them as a `TextDelta` would drop the compaction summary
-        // inside the assistant's own reply. One row keyed on the session.
-        "session.compaction.started" => compaction_activity(state, events, None, false, false),
-        "session.compaction.delta" => compaction_activity(
-            state,
-            events,
-            data.get("text").and_then(Value::as_str),
-            false,
-            false,
-        ),
-        "session.compaction.ended" => compaction_activity(state, events, None, true, false),
-        "session.compaction.failed" => compaction_activity(state, events, None, true, true),
+        "session.compaction.started" => {
+            // OpenCode derives the stored message ID from inputID or the
+            // opening event ID; use the same identity for live and imported rows.
+            let id = data
+                .get("inputID")
+                .or_else(|| data.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| {
+                    envelope
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| id.strip_prefix("evt_"))
+                        .map(|id| format!("msg_{id}"))
+                });
+            state.compaction.start(
+                id.as_deref(),
+                match data.get("reason").and_then(Value::as_str) {
+                    Some("auto") => Some(CompactionTrigger::Auto),
+                    Some("manual") => Some(CompactionTrigger::Manual),
+                    _ => None,
+                },
+                events,
+            );
+        }
+        "session.compaction.delta" => {
+            if let Some(text) = data.get("text").and_then(Value::as_str) {
+                state.compaction.delta(text, events);
+            }
+        }
+        "session.compaction.ended" | "session.compaction.failed" => {
+            let status = if kind.ends_with("failed") {
+                match data.pointer("/error/type").and_then(Value::as_str) {
+                    Some("aborted" | "compaction.interrupted") => {
+                        ContextCompactionStatus::Interrupted
+                    }
+                    _ => ContextCompactionStatus::Failed,
+                }
+            } else {
+                ContextCompactionStatus::Completed
+            };
+            let error = data
+                .pointer("/error/message")
+                .or_else(|| data.get("error"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if state
+                .compaction
+                .current
+                .as_ref()
+                .is_none_or(|item| item.status != ContextCompactionStatus::Running)
+                && kind.ends_with("failed")
+            {
+                let id = data
+                    .get("inputID")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        envelope
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(|id| id.replacen("evt_", "msg_", 1))
+                    })
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                state
+                    .compaction
+                    .seed(waku_protocol::compaction::ContextCompaction::new(
+                        id, None, 0,
+                    ));
+            }
+            state.compaction.finish(status, Some(data), error, events);
+        }
         // Activities, never user messages: a synthetic note is the harness
         // talking to the model, not the user.
         "session.synthetic" => {
@@ -2134,34 +2239,6 @@ fn retry_activity(kind: &str, data: &Value, state: &StreamState, events: &impl D
         None,
         false,
         false,
-    );
-    let _ = events.send(DriverEvent::RichActivity(item));
-}
-
-fn compaction_activity(
-    state: &StreamState,
-    events: &impl DriverEventSink,
-    delta: Option<&str>,
-    complete: bool,
-    failed: bool,
-) {
-    let title = if failed {
-        tr!("activity.compaction_failed")
-    } else if complete {
-        tr!("activity.compacted_context")
-    } else {
-        tr!("activity.compacting_context")
-    };
-    let delta = delta.map(|delta| Value::String(delta.to_owned()));
-    let item = activity::tool_activity(
-        Some(format!("compaction:{}", state.session_id)),
-        ActivityKind::Tool,
-        title,
-        None,
-        delta.as_ref(),
-        None,
-        failed,
-        complete,
     );
     let _ = events.send(DriverEvent::RichActivity(item));
 }
@@ -3321,28 +3398,31 @@ mod tests {
     /// Compaction deltas carry no `assistantMessageID` and no ordinal, so
     /// routing them as text would put the summary inside the assistant reply.
     #[test]
-    fn compaction_streams_into_one_row_of_its_own() {
+    fn compaction_streams_complete_summaries_with_native_attempt_identities() {
         let mut harness = Harness::new(RuntimeMode::FullAccess);
-        harness.feed(json!({"type": "session.compaction.started", "data": {"sessionID": "ses_1"}}));
-        harness.feed(json!({"type": "session.compaction.delta", "data": {"sessionID": "ses_1", "text": "summarising"}}));
-        harness.feed(json!({"type": "session.compaction.ended", "data": {"sessionID": "ses_1"}}));
-
+        harness.feed(json!({"id": "evt_first", "type": "session.compaction.started", "data": {"sessionID": "ses_1", "reason": "auto"}}));
+        harness.feed(json!({"type": "session.compaction.delta", "data": {"sessionID": "ses_1", "text": "keep "}}));
+        harness.feed(json!({"type": "session.compaction.delta", "data": {"sessionID": "ses_1", "text": "the requirement"}}));
+        harness.feed(json!({"type": "session.compaction.ended", "data": {"sessionID": "ses_1", "text": "keep the requirement"}}));
+        harness.feed(json!({"id": "evt_second", "type": "session.compaction.started", "data": {"sessionID": "ses_1", "inputID": "msg_manual", "reason": "manual"}}));
+        harness.feed(json!({"type": "session.compaction.failed", "data": {"sessionID": "ses_1", "error": {"type": "aborted", "message": "Stopped"}}}));
         let seen = harness.drain();
-        assert_eq!(seen.len(), 3);
-        let ids = seen
-            .iter()
+        assert!(
+            seen.iter()
+                .all(|event| matches!(event, DriverEvent::CompactionUpdated(_)))
+        );
+        let records = seen
+            .into_iter()
             .filter_map(|event| match event {
-                DriverEvent::RichActivity(item) => item.source_id.clone(),
+                DriverEvent::CompactionUpdated(item) => Some(item),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["compaction:ses_1"; 3]);
-        assert!(
-            !seen
-                .iter()
-                .any(|event| matches!(event, DriverEvent::TextDelta(_))),
-            "a compaction summary is not the assistant's reply"
-        );
+        assert_eq!(records[2].summary.as_deref(), Some("keep the requirement"));
+        assert_eq!(records[3].id, "msg_first");
+        assert_eq!(records[3].status, ContextCompactionStatus::Completed);
+        assert_eq!(records[4].id, "msg_manual");
+        assert_eq!(records[5].status, ContextCompactionStatus::Interrupted);
     }
 
     /// A detached shell must survive its turn, so it is background work

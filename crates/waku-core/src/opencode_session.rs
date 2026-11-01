@@ -192,12 +192,48 @@ fn strip_provider_state(messages: &mut [MessageInfo]) {
     }
 }
 
+/// Public lifecycle metadata only; native checkpoints never enter Waku's transcript.
+pub(crate) fn compaction_from_message(
+    message: &MessageInfo,
+) -> Option<waku_protocol::compaction::ContextCompaction> {
+    use waku_protocol::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
+    let MessageInfo::Compaction {
+        id,
+        time,
+        status,
+        reason,
+        summary,
+        error,
+        ..
+    } = message
+    else {
+        return None;
+    };
+    let mut item = ContextCompaction::new(
+        id,
+        Some(match reason {
+            opencode_api::CompactionReason::Auto => CompactionTrigger::Auto,
+            opencode_api::CompactionReason::Manual => CompactionTrigger::Manual,
+        }),
+        time.created.max(0.0) as u64,
+    );
+    item.status = match status {
+        opencode_api::CompactionStatus::Running => CompactionStatus::Running,
+        opencode_api::CompactionStatus::Completed => CompactionStatus::Completed,
+        opencode_api::CompactionStatus::Failed => CompactionStatus::Failed,
+    };
+    item.summary = summary.clone();
+    item.error = error.as_ref().map(|error| error.message.clone());
+    if item.status != CompactionStatus::Running {
+        item.completed_at_ms = time.completed.map(|value| value.max(0.0) as u64);
+    }
+    Some(item)
+}
+
 /// Projects stored messages onto Waku's turn model.
 ///
-/// Only `user` and assistant TEXT survive: reasoning is dropped from an
-/// imported transcript the way `acp_session` drops it, and every other message
-/// kind — synthetic, system, skill, shell, compaction, idle and the three
-/// `*-switched` records — is provider bookkeeping rather than conversation.
+/// User and assistant text form messages; public compaction records retain
+/// their ordered lifecycle separately. Private provider state stays excluded.
 fn history_from_messages(messages: &[MessageInfo]) -> ProviderSessionHistory {
     let mut history = ProviderSessionHistory::default();
     let mut boundaries = TurnBoundaries::default();
@@ -236,6 +272,17 @@ fn history_from_messages(messages: &[MessageInfo]) -> ProviderSessionHistory {
                         .messages
                         .push(Message::new_for_turn(MessageRole::User, text, id));
                 }
+                assistant_open = false;
+            }
+            message @ MessageInfo::Compaction { .. } => {
+                let item = compaction_from_message(message).expect("compaction message");
+                history
+                    .transcript_blocks
+                    .push(crate::model::TranscriptBlock {
+                        after_message: history.messages.len(),
+                        turn_id,
+                        activities: vec![crate::model::ActivityItem::from_compaction(item)],
+                    });
                 assistant_open = false;
             }
             MessageInfo::Assistant { content, .. } => {
@@ -283,6 +330,18 @@ fn retain_recent_messages(history: &mut ProviderSessionHistory, limit: usize) {
         .take(limit)
         .map(|turn| turn.id)
         .collect::<std::collections::HashSet<_>>();
+    let removed = history
+        .messages
+        .iter()
+        .take_while(|message| !message.turn_id.is_some_and(|id| retained.contains(&id)))
+        .count();
+    history.transcript_blocks.retain_mut(|block| {
+        if block.turn_id.is_some_and(|id| !retained.contains(&id)) {
+            return false;
+        }
+        block.after_message = block.after_message.saturating_sub(removed);
+        true
+    });
     history
         .messages
         .retain(|message| message.turn_id.is_some_and(|id| retained.contains(&id)));
@@ -693,6 +752,28 @@ mod tests {
                 (MessageRole::Assistant, "Hi.")
             ]
         );
+    }
+
+    #[test]
+    fn imported_compaction_keeps_its_position_summary_and_public_metadata() {
+        let transcript = messages(json!([
+            {"type":"user","id":"msg_u","text":"Keep the API stable","time":{"created":1.0}},
+            assistant("msg_a", json!([{"type":"text","text":"Working"}])),
+            {"type":"compaction","id":"msg_c","status":"completed","reason":"auto",
+             "time":{"created":2000.0,"completed":2500.0},"summary":"Keep the API stable"},
+            assistant("msg_b", json!([{"type":"text","text":"Done"}]))
+        ]));
+        let history = history_from_messages(&transcript);
+        assert_eq!(history.messages.len(), 3);
+        assert_eq!(history.transcript_blocks.len(), 1);
+        assert_eq!(history.transcript_blocks[0].after_message, 2);
+        let item = history.transcript_blocks[0].activities[0]
+            .compaction
+            .as_ref()
+            .unwrap();
+        assert_eq!(item.id, "msg_c");
+        assert_eq!(item.summary.as_deref(), Some("Keep the API stable"));
+        assert_eq!(item.completed_at_ms, Some(2500));
     }
 
     /// The private markers must be gone before anything is built from the

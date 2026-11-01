@@ -308,6 +308,19 @@ fn assemble_slash_commands(
         argument_hint: None,
         template: None,
     });
+    if provider.compaction_capabilities().manual {
+        commands.retain(|command| command.name != "compact");
+        commands.push(SlashCommand {
+            name: "compact".into(),
+            description: crate::i18n::translate("compaction.action"),
+            scope: CommandScope::Builtin,
+            argument_hint: provider
+                .compaction_capabilities()
+                .instructions
+                .then(|| "[focus]".into()),
+            template: None,
+        });
+    }
     sort_commands_for_display(&mut commands);
     commands
 }

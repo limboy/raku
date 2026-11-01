@@ -130,23 +130,23 @@ fn remote_task_catalog_adds_web_tasks_without_replacing_hydrated_detail() {
 #[test]
 fn composer_only_offers_stop_after_submission_preparation() {
     assert_eq!(
-        composer_submit_action(Some(SessionStatus::Idle), false),
+        composer_submit_action(SessionStatus::Idle.is_busy(), false),
         ComposerSubmitAction::Send
     );
     assert_eq!(
-        composer_submit_action(Some(SessionStatus::Connecting), true),
+        composer_submit_action(SessionStatus::Connecting.is_busy(), true),
         ComposerSubmitAction::Preparing
     );
     assert_eq!(
-        composer_submit_action(Some(SessionStatus::Connecting), false),
+        composer_submit_action(SessionStatus::Connecting.is_busy(), false),
         ComposerSubmitAction::Stop
     );
     assert_eq!(
-        composer_submit_action(Some(SessionStatus::Working), false),
+        composer_submit_action(SessionStatus::Working.is_busy(), false),
         ComposerSubmitAction::Stop
     );
     assert_eq!(
-        composer_submit_action(Some(SessionStatus::Failed), false),
+        composer_submit_action(SessionStatus::Failed.is_busy(), false),
         ComposerSubmitAction::Send
     );
 }
@@ -198,31 +198,33 @@ fn escape_stop_requires_a_matching_second_press_and_expires() {
     let target = EscapeStopTarget {
         session_id: Uuid::new_v4(),
         turn_id: Some(Uuid::new_v4()),
+        compaction_id: None,
     };
     let other_turn = EscapeStopTarget {
         session_id: target.session_id,
         turn_id: Some(Uuid::new_v4()),
+        compaction_id: None,
     };
     let mut confirmation = EscapeStopConfirmation::default();
     let now = Instant::now();
 
-    let first_arm = match confirmation.press(target, now) {
+    let first_arm = match confirmation.press(target.clone(), now) {
         EscapeStopPress::Arm(arm) => arm,
         EscapeStopPress::Stop => panic!("the first press must arm Stop"),
     };
-    assert!(confirmation.is_armed_for(target, now + Duration::from_secs(2)));
+    assert!(confirmation.is_armed_for(&target, now + Duration::from_secs(2)));
     assert_eq!(
-        confirmation.press(target, now + Duration::from_secs(2)),
+        confirmation.press(target.clone(), now + Duration::from_secs(2)),
         EscapeStopPress::Stop
     );
-    assert!(!confirmation.is_armed_for(target, now + Duration::from_secs(2)));
+    assert!(!confirmation.is_armed_for(&target, now + Duration::from_secs(2)));
 
     assert_eq!(ESCAPE_STOP_CONFIRMATION_TIMEOUT, Duration::from_secs(3));
-    let second_arm = match confirmation.press(target, now) {
+    let second_arm = match confirmation.press(target.clone(), now) {
         EscapeStopPress::Arm(arm) => arm,
         EscapeStopPress::Stop => panic!("an unarmed confirmation must arm Stop"),
     };
-    assert!(!confirmation.is_armed_for(target, now + Duration::from_secs(3)));
+    assert!(!confirmation.is_armed_for(&target, now + Duration::from_secs(3)));
     let replacement_arm = match confirmation.press(other_turn, now + Duration::from_secs(3)) {
         EscapeStopPress::Arm(arm) => arm,
         EscapeStopPress::Stop => panic!("an expired or different target must arm Stop again"),
@@ -230,6 +232,35 @@ fn escape_stop_requires_a_matching_second_press_and_expires() {
     assert!(!confirmation.expire(first_arm));
     assert!(!confirmation.expire(second_arm));
     assert!(confirmation.expire(replacement_arm));
+}
+
+#[test]
+fn standalone_compaction_offers_stop_and_escape_confirmation_is_scoped_to_the_operation() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::OhMyPi);
+    session.active_compaction = Some("first".into());
+    assert_eq!(session.status, SessionStatus::Idle);
+    assert_eq!(
+        composer_submit_action(session.is_busy(), false),
+        ComposerSubmitAction::Stop
+    );
+    let now = Instant::now();
+    let mut confirmation = EscapeStopConfirmation::default();
+    let first = EscapeStopTarget::for_session(&session);
+    assert!(matches!(
+        confirmation.press(first.clone(), now),
+        EscapeStopPress::Arm(_)
+    ));
+    assert!(confirmation.is_armed_for_session(&session, now));
+    session.active_compaction = Some("second".into());
+    assert!(!confirmation.is_armed_for_session(&session, now));
+    assert!(matches!(
+        confirmation.press(EscapeStopTarget::for_session(&session), now),
+        EscapeStopPress::Arm(_)
+    ));
+    assert_eq!(
+        confirmation.press(EscapeStopTarget::for_session(&session), now),
+        EscapeStopPress::Stop
+    );
 }
 
 #[test]
@@ -2181,4 +2212,80 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
         Some(ProviderKind::Claude),
         ProviderKind::Claude
     ));
+}
+
+#[test]
+fn compaction_milestones_survive_folding_roundtrip_and_later_activity() {
+    use waku_protocol::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
+    let mut session = AgentSession::new(uuid::Uuid::new_v4(), ProviderKind::OpenCode);
+    session.begin_turn("Keep the public API stable");
+    push_transcript_activity(
+        &mut session,
+        ActivityItem::new(
+            Some("read".into()),
+            ActivityKind::FileRead,
+            "Read",
+            None,
+            true,
+        ),
+        false,
+    );
+    let mut first = ContextCompaction::new("msg_first", Some(CompactionTrigger::Auto), 1000);
+    first.summary = Some("Keep the public API stable".into());
+    first.finish(CompactionStatus::Completed, 1500);
+    push_transcript_activity(&mut session, ActivityItem::from_compaction(first), true);
+    push_transcript_activity(
+        &mut session,
+        ActivityItem::new(
+            Some("test".into()),
+            ActivityKind::Command,
+            "Test",
+            None,
+            true,
+        ),
+        true,
+    );
+    session.push_message(MessageRole::Assistant, "Done");
+    session.finish_active_turn(TurnStatus::Completed);
+    let mut restored: AgentSession =
+        serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+    restored.migrate_legacy_state();
+    assert_eq!(restored.transcript_blocks.len(), 3);
+    let (rows, work) = folded_transcript_rows(&restored, &std::collections::HashSet::new());
+    assert!(
+        rows.contains(&TurnBlock(1)),
+        "a compaction milestone must stay visible after work folds"
+    );
+    assert!(!rows.contains(&TurnBlock(0)));
+    assert!(!rows.contains(&TurnBlock(2)));
+    assert!(!work.contains(&TurnBlock(1)));
+    let mut second = ContextCompaction::new("msg_second", Some(CompactionTrigger::Manual), 2000);
+    second.finish(CompactionStatus::Completed, 2500);
+    super::streaming::update_session_activity(
+        &mut restored,
+        None,
+        ActivityItem::from_compaction(second),
+    );
+    assert_eq!(
+        restored.transcript_blocks[1].activities[0]
+            .compaction
+            .as_ref()
+            .unwrap()
+            .summary
+            .as_deref(),
+        Some("Keep the public API stable")
+    );
+    assert_eq!(restored.transcript_blocks.len(), 4);
+}
+
+#[test]
+fn compact_command_only_matches_exact_command_and_keeps_focus_instructions() {
+    use super::compaction::compact_invocation;
+    assert_eq!(compact_invocation("/compact"), Some(None));
+    assert_eq!(
+        compact_invocation("/compact  keep the API stable\n and the tests"),
+        Some(Some("keep the API stable\n and the tests"))
+    );
+    assert_eq!(compact_invocation("/compaction"), None);
+    assert_eq!(compact_invocation("explain /compact"), None);
 }

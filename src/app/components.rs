@@ -1423,7 +1423,7 @@ pub(super) fn activity_display_title(activity: &ActivityItem) -> String {
                 (true, true) => tr!("activity.plan_update_failed"),
             }
         }
-        ActivityKind::Tool => activity_tool_display_name(activity),
+        ActivityKind::Tool | ActivityKind::Compaction => activity_tool_display_name(activity),
         ActivityKind::Reasoning => activity.title.clone(),
     }
 }
@@ -1440,7 +1440,7 @@ pub(super) fn activity_action_label(activity: &ActivityItem) -> String {
         ActivityKind::FileList => tr!("activity.action_list"),
         ActivityKind::Plan => tr!("activity.action_plan"),
         ActivityKind::Tool if is_ask_user_question(activity) => tr!("activity.ask_questions"),
-        ActivityKind::Tool => tr!("activity.tool"),
+        ActivityKind::Tool | ActivityKind::Compaction => tr!("activity.tool"),
     }
 }
 
@@ -1494,7 +1494,7 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
             .unwrap_or_default(),
         ActivityKind::Plan => custom_title().unwrap_or_default(),
         ActivityKind::Tool if is_ask_user_question(activity) => String::new(),
-        ActivityKind::Tool => {
+        ActivityKind::Tool | ActivityKind::Compaction => {
             let has_name = activity
                 .display_target
                 .as_deref()

@@ -119,13 +119,22 @@ pub(crate) fn markdown(session: &AgentSession, scope: ExportScope) -> anyhow::Re
 }
 
 fn write_activity(out: &mut String, activity: &ActivityItem) {
+    use waku_protocol::compaction::{CompactionStatus, CompactionTrigger};
     let title = if activity.reasoning.is_some() {
         "Reasoning"
     } else {
         &activity.title
     };
     writeln!(out, "---\n\n### {}\n", inline(title)).unwrap();
-    let status = if activity.failed {
+    let status = if let Some(item) = &activity.compaction {
+        match item.status {
+            CompactionStatus::Running => "In progress",
+            CompactionStatus::Completed => "Completed",
+            CompactionStatus::Unconfirmed => "Unconfirmed",
+            CompactionStatus::Failed => "Failed",
+            CompactionStatus::Interrupted => "Interrupted",
+        }
+    } else if activity.failed {
         "Failed"
     } else if activity.complete {
         "Completed"
@@ -133,6 +142,54 @@ fn write_activity(out: &mut String, activity: &ActivityItem) {
         "In progress"
     };
     writeln!(out, "Status: {status}\n").unwrap();
+    if let Some(item) = &activity.compaction {
+        if let Some(trigger) = item.trigger {
+            writeln!(
+                out,
+                "Trigger: {}\n",
+                match trigger {
+                    CompactionTrigger::Auto => "Automatic",
+                    CompactionTrigger::Manual => "Manual",
+                }
+            )
+            .unwrap();
+        }
+        if let Some(tokens) = item.before_tokens {
+            writeln!(out, "Tokens before: {tokens}\n").unwrap();
+        }
+        if let Some(tokens) = item.after_tokens {
+            writeln!(
+                out,
+                "Tokens after: {}{tokens}\n",
+                if item.after_tokens_estimated {
+                    "≈"
+                } else {
+                    ""
+                }
+            )
+            .unwrap();
+        }
+        if item.started_at_ms > 0
+            && let Some(end) = item.completed_at_ms
+        {
+            writeln!(
+                out,
+                "Duration: {:.1}s\n",
+                end.saturating_sub(item.started_at_ms) as f64 / 1000.0
+            )
+            .unwrap();
+        }
+        for (label, text) in [
+            ("Summary", item.summary.as_deref()),
+            ("Notice", item.notice.as_deref()),
+            ("Error", item.error.as_deref()),
+        ] {
+            if let Some(text) = text.filter(|text| !text.is_empty()) {
+                writeln!(out, "#### {label}\n").unwrap();
+                code(out, text, "text");
+            }
+        }
+    }
     if let Some(reasoning) = &activity.reasoning {
         body(out, &reasoning.content);
     }
@@ -327,6 +384,34 @@ mod tests {
         assert!(out.contains("Status: Failed"));
         assert!(out.contains("````text\nTool output\n```\n#### raw heading\n````"));
         assert!(out.contains("```rust\nfn main() {}\n```\n\n[Source](https://example.com)"));
+    }
+
+    #[test]
+    fn full_export_preserves_compaction_details_and_interrupted_status() {
+        use waku_protocol::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
+        let mut session = session();
+        let mut item = ContextCompaction::new("compact", Some(CompactionTrigger::Manual), 1000);
+        item.summary = Some("Keep the architecture constraint".into());
+        item.error = Some("Provider connection lost".into());
+        item.before_tokens = Some(180000);
+        item.after_tokens = Some(20000);
+        item.after_tokens_estimated = true;
+        item.finish(CompactionStatus::Interrupted, 2500);
+        session.transcript_blocks[0]
+            .activities
+            .push(ActivityItem::from_compaction(item));
+        let out = markdown(&session, ExportScope::All).unwrap();
+        for text in [
+            "Status: Interrupted",
+            "Trigger: Manual",
+            "Tokens before: 180000",
+            "Tokens after: ≈20000",
+            "Duration: 1.5s",
+            "Keep the architecture constraint",
+            "Provider connection lost",
+        ] {
+            assert!(out.contains(text), "missing {text}: {out}");
+        }
     }
 
     #[test]

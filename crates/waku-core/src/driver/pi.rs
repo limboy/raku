@@ -6,6 +6,7 @@
 //! once protocol v2 is negotiated. [`PiFlavor`] carries those differences so
 //! both providers share one transport instead of two near-copies.
 
+use super::compaction::CompactionTracker;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -13,6 +14,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use waku_protocol::compaction::{
+    CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
+};
 
 use anyhow::{Context as _, anyhow};
 use crossbeam_channel::{Sender, bounded, unbounded};
@@ -295,6 +299,7 @@ impl PiFlavor {
 }
 
 enum CommandMessage {
+    Compact(CompactionRequest),
     Prompt(String),
     Steer(String),
     Cancel,
@@ -312,11 +317,23 @@ enum CommandMessage {
 }
 
 enum PendingResponse {
+    Compact(ContextCompaction),
     Request(Sender<Result<Value, String>>),
     Prompt,
 }
 
 type PendingResponses = Arc<Mutex<HashMap<String, PendingResponse>>>;
+
+fn interrupt_pending_compactions(pending: &PendingResponses, events: &impl DriverEventSink) {
+    for entry in pending.lock().values_mut() {
+        if let PendingResponse::Compact(item) = entry
+            && item.status == CompactionStatus::Running
+        {
+            item.finish(CompactionStatus::Interrupted, unix_time_millis());
+            let _ = events.send(DriverEvent::CompactionUpdated(item.clone()));
+        }
+    }
+}
 
 pub struct PiDriver {
     flavor: PiFlavor,
@@ -736,6 +753,20 @@ impl PiDriver {
                 let mut current_effort = reasoning_effort;
                 while let Ok(message) = command_rx.recv() {
                     match message {
+                        CommandMessage::Compact(request) => {
+                            next_request_id += 1;
+                            let rpc_id = format!("waku-{}", next_request_id);
+                            let item = ContextCompaction::new(request.id, Some(CompactionTrigger::Manual), unix_time_millis());
+                            writer_pending.lock().insert(rpc_id.clone(), PendingResponse::Compact(item.clone()));
+                            let _ = writer_events.send(DriverEvent::CompactionUpdated(item.clone()));
+                            if let Err(error) = write_json_line(&mut stdin, &json!({"id": rpc_id, "type": "compact", "customInstructions": request.instructions})) {
+                                writer_pending.lock().remove(&rpc_id);
+                                let mut item = item;
+                                item.error = Some(error.to_string());
+                                item.finish(CompactionStatus::Failed, unix_time_millis());
+                                let _ = writer_events.send(DriverEvent::CompactionUpdated(item));
+                            }
+                        }
                         CommandMessage::Prompt(prompt) => {
                             let result = send_prompt(
                                 &mut stdin,
@@ -779,6 +810,7 @@ impl PiDriver {
                             }
                         }
                         CommandMessage::Cancel => {
+                            interrupt_pending_compactions(&writer_pending, &writer_events);
                             if let Err(error) = send_request(
                                 &mut stdin,
                                 &writer_pending,
@@ -963,6 +995,10 @@ impl PiDriver {
 }
 
 impl DriverControl for PiDriver {
+    fn compact(&self, request: CompactionRequest) {
+        let _ = self.commands.send(CommandMessage::Compact(request));
+    }
+
     fn prompt(&self, prompt: String) {
         let _ = self.commands.send(CommandMessage::Prompt(prompt));
     }
@@ -1109,7 +1145,12 @@ fn send_prompt(
     {
         let mut pending = pending.lock();
         // A response from an older prompt cannot settle the next turn.
-        pending.retain(|_, response| matches!(response, PendingResponse::Request(_)));
+        pending.retain(|_, response| {
+            matches!(
+                response,
+                PendingResponse::Request(_) | PendingResponse::Compact(_)
+            )
+        });
         pending.insert(id.clone(), PendingResponse::Prompt);
     }
     // OMP built-ins can hold the prompt response until compaction or another
@@ -1478,6 +1519,7 @@ fn clone_ohmypi_session(
 
 #[derive(Default)]
 struct PiStreamState {
+    compaction: CompactionTracker,
     run_started: bool,
     message_saw_text: bool,
     message_saw_reasoning: bool,
@@ -1547,6 +1589,59 @@ fn handle_pi_message(
         let Some(id) = value.get("id").and_then(Value::as_str) else {
             return;
         };
+        let compact = {
+            let mut pending = pending.lock();
+            if matches!(pending.get(id), Some(PendingResponse::Compact(_))) {
+                match pending.remove(id) {
+                    Some(PendingResponse::Compact(item)) => Some(item),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(item) = compact {
+            let cancelled = item.status == CompactionStatus::Interrupted;
+            let same_operation = state
+                .compaction
+                .current
+                .as_ref()
+                .is_some_and(|current| current.id == item.id);
+            let mut operation = CompactionTracker {
+                current: Some(if same_operation && !cancelled {
+                    state.compaction.current.as_ref().unwrap().clone()
+                } else {
+                    item
+                }),
+            };
+            let success = value.get("success").and_then(Value::as_bool) == Some(true);
+            let error = value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            operation.finish(
+                if cancelled {
+                    CompactionStatus::Interrupted
+                } else if success {
+                    CompactionStatus::Completed
+                } else {
+                    CompactionStatus::Failed
+                },
+                value.get("data"),
+                if cancelled { None } else { error },
+                events,
+            );
+            if same_operation
+                || state
+                    .compaction
+                    .current
+                    .as_ref()
+                    .is_none_or(|current| current.status != CompactionStatus::Running)
+            {
+                state.compaction = operation;
+            }
+            return;
+        }
         let prompt_response = matches!(pending.lock().get(id), Some(PendingResponse::Prompt));
         if prompt_response {
             let success = value.get("success").and_then(Value::as_bool) == Some(true);
@@ -1623,9 +1718,12 @@ fn handle_pi_message(
         }
         flush_pending_message_text(events, state);
         if state.run_started {
-            pending
-                .lock()
-                .retain(|_, response| matches!(response, PendingResponse::Request(_)));
+            pending.lock().retain(|_, response| {
+                matches!(
+                    response,
+                    PendingResponse::Request(_) | PendingResponse::Compact(_)
+                )
+            });
             let success = !state.failed;
             let _ = events.send(DriverEvent::TurnFinished {
                 success,
@@ -1642,6 +1740,40 @@ fn handle_pi_message(
     }
 
     match event_type {
+        "compaction_start" | "auto_compaction_start" => {
+            let manual = pending.lock().values().find_map(|entry| match entry {
+                PendingResponse::Compact(item) => Some(item.clone()),
+                _ => None,
+            });
+            if let Some(item) = manual {
+                state.compaction.seed(item);
+            }
+            let trigger = match value.get("reason").and_then(Value::as_str) {
+                Some("manual") => Some(CompactionTrigger::Manual),
+                Some("threshold" | "overflow") => Some(CompactionTrigger::Auto),
+                _ if event_type == "auto_compaction_start" => Some(CompactionTrigger::Auto),
+                _ => None,
+            };
+            state.compaction.start(None, trigger, events);
+        }
+        "compaction_end" | "auto_compaction_end" => {
+            let status = if value.get("aborted").and_then(Value::as_bool) == Some(true) {
+                CompactionStatus::Interrupted
+            } else if value.get("result").is_some_and(|result| !result.is_null()) {
+                CompactionStatus::Completed
+            } else {
+                CompactionStatus::Failed
+            };
+            state.compaction.finish(
+                status,
+                value.get("result"),
+                value
+                    .get("errorMessage")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                events,
+            );
+        }
         "command_output" => {
             if let Some(text) = value
                 .get("text")
@@ -1956,6 +2088,75 @@ fn tool_title(name: &str) -> String {
 mod tests {
     use super::*;
     use crossbeam_channel::TryRecvError;
+
+    #[test]
+    fn native_compaction_response_is_metadata_and_never_an_assistant_turn() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, received) = unbounded();
+        let item = ContextCompaction::new("manual", Some(CompactionTrigger::Manual), 1000);
+        pending
+            .lock()
+            .insert("rpc-compact".into(), PendingResponse::Compact(item));
+        for frame in [
+            json!({"type":"compaction_start","reason":"manual"}),
+            json!({"type":"compaction_end","reason":"manual","result":{"summary":"Keep the public API stable","tokensBefore":120000,"estimatedTokensAfter":16000},"aborted":false}),
+            json!({"type":"response","id":"rpc-compact","command":"compact","success":true,"data":{"summary":"Keep the public API stable","tokensBefore":120000,"estimatedTokensAfter":16000}}),
+        ] {
+            handle_pi_message(
+                PiFlavor::Pi,
+                frame,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+        let seen = received.try_iter().collect::<Vec<_>>();
+        assert!(
+            seen.iter()
+                .all(|event| matches!(event, DriverEvent::CompactionUpdated(_)))
+        );
+        let record = state.compaction.current.unwrap();
+        assert_eq!(record.id, "manual");
+        assert_eq!(record.status, CompactionStatus::Completed);
+        assert_eq!(record.after_tokens, Some(16000));
+        assert!(record.after_tokens_estimated);
+        assert_eq!(
+            record.summary.as_deref(),
+            Some("Keep the public API stable")
+        );
+    }
+
+    #[test]
+    fn cancelled_manual_compaction_response_preserves_interrupted_status() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, received) = unbounded();
+        let item = ContextCompaction::new("manual", Some(CompactionTrigger::Manual), 1);
+        state.compaction.seed(item.clone());
+        pending
+            .lock()
+            .insert("rpc-compact".into(), PendingResponse::Compact(item));
+        interrupt_pending_compactions(&pending, &events);
+        handle_pi_message(
+            PiFlavor::OhMyPi,
+            json!({"type":"response","id":"rpc-compact","command":"compact","success":false,"error":"Compaction aborted"}),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        let records = received.try_iter().collect::<Vec<_>>();
+        assert!(
+            records
+                .iter()
+                .all(|event| matches!(event, DriverEvent::CompactionUpdated(item)
+            if item.status == CompactionStatus::Interrupted && item.error.is_none()))
+        );
+        assert_eq!(
+            state.compaction.current.as_ref().unwrap().status,
+            CompactionStatus::Interrupted
+        );
+    }
 
     #[test]
     fn live_command_updates_reach_the_composer_and_clear_removed_commands() {

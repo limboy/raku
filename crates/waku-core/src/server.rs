@@ -815,6 +815,7 @@ fn command_targets_runtime(command: &Command) -> bool {
             | Command::Prompt { .. }
             | Command::Steer { .. }
             | Command::Cancel
+            | Command::Compact { .. }
             | Command::CancelComputerUse
             | Command::RefreshBackgroundWork
             | Command::StopBackgroundWork { .. }

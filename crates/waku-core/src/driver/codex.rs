@@ -1,5 +1,6 @@
 //! Codex app-server transport.
 
+use super::compaction::CompactionTracker;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -8,6 +9,9 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use waku_protocol::compaction::{
+    CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
+};
 
 use anyhow::{Context as _, anyhow};
 use crossbeam_channel::{Sender, bounded, unbounded};
@@ -43,6 +47,7 @@ const DISABLE_CODEX_NODE_REPL_COMMAND: &str = "mcp_servers.node_repl.command=\"/
 const DISABLE_CODEX_NODE_REPL: &str = "mcp_servers.node_repl.enabled=false";
 
 enum CommandMessage {
+    Compact(CompactionRequest),
     Prompt(String),
     Steer(String),
     Cancel,
@@ -85,12 +90,18 @@ struct CodexTitleGeneration {
 
 #[derive(Default)]
 struct BackgroundRpcState {
+    compactions: HashMap<u64, ContextCompaction>,
+    /// Kept through the lifecycle, since the RPC acknowledgement may precede
+    /// or follow the native maintenance turn.
+    manual_compaction: Option<ContextCompaction>,
+    compaction_turn_ids: HashSet<String>,
     lists: HashSet<u64>,
     stops: HashMap<u64, BackgroundWorkKey>,
     unsupported: bool,
 }
 
 enum PendingBackgroundRpc {
+    Compact(ContextCompaction),
     List,
     Stop(BackgroundWorkKey),
 }
@@ -122,7 +133,9 @@ enum PendingGoalRpc {
 
 impl BackgroundRpcState {
     fn take(&mut self, id: u64) -> Option<PendingBackgroundRpc> {
-        if self.lists.remove(&id) {
+        if let Some(item) = self.compactions.remove(&id) {
+            Some(PendingBackgroundRpc::Compact(item))
+        } else if self.lists.remove(&id) {
             Some(PendingBackgroundRpc::List)
         } else {
             self.stops.remove(&id).map(PendingBackgroundRpc::Stop)
@@ -435,6 +448,31 @@ impl CodexDriver {
                 let mut next_request_id = 10_u64;
                 while let Ok(command) = command_rx.recv() {
                     let message = match command {
+                        CommandMessage::Compact(request) => {
+                            let Some(thread_id) = wait_for_thread_id(&writer_thread_id) else {
+                                let mut item = ContextCompaction::new(request.id, Some(CompactionTrigger::Manual), unix_time_millis());
+                                item.error = Some(tr!("errors.codex_thread_open_incomplete"));
+                                item.finish(CompactionStatus::Failed, unix_time_millis());
+                                let _ = writer_events.send(DriverEvent::CompactionUpdated(item));
+                                continue;
+                            };
+                            if writer_turn_id.lock().is_some() {
+                                let mut item = ContextCompaction::new(request.id, Some(CompactionTrigger::Manual), unix_time_millis());
+                                item.error = Some(tr!("compaction.busy"));
+                                item.finish(CompactionStatus::Failed, unix_time_millis());
+                                let _ = writer_events.send(DriverEvent::CompactionUpdated(item));
+                                continue;
+                            }
+                            next_request_id += 1;
+                            let item = ContextCompaction::new(request.id, Some(CompactionTrigger::Manual), unix_time_millis());
+                            {
+                                let mut background = writer_background_rpcs.lock();
+                                background.manual_compaction = Some(item.clone());
+                                background.compactions.insert(next_request_id, item);
+                            }
+                            json!({"method": "thread/compact/start", "id": next_request_id, "params": {"threadId": thread_id}})
+                        }
+
                         CommandMessage::Prompt(text) => {
                             let Some(thread_id) = wait_for_thread_id(&writer_thread_id) else {
                                 let _ = writer_events.send(DriverEvent::Error(tr!(
@@ -565,6 +603,11 @@ impl CodexDriver {
                             };
                             next_request_id += 1;
                             let request_id = next_request_id;
+                            let turns = rollback_native_turn_count(
+                                &writer_turn_ids.lock(),
+                                &writer_background_rpcs.lock().compaction_turn_ids,
+                                turns,
+                            );
                             writer_pending_rollbacks
                                 .lock()
                                 .insert(request_id, (turns, response));
@@ -596,7 +639,7 @@ impl CodexDriver {
                             };
                             let last_turn_id = {
                                 let turn_ids = writer_turn_ids.lock();
-                                match fork_last_turn_id(&turn_ids, turns_to_remove) {
+                                match fork_last_turn_id(&turn_ids, &writer_background_rpcs.lock().compaction_turn_ids, turns_to_remove) {
                                     Ok(turn_id) => turn_id,
                                     Err(error) => {
                                         let _ = response.send(Err(error));
@@ -1014,6 +1057,10 @@ fn handle_goal_response(
 }
 
 impl DriverControl for CodexDriver {
+    fn compact(&self, request: CompactionRequest) {
+        let _ = self.commands.send(CommandMessage::Compact(request));
+    }
+
     fn prompt(&self, prompt: String) {
         let _ = self.commands.send(CommandMessage::Prompt(prompt));
     }
@@ -1361,13 +1408,35 @@ fn wait_for_thread_id(thread_id: &Mutex<Option<String>>) -> Option<String> {
     None
 }
 
-fn fork_last_turn_id(turn_ids: &[String], turns_to_remove: usize) -> Result<String, String> {
+fn fork_last_turn_id(
+    turn_ids: &[String],
+    compaction_turn_ids: &HashSet<String>,
+    turns_to_remove: usize,
+) -> Result<String, String> {
     turn_ids
-        .len()
-        .checked_sub(turns_to_remove + 1)
-        .and_then(|index| turn_ids.get(index))
+        .iter()
+        .rev()
+        .filter(|id| !compaction_turn_ids.contains(*id))
+        .nth(turns_to_remove)
         .cloned()
         .ok_or_else(|| "Codex has no completed turn at that response.".to_owned())
+}
+
+fn rollback_native_turn_count(
+    turn_ids: &[String],
+    compaction_turn_ids: &HashSet<String>,
+    visible_turns: usize,
+) -> usize {
+    if visible_turns == 0 {
+        return 0;
+    }
+    turn_ids
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, id)| !compaction_turn_ids.contains(*id))
+        .nth(visible_turns - 1)
+        .map_or(turn_ids.len(), |(index, _)| turn_ids.len() - index)
 }
 
 const CODEX_CITATION_START: char = '\u{e200}';
@@ -1376,6 +1445,8 @@ const CODEX_CITATION_SEPARATOR: char = '\u{e202}';
 
 #[derive(Default)]
 struct CodexStreamState {
+    compaction: CompactionTracker,
+    maintenance_turn: bool,
     citations: HashMap<String, String>,
     citation_numbers: HashMap<String, usize>,
     citation_buffer: String,
@@ -1678,6 +1749,39 @@ fn handle_codex_message(
         .and_then(|id| background_rpcs.lock().take(id));
     if let Some(pending) = pending_background {
         match pending {
+            PendingBackgroundRpc::Compact(mut item) => {
+                if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+                    {
+                        let mut background = background_rpcs.lock();
+                        if background
+                            .manual_compaction
+                            .as_ref()
+                            .is_some_and(|pending| pending.id == item.id)
+                        {
+                            background.manual_compaction = None;
+                        }
+                    }
+                    item.error = Some(error.to_owned());
+                    item.finish(CompactionStatus::Failed, unix_time_millis());
+                    if stream_state
+                        .compaction
+                        .current
+                        .as_ref()
+                        .is_some_and(|current| current.id == item.id)
+                    {
+                        stream_state.compaction.current = Some(item.clone());
+                    }
+                    let _ = events.send(DriverEvent::CompactionUpdated(item));
+                } else if stream_state
+                    .compaction
+                    .current
+                    .as_ref()
+                    .is_none_or(|current| current.id != item.id)
+                {
+                    stream_state.compaction.seed(item.clone());
+                    let _ = events.send(DriverEvent::CompactionUpdated(item));
+                }
+            }
             PendingBackgroundRpc::List => {
                 if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
                     if error.to_ascii_lowercase().contains("method not found")
@@ -1761,8 +1865,13 @@ fn handle_codex_message(
             .and_then(Value::as_str)
             .map_or_else(|| Ok(()), |error| Err(error.to_owned()));
         if result.is_ok() {
-            let retained = turn_ids.lock().len().saturating_sub(turns);
-            turn_ids.lock().truncate(retained);
+            let mut turn_ids = turn_ids.lock();
+            let retained = turn_ids.len().saturating_sub(turns);
+            turn_ids.truncate(retained);
+            background_rpcs
+                .lock()
+                .compaction_turn_ids
+                .retain(|id| turn_ids.contains(id));
         }
         let _ = response.send(result);
         return;
@@ -1770,6 +1879,14 @@ fn handle_codex_message(
 
     if is_response && value.get("id").and_then(Value::as_u64) == Some(1) {
         if let Some(id) = value.pointer("/result/thread/id").and_then(Value::as_str) {
+            background_rpcs.lock().compaction_turn_ids = value
+                .pointer("/result/thread/turns")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|turn| crate::codex_session::is_compaction_turn(turn))
+                .filter_map(|turn| turn.get("id").and_then(Value::as_str).map(str::to_owned))
+                .collect();
             *turn_ids.lock() = value
                 .pointer("/result/thread/turns")
                 .and_then(Value::as_array)
@@ -1810,16 +1927,28 @@ fn handle_codex_message(
     match method {
         "turn/started" => {
             stream_state.begin_turn();
+            stream_state.maintenance_turn = background_rpcs.lock().manual_compaction.is_some();
             if let Some(id) = params.pointer("/turn/id").and_then(Value::as_str) {
                 *turn_id.lock() = Some(id.to_owned());
                 let mut turn_ids = turn_ids.lock();
                 if turn_ids.last().is_none_or(|last| last != id) {
                     turn_ids.push(id.to_owned());
                 }
+                if stream_state.maintenance_turn {
+                    background_rpcs
+                        .lock()
+                        .compaction_turn_ids
+                        .insert(id.to_owned());
+                }
             }
-            let _ = events.send(DriverEvent::TurnStarted);
+            if !stream_state.maintenance_turn {
+                let _ = events.send(DriverEvent::TurnStarted);
+            }
         }
         "item/agentMessage/delta" => {
+            if stream_state.maintenance_turn {
+                return;
+            }
             if let Some(delta) = params.get("delta").and_then(Value::as_str) {
                 let delta = stream_state.rewrite_citation_delta(delta);
                 if !delta.is_empty() {
@@ -1828,6 +1957,9 @@ fn handle_codex_message(
             }
         }
         "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
+            if stream_state.maintenance_turn {
+                return;
+            }
             if let Some(delta) = params
                 .get("delta")
                 .and_then(Value::as_str)
@@ -1886,6 +2018,45 @@ fn handle_codex_message(
         }
         "item/started" | "item/completed" => {
             if let Some(item) = params.get("item") {
+                if item.get("type").and_then(Value::as_str) == Some("contextCompaction") {
+                    if method == "item/started" {
+                        if let Some(pending) = background_rpcs.lock().manual_compaction.clone()
+                            && stream_state
+                                .compaction
+                                .current
+                                .as_ref()
+                                .is_none_or(|current| current.id != pending.id)
+                        {
+                            stream_state.compaction.seed(pending.clone());
+                            let _ = events.send(DriverEvent::CompactionUpdated(pending));
+                        }
+                        stream_state.compaction.start(
+                            item.get("id").and_then(Value::as_str),
+                            None,
+                            events,
+                        );
+                    } else {
+                        if stream_state.compaction.current.is_none() {
+                            let mut current = ContextCompaction::new(
+                                item.get("id").and_then(Value::as_str).unwrap_or("imported"),
+                                None,
+                                0,
+                            );
+                            current.started_at_ms = 0;
+                            stream_state.compaction.seed(current);
+                        }
+                        stream_state.compaction.finish(
+                            CompactionStatus::Completed,
+                            None,
+                            None,
+                            events,
+                        );
+                    }
+                    return;
+                }
+                if stream_state.maintenance_turn {
+                    return;
+                }
                 stream_state.capture_citations(item);
                 let complete = method == "item/completed";
                 if item.get("type").and_then(Value::as_str) == Some("reasoning")
@@ -1966,6 +2137,30 @@ fn handle_codex_message(
                 .pointer("/turn/error/message")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
+            if stream_state
+                .compaction
+                .current
+                .as_ref()
+                .is_some_and(|item| item.status == CompactionStatus::Running)
+            {
+                stream_state.compaction.finish(
+                    if status == "completed" {
+                        CompactionStatus::Completed
+                    } else if status == "interrupted" {
+                        CompactionStatus::Interrupted
+                    } else {
+                        CompactionStatus::Failed
+                    },
+                    None,
+                    error.clone(),
+                    events,
+                );
+            }
+            if stream_state.maintenance_turn {
+                stream_state.maintenance_turn = false;
+                background_rpcs.lock().manual_compaction = None;
+                return;
+            }
             let _ = events.send(DriverEvent::TurnFinished {
                 success: status == "completed",
                 summary: error,
@@ -2554,6 +2749,198 @@ fn is_visible_stderr_notice(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_compaction_lifecycle_and_failed_turn_both_terminalize() {
+        let harness = GoalHarness::new();
+        let mut stream = CodexStreamState::default();
+        for frame in [
+            json!({"method":"item/started","params":{"item":{"id":"compact-first","type":"contextCompaction"}}}),
+            json!({"method":"item/completed","params":{"item":{"id":"compact-first","type":"contextCompaction"}}}),
+            json!({"method":"item/started","params":{"item":{"id":"compact-second","type":"contextCompaction"}}}),
+            json!({"method":"turn/completed","params":{"turn":{"status":"failed","error":{"message":"context too large"}}}}),
+        ] {
+            handle_codex_message(
+                frame,
+                &harness.thread_id,
+                &harness.turn_id,
+                &harness.turn_ids,
+                &harness.rollbacks,
+                &harness.steers,
+                &harness.background,
+                &harness.goals,
+                &harness.commands,
+                &harness.events,
+                &mut stream,
+            );
+        }
+        let records = harness
+            .received
+            .try_iter()
+            .filter_map(|event| match event {
+                DriverEvent::CompactionUpdated(item) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records.len(),
+            4,
+            "each attempt has one start and one terminal event"
+        );
+        assert!(
+            records.iter().any(
+                |item| item.id == "compact-first" && item.status == CompactionStatus::Completed
+            )
+        );
+        let last = records.last().unwrap();
+        assert_eq!(last.id, "compact-second");
+        assert_eq!(last.status, CompactionStatus::Failed);
+        assert_eq!(last.error.as_deref(), Some("context too large"));
+    }
+
+    #[test]
+    fn manual_compaction_emits_no_conversation_turn_and_starts_once_in_every_ack_order() {
+        for ack_index in 0..=4 {
+            let harness = GoalHarness::new();
+            let mut stream = CodexStreamState::default();
+            let item = ContextCompaction::new("manual", Some(CompactionTrigger::Manual), 1);
+            {
+                let mut background = harness.background.lock();
+                background.manual_compaction = Some(item.clone());
+                background.compactions.insert(42, item);
+            }
+            let mut frames = vec![
+                json!({"method":"turn/started","params":{"turn":{"id":"maintenance"}}}),
+                json!({"method":"item/started","params":{"item":{"id":"native-item","type":"contextCompaction"}}}),
+                json!({"method":"item/completed","params":{"item":{"id":"native-item","type":"contextCompaction"}}}),
+                json!({"method":"turn/completed","params":{"turn":{"id":"maintenance","status":"completed"}}}),
+            ];
+            frames.insert(ack_index, json!({"id":42,"result":{}}));
+            for frame in frames {
+                handle_codex_message(
+                    frame,
+                    &harness.thread_id,
+                    &harness.turn_id,
+                    &harness.turn_ids,
+                    &harness.rollbacks,
+                    &harness.steers,
+                    &harness.background,
+                    &harness.goals,
+                    &harness.commands,
+                    &harness.events,
+                    &mut stream,
+                );
+            }
+            let records = harness.received.try_iter().collect::<Vec<_>>();
+            assert!(
+                matches!(records.as_slice(), [DriverEvent::CompactionUpdated(start), DriverEvent::CompactionUpdated(end)]
+                if start.id == "manual" && start.status == CompactionStatus::Running
+                    && end.id == "manual" && end.status == CompactionStatus::Completed),
+                "ack index {ack_index}: {records:?}"
+            );
+            assert!(
+                harness
+                    .background
+                    .lock()
+                    .compaction_turn_ids
+                    .contains("maintenance")
+            );
+            assert!(harness.background.lock().manual_compaction.is_none());
+            assert!(harness.turn_id.lock().is_none());
+        }
+    }
+
+    #[test]
+    fn fork_and_rollback_count_visible_turns_across_native_compaction_turns() {
+        let turns = [
+            "first",
+            "compact-1",
+            "second",
+            "compact-2",
+            "third",
+            "compact-3",
+        ]
+        .map(str::to_owned);
+        let hidden = ["compact-1", "compact-2", "compact-3"]
+            .map(str::to_owned)
+            .into_iter()
+            .collect();
+        assert_eq!(fork_last_turn_id(&turns, &hidden, 0), Ok("third".into()));
+        assert_eq!(fork_last_turn_id(&turns, &hidden, 1), Ok("second".into()));
+        assert_eq!(fork_last_turn_id(&turns, &hidden, 2), Ok("first".into()));
+        assert_eq!(rollback_native_turn_count(&turns, &hidden, 0), 0);
+        assert_eq!(rollback_native_turn_count(&turns, &hidden, 1), 2);
+        assert_eq!(rollback_native_turn_count(&turns, &hidden, 2), 4);
+        assert_eq!(rollback_native_turn_count(&turns, &hidden, 3), 6);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_compaction_uses_native_rpc_and_waits_for_the_item_lifecycle() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = std::env::temp_dir().join(format!("waku-compact-rpc-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let binary = directory.join("codex");
+        fs::write(&binary, include_str!("fixtures/codex_fork.sh")).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let (events, received) = crate::driver::test_event_channel();
+        let driver = CodexDriver::start(
+            DriverStartOptions {
+                binary,
+                cwd: directory.clone(),
+                mode: RuntimeMode::Ask,
+                execution_policy: Default::default(),
+                model: None,
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                computer_use_enabled: false,
+                provider_cursor: Some(ProviderResumeCursor::Codex {
+                    thread_id: "thread-original".into(),
+                }),
+                delegation_session_path: None,
+                delegation_registry_dir: None,
+            },
+            events,
+        )
+        .unwrap();
+        assert!(matches!(
+            received.recv_timeout(Duration::from_secs(5)).unwrap(),
+            DriverEvent::Connected { .. }
+        ));
+        driver.compact(CompactionRequest {
+            id: "manual-compact".into(),
+            instructions: None,
+        });
+        let mut started = false;
+        loop {
+            match received.recv_timeout(Duration::from_secs(5)).unwrap() {
+                DriverEvent::CompactionUpdated(item) => {
+                    assert_eq!(item.id, "manual-compact");
+                    if item.status == CompactionStatus::Running {
+                        started = true;
+                    }
+                    if item.status == CompactionStatus::Completed {
+                        assert!(started);
+                        break;
+                    }
+                }
+                DriverEvent::TextDelta(text) => {
+                    panic!("compaction generated assistant text: {text}")
+                }
+                DriverEvent::Error(error) => panic!("compaction failed: {error}"),
+                _ => {}
+            }
+        }
+        let request: Value =
+            serde_json::from_str(&fs::read_to_string(directory.join("compact.request")).unwrap())
+                .unwrap();
+        assert_eq!(request["method"], "thread/compact/start");
+        assert_eq!(request["params"]["threadId"], "thread-original");
+        drop(driver);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
@@ -3517,9 +3904,15 @@ mod tests {
     fn fork_turn_selection_keeps_the_requested_completed_prefix() {
         let turns = vec!["turn-1".into(), "turn-2".into(), "turn-3".into()];
 
-        assert_eq!(fork_last_turn_id(&turns, 0), Ok("turn-3".into()));
-        assert_eq!(fork_last_turn_id(&turns, 2), Ok("turn-1".into()));
-        assert!(fork_last_turn_id(&turns, 3).is_err());
+        assert_eq!(
+            fork_last_turn_id(&turns, &HashSet::new(), 0),
+            Ok("turn-3".into())
+        );
+        assert_eq!(
+            fork_last_turn_id(&turns, &HashSet::new(), 2),
+            Ok("turn-1".into())
+        );
+        assert!(fork_last_turn_id(&turns, &HashSet::new(), 3).is_err());
     }
 
     #[test]

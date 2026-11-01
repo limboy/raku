@@ -196,7 +196,7 @@ impl Waku {
         let Some(session) = self
             .state
             .session_mut(session_id)
-            .filter(|session| session.active_turn_id().is_none() && !session.status.is_busy())
+            .filter(|session| session.active_turn_id().is_none() && !session.is_busy())
         else {
             return;
         };
@@ -245,7 +245,7 @@ impl Waku {
         if let Some(turn_id) = session.active_turn_id() {
             session.unwind_unstarted_turn(turn_id);
         }
-        if session.status.is_busy() {
+        if session.is_busy() {
             session.status = SessionStatus::Idle;
         }
         self.state.mark_session_dirty(session_id);
@@ -255,9 +255,11 @@ impl Waku {
     /// any runtime install so the goal lands on the thread that was started
     /// for it — whether the goal path or a racing submission started it.
     pub(super) fn drain_pending_goal_operations(&mut self, session_id: Uuid) {
-        let Some(operations) = self.pending_goal_operations.remove(&session_id) else {
-            return;
-        };
+        self.drain_pending_compaction(session_id);
+        let operations = self
+            .pending_goal_operations
+            .remove(&session_id)
+            .unwrap_or_default();
         if let Some(runtime) = self.runtimes.get(&session_id) {
             for operation in operations {
                 runtime.driver.goal(operation);

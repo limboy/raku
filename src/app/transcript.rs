@@ -885,6 +885,13 @@ pub(super) fn transcript_rows_fingerprint(
         // be folded in rather than assumed fixed at insertion.
         hash = mix(hash, block.after_message as u64);
         hash = mix_turn_id(hash, block.turn_id);
+        hash = mix(
+            hash,
+            block
+                .activities
+                .first()
+                .is_some_and(|item| item.compaction.is_some()) as u64,
+        );
     }
 
     hash = mix(hash, session.turns.len() as u64);
@@ -968,7 +975,9 @@ pub(super) fn folded_transcript_rows(
         if let Some(message_index) = response_footer_message_index_from_rows(session, &turn_rows) {
             response_footers.insert(turn.id, message_index);
         }
-        let hidden = &turn_rows[..answer_start];
+        let hidden = turn_rows[..answer_start].iter().copied().filter(|row| !matches!(row,
+            TranscriptRowKind::TurnBlock(index) if session.transcript_blocks[*index].activities.first().is_some_and(|item| item.compaction.is_some())
+        )).collect::<Vec<_>>();
         let Some(anchor) = hidden.first().copied() else {
             continue;
         };

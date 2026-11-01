@@ -41,7 +41,7 @@ fn attach_driver(
     daemon: waku_client::DaemonSupervisor,
     session_id: Uuid,
     event_wake: smol::channel::Sender<()>,
-) -> anyhow::Result<Option<(AgentSession, PreparedDriver)>> {
+) -> anyhow::Result<Option<(AgentSession, Option<PreparedDriver>)>> {
     let Some(session) = waku_client::persistence::hydrate_session(&daemon, session_id)? else {
         return Ok(None);
     };
@@ -55,7 +55,9 @@ fn attach_driver(
         anyhow::bail!("Waku daemon returned an invalid runtime attachment response");
     };
     let Some(runtime_id) = runtime_id else {
-        return Ok(None);
+        // Keep the hydrated history for orphan cleanup. Clearing only the
+        // list row would leave Running metadata in the stored transcript.
+        return Ok(Some((session, None)));
     };
     let (event_tx, events) = driver::event_channel(event_wake);
     let handle = driver::attach_remote(
@@ -67,7 +69,7 @@ fn attach_driver(
         session.runtime_event_cursor,
         event_tx,
     )?;
-    Ok(Some((session, PreparedDriver { handle, events })))
+    Ok(Some((session, Some(PreparedDriver { handle, events }))))
 }
 
 fn load_remote_task_state(
@@ -133,6 +135,7 @@ pub(super) fn merge_remote_session_catalog(
             local.last_reply_at = remote.last_reply_at;
             if !has_local_runtime(local.id) {
                 local.status = remote.status;
+                local.active_compaction = remote.active_compaction;
                 local.updated_at = remote.updated_at;
             }
         } else {
@@ -998,7 +1001,13 @@ impl Waku {
         snapshot: RemoteTaskStateSnapshot,
         cx: &mut Context<Self>,
     ) {
-        let runtime_ids = self.runtimes.keys().copied().collect::<HashSet<_>>();
+        let runtime_ids = self
+            .runtimes
+            .keys()
+            .copied()
+            .chain(self.goal_runtime_starts.iter().copied())
+            .chain(self.pending_compactions.keys().copied())
+            .collect::<HashSet<_>>();
         let removed = merge_remote_session_catalog(
             &mut self.state.sessions,
             snapshot.sessions,
@@ -1020,7 +1029,7 @@ impl Waku {
             .sessions
             .iter()
             .filter(|session| {
-                session.status.is_busy()
+                session.is_busy()
                     || (self.state.selected_session == Some(session.id) && session.has_started())
             })
             .map(|session| session.id)
@@ -1096,14 +1105,14 @@ impl Waku {
     fn finish_runtime_attachment(
         &mut self,
         session_id: Uuid,
-        result: anyhow::Result<Option<(AgentSession, PreparedDriver)>>,
+        result: anyhow::Result<Option<(AgentSession, Option<PreparedDriver>)>>,
         cx: &mut Context<Self>,
     ) {
         if !self.runtime_attach_pending.remove(&session_id) {
             return;
         }
         match result {
-            Ok(Some((session, prepared))) => {
+            Ok(Some((session, Some(prepared)))) => {
                 self.runtime_attach_misses.remove(&session_id);
                 let Some(index) = self
                     .state
@@ -1123,13 +1132,29 @@ impl Waku {
                     cx.notify();
                 }
             }
-            Ok(None) => {
+            Ok(missing) => {
+                if self.runtimes.contains_key(&session_id)
+                    || self.goal_runtime_starts.contains(&session_id)
+                    || self.submission_preparations.contains(&session_id)
+                {
+                    return;
+                }
+                if let Some((hydrated, _)) = missing
+                    && let Some(local) = self
+                        .state
+                        .sessions
+                        .iter_mut()
+                        .find(|session| session.id == session_id)
+                    && !local.detail_loaded
+                {
+                    *local = hydrated;
+                }
                 let busy = self
                     .state
                     .sessions
                     .iter()
                     .find(|session| session.id == session_id)
-                    .is_some_and(|session| session.status.is_busy());
+                    .is_some_and(AgentSession::is_busy);
                 if !busy {
                     self.runtime_attach_misses.remove(&session_id);
                     return;
@@ -1158,6 +1183,9 @@ impl Waku {
     }
 
     fn interrupt_orphaned_runtime(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        self.interrupt_session_compactions(session_id);
+        self.save();
+        cx.notify();
         let project_paths = self
             .state
             .projects
@@ -2840,6 +2868,7 @@ impl Waku {
             .cloned()
         else {
             self.pending_goal_operations.remove(&session_id);
+            self.interrupt_session_compactions(session_id);
             self.show_toast(tr!("errors.prepare_task_project_not_found"));
             cx.notify();
             return;
@@ -2901,6 +2930,7 @@ impl Waku {
                 // behind this start resubmit through the ordinary path,
                 // which starts its own runtime.
                 self.pending_goal_operations.remove(&session_id);
+                self.interrupt_session_compactions(session_id);
                 self.unwind_unconfirmed_pursuit_turn(session_id);
                 self.show_toast(error.to_string());
                 self.drain_queued_message(session_id, cx);
@@ -2951,6 +2981,7 @@ impl Waku {
             None => self.drain_pending_goal_operations(session_id),
             Some(Err(error)) => {
                 self.pending_goal_operations.remove(&session_id);
+                self.interrupt_session_compactions(session_id);
                 self.unwind_unconfirmed_pursuit_turn(session_id);
                 self.show_toast(error.to_string());
                 self.drain_queued_message(session_id, cx);
@@ -3012,6 +3043,22 @@ impl Waku {
             return;
         };
         if self.response_fork_preparations.contains_key(&session.id) {
+            return;
+        }
+        if session.provider.compaction_capabilities().manual
+            && let Some(focus) = compaction::compact_invocation(&submission.prompt)
+        {
+            let id = session.id;
+            if session.is_busy() {
+                self.enqueue_follow_up_submission(id, submission, cx);
+            } else {
+                self.request_session_compaction(id, focus.map(str::to_owned), cx);
+            }
+            return;
+        }
+        if session.active_compaction.is_some() {
+            let id = session.id;
+            self.enqueue_follow_up_submission(id, submission, cx);
             return;
         }
         if session.status == SessionStatus::Background {
@@ -3206,6 +3253,7 @@ impl Waku {
             return;
         };
         if session.is_busy()
+            || session.active_compaction.is_some()
             || session.queued_messages.is_empty()
             || self.ending_checkpoint_pending(session_id)
             // Messages parked behind a goal-initiated provider start stay
@@ -3246,6 +3294,12 @@ impl Waku {
         else {
             return;
         };
+        if session.provider.compaction_capabilities().manual
+            && let Some(focus) = compaction::compact_invocation(&submission.prompt)
+        {
+            self.request_session_compaction(session_id, focus.map(str::to_owned), cx);
+            return;
+        }
         if self.ending_checkpoint_pending(session_id) {
             self.enqueue_follow_up_submission(session_id, submission, cx);
             self.defer_queue_drain(session_id);
@@ -3259,7 +3313,7 @@ impl Waku {
             self.defer_queue_drain(session_id);
             return;
         }
-        if session.status.is_busy() {
+        if session.is_busy() {
             self.enqueue_follow_up_submission(session_id, submission, cx);
             return;
         }
@@ -3737,6 +3791,7 @@ impl Waku {
                         | DriverEvent::ReasoningStarted { .. }
                         | DriverEvent::ReasoningBlockDelta { .. }
                         | DriverEvent::ReasoningCompleted { .. }
+                        | DriverEvent::CompactionUpdated(_)
                 );
                 if background_output_delta {
                     // The registry batches log text into SharedString at 10Hz;

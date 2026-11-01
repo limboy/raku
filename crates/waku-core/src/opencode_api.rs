@@ -1086,6 +1086,19 @@ pub(crate) fn prompt(
     decode(data(response, "prompt")?, "prompt")
 }
 
+/// Queue provider-native compaction. Acknowledgement is not completion.
+pub(crate) fn compact(endpoint: &Endpoint, session: &str, id: &str) -> Result<()> {
+    let path = format!("/api/session/{}/compact", encode_path_segment(session));
+    request(
+        endpoint,
+        "POST",
+        &path,
+        Some(&json!({"id": id})),
+        REQUEST_TIMEOUT,
+    )?;
+    Ok(())
+}
+
 /// Execute a registered command with provider-owned template expansion and
 /// agent/model selection. Unlike /prompt, this route acknowledges with 204;
 /// execution and completion arrive on the session event stream.

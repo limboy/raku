@@ -41,6 +41,10 @@ impl DriverHandle {
         Self { inner: control }
     }
 
+    pub fn compact(&self, request: waku_protocol::compaction::CompactionRequest) {
+        self.inner.compact(request);
+    }
+
     pub fn prompt(&self, prompt: String) {
         self.inner.prompt(prompt);
     }
@@ -117,6 +121,7 @@ impl DriverHandle {
 }
 
 pub trait DriverControl: Send + Sync {
+    fn compact(&self, _request: waku_protocol::compaction::CompactionRequest) {}
     fn prompt(&self, prompt: String);
     /// Send a prompt together with the models this turn may delegate to.
     /// Transports that cannot carry delegation ignore the context.

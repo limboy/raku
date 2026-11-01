@@ -277,6 +277,23 @@ fn codex_user_text(item: &Value) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// A standalone native maintenance turn must not become a conversation turn.
+pub(crate) fn is_compaction_turn(turn: &Value) -> bool {
+    turn.get("items")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("type").and_then(Value::as_str) == Some("contextCompaction"))
+                && items.iter().all(|item| {
+                    matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("contextCompaction" | "reasoning")
+                    )
+                })
+        })
+}
+
 fn parse_session_history(response: &Value) -> ProviderSessionHistory {
     let native_turns = response
         .pointer("/result/thread/turns")
@@ -286,6 +303,9 @@ fn parse_session_history(response: &Value) -> ProviderSessionHistory {
     let mut history = ProviderSessionHistory::default();
 
     for native_turn in native_turns {
+        if is_compaction_turn(&native_turn) {
+            continue;
+        }
         let turn_id = native_turn
             .get("id")
             .and_then(Value::as_str)
@@ -397,6 +417,27 @@ pub fn provider_session_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_compaction_turns_do_not_shift_conversation_turn_counts() {
+        let response = json!({"result":{"thread":{"turns":[
+            {"id":"first", "items":[{"type":"userMessage","content":[{"type":"text","text":"first"}]}]},
+            {"id":"maintenance", "items":[{"type":"reasoning"},{"type":"contextCompaction"}]},
+            {"id":"second", "items":[{"type":"userMessage","content":[{"type":"text","text":"second"}]},{"type":"contextCompaction"},{"type":"agentMessage","text":"done"}]}
+        ]}}});
+        let history = parse_session_history(&response);
+        assert_eq!(history.turns.len(), 2);
+        assert_eq!(history.turns[1].turn_count, 2);
+        assert_eq!(
+            history
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "done"]
+        );
+        assert_eq!(history.messages[1].turn_id, Some(history.turns[1].id));
+    }
 
     #[test]
     fn parses_thread_catalog_metadata_and_filters_subagents() {

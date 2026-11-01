@@ -340,6 +340,70 @@ impl Waku {
                     }
                 }
             }
+            DriverEvent::CompactionUpdated(item) => {
+                use waku_protocol::compaction::CompactionStatus;
+                let completed = item.status != CompactionStatus::Running;
+                let succeeded = item.status == CompactionStatus::Completed;
+                let resume_queue = matches!(
+                    item.status,
+                    CompactionStatus::Completed | CompactionStatus::Unconfirmed
+                );
+                let id = item.id.clone();
+                let (was_active, previous_status) = self
+                    .state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .map(|session| {
+                        let previous = session
+                            .transcript_blocks
+                            .iter()
+                            .rev()
+                            .flat_map(|block| block.activities.iter().rev())
+                            .filter_map(|activity| activity.compaction.as_ref())
+                            .find(|old| old.id == id)
+                            .map(|old| old.status);
+                        (
+                            session.active_compaction.as_deref() == Some(id.as_str()),
+                            previous,
+                        )
+                    })
+                    .unwrap_or((false, None));
+                if !completed
+                    && previous_status.is_some_and(|status| status != CompactionStatus::Running)
+                {
+                    return true;
+                }
+                // Estimated post-compaction counts belong on the milestone;
+                // the occupancy gauge waits for a measured provider update.
+                let after = item.after_tokens.filter(|_| !item.after_tokens_estimated);
+                if let Some(session) = self.state.session_mut(session_id) {
+                    if !completed {
+                        session.active_compaction = Some(id.clone());
+                    } else if session.active_compaction.as_deref() == Some(&id) {
+                        session.active_compaction = None;
+                    }
+                    if succeeded && previous_status != Some(CompactionStatus::Completed) {
+                        session.context_usage_pending = after.is_none();
+                        if let Some(tokens) = after {
+                            session.context_usage.get_or_insert_default().tokens = tokens;
+                        }
+                    }
+                }
+                self.update_activity(session_id, runtime, ActivityItem::from_compaction(item));
+                self.state.mark_session_dirty(session_id);
+                if completed
+                    && self
+                        .pending_compactions
+                        .get(&session_id)
+                        .is_some_and(|request| request.id == id)
+                {
+                    self.pending_compactions.remove(&session_id);
+                }
+                if resume_queue && was_active && allow_queue_drain {
+                    self.pending_queue_drains.push(session_id);
+                }
+            }
             DriverEvent::RichActivity(item) => {
                 if self.accepts_turn_output(session_id) {
                     let refresh_branch =
@@ -514,6 +578,7 @@ impl Waku {
                     let usage = session.context_usage.get_or_insert(ContextUsage::default());
                     if let Some(tokens) = context_tokens {
                         usage.tokens = tokens;
+                        session.context_usage_pending = false;
                     }
                     if let Some(window) = context_window {
                         usage.window = Some(window);
@@ -578,7 +643,23 @@ impl Waku {
                 self.complete_turn_blocks(session_id);
                 runtime.stream_phase = None;
                 runtime.park_announced = false;
-                let needs_fallback = !self.turn_has_assistant_message(session_id);
+                let compaction_only = !self.active_turn_has_user_message(session_id)
+                    && self
+                        .state
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == session_id)
+                        .is_some_and(|session| {
+                            session.transcript_blocks.last().is_some_and(|block| {
+                                block.after_message == session.messages.len()
+                                    && block
+                                        .activities
+                                        .last()
+                                        .is_some_and(|item| item.compaction.is_some())
+                            })
+                        });
+                let needs_fallback =
+                    !self.turn_has_assistant_message(session_id) && !compaction_only;
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.status = if success {
                         SessionStatus::Idle
@@ -684,6 +765,7 @@ impl Waku {
                 }
             }
             DriverEvent::ProcessExited => {
+                self.interrupt_session_compactions(session_id);
                 self.mark_background_work_lost(session_id);
                 let previous_kinds = self.snapshot_selected_transcript_rows(session_id);
                 self.finish_streaming_assistant(session_id);
@@ -841,9 +923,14 @@ pub(super) fn push_transcript_activity(
     let after_message = session.messages.len();
     let turn_id = session.active_turn_id();
     if continuing_work
+        && item.compaction.is_none()
         && let Some(block) = session.transcript_blocks.last_mut()
         && block.after_message == after_message
         && block.turn_id == turn_id
+        && block
+            .activities
+            .iter()
+            .all(|activity| activity.compaction.is_none())
     {
         block.activities.push(item);
     } else {
@@ -1000,6 +1087,7 @@ pub(super) fn finish_session_messages(session: &mut AgentSession) {
 }
 
 pub(super) fn finish_session_activities(session: &mut AgentSession, now: u64) {
+    session.interrupt_compactions(now);
     for block in &mut session.transcript_blocks {
         for activity in &mut block.activities {
             if !activity.complete
@@ -1170,6 +1258,9 @@ pub(super) fn update_session_activity(
                 || (item.source_id.is_none() && activity.title == item.title && !activity.complete)
         }) {
             let has_arguments = item.arguments.is_some();
+            if item.compaction.is_some() {
+                activity.compaction = item.compaction.clone();
+            }
             activity.kind = item.kind;
             activity.title = item.title;
             activity.complete = item.complete;

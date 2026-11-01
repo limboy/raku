@@ -9,8 +9,8 @@ use waku_client::delegation::{
 
 use super::streaming::{
     append_session_reasoning, append_session_reasoning_block, complete_session_reasoning,
-    finish_session_messages, finish_session_reasoning_block, start_session_reasoning,
-    update_session_activity,
+    finish_session_activities, finish_session_messages, finish_session_reasoning_block,
+    start_session_reasoning, update_session_activity,
 };
 use super::transcript_view::{ActivityClusterPart, ActivityRenderContext};
 use super::*;
@@ -170,6 +170,16 @@ impl DetailOutput {
                     timestamp_ms,
                 );
             }
+            DriverEvent::CompactionUpdated(item) => {
+                let (_, inserted) = update_session_activity(
+                    &mut self.session,
+                    self.phase,
+                    ActivityItem::from_compaction(item),
+                );
+                if inserted {
+                    self.phase = Some(StreamPhase::Activity);
+                }
+            }
             DriverEvent::RichActivity(mut item) => {
                 // Provider IDs are not UI identities across isolated task panes.
                 item.id = Uuid::new_v4();
@@ -228,11 +238,7 @@ impl DetailOutput {
             }
         }
         finish_session_messages(&mut self.session);
-        for block in &mut self.session.transcript_blocks {
-            for activity in &mut block.activities {
-                activity.complete = true;
-            }
-        }
+        finish_session_activities(&mut self.session, unix_time_millis());
         self.phase = None;
     }
 

@@ -39,6 +39,14 @@ while IFS= read -r request; do
             owns_fork=true
             printf '{"id":%s,"result":{"thread":{"id":"thread-fork"}}}\n' "$id"
             ;;
+        *'"method":"thread/compact/start"'*)
+            printf '%s\n' "$request" > "$fixture_dir/compact.request"
+            printf '{"id":%s,"result":{}}\n' "$id"
+            printf '{"method":"turn/started","params":{"threadId":"%s","turn":{"id":"turn-compact"}}}\n' "$thread_id"
+            printf '{"method":"item/started","params":{"threadId":"%s","item":{"id":"native-compact","type":"contextCompaction"}}}\n' "$thread_id"
+            printf '{"method":"item/completed","params":{"threadId":"%s","item":{"id":"native-compact","type":"contextCompaction"}}}\n' "$thread_id"
+            printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-compact","status":"completed"}}}\n' "$thread_id"
+            ;;
         *'"method":"turn/start"'*)
             printf '{"id":%s,"result":{"turn":{"id":"turn-new"}}}\n' "$id"
             printf '{"method":"turn/started","params":{"threadId":"%s","turn":{"id":"turn-new"}}}\n' "$thread_id"

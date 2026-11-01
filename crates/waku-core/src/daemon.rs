@@ -984,7 +984,7 @@ fn session_projection_precedes(
         {
             incoming.sequence < existing.sequence
         }
-        (Some(_), None) if existing.status.is_busy() => true,
+        (Some(_), None) if existing.is_busy() => true,
         _ => incoming.updated_at < existing.updated_at,
     }
 }
@@ -1820,6 +1820,7 @@ fn handle_driver_command(
         Command::Steer { prompt } => driver.steer(prompt),
         Command::Cancel => driver.cancel(),
         Command::CancelComputerUse => driver.cancel_computer_use(),
+        Command::Compact { request } => driver.compact(request),
         Command::RefreshBackgroundWork => driver.refresh_background_work(),
         Command::StopBackgroundWork { key, control_id } => {
             driver.stop_background_work(
@@ -2143,6 +2144,9 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "complete": complete,
             }),
         ),
+        DriverEvent::CompactionUpdated(compaction) => {
+            ("compactionUpdated", serde_json::to_value(compaction)?)
+        }
         DriverEvent::RichActivity(activity) => ("richActivity", serde_json::to_value(activity)?),
         DriverEvent::BackgroundWork(work) => ("backgroundWork", serde_json::to_value(work)?),
         DriverEvent::Permission {
@@ -2250,6 +2254,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 complete: activity.complete,
             }
         }
+        "compactionUpdated" => DriverEvent::CompactionUpdated(serde_json::from_value(payload)?),
         "richActivity" => DriverEvent::RichActivity(serde_json::from_value(payload)?),
         "backgroundWork" => DriverEvent::BackgroundWork(serde_json::from_value(payload)?),
         "permission" => {

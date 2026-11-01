@@ -36,6 +36,8 @@ export const sessions = sqliteTable(
     provider: text("provider").notNull(),
     model: text("model"),
     status: text("status").notNull(),
+    /** Maintenance can be busy without a provider turn. Needed before hydration. */
+    activeCompaction: text("active_compaction"),
     /** Session creation time, unix seconds. */
     createdAt: integer("created_at").notNull(),
     /** Any mutation, unix seconds — including title edits and truncation. */

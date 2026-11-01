@@ -2178,3 +2178,24 @@ delegation.detail_waiting:
   en: The subtask is still working. Its conclusion will appear here when available.
 delegation.detail_no_result:
   en: This subtask finished without a conclusion.
+
+compaction.action:
+  en: "Compact Context"
+compaction.interrupted:
+  en: "Context compaction stopped"
+compaction.unconfirmed:
+  en: "Compaction not confirmed"
+compaction.auto:
+  en: "Automatic"
+compaction.manual:
+  en: "Manual"
+compaction.unsupported:
+  en: "This provider does not expose manual compaction."
+compaction.busy:
+  en: "Wait for the current operation to finish before compacting."
+compaction.focus_unsupported:
+  en: "This provider does not accept compaction focus instructions."
+compaction.no_history:
+  en: "Send a message before compacting this conversation."
+compaction.waiting_usage:
+  en: "Updating usage…"

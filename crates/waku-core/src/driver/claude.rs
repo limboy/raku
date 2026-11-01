@@ -13,6 +13,7 @@
 //! invocation, not guessed. `--permission-prompt-tool` in particular is absent
 //! from `claude --help`.
 
+use super::compaction::CompactionTracker;
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::fs::File;
@@ -26,6 +27,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+use waku_protocol::compaction::{
+    CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
+};
 
 use anyhow::{Context as _, anyhow};
 use crossbeam_channel::{Sender, unbounded};
@@ -44,6 +48,7 @@ use crate::model::{
 };
 
 enum CommandMessage {
+    Compact(CompactionRequest),
     Prompt(String),
     Steer(String),
     Cancel,
@@ -284,6 +289,11 @@ impl ClaudeDriver {
         let pending_task_stops = Arc::new(Mutex::new(HashMap::<String, BackgroundWorkKey>::new()));
         let pending_user_inputs = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
 
+        let manual_compaction = Arc::new(Mutex::new(None::<ContextCompaction>));
+        let reader_compaction = manual_compaction.clone();
+        let writer_compaction = manual_compaction;
+        let compaction_cancelled = Arc::new(AtomicBool::new(false));
+        let reader_compaction_cancelled = compaction_cancelled.clone();
         let reader_events = events.clone();
         let reader_commands = commands.clone();
         let reader_turn = turn_active.clone();
@@ -296,6 +306,8 @@ impl ClaudeDriver {
                 let mut state = ClaudeStreamState {
                     pending_task_stops: reader_pending_task_stops,
                     pending_user_inputs: reader_pending_user_inputs,
+                    manual_compaction: reader_compaction,
+                    compaction_cancelled: reader_compaction_cancelled,
                     ..ClaudeStreamState::default()
                 };
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -330,7 +342,17 @@ impl ClaudeDriver {
                 let mut current_model = launch_model;
                 while let Ok(message) = command_rx.recv() {
                     let written = match message {
+                        CommandMessage::Compact(request) => {
+                            compaction_cancelled.store(false, Ordering::Release);
+                            let item = ContextCompaction::new(request.id, Some(CompactionTrigger::Manual), unix_time_millis());
+                            *writer_compaction.lock() = Some(item.clone());
+                            let _ = writer_events.send(DriverEvent::CompactionUpdated(item));
+                            let text = request.instructions.map_or_else(|| "/compact".to_owned(), |focus| format!("/compact {focus}"));
+                            write_line(&mut stdin, &user_message_payload(&text))
+                        }
+
                         CommandMessage::Prompt(text) => {
+                            compaction_cancelled.store(false, Ordering::Release);
                             *writer_turn.lock() = true;
                             start_claude_title_refresh(
                                 &writer_title_refresh,
@@ -382,6 +404,11 @@ impl ClaudeDriver {
                             written
                         }
                         CommandMessage::Cancel => {
+                            compaction_cancelled.store(true, Ordering::Release);
+                            if let Some(item) = writer_compaction.lock().as_mut() {
+                                item.finish(CompactionStatus::Interrupted, unix_time_millis());
+                                let _ = writer_events.send(DriverEvent::CompactionUpdated(item.clone()));
+                            }
                             next_request_id += 1;
                             write_line(
                                 &mut stdin,
@@ -564,6 +591,10 @@ impl ClaudeDriver {
 }
 
 impl DriverControl for ClaudeDriver {
+    fn compact(&self, request: CompactionRequest) {
+        let _ = self.commands.send(CommandMessage::Compact(request));
+    }
+
     fn prompt(&self, prompt: String) {
         let _ = self.commands.send(CommandMessage::Prompt(prompt));
     }
@@ -634,6 +665,9 @@ fn write_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()> {
 
 #[derive(Default)]
 struct ClaudeStreamState {
+    compaction: CompactionTracker,
+    manual_compaction: Arc<Mutex<Option<ContextCompaction>>>,
+    compaction_cancelled: Arc<AtomicBool>,
     saw_text_delta: bool,
     saw_reasoning_delta: bool,
     /// Tool-use id → transcript presentation plus the full shell command.
@@ -1100,6 +1134,64 @@ fn handle_claude_system(
     state: &mut ClaudeStreamState,
 ) {
     let subtype = value.get("subtype").and_then(Value::as_str);
+    if subtype == Some("status")
+        && value.get("status").and_then(Value::as_str) == Some("compacting")
+    {
+        if state.compaction_cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(item) = state.manual_compaction.lock().clone() {
+            state.compaction.seed(item);
+        }
+        state.compaction.start(None, None, events);
+        return;
+    }
+    if subtype == Some("compact_boundary") {
+        if let Some(item) = state.manual_compaction.lock().take() {
+            state.compaction.seed(item);
+        }
+        if state
+            .compaction
+            .current
+            .as_ref()
+            .is_none_or(|item| item.status != CompactionStatus::Running)
+        {
+            let trigger = match value
+                .pointer("/compact_metadata/trigger")
+                .and_then(Value::as_str)
+            {
+                Some("manual") => Some(CompactionTrigger::Manual),
+                Some("auto") => Some(CompactionTrigger::Auto),
+                _ => None,
+            };
+            state.compaction.seed(ContextCompaction::new(
+                value
+                    .get("uuid")
+                    .and_then(Value::as_str)
+                    .unwrap_or(session_id),
+                trigger,
+                0,
+            ));
+        }
+        if let Some(item) = state.compaction.current.as_mut() {
+            item.trigger = match value
+                .pointer("/compact_metadata/trigger")
+                .and_then(Value::as_str)
+            {
+                Some("manual") => Some(CompactionTrigger::Manual),
+                Some("auto") => Some(CompactionTrigger::Auto),
+                _ => item.trigger,
+            };
+            item.before_tokens = value
+                .pointer("/compact_metadata/pre_tokens")
+                .and_then(Value::as_u64);
+        }
+        state
+            .compaction
+            .finish(CompactionStatus::Completed, None, None, events);
+        return;
+    }
+
     if subtype == Some("background_tasks_changed") {
         let tasks = value
             .get("background_tasks")
@@ -1597,7 +1689,60 @@ fn handle_message(
         }
         Some("result") => {
             let failed = value.get("is_error").and_then(Value::as_bool) == Some(true);
-            if failed && let Some(result) = value.get("result").and_then(Value::as_str) {
+            let cancellation_requested = state.compaction_cancelled.swap(false, Ordering::AcqRel);
+            let manual = state.manual_compaction.lock().take();
+            let cancelled = cancellation_requested
+                || manual
+                    .as_ref()
+                    .is_some_and(|item| item.status == CompactionStatus::Interrupted);
+            let manual_result = manual.is_some();
+            let result_text = value
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if let Some(mut item) = manual {
+                if !failed && !cancelled {
+                    item.notice = result_text.clone();
+                }
+                state.compaction.current = Some(item);
+                state.compaction.finish(
+                    if cancelled {
+                        CompactionStatus::Interrupted
+                    } else if failed {
+                        CompactionStatus::Failed
+                    } else {
+                        CompactionStatus::Unconfirmed
+                    },
+                    None,
+                    (failed && !cancelled)
+                        .then(|| result_text.clone())
+                        .flatten(),
+                    events,
+                );
+            }
+            if (failed || cancelled)
+                && state
+                    .compaction
+                    .current
+                    .as_ref()
+                    .is_some_and(|item| item.status == CompactionStatus::Running)
+            {
+                state.compaction.finish(
+                    if cancelled {
+                        CompactionStatus::Interrupted
+                    } else {
+                        CompactionStatus::Failed
+                    },
+                    None,
+                    (!cancelled).then(|| result_text.clone()).flatten(),
+                    events,
+                );
+            }
+            if failed
+                && !manual_result
+                && !cancelled
+                && let Some(result) = value.get("result").and_then(Value::as_str)
+            {
                 let _ = events.send(DriverEvent::Error(result.to_owned()));
             }
             // Ahead of TurnFinished, whose forced save should include it.
@@ -1846,6 +1991,83 @@ mod tests {
             Mutex::new(true),
             ClaudeStreamState::default(),
         )
+    }
+
+    #[test]
+    fn compaction_boundary_supplies_trigger_and_counts_without_inventing_summary() {
+        let (events, received, _commands, _command_rx, _turn, mut state) = harness();
+        handle_claude_system(
+            &json!({"type":"system","subtype":"status","status":"compacting"}),
+            "session",
+            &events,
+            &mut state,
+        );
+        handle_claude_system(
+            &json!({"type":"system","subtype":"compact_boundary","uuid":"boundary","compact_metadata":{"trigger":"manual","pre_tokens":150000}}),
+            "session",
+            &events,
+            &mut state,
+        );
+        let records = received
+            .try_iter()
+            .filter_map(|event| match event {
+                DriverEvent::CompactionUpdated(item) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, records[1].id);
+        let final_record = &records[1];
+        assert_eq!(final_record.trigger, Some(CompactionTrigger::Manual));
+        assert_eq!(final_record.before_tokens, Some(150000));
+        assert_eq!(final_record.status, CompactionStatus::Completed);
+        assert!(final_record.summary.is_none());
+        assert!(final_record.after_tokens.is_none());
+    }
+
+    #[test]
+    fn manual_result_without_boundary_distinguishes_success_failure_and_cancellation() {
+        for (failed, cancelled, status) in [
+            (false, false, CompactionStatus::Unconfirmed),
+            (true, false, CompactionStatus::Failed),
+            (true, true, CompactionStatus::Interrupted),
+            (false, true, CompactionStatus::Interrupted),
+        ] {
+            let (events, received, commands, _command_rx, turn, mut state) = harness();
+            *turn.lock() = false;
+            *state.manual_compaction.lock() = Some(ContextCompaction::new(
+                "manual",
+                Some(CompactionTrigger::Manual),
+                1,
+            ));
+            state
+                .compaction_cancelled
+                .store(cancelled, Ordering::Release);
+            handle_message(
+                &json!({"type":"result", "is_error":failed, "result":"native explanation"}),
+                "session",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::Ask,
+                &mut state,
+            );
+            let records = received.try_iter().collect::<Vec<_>>();
+            assert!(
+                matches!(records.as_slice(), [DriverEvent::CompactionUpdated(item)] if item.status == status)
+            );
+            let item = state.compaction.current.as_ref().unwrap();
+            assert_eq!(item.id, "manual");
+            assert_eq!(
+                item.error.as_deref(),
+                (failed && !cancelled).then_some("native explanation")
+            );
+            assert_eq!(
+                item.notice.as_deref(),
+                (!failed && !cancelled).then_some("native explanation")
+            );
+            assert!(item.summary.is_none());
+        }
     }
 
     #[cfg(unix)]

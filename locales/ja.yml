@@ -1114,3 +1114,14 @@ delegation.status_interrupted: 中断
 delegation.detail_unavailable: このセッションでは、このサブタスクを表示できません。
 delegation.detail_waiting: サブタスクは実行中です。結果が届くと、ここに表示されます。
 delegation.detail_no_result: サブタスクは結果を返さずに終了しました。
+
+compaction.action: "コンテキストを圧縮"
+compaction.interrupted: "コンテキストの圧縮が停止しました"
+compaction.unconfirmed: "コンテキストの圧縮を確認できませんでした"
+compaction.auto: "自動"
+compaction.manual: "手動"
+compaction.unsupported: "このプロバイダーは手動圧縮に対応していません。"
+compaction.busy: "現在の処理が終了してから圧縮してください。"
+compaction.focus_unsupported: "このプロバイダーは圧縮の追加指示に対応していません。"
+compaction.no_history: "メッセージを送信してから圧縮してください。"
+compaction.waiting_usage: "使用量を更新中…"

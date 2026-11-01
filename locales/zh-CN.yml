@@ -1062,3 +1062,14 @@ delegation.status_interrupted: 已中断
 delegation.detail_unavailable: 此会话暂时无法显示该子任务。
 delegation.detail_waiting: 子任务仍在执行，完成后将在此显示结论。
 delegation.detail_no_result: 子任务已结束，但未返回结论。
+
+compaction.action: "压缩上下文"
+compaction.interrupted: "上下文压缩已停止"
+compaction.unconfirmed: "未确认上下文压缩"
+compaction.auto: "自动"
+compaction.manual: "手动"
+compaction.unsupported: "此提供商不支持手动压缩。"
+compaction.busy: "请等待当前操作结束后再压缩。"
+compaction.focus_unsupported: "此提供商不支持指定压缩重点。"
+compaction.no_history: "发送消息后才能压缩此会话。"
+compaction.waiting_usage: "等待更新用量…"

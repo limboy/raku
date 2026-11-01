@@ -921,6 +921,8 @@ impl ProviderSessionSummary {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProviderSessionHistory {
     #[serde(default)]
+    pub transcript_blocks: Vec<TranscriptBlock>,
+    #[serde(default)]
     pub messages: Vec<Message>,
     #[serde(default)]
     pub turns: Vec<AgentTurn>,
@@ -1034,6 +1036,10 @@ pub struct AgentSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage: Option<ContextUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_compaction: Option<String>,
+    #[serde(default)]
+    pub context_usage_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_event_cursor: Option<RuntimeEventCursor>,
     /// Read-only compatibility field for v1 state files. New saves omit it.
     #[serde(default, skip_serializing)]
@@ -1091,6 +1097,8 @@ impl AgentSession {
             available_commands: Vec::new(),
             thread_goal: None,
             context_usage: None,
+            active_compaction: None,
+            context_usage_pending: false,
             runtime_event_cursor: None,
             provider_session_id: None,
             messages: Vec::new(),
@@ -1127,6 +1135,8 @@ impl AgentSession {
             available_commands: Vec::new(),
             thread_goal: None,
             context_usage: None,
+            active_compaction: self.active_compaction.clone(),
+            context_usage_pending: false,
             runtime_event_cursor: None,
             provider_session_id: None,
             messages: Vec::new(),
@@ -1138,7 +1148,27 @@ impl AgentSession {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.status.is_busy()
+        self.status.is_busy() || self.active_compaction.is_some()
+    }
+
+    /// Forced cleanup must terminalize provider metadata as well as the row.
+    pub fn interrupt_compactions(&mut self, now: u64) -> bool {
+        let mut changed = self.active_compaction.take().is_some();
+        for activity in self
+            .transcript_blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.activities)
+        {
+            if let Some(item) = &mut activity.compaction
+                && item.status == crate::compaction::CompactionStatus::Running
+            {
+                item.finish(crate::compaction::CompactionStatus::Interrupted, now);
+                activity.title = tr!("compaction.interrupted");
+                activity.complete = true;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Derives [`Self::last_reply_at`] from the turn history when it is not
@@ -1247,7 +1277,7 @@ impl AgentSession {
     }
 
     pub fn can_choose_model(&self, provider: ProviderKind) -> bool {
-        !self.status.is_busy() && (self.messages.is_empty() || self.provider == provider)
+        !self.is_busy() && (self.messages.is_empty() || self.provider == provider)
     }
 
     pub fn migrate_legacy_state(&mut self) {
@@ -1269,6 +1299,11 @@ impl AgentSession {
             if let Some(previous) = merged_blocks.last_mut()
                 && previous.after_message == block.after_message
                 && previous.turn_id == block.turn_id
+                && !previous
+                    .activities
+                    .iter()
+                    .chain(&block.activities)
+                    .any(|item| item.compaction.is_some())
             {
                 previous.activities.append(&mut block.activities);
             } else {
@@ -1735,6 +1770,7 @@ pub enum ActivityKind {
     Search,
     Plan,
     Tool,
+    Compaction,
 }
 
 impl ActivityKind {
@@ -1836,6 +1872,7 @@ impl ActivityKind {
 
 #[derive(Clone, Debug)]
 pub enum DriverEvent {
+    CompactionUpdated(crate::compaction::ContextCompaction),
     /// Client-only acknowledgement that every daemon event through this
     /// sequence has been incorporated into the local session projection.
     /// Providers never emit this and the daemon never serializes it.
@@ -2234,9 +2271,33 @@ pub struct ActivityItem {
     /// activity fields and leave this empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<crate::compaction::ContextCompaction>,
 }
 
 impl ActivityItem {
+    pub fn from_compaction(compaction: crate::compaction::ContextCompaction) -> Self {
+        use crate::compaction::CompactionStatus;
+        let complete = compaction.status != CompactionStatus::Running;
+        let title = tr!(match compaction.status {
+            CompactionStatus::Running => "activity.compacting_context",
+            CompactionStatus::Completed => "activity.compacted_context",
+            CompactionStatus::Unconfirmed => "compaction.unconfirmed",
+            CompactionStatus::Failed => "activity.compaction_failed",
+            CompactionStatus::Interrupted => "compaction.interrupted",
+        });
+        let mut item = Self::new(
+            Some(format!("compaction:{}", compaction.id)),
+            ActivityKind::Compaction,
+            title,
+            None,
+            complete,
+        );
+        item.failed = compaction.status == CompactionStatus::Failed;
+        item.compaction = Some(compaction);
+        item
+    }
+
     pub fn new(
         source_id: Option<String>,
         kind: ActivityKind,
@@ -2263,6 +2324,7 @@ impl ActivityItem {
             display_target,
             display_description: None,
             reasoning: None,
+            compaction: None,
         }
     }
 
@@ -4830,6 +4892,7 @@ mod tests {
         session.title = "Visible title".into();
         session.model = Some("gpt-5".into());
         session.status = SessionStatus::Working;
+        session.active_compaction = Some("pending-compaction".into());
         session.begin_turn("A large prompt");
         session.messages.push(Message::new(
             MessageRole::Assistant,
@@ -4856,11 +4919,40 @@ mod tests {
         assert_eq!(projection.title, "Visible title");
         assert_eq!(projection.model.as_deref(), Some("gpt-5"));
         assert_eq!(projection.status, SessionStatus::Working);
+        assert_eq!(
+            projection.active_compaction.as_deref(),
+            Some("pending-compaction")
+        );
         assert!(!projection.detail_loaded);
         assert!(projection.messages.is_empty());
         assert!(projection.transcript_blocks.is_empty());
         assert!(projection.turns.is_empty());
         assert!(projection.queued_messages.is_empty());
+    }
+
+    #[test]
+    fn forced_cleanup_interrupts_compaction_even_if_the_activity_was_marked_complete() {
+        use crate::compaction::{CompactionStatus, ContextCompaction};
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::OhMyPi);
+        session.active_compaction = Some("pending".into());
+        let mut activity =
+            ActivityItem::from_compaction(ContextCompaction::new("pending", None, 1));
+        activity.complete = true; // An older cleanup may already have run.
+        session.transcript_blocks.push(TranscriptBlock {
+            after_message: 0,
+            turn_id: None,
+            activities: vec![activity],
+        });
+        assert!(session.is_busy());
+        session.interrupt_compactions(5);
+        session.interrupt_compactions(10);
+        assert!(!session.is_busy());
+        let activity = &session.transcript_blocks[0].activities[0];
+        let item = activity.compaction.as_ref().unwrap();
+        assert_eq!(item.status, CompactionStatus::Interrupted);
+        assert_eq!(item.completed_at_ms, Some(5));
+        assert!(activity.complete);
+        assert!(!activity.failed);
     }
 }
 

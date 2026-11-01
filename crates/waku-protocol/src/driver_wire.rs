@@ -69,6 +69,9 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "complete": complete,
             }),
         ),
+        DriverEvent::CompactionUpdated(compaction) => {
+            ("compactionUpdated", serde_json::to_value(compaction)?)
+        }
         DriverEvent::RichActivity(activity) => ("richActivity", serde_json::to_value(activity)?),
         DriverEvent::BackgroundWork(work) => ("backgroundWork", serde_json::to_value(work)?),
         DriverEvent::Permission {
@@ -176,6 +179,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 complete: activity.complete,
             }
         }
+        "compactionUpdated" => DriverEvent::CompactionUpdated(serde_json::from_value(payload)?),
         "richActivity" => DriverEvent::RichActivity(serde_json::from_value(payload)?),
         "backgroundWork" => DriverEvent::BackgroundWork(serde_json::from_value(payload)?),
         "permission" => {
@@ -314,6 +318,23 @@ struct TurnFinishedWire {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compaction_snapshots_roundtrip_without_losing_optional_metadata() {
+        use crate::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
+        let mut item = ContextCompaction::new("native-id", Some(CompactionTrigger::Manual), 1000);
+        item.summary = Some("Keep the API stable".into());
+        item.before_tokens = Some(120000);
+        item.after_tokens = Some(16000);
+        item.after_tokens_estimated = true;
+        item.finish(CompactionStatus::Completed, 2000);
+        let wire = super::event_to_wire(crate::model::DriverEvent::CompactionUpdated(item.clone()))
+            .unwrap();
+        let decoded = super::event_from_wire(wire).unwrap();
+        assert!(
+            matches!(decoded, crate::model::DriverEvent::CompactionUpdated(restored) if restored == item)
+        );
+    }
+
     use super::*;
     use crate::model::{ThreadGoal, ThreadGoalStatus, UserInputOption, UserInputQuestion};
 

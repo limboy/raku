@@ -95,6 +95,9 @@ pub enum Command {
     },
     Cancel,
     CancelComputerUse,
+    Compact {
+        request: crate::compaction::CompactionRequest,
+    },
     RefreshBackgroundWork,
     StopBackgroundWork {
         key: Value,

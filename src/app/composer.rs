@@ -36,13 +36,10 @@ pub(super) enum ComposerSubmitAction {
     Stop,
 }
 
-pub(super) fn composer_submit_action(
-    status: Option<SessionStatus>,
-    preparing: bool,
-) -> ComposerSubmitAction {
+pub(super) fn composer_submit_action(busy: bool, preparing: bool) -> ComposerSubmitAction {
     if preparing {
         ComposerSubmitAction::Preparing
-    } else if status.is_some_and(SessionStatus::is_busy) {
+    } else if busy {
         ComposerSubmitAction::Stop
     } else {
         ComposerSubmitAction::Send
@@ -2735,10 +2732,10 @@ impl Waku {
                 || self.response_fork_preparations.contains_key(&session.id)
         });
         let submit_action =
-            composer_submit_action(session.map(|session| session.status), preparing);
+            composer_submit_action(session.is_some_and(AgentSession::is_busy), preparing);
         let escape_stop_armed = session.is_some_and(|session| {
             self.escape_stop_confirmation
-                .is_armed_for(EscapeStopTarget::for_session(session), Instant::now())
+                .is_armed_for_session(session, Instant::now())
         });
         let has_draft = !self.composer.read(cx).content(cx).trim().is_empty()
             || !self.composer_attachments.is_empty();

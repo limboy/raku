@@ -180,7 +180,23 @@ impl Waku {
         }
         let session = self.selected_session()?;
         let provider = session.provider;
-        let context = session.context_usage;
+        let waiting_for_context = session.context_usage_pending;
+        let context = session.context_usage.filter(|_| !waiting_for_context);
+        let session_id = session.id;
+        let compact_enabled = session.provider.compaction_capabilities().manual
+            && !session.is_busy()
+            && session.active_compaction.is_none()
+            && session.provider_cursor.is_some();
+        let compact_visible = session.provider.compaction_capabilities().manual;
+        let compact_running = session.active_compaction.is_some();
+        let compact_disabled_reason = if session.is_busy() {
+            tr!("compaction.busy")
+        } else {
+            tr!("compaction.no_history")
+        };
+        let compact_focus =
+            self.transcript_control_focus(format!("compact-context-{session_id}"), cx);
+        let compact_owner = cx.entity().downgrade();
         let theme = Theme::current(cx);
         let plan = self.plan_usage.get(&provider).cloned();
         let error = self.plan_usage_error.get(&provider).cloned();
@@ -272,15 +288,79 @@ impl Waku {
             &handle,
             MenuAlign::AboveRight,
             move |handle, _, cx| {
-                usage_panel(
+                let panel = usage_panel(
                     handle,
                     provider,
                     context,
+                    waiting_for_context,
                     plan.clone(),
                     error.as_deref(),
                     plan_loading,
                     cx,
-                )
+                );
+                let mut content = panel;
+                if compact_visible {
+                    let theme = Theme::current(cx);
+                    let click_owner = compact_owner.clone();
+                    let key_owner = compact_owner.clone();
+                    let click_handle = handle.clone();
+                    let key_handle = handle.clone();
+                    content = content.child(
+                        div().child(
+                            div()
+                                .id("compact-context-action")
+                                .track_focus(&compact_focus)
+                                .tab_index(0)
+                                .tab_stop(compact_enabled)
+                                .min_h(px(30.0))
+                                .px(px(9.0))
+                                .rounded(px(5.0))
+                                .border_1()
+                                .border_color(theme.border_strong)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(sp(12.0))
+                                .text_color(if compact_enabled {
+                                    theme.text
+                                } else {
+                                    theme.text_tertiary
+                                })
+                                .focus_visible(|style| style.bg(theme.overlay))
+                                .when(compact_enabled, |button| {
+                                    button.hover(|style| style.bg(theme.overlay))
+                                })
+                                .when(!compact_enabled, |button| {
+                                    button.tooltip(Tooltip::text(compact_disabled_reason.clone()))
+                                })
+                                .child(tr!(if compact_running {
+                                    "activity.compacting_context"
+                                } else {
+                                    "compaction.action"
+                                }))
+                                .on_click(move |_, window, cx| {
+                                    if compact_enabled {
+                                        click_handle.close(window, cx);
+                                        let _ = click_owner.update(cx, |this, cx| {
+                                            this.request_session_compaction(session_id, None, cx)
+                                        });
+                                    }
+                                })
+                                .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                                    if compact_enabled
+                                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                    {
+                                        key_handle.close(window, cx);
+                                        let _ = key_owner.update(cx, |this, cx| {
+                                            this.request_session_compaction(session_id, None, cx)
+                                        });
+                                        cx.stop_propagation();
+                                    }
+                                }),
+                        ),
+                    );
+                }
+                content.into_any_element()
             },
         ))
     }
@@ -375,11 +455,12 @@ fn usage_panel(
     handle: &ContextMenuHandle,
     provider: ProviderKind,
     context: Option<ContextUsage>,
+    waiting_for_context: bool,
     plan: Option<PlanUsage>,
     error: Option<&str>,
     plan_loading: bool,
     cx: &App,
-) -> AnyElement {
+) -> Div {
     let theme = Theme::current(cx);
     let now = unix_time() as i64;
     let mut panel = div()
@@ -401,14 +482,18 @@ fn usage_panel(
     // reads "0" over an empty track, exactly like the CLI's own panel.
     let usage = context.unwrap_or_default();
     let percent = context_percent(usage);
-    let value = match (usage.window, percent) {
-        (Some(window), Some(percent)) => format!(
-            "{} / {} ({percent:.0}%)",
-            format_tokens(usage.tokens.min(window)),
-            format_tokens(window)
-        ),
-        // The transport reports occupancy but not the window size.
-        _ => format_tokens(usage.tokens),
+    let value = if waiting_for_context {
+        tr!("compaction.waiting_usage")
+    } else {
+        match (usage.window, percent) {
+            (Some(window), Some(percent)) => format!(
+                "{} / {} ({percent:.0}%)",
+                format_tokens(usage.tokens.min(window)),
+                format_tokens(window)
+            ),
+            // The transport reports occupancy but not the window size.
+            _ => format_tokens(usage.tokens),
+        }
     };
     panel = panel.child(
         div()
@@ -532,7 +617,7 @@ fn usage_panel(
         );
     }
 
-    panel.into_any_element()
+    panel
 }
 
 /// Placeholder for the plan section while its first fetch is in flight:

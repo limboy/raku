@@ -30,6 +30,7 @@ pub mod attachments;
 pub mod backup;
 pub mod blob;
 pub mod checkpoint;
+pub mod compaction;
 pub mod composer;
 pub mod computer_use;
 pub mod delegation;

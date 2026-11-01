@@ -838,7 +838,7 @@ impl Waku {
 
     fn selected_escape_stop_target(&self) -> Option<EscapeStopTarget> {
         let session = self.selected_session()?;
-        (!self.submission_preparations.contains(&session.id) && session.status.is_busy())
+        (!self.submission_preparations.contains(&session.id) && session.is_busy())
             .then(|| EscapeStopTarget::for_session(session))
     }
 
@@ -1211,6 +1211,7 @@ impl Waku {
         // objective after this stop and begin pursuing it; the user asked to
         // stop, so they leave with the turn.
         self.pending_goal_operations.remove(&session_id);
+        self.interrupt_session_compactions(session_id);
         let mut runtime = self.runtimes.remove(&session_id);
         if let Some(runtime) = runtime.as_ref() {
             runtime.driver.cancel();

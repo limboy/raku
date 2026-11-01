@@ -79,6 +79,12 @@ Two hard-won rules:
   second**, sailing straight past the floor. Fast thinking hitting 40% CPU
   while text streamed at 10% was this one flag.
 
+Compaction summaries are streamed Markdown too: `CompactionUpdated` snapshots
+route onto the same `StreamFrame` cadence. Summary assembly and native history
+repair run in the provider worker; rendering reads stored metadata and only
+builds the summary when its disclosure is open. Compaction blocks remain inside
+the virtualized transcript, with no per-frame provider or filesystem work.
+
 **Pulse ticks, ≤ 60 Hz.** All repeating animation rides the shared
 self-parking clock in [src/ui/motion.rs](../src/ui/motion.rs): loaders read
 a phase from a shared epoch, leases expire 300 ms after the loader last

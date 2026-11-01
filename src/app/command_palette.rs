@@ -89,6 +89,7 @@ impl PaletteSection {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PaletteAction {
+    CompactContext(Uuid),
     ChooseResumeProvider,
     SelectResumeProvider(ProviderKind),
     ResumeProviderSession(ProviderSessionSummary),
@@ -888,11 +889,30 @@ impl Waku {
                 .get(self.command_palette.selected)
                 .map(|item| item.action.clone())
         });
-        let candidates = session_search_candidates(
+        let mut candidates = session_search_candidates(
             &self.state.sessions,
             &self.state.projects,
             &self.command_palette.message_matches,
         );
+        if let Some(session) = self.selected_session()
+            && session.provider.compaction_capabilities().manual
+            && session.provider_cursor.is_some()
+            && !session.is_busy()
+            && session.active_compaction.is_none()
+        {
+            let label = tr!("compaction.action");
+            candidates.push(CommandPaletteItem {
+                section: PaletteSection::Tasks,
+                search_text: format!("compact context {label}"),
+                label,
+                detail: Some(session.display_title().to_owned()),
+                provider: Some(session.provider),
+                action: PaletteAction::CompactContext(session.id),
+                content_match: None,
+                order: candidates.len(),
+                recency: 0,
+            });
+        }
         let next_results = session_search_results(
             candidates,
             query,
@@ -1091,6 +1111,7 @@ impl Waku {
         session.last_reply_at = has_history.then_some(updated_at);
         session.messages = history.messages;
         session.turns = history.turns;
+        session.transcript_blocks = history.transcript_blocks;
         let session_id = session.id;
         self.state.push_session(session);
 
@@ -1204,6 +1225,10 @@ impl Waku {
         };
 
         match action {
+            PaletteAction::CompactContext(session_id) => {
+                self.close_command_palette(window, cx);
+                self.request_session_compaction(session_id, None, cx);
+            }
             PaletteAction::ChooseResumeProvider => {
                 self.open_command_palette_resume_provider_view(cx)
             }

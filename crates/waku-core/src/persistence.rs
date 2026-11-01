@@ -1174,7 +1174,7 @@ impl StateStore {
         let mut sessions = connection
             .prepare(
                 "SELECT id, project_id, title, auto_title, provider, model, status,
-                        created_at, updated_at, last_reply_at
+                        created_at, updated_at, last_reply_at, active_compaction
                  FROM sessions ORDER BY updated_at",
             )
             .map_err(to_io_error)?;
@@ -1192,6 +1192,7 @@ impl StateStore {
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
                     row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             })
             .map_err(to_io_error)?
@@ -1288,6 +1289,8 @@ impl StateStore {
         session.service_tier = stored.service_tier;
         session.context_window = stored.context_window;
         session.context_usage = stored.context_usage;
+        session.active_compaction = stored.active_compaction;
+        session.context_usage_pending = stored.context_usage_pending;
         session.runtime_event_cursor = stored.runtime_event_cursor;
 
         let mut statement = connection
@@ -1538,6 +1541,7 @@ type SessionColumns = (
     i64,
     i64,
     Option<i64>,
+    Option<String>,
 );
 
 /// Builds a list-only session from its columns. `messages`,
@@ -1557,6 +1561,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         created_at,
         updated_at,
         last_reply_at,
+        active_compaction,
     ) = row;
     Some(AgentSession {
         id: Uuid::parse_str(&id).ok()?,
@@ -1580,6 +1585,8 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         available_commands: Vec::new(),
         thread_goal: None,
         context_usage: None,
+        active_compaction,
+        context_usage_pending: false,
         runtime_event_cursor: None,
         provider_session_id: None,
         messages: Vec::new(),
@@ -1795,8 +1802,8 @@ fn message_fingerprint(message: &Message, position: usize) -> u64 {
 /// listing sessions never has to deserialize a transcript.
 const UPSERT_SESSION: &str = "INSERT INTO sessions(
          id, project_id, title, auto_title, provider, model, status,
-         created_at, updated_at, last_reply_at
-     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         created_at, updated_at, last_reply_at, active_compaction
+     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
      ON CONFLICT(id) DO UPDATE SET
          project_id    = excluded.project_id,
          title         = excluded.title,
@@ -1806,7 +1813,8 @@ const UPSERT_SESSION: &str = "INSERT INTO sessions(
          status        = excluded.status,
          created_at    = excluded.created_at,
          updated_at    = excluded.updated_at,
-         last_reply_at = excluded.last_reply_at";
+         last_reply_at = excluded.last_reply_at,
+         active_compaction = excluded.active_compaction";
 
 const INSERT_PROJECT: &str = "INSERT INTO projects(id, name, path, position, created_at)
      VALUES(?1, ?2, ?3, ?4, ?5)
@@ -1845,6 +1853,10 @@ fn session_params(session: &AgentSession) -> Vec<rusqlite::types::Value> {
         session
             .last_reply_at
             .map_or(Value::Null, |at| Value::Integer(at as i64)),
+        session
+            .active_compaction
+            .clone()
+            .map_or(Value::Null, Value::Text),
     ]
 }
 
@@ -1859,7 +1871,8 @@ fn normalize_computer_app_grants(grants: &mut Vec<ComputerAppGrant>) {
 mod tests {
     use super::*;
     use crate::model::{
-        ActivityItem, ActivityKind, FavoriteModel, MessageRole, ReasoningBlock, TranscriptBlock,
+        ActivityItem, ActivityKind, FavoriteModel, MessageRole, ReasoningBlock, SessionStatus,
+        TranscriptBlock,
     };
     use base64::Engine as _;
 
@@ -1883,6 +1896,91 @@ mod tests {
             store.hydrate(session).unwrap();
         }
         state
+    }
+
+    #[test]
+    fn standalone_compaction_survives_list_only_reload_and_terminal_save() {
+        use waku_protocol::compaction::{CompactionStatus, ContextCompaction};
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let session = &mut state.sessions[0];
+        session.begin_turn("existing history");
+        session.finish_active_turn(crate::model::TurnStatus::Completed);
+        session.status = SessionStatus::Idle;
+        session.active_compaction = Some("pending".into());
+        session.transcript_blocks.push(TranscriptBlock {
+            after_message: session.messages.len(),
+            turn_id: None,
+            activities: vec![ActivityItem::from_compaction(ContextCompaction::new(
+                "pending", None, 1,
+            ))],
+        });
+        let id = session.id;
+        store.save(&mut state).unwrap();
+        let reopened = store_in(&directory);
+        let mut loaded = reopened.load().unwrap();
+        let session = loaded.session_mut(id).unwrap();
+        assert!(!session.detail_loaded);
+        assert!(session.is_busy());
+        assert_eq!(
+            session.list_projection().active_compaction.as_deref(),
+            Some("pending")
+        );
+        reopened.hydrate(session).unwrap();
+        session.interrupt_compactions(5);
+        loaded.mark_session_dirty(id);
+        reopened.save(&mut loaded).unwrap();
+        let mut loaded = reopened.load().unwrap();
+        let session = loaded.session_mut(id).unwrap();
+        assert!(!session.is_busy());
+        reopened.hydrate(session).unwrap();
+        assert_eq!(
+            session.transcript_blocks[0].activities[0]
+                .compaction
+                .as_ref()
+                .unwrap()
+                .status,
+            CompactionStatus::Interrupted
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn active_compaction_migration_backfills_previously_saved_detail() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS_TABLE).unwrap();
+        let index = MIGRATIONS
+            .iter()
+            .position(|(tag, _)| *tag == "0005_active_compaction")
+            .unwrap();
+        for (tag, sql) in &MIGRATIONS[..index] {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO migrations(tag, applied_at) VALUES(?1, 0)",
+                    params![tag],
+                )
+                .unwrap();
+        }
+        connection.execute("INSERT INTO sessions(id,project_id,title,provider,status,created_at,updated_at) VALUES('s','p','New task','ohMyPi','idle',1,1)", []).unwrap();
+        connection
+            .execute(
+                "INSERT INTO session_details(session_id,data) VALUES('s',?1)",
+                params![r#"{"active_compaction":"pending"}"#],
+            )
+            .unwrap();
+        apply_migrations(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row::<String, _, _>(
+                    "SELECT active_compaction FROM sessions WHERE id='s'",
+                    [],
+                    |row| row.get(0)
+                )
+                .unwrap(),
+            "pending"
+        );
     }
 
     fn text_draft(text: &str) -> ComposerDraft {
