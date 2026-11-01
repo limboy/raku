@@ -545,6 +545,7 @@ enum RightPanelSurface {
     Files,
     Diff,
     File(String),
+    AttachmentFile(right_panel::AttachmentFile),
     /// A pasted text attachment, shown from the in-memory text its chip
     /// carries rather than from a workspace file.
     PastedText {
@@ -748,6 +749,8 @@ impl Render for WakuPane {
 
 struct RightPanelFileEditor {
     state: Entity<TextInput>,
+    /// Uploaded files retain their daemon reference and are always read-only.
+    attachment: Option<right_panel::AttachmentFile>,
     disk_content: String,
     writable: bool,
     dirty: bool,

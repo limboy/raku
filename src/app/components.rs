@@ -586,6 +586,13 @@ fn render_sent_message_attachments(
         } else {
             right_panel::file_icon_for_path(&attachment.mention)
         };
+        let preview_file = right_panel::AttachmentFile::for_preview(
+            &attachment.path,
+            attachment.blob_reference.as_deref(),
+            &attachment.name,
+            attachment.is_dir,
+            attachment.is_image,
+        );
         let attachment_image = attachment_images.get(index).and_then(|image| image.clone());
         let mut tile = div()
             .id(SharedString::from(format!(
@@ -601,7 +608,11 @@ fn render_sent_message_attachments(
             .track_focus(menu.trigger_focus_handle())
             .tab_index(0)
             .focus_visible(|style| style.border_color(theme.accent))
-            .tooltip(Tooltip::text(attachment.name.clone()));
+            .tooltip(Tooltip::text(if preview_file.is_some() {
+                tr!("attachments.open_preview", name = attachment.name)
+            } else {
+                attachment.name.clone()
+            }));
         if attachment.is_image {
             let key_menu = menu.clone();
             if let Some(attachment_image) = attachment_image.as_ref() {
@@ -671,6 +682,18 @@ fn render_sent_message_attachments(
             }
         } else {
             let key_menu = menu.clone();
+            if let Some(preview_file) = preview_file.clone() {
+                let click_waku = waku.clone();
+                tile = tile
+                    .cursor_default()
+                    .hover(|style| style.bg(theme.overlay))
+                    .on_click(move |_, _, cx| {
+                        let _ = click_waku.update(cx, |this, cx| {
+                            this.open_attachment_file(preview_file.clone(), cx);
+                        });
+                        cx.stop_propagation();
+                    });
+            }
             tile = tile.child(
                 div()
                     .size_full()
@@ -691,8 +714,18 @@ fn render_sent_message_attachments(
                             .child(attachment.name.clone()),
                     ),
             );
+            let key_waku = waku.clone();
+            let key_file = preview_file;
             tile = tile.on_key_down(move |event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "f10" && event.keystroke.modifiers.shift {
+                if !event.keystroke.modifiers.modified()
+                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    && let Some(preview_file) = key_file.as_ref()
+                {
+                    let _ = key_waku.update(cx, |this, cx| {
+                        this.open_attachment_file(preview_file.clone(), cx);
+                    });
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "f10" && event.keystroke.modifiers.shift {
                     key_menu.open_context_menu(window, cx);
                     cx.stop_propagation();
                 }

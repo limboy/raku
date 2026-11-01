@@ -820,6 +820,10 @@ files.could_not_save_read_only: "%{path} を保存できませんでした：こ
 files.could_not_save: "%{path} を保存できませんでした：%{error}"
 files.preview_markdown: Markdown をプレビュー
 files.edit_markdown_source: ソースを編集
+files.view_markdown_source: ソースを表示
+files.unable_to_open: "このファイルを開けません：%{error}"
+files.preview_too_large: ファイルが大きすぎるためプレビューできません（最大 2 MB）。
+files.binary_preview_unavailable: このファイルにはバイナリデータが含まれています。
 files.resize_tree: ファイルツリーの幅を変更
 files.refresh: ファイルを更新
 files.loading: ファイルを読み込み中…

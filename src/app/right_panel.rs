@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
+
 use super::*;
 use crate::md::file_links::strip_file_location;
 
@@ -9,6 +11,45 @@ const REVIEW_DIFF_FILE_HEADER_HEIGHT: f32 = 36.0;
 const RIGHT_PANEL_TOGGLE_SIZE: f32 = 26.0;
 const RIGHT_TITLEBAR_INSET: f32 = 14.0;
 const RIGHT_TITLEBAR_GAP: f32 = 6.0;
+const MAX_ATTACHMENT_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AttachmentFile {
+    path: PathBuf,
+    reference: Option<String>,
+    name: SharedString,
+}
+
+impl AttachmentFile {
+    pub(super) fn for_preview(
+        path: &Path,
+        reference: Option<&str>,
+        name: &str,
+        is_dir: bool,
+        is_image: bool,
+    ) -> Option<Self> {
+        let extension = Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase);
+        let is_text = file_highlighter_language(name) != "text"
+            || matches!(
+                extension.as_deref(),
+                Some("txt" | "text" | "log" | "csv" | "tsv" | "rst" | "adoc" | "asciidoc")
+            )
+            || extension.is_none();
+        (!is_dir && !is_image && is_text).then(|| Self {
+            path: path.to_owned(),
+            reference: reference.map(str::to_owned),
+            name: name.to_owned().into(),
+        })
+    }
+
+    fn editor_path(&self) -> String {
+        // Keep attachment snapshots separate from editable workspace files.
+        format!("attachment:{}", self.path.display())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct WorkingTreeEntry {
@@ -823,6 +864,70 @@ fn read_right_panel_file(
     }
 }
 
+fn read_attachment_file(
+    attachment: &AttachmentFile,
+    request: impl FnOnce(waku_client::Command) -> anyhow::Result<waku_client::ResponsePayload>,
+) -> (String, bool) {
+    let read = (|| -> anyhow::Result<String> {
+        if let Some(reference) = attachment.reference.as_ref() {
+            let command = if waku_protocol::blob::is_reference(reference) {
+                waku_client::Command::ReadBlob {
+                    reference: reference.clone(),
+                }
+            } else {
+                waku_client::Command::ReadAttachment {
+                    reference: reference.clone(),
+                    path: attachment.path.clone(),
+                }
+            };
+            let waku_client::ResponsePayload::BlobData { bytes } = request(command)? else {
+                anyhow::bail!("the daemon returned an invalid attachment response");
+            };
+            return attachment_text(bytes);
+        }
+
+        // Older persisted attachments carry only a daemon-host path. Read it
+        // through the daemon too, even when it lives outside the workspace.
+        let root = attachment
+            .path
+            .parent()
+            .context("invalid attachment path")?;
+        let name = attachment
+            .path
+            .file_name()
+            .context("invalid attachment name")?;
+        let waku_client::ResponsePayload::Workspace {
+            result: waku_client::WorkspaceResult::TextFile { content },
+        } = request(waku_client::Command::Workspace {
+            operation: waku_client::WorkspaceOperation::ReadTextFile {
+                root: root.to_owned(),
+                relative_path: PathBuf::from(name),
+            },
+        })?
+        else {
+            anyhow::bail!("the daemon returned an invalid file response");
+        };
+        attachment_text(content.into_bytes())
+    })();
+    (
+        read.unwrap_or_else(|error| tr!("files.unable_to_open", error = error.to_string())),
+        false,
+    )
+}
+
+fn attachment_text(bytes: Vec<u8>) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        bytes.len() <= MAX_ATTACHMENT_PREVIEW_BYTES,
+        tr!("files.preview_too_large")
+    );
+    anyhow::ensure!(!bytes.contains(&0), tr!("files.binary_preview_unavailable"));
+    let mut text = String::from_utf8(bytes)?;
+    if text.starts_with('\u{feff}') {
+        text.drain(..'\u{feff}'.len_utf8());
+    }
+    Ok(text)
+}
+
 impl RightPanelSurface {
     fn new_browser() -> Self {
         Self::Browser(Uuid::new_v4())
@@ -865,6 +970,7 @@ impl RightPanelSurface {
             Self::Files => tr!("right_panel.files"),
             Self::Diff => tr!("right_panel.diff"),
             Self::File(path) => path.rsplit('/').next().unwrap_or(path).to_owned(),
+            Self::AttachmentFile(attachment) => attachment.name.to_string(),
             Self::PastedText { name, .. } => name.to_string(),
         }
     }
@@ -878,6 +984,7 @@ impl RightPanelSurface {
             Self::Files => "icons/folder.svg",
             Self::Diff => "icons/file-diff.svg",
             Self::File(path) => file_icon_for_path(path),
+            Self::AttachmentFile(attachment) => file_icon_for_path(&attachment.name),
             Self::PastedText { .. } => "icons/file.svg",
         }
     }
@@ -935,7 +1042,10 @@ fn reusable_surface_index(
                 RightPanelSurface::PastedText { id: candidate, .. } if candidate == id
             )
         }),
-        RightPanelSurface::Files | RightPanelSurface::Diff | RightPanelSurface::File(_) => {
+        RightPanelSurface::Files
+        | RightPanelSurface::Diff
+        | RightPanelSurface::File(_)
+        | RightPanelSurface::AttachmentFile(_) => {
             surfaces.iter().position(|surface| surface == requested)
         }
     }
@@ -1063,6 +1173,144 @@ fn tab_scroll_fade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_attachments_offer_a_preview_without_changing_image_or_directory_actions() {
+        for name in [
+            "report.md",
+            "NOTES.MARKDOWN",
+            "notes.TXT",
+            "build.log",
+            "app.rs",
+            "LICENSE",
+        ] {
+            assert!(
+                AttachmentFile::for_preview(Path::new(name), None, name, false, false).is_some()
+            );
+        }
+        for (name, is_dir, is_image) in [
+            ("report.md", true, false),
+            ("photo.png", false, true),
+            ("report.pdf", false, false),
+            ("archive.zip", false, false),
+        ] {
+            assert!(
+                AttachmentFile::for_preview(Path::new(name), None, name, is_dir, is_image)
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn attachment_preview_reads_the_stored_snapshot_and_keeps_it_read_only() {
+        let reference = format!("waku-attachment:{}", Uuid::new_v4());
+        let attachment = AttachmentFile::for_preview(
+            Path::new("/daemon/attachments/report.md"),
+            Some(&reference),
+            "report.md",
+            false,
+            false,
+        )
+        .unwrap();
+        let (text, writable) = read_attachment_file(&attachment, |command| {
+            let waku_client::Command::ReadAttachment {
+                reference: actual,
+                path,
+            } = command
+            else {
+                panic!("attachment previews must read their stored reference");
+            };
+            assert_eq!(actual, reference);
+            assert_eq!(path, attachment.path);
+            Ok(waku_client::ResponsePayload::BlobData {
+                bytes: "\u{feff}# Report\n修复 #14\n".as_bytes().to_vec(),
+            })
+        });
+        assert_eq!(text, "# Report\n修复 #14\n");
+        assert!(!writable);
+    }
+
+    #[test]
+    fn legacy_attachment_preview_reads_an_outside_workspace_path_through_the_daemon() {
+        let attachment = AttachmentFile::for_preview(
+            Path::new("/outside/project/notes.txt"),
+            None,
+            "notes.txt",
+            false,
+            false,
+        )
+        .unwrap();
+        let (text, writable) = read_attachment_file(&attachment, |command| {
+            let waku_client::Command::Workspace {
+                operation:
+                    waku_client::WorkspaceOperation::ReadTextFile {
+                        root,
+                        relative_path,
+                    },
+            } = command
+            else {
+                panic!("legacy paths must be read by the daemon");
+            };
+            assert_eq!(root, Path::new("/outside/project"));
+            assert_eq!(relative_path, Path::new("notes.txt"));
+            Ok(waku_client::ResponsePayload::Workspace {
+                result: waku_client::WorkspaceResult::TextFile {
+                    content: "literal *text*\n".into(),
+                },
+            })
+        });
+        assert_eq!(text, "literal *text*\n");
+        assert!(!writable);
+    }
+
+    #[test]
+    fn attachment_preview_reports_missing_invalid_and_oversized_content() {
+        let attachment = AttachmentFile::for_preview(
+            Path::new("/daemon/missing.md"),
+            Some("waku-attachment:missing"),
+            "missing.md",
+            false,
+            false,
+        )
+        .unwrap();
+        let (text, writable) =
+            read_attachment_file(&attachment, |_| anyhow::bail!("missing attachment"));
+        assert!(text.contains("missing attachment"));
+        assert!(!writable);
+        assert!(attachment_text(Vec::new()).unwrap().is_empty());
+        assert!(attachment_text(vec![0xff, 0xfe]).is_err());
+        assert!(attachment_text(b"binary\0data".to_vec()).is_err());
+        assert!(attachment_text(vec![b'a'; MAX_ATTACHMENT_PREVIEW_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn attachment_tabs_reuse_the_file_and_distinguish_matching_basenames() {
+        let attachment = AttachmentFile::for_preview(
+            Path::new("/daemon/one/report.md"),
+            None,
+            "report.md",
+            false,
+            false,
+        )
+        .unwrap();
+        let surface = RightPanelSurface::AttachmentFile(attachment.clone());
+        let surfaces = vec![surface.clone()];
+        assert_eq!(reusable_surface_index(&surfaces, &surface), Some(0));
+        let other = AttachmentFile {
+            path: "/daemon/two/report.md".into(),
+            ..attachment.clone()
+        };
+        assert_eq!(
+            reusable_surface_index(&surfaces, &RightPanelSurface::AttachmentFile(other)),
+            None
+        );
+        assert_eq!(right_panel_tab_label(&surface, None), "report.md");
+        assert_eq!(
+            right_panel_tab_icon(&surface, None),
+            file_icon_for_path("report.md")
+        );
+        assert_ne!(attachment.editor_path(), "report.md");
+    }
 
     #[test]
     fn transcript_file_links_route_by_the_active_workspace() {
@@ -1991,6 +2239,7 @@ impl Waku {
         match self.active_right_panel_surface() {
             Some(RightPanelSurface::Files) => self.right_panel_files_selected_path.clone(),
             Some(RightPanelSurface::File(path)) => Some(path.clone()),
+            Some(RightPanelSurface::AttachmentFile(attachment)) => Some(attachment.editor_path()),
             _ => None,
         }
     }
@@ -2013,7 +2262,11 @@ impl Waku {
     }
 
     fn ensure_initial_right_panel_file_editor_width(&mut self) {
-        if self.right_panel_file_editors.is_empty() {
+        if !self
+            .right_panel_file_editors
+            .values()
+            .any(|editor| editor.attachment.is_none())
+        {
             self.right_panel_width = widened_panel_width_for_file_editor(
                 self.right_panel_width,
                 self.right_panel_file_tree_width,
@@ -2153,6 +2406,14 @@ impl Waku {
         cx: &mut Context<Self>,
     ) {
         self.open_right_panel_surface(RightPanelSurface::PastedText { id, name, text }, cx);
+    }
+
+    pub(super) fn open_attachment_file(
+        &mut self,
+        attachment: AttachmentFile,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_right_panel_surface(RightPanelSurface::AttachmentFile(attachment), cx);
     }
 
     fn close_right_panel_surface(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -2334,7 +2595,16 @@ impl Waku {
                     .into_any_element()
                 }),
             Some(RightPanelSurface::File(path)) => self
-                .render_right_panel_file(path, width, window, cx)
+                .render_right_panel_file(path, None, width, window, cx)
+                .into_any_element(),
+            Some(RightPanelSurface::AttachmentFile(attachment)) => self
+                .render_right_panel_file(
+                    attachment.editor_path(),
+                    Some(attachment),
+                    width,
+                    window,
+                    cx,
+                )
                 .into_any_element(),
             Some(RightPanelSurface::PastedText { id, text, .. }) => self
                 .render_right_panel_pasted_text(id, &text, window, cx)
@@ -2535,9 +2805,11 @@ impl Waku {
             });
             let icon_path =
                 right_panel_tab_icon(&surface, self.right_panel_files_selected_path.as_deref());
-            let uses_file_icon = matches!(&surface, RightPanelSurface::File(_))
-                || matches!(&surface, RightPanelSurface::Files)
-                    && self.right_panel_files_selected_path.is_some();
+            let uses_file_icon = matches!(
+                &surface,
+                RightPanelSurface::File(_) | RightPanelSurface::AttachmentFile(_)
+            ) || matches!(&surface, RightPanelSurface::Files)
+                && self.right_panel_files_selected_path.is_some();
             let activate_weak = cx.entity().downgrade();
             let close_weak = cx.entity().downgrade();
             tabs = tabs.child(
@@ -2842,7 +3114,7 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> Div {
         if let Some(relative_path) = self.right_panel_files_selected_path.clone() {
-            self.render_right_panel_file(relative_path, panel_width, window, cx)
+            self.render_right_panel_file(relative_path, None, panel_width, window, cx)
         } else {
             self.render_right_panel_working_tree(None, cx)
         }
@@ -3027,20 +3299,37 @@ impl Waku {
     fn render_right_panel_file(
         &mut self,
         relative_path: String,
+        attachment: Option<AttachmentFile>,
         panel_width: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::current(cx);
-        let file_tree_width = fitted_file_tree_width(panel_width, self.right_panel_file_tree_width);
+        let file_tree_width = if attachment.is_some() {
+            0.0
+        } else {
+            fitted_file_tree_width(panel_width, self.right_panel_file_tree_width)
+        };
+        let display_path = attachment
+            .as_ref()
+            .map(|attachment| attachment.name.to_string())
+            .unwrap_or_else(|| relative_path.clone());
         let (editor_state, writable, _) =
-            self.ensure_right_panel_file_editor(&relative_path, window, cx);
+            self.ensure_right_panel_file_editor(&relative_path, attachment.clone(), window, cx);
 
         // Markdown files carry the global source/preview toggle; every other
         // language always shows source.
-        let is_markdown = file_highlighter_language(&relative_path) == "markdown";
+        let is_markdown = file_highlighter_language(&display_path) == "markdown";
         let preview = is_markdown && self.state.markdown_preview;
-        let body = if preview {
+        let reading_attachment =
+            attachment.is_some() && self.right_panel_file_editors[&relative_path].reading;
+        let body = if reading_attachment {
+            self.render_right_panel_empty_message(
+                tr!("files.loading_file"),
+                tr!("files.preparing_editor"),
+                cx,
+            )
+        } else if preview {
             self.render_file_markdown_preview(&relative_path, &editor_state, cx)
         } else {
             self.render_file_editor_body(
@@ -3055,7 +3344,11 @@ impl Waku {
         let preview_toggle = is_markdown.then(|| {
             let focus = self.transcript_control_focus("file-markdown-preview-toggle", cx);
             let (icon_path, label) = if preview {
-                ("icons/pencil.svg", tr!("files.edit_markdown_source"))
+                if attachment.is_some() {
+                    ("icons/file.svg", tr!("files.view_markdown_source"))
+                } else {
+                    ("icons/pencil.svg", tr!("files.edit_markdown_source"))
+                }
             } else {
                 ("icons/eye.svg", tr!("files.preview_markdown"))
             };
@@ -3099,7 +3392,7 @@ impl Waku {
                     .gap(px(8.0))
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(file_icon(file_icon_for_path(&relative_path), 13.0))
+                    .child(file_icon(file_icon_for_path(&display_path), 13.0))
                     .child(
                         div()
                             .min_w_0()
@@ -3107,7 +3400,7 @@ impl Waku {
                             .truncate()
                             .text_size(sp(12.5))
                             .text_color(theme.text_secondary)
-                            .child(relative_path.clone()),
+                            .child(display_path),
                     )
                     .children(preview_toggle),
             )
@@ -3119,29 +3412,32 @@ impl Waku {
             .min_w_0()
             .flex()
             .child(editor)
-            .child(
-                div()
-                    .w(px(file_tree_width))
-                    .min_w(px(FILE_TREE_MIN_WIDTH))
-                    .h_full()
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .relative()
-                    .border_l_1()
-                    .border_color(theme.border_strong)
-                    .child(self.render_right_panel_working_tree(Some(&relative_path), cx))
-                    .child(self.render_panel_resize_handle(
-                        "right-panel-file-tree-resize-handle",
-                        PanelResizeTarget::FileTree,
-                        cx,
-                    )),
-            )
+            .when(attachment.is_none(), |element| {
+                element.child(
+                    div()
+                        .w(px(file_tree_width))
+                        .min_w(px(FILE_TREE_MIN_WIDTH))
+                        .h_full()
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .relative()
+                        .border_l_1()
+                        .border_color(theme.border_strong)
+                        .child(self.render_right_panel_working_tree(Some(&relative_path), cx))
+                        .child(self.render_panel_resize_handle(
+                            "right-panel-file-tree-resize-handle",
+                            PanelResizeTarget::FileTree,
+                            cx,
+                        )),
+                )
+            })
     }
 
     fn ensure_right_panel_file_editor(
         &mut self,
         relative_path: &str,
+        attachment: Option<AttachmentFile>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (Entity<TextInput>, bool, bool) {
@@ -3164,6 +3460,7 @@ impl Waku {
             relative_path.to_owned(),
             RightPanelFileEditor {
                 state: state.clone(),
+                attachment,
                 disk_content: String::new(),
                 writable: false,
                 dirty: false,
@@ -3222,11 +3519,15 @@ impl Waku {
     /// editor is still the one that asked, so a read started before a project
     /// or session switch cannot write another workspace's text into the view.
     fn read_right_panel_file_into_editor(&mut self, relative_path: String, cx: &mut Context<Self>) {
+        let attachment = self
+            .right_panel_file_editors
+            .get(&relative_path)
+            .and_then(|editor| editor.attachment.clone());
         let project_path = self
             .selected_workspace_path()
             .map(std::path::Path::to_path_buf);
-        let (Some(project_path), Some(session_id)) = (project_path, self.state.selected_session)
-        else {
+        let session_id = self.state.selected_session;
+        if attachment.is_none() && (project_path.is_none() || session_id.is_none()) {
             // Nothing to read from. Say so in the editor rather than leaving it
             // looking like an empty file.
             if let Some(editor) = self.right_panel_file_editors.get_mut(&relative_path) {
@@ -3238,7 +3539,7 @@ impl Waku {
                 state.update(cx, |state, cx| state.set_content(content, cx));
             }
             return;
-        };
+        }
         let Some(editor) = self.right_panel_file_editors.get_mut(&relative_path) else {
             return;
         };
@@ -3249,7 +3550,9 @@ impl Waku {
         editor.reading = true;
         editor.read_epoch += 1;
         let epoch = editor.read_epoch;
-        let workspace = waku_client::WorkspaceClient::new(self.daemon.client());
+        let client = self.daemon.client();
+        let workspace = waku_client::WorkspaceClient::new(client.clone());
+        let reading_attachment = attachment.is_some();
 
         cx.spawn(async move |waku, cx| {
             let read = cx
@@ -3257,21 +3560,29 @@ impl Waku {
                 .spawn({
                     let project_path = project_path.clone();
                     let relative_path = relative_path.clone();
-                    async move { read_right_panel_file(&workspace, &project_path, &relative_path) }
+                    async move {
+                        if let Some(attachment) = attachment {
+                            read_attachment_file(&attachment, |command| {
+                                client.request(Uuid::nil(), Uuid::nil(), command)
+                            })
+                        } else {
+                            read_right_panel_file(
+                                &workspace,
+                                project_path.as_deref().expect("workspace checked above"),
+                                &relative_path,
+                            )
+                        }
+                    }
                 })
                 .await;
             waku.update(cx, |waku, cx| {
-                if waku.state.selected_session != Some(session_id)
-                    || waku
-                        .selected_workspace_path()
-                        .is_none_or(|path| path != project_path)
+                if waku.state.selected_session != session_id
+                    || !reading_attachment
+                        && waku.selected_workspace_path() != project_path.as_deref()
                 {
-                    // The editor moved into another session's stored state, or
-                    // the project changed. Clear the flag so a later reload can
-                    // ask again, and drop the text.
-                    if let Some(editor) = waku.right_panel_file_editors.get_mut(&relative_path) {
-                        editor.reading = false;
-                    }
+                    // Restoring a session clears its in-flight flags before
+                    // reading afresh. A stale result must not touch the editor
+                    // for the same path in the newly selected session.
                     return;
                 }
                 let (content, writable) = read;
@@ -3290,6 +3601,9 @@ impl Waku {
                     return;
                 }
                 if editor.disk_content == content && editor.writable == writable {
+                    // An empty read-only attachment still retires its loading
+                    // placeholder even though its initial text did not change.
+                    cx.notify();
                     return;
                 }
                 editor.disk_content = content.clone();

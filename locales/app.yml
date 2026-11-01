@@ -1597,6 +1597,14 @@ files.preview_markdown:
   en: Preview markdown
 files.edit_markdown_source:
   en: Edit source
+files.view_markdown_source:
+  en: View source
+files.unable_to_open:
+  en: "Unable to open this file: %{error}"
+files.preview_too_large:
+  en: This file is too large to preview (maximum 2 MB).
+files.binary_preview_unavailable:
+  en: This file contains binary data.
 files.resize_tree:
   en: Resize file tree
 files.refresh:

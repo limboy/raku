@@ -2421,6 +2421,13 @@ impl Waku {
         for (index, attachment) in self.composer_attachments.iter().enumerate() {
             let menu = self.menu_handle(format!("composer-attachment-{index}-menu"), cx);
             let can_reveal = true;
+            let preview_file = right_panel::AttachmentFile::for_preview(
+                &attachment.path,
+                attachment.blob_reference.as_deref(),
+                &attachment.name,
+                attachment.is_dir,
+                attachment.is_image,
+            );
             let reveal_path = attachment.path.clone();
 
             if let Some(text) = attachment.pasted_text.as_deref() {
@@ -2547,7 +2554,11 @@ impl Waku {
                 .track_focus(menu.trigger_focus_handle())
                 .tab_index(0)
                 .focus_visible(|style| style.border_color(theme.accent))
-                .tooltip(Tooltip::text(format!("@{}", attachment.mention)));
+                .tooltip(Tooltip::text(if preview_file.is_some() {
+                    tr!("attachments.open_preview", name = attachment.name)
+                } else {
+                    format!("@{}", attachment.mention)
+                }));
             let attachment_image = attachment.client_preview_image.clone().or_else(|| {
                 attachment
                     .is_image
@@ -2623,10 +2634,20 @@ impl Waku {
                         ),
                 );
             }
+            if let Some(preview_file) = preview_file.clone() {
+                tile = tile
+                    .cursor_default()
+                    .hover(|style| style.bg(theme.overlay))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_attachment_file(preview_file.clone(), cx);
+                        cx.stop_propagation();
+                    }));
+            }
             let key_menu = menu.clone();
             let key_image = attachment_image.clone();
             let key_name = attachment.name.clone();
             let is_image = attachment.is_image;
+            let key_file = preview_file;
             tile = tile.on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 if is_image
@@ -2634,6 +2655,12 @@ impl Waku {
                     && let Some(key_image) = key_image.as_ref()
                 {
                     this.open_image_preview(key_image.clone(), key_name.clone(), window, cx);
+                    cx.stop_propagation();
+                } else if !event.keystroke.modifiers.modified()
+                    && matches!(key, "enter" | "space")
+                    && let Some(preview_file) = key_file.as_ref()
+                {
+                    this.open_attachment_file(preview_file.clone(), cx);
                     cx.stop_propagation();
                 } else if key == "f10" && event.keystroke.modifiers.shift {
                     key_menu.open_context_menu(window, cx);
