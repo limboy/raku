@@ -613,6 +613,75 @@ impl Waku {
             }))
     }
 
+    fn install_sidebar_update(&mut self, cx: &mut Context<Self>) {
+        if self.update_status != crate::updater::UpdateStatus::Available {
+            return;
+        }
+        let installed = cx
+            .try_global::<crate::updater::UpdaterState>()
+            .and_then(|state| state.0.as_ref())
+            .is_some_and(|updater| updater.install_available_update());
+        if installed {
+            self.update_status = crate::updater::UpdateStatus::Updating;
+            cx.notify();
+        }
+    }
+
+    fn render_sidebar_update(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        use crate::updater::UpdateStatus;
+
+        if self.update_status == UpdateStatus::Idle {
+            return None;
+        }
+        let theme = Theme::current(cx);
+        let updating = self.update_status == UpdateStatus::Updating;
+        let label = if updating {
+            tr!("updater.updating")
+        } else {
+            tr!("updater.update")
+        };
+        Some(
+            div()
+                .id("sidebar-install-update")
+                .role(gpui::Role::Button)
+                .aria_label(label.clone())
+                .track_focus(&self.sidebar_update_focus)
+                .tab_index(0)
+                .size(px(TITLEBAR_BUTTON_SIZE))
+                .flex_none()
+                .rounded(px(6.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_default()
+                .focus_visible(|style| style.border_1().border_color(theme.accent))
+                .when(!updating, |button| {
+                    button
+                        .hover(|style| style.bg(theme.overlay))
+                        .active(|style| style.bg(theme.overlay_strong))
+                })
+                .tooltip(Tooltip::text(label))
+                .child(if updating {
+                    motion::spin_slow(icon("icons/loader-circle.svg", 14.0, theme.text_tertiary))
+                } else {
+                    icon("icons/download.svg", 14.0, theme.accent).into_any_element()
+                })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.install_sidebar_update(cx);
+                }))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        this.install_sidebar_update(cx);
+                    }
+                })),
+        )
+    }
+
     fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::current(cx);
         let project = self.selected_project();
@@ -709,6 +778,10 @@ impl Waku {
         let is_resizing = self
             .panel_resize_drag
             .is_some_and(|drag| drag.target == PanelResizeTarget::Sidebar);
+        // A narrow sidebar leaves no titlebar room beside the fixed window
+        // navigation. Keep the update reachable beside New Task in that case.
+        let update_in_titlebar =
+            width >= self.window_navigation_width(window, cx) + TITLEBAR_BUTTON_SIZE + 20.0;
 
         let rows = self.sidebar_rows_cached();
         self.sync_sidebar_rows(&rows);
@@ -754,7 +827,17 @@ impl Waku {
                     div()
                         .id("sidebar-titlebar-drag-region")
                         .h(px(48.0))
-                        .flex_none(),
+                        .flex_none()
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .tab_index(0)
+                        .tab_group()
+                        .tab_stop(false)
+                        .when(update_in_titlebar, |titlebar| {
+                            titlebar.children(self.render_sidebar_update(cx))
+                        }),
                     cx,
                 ),
             )
@@ -763,7 +846,16 @@ impl Waku {
                     .flex_none()
                     .px(px(10.0))
                     .pb(px(10.0))
-                    .child(self.render_sidebar_new_session(cx)),
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .tab_index(0)
+                    .tab_group()
+                    .tab_stop(false)
+                    .child(self.render_sidebar_new_session(cx).flex_1().min_w_0())
+                    .when(!update_in_titlebar, |row| {
+                        row.children(self.render_sidebar_update(cx))
+                    }),
             )
             .child(
                 div()

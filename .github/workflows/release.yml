@@ -36,6 +36,12 @@ jobs:
             echo "::error::No version found in Cargo.toml"
             exit 1
           fi
+          # All clients follow GitHub's latest stable release. Do not put a
+          # prerelease in that feed or build a version its comparators ignore.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The update feed requires a stable major.minor.patch version"
+            exit 1
+          fi
           # Cargo.toml is the source of truth. A tag push must agree with it;
           # a manual run has no tag and simply releases what Cargo.toml says.
           if [ "$GITHUB_EVENT_NAME" = push ]; then
@@ -325,6 +331,7 @@ jobs:
             macos-latest-rust-1.96.0-release-
 
       - name: Import Apple Developer Certificate
+        id: certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -338,25 +345,52 @@ jobs:
           security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
           security find-identity -v -p codesigning build.keychain
+          identity=$(security find-identity -v -p codesigning build.keychain \
+            | awk '/"Developer ID Application:/ {print $2; exit}')
+          if [ -z "$identity" ]; then
+            echo "::error::The certificate must contain a valid Developer ID Application signing identity and private key"
+            exit 1
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
           rm certificate.p12
 
       - name: Store notary credentials
         env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool store-credentials NOTARY \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID"
+          if [ -n "$ASC_PRIVATE_KEY" ]; then
+            if [ -z "$ASC_KEY_ID" ]; then
+              echo "::error::ASC_KEY_ID is required with ASC_PRIVATE_KEY"
+              exit 1
+            fi
+            key_path="$RUNNER_TEMP/waku-notary-key.p8"
+            umask 077
+            trap 'rm -f "$key_path"' EXIT
+            printf '%s' "$ASC_PRIVATE_KEY" > "$key_path"
+            credentials=(--key "$key_path" --key-id "$ASC_KEY_ID")
+            if [ -n "$ASC_ISSUER_ID" ]; then
+              credentials+=(--issuer "$ASC_ISSUER_ID")
+            fi
+            xcrun notarytool store-credentials NOTARY "${credentials[@]}"
+          else
+            xcrun notarytool store-credentials NOTARY \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID"
+          fi
 
       - name: Release
         env:
-          WAKU_SIGNING_IDENTITY: ${{ secrets.WAKU_SIGNING_IDENTITY }}
+          WAKU_SIGNING_IDENTITY: ${{ secrets.WAKU_SIGNING_IDENTITY || steps.certificate.outputs.identity }}
           WAKU_ANALYTICS_ENDPOINT: ${{ secrets.WAKU_ANALYTICS_ENDPOINT }}
           WAKU_ANALYTICS_WEBSITE_ID: ${{ secrets.WAKU_ANALYTICS_WEBSITE_ID }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          WAKU_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}/
         run: bun run release --local
 
       - uses: actions/upload-artifact@v7
@@ -410,18 +444,30 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          WAKU_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}/
         run: |
           # Merge into the live feeds so previously published releases keep
           # their entries; a first run simply starts from nothing.
           for platform in linux windows; do
             for arch in x86_64 aarch64; do
-              curl -fsSL --max-time 30 \
-                "https://releases.waku.sh/appcast-$platform-$arch.xml" \
-                -o "artifacts/appcast-$platform-$arch.xml" || true
+              feed="appcast-$platform-$arch.xml"
+              if curl -fsSL --retry 3 --max-time 30 \
+                "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/$feed" \
+                -o "artifacts/$feed.tmp"; then
+                mv "artifacts/$feed.tmp" "artifacts/$feed"
+              else
+                rm -f "artifacts/$feed.tmp"
+              fi
             done
           done
           bun scripts/appcast-linux.ts artifacts "$VERSION"
           bun scripts/appcast-windows.ts artifacts "$VERSION"
+
+      - name: Verify every signed update feed and archive
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          WAKU_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}/
+        run: bun scripts/verify-update-feeds.ts artifacts "$VERSION"
 
       - name: Write release notes
         env:
@@ -443,6 +489,9 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           draft: true
+          # The stable appcast URLs resolve through /releases/latest/download.
+          # Upload every asset to the draft before publishing moves that pointer.
+          make_latest: true
           # A manual run has no tag yet; publishing the draft creates this one
           # at the commit that was built.
           tag_name: ${{ needs.version.outputs.tag }}

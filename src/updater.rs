@@ -2,7 +2,7 @@
 //!
 //! macOS delegates to the Sparkle framework embedded by `scripts/bundle.sh`.
 //! Windows and Linux implement the same signed-appcast contract themselves,
-//! while sharing the status/events consumed by the sidebar and Settings.
+//! while sharing the status/events consumed by the sidebar.
 //! Linux only enables the updater for the marked, user-writable tarball
 //! layout; package-manager-owned builds continue to defer to their manager.
 //!
@@ -13,9 +13,6 @@
 //! real from a debug bundle.
 
 use gpui::Global;
-
-/// This desktop is updated through explicit installs.
-const UPDATES_ENABLED: bool = false;
 
 /// App-wide handle to the updater, if this build can update itself.
 pub struct UpdaterState(pub Option<Updater>);
@@ -590,9 +587,6 @@ mod macos {
         /// cannot update itself: debug builds unless forced, and binaries
         /// running outside a bundle with an embedded framework.
         pub fn init() -> Option<Self> {
-            if !super::UPDATES_ENABLED {
-                return None;
-            }
             let preview = cfg!(debug_assertions)
                 && std::env::var_os("WAKU_PREVIEW_UPDATE").is_some_and(|value| value == "1");
             let forced = std::env::var_os("WAKU_FORCE_UPDATER").is_some_and(|value| value == "1");
@@ -706,7 +700,6 @@ mod macos {
             }
         }
 
-        #[allow(dead_code)]
         pub fn install_available_update(&self) -> bool {
             if self
                 .user_driver
@@ -723,7 +716,6 @@ mod macos {
             }
         }
 
-        #[allow(dead_code)]
         pub fn status(&self) -> UpdateStatus {
             self.status.get()
         }
@@ -829,6 +821,37 @@ pub use macos::Updater;
 /// on every host, not only on the one that ships an updater.
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 mod feed {
+    /// A release version becomes part of a staging path on native updaters.
+    pub(super) fn validate_release_version(version: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !version.is_empty()
+                && version.len() <= 64
+                && version.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_')
+                }),
+            "the update feed contains an invalid version"
+        );
+        Ok(())
+    }
+
+    /// Accept official release assets and the legacy mirror. GitHub redirects
+    /// the download to its asset CDN; archive signatures remain authoritative.
+    pub(super) fn validate_download_url(value: &str) -> anyhow::Result<()> {
+        let url = url::Url::parse(value)?;
+        let official_origin = url.host_str() == Some("releases.waku.sh")
+            || (url.host_str() == Some("github.com")
+                && url.path().starts_with("/limboy/waku/releases/download/"));
+        anyhow::ensure!(
+            url.scheme() == "https"
+                && official_origin
+                && url.port_or_known_default() == Some(443)
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "the update feed points outside Waku's release hosts"
+        );
+        Ok(())
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub(super) struct AppcastItem {
         pub(super) version: String,
@@ -912,6 +935,42 @@ mod feed {
     mod tests {
         use super::*;
 
+        #[test]
+        fn release_versions_cannot_escape_staging_paths() {
+            assert!(validate_release_version("1.2.3-beta.1").is_ok());
+            for version in ["../../tmp/payload", "1.2.3/evil", "1.2.3\\evil", ""] {
+                assert!(validate_release_version(version).is_err(), "{version}");
+            }
+        }
+
+        #[test]
+        fn official_github_assets_and_legacy_mirror_are_allowed() {
+            for url in [
+                "https://github.com/limboy/waku/releases/download/v0.2.0/Waku-0.2.0-x86_64-Setup.exe",
+                "https://github.com/limboy/waku/releases/download/v0.2.0/waku-0.2.0-aarch64-unknown-linux-gnu.tar.gz",
+                "https://releases.waku.sh/waku-0.1.20-x86_64-unknown-linux-gnu.tar.gz",
+            ] {
+                assert!(validate_download_url(url).is_ok(), "{url}");
+            }
+        }
+
+        #[test]
+        fn unrelated_repositories_and_insecure_downloads_are_rejected() {
+            for url in [
+                "http://github.com/limboy/waku/releases/download/v0.2.0/payload.zip",
+                "https://github.com/other/waku/releases/download/v0.2.0/payload.zip",
+                "https://github.com/limboy/waku-evil/releases/download/v0.2.0/payload.zip",
+                "https://github.com/limboy/waku/releases/download/../../../../other/waku/payload.zip",
+                "https://github.com:8443/limboy/waku/releases/download/v0.2.0/payload.zip",
+                "https://github.com.evil.test/limboy/waku/releases/download/v0.2.0/payload.zip",
+                "https://user:password@github.com/limboy/waku/releases/download/v0.2.0/payload.zip",
+                "https://github.com@evil.test/limboy/waku/releases/download/v0.2.0/payload.zip",
+                "file:///tmp/payload.zip",
+            ] {
+                assert!(validate_download_url(url).is_err(), "{url}");
+            }
+        }
+
         const FEED: &str = r#"<?xml version="1.0" standalone="yes"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
@@ -978,8 +1037,7 @@ mod feed {
 ///
 /// Nothing here touches the UI thread. Checks and downloads run on their own
 /// threads and report back through the same `UpdaterEvent` channel the macOS
-/// driver uses, so the sidebar footer and the Settings toggle behave
-/// identically on both platforms.
+/// driver uses, so the sidebar behaves identically on both platforms.
 #[cfg(target_os = "windows")]
 mod windows {
     use std::io::Write as _;
@@ -997,9 +1055,11 @@ mod windows {
     /// binary an item is for, and guessing from the enclosure filename would
     /// be a contract hiding in a string.
     #[cfg(target_arch = "aarch64")]
-    const FEED_URL: &str = "https://releases.waku.sh/appcast-windows-aarch64.xml";
+    const FEED_URL: &str =
+        "https://github.com/limboy/waku/releases/latest/download/appcast-windows-aarch64.xml";
     #[cfg(not(target_arch = "aarch64"))]
-    const FEED_URL: &str = "https://releases.waku.sh/appcast-windows-x86_64.xml";
+    const FEED_URL: &str =
+        "https://github.com/limboy/waku/releases/latest/download/appcast-windows-x86_64.xml";
 
     /// Read out of `resources/Info.plist` by the build script, so macOS and
     /// Windows cannot end up trusting different keys.
@@ -1037,9 +1097,6 @@ mod windows {
 
     impl Updater {
         pub fn init() -> Option<Self> {
-            if !super::UPDATES_ENABLED {
-                return None;
-            }
             // A debug build must never offer to replace the watcher's app
             // with a production install.
             let forced = std::env::var_os("WAKU_FORCE_UPDATER").is_some_and(|value| value == "1");
@@ -1239,6 +1296,8 @@ mod windows {
     }
 
     fn download_and_verify(item: &AppcastItem) -> anyhow::Result<PathBuf> {
+        feed::validate_release_version(&item.version)?;
+        feed::validate_download_url(&item.url)?;
         let key = verifying_key().ok_or_else(|| anyhow::anyhow!("SUPublicEDKey is unusable"))?;
         let signature = base64::engine::general_purpose::STANDARD
             .decode(item.signature.trim())
@@ -1479,7 +1538,12 @@ impl Updater {
 #[cfg(test)]
 mod desktop_policy_tests {
     #[test]
-    fn updates_are_disabled_before_platform_initialization() {
-        assert!(super::Updater::init().is_none());
+    #[cfg(debug_assertions)]
+    fn debug_builds_do_not_initialize_the_release_updater() {
+        if std::env::var_os("WAKU_FORCE_UPDATER").is_none()
+            && std::env::var_os("WAKU_PREVIEW_UPDATE").is_none()
+        {
+            assert!(super::Updater::init().is_none());
+        }
     }
 }

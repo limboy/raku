@@ -44,16 +44,15 @@ release was not code-signed. Choose **More info → Run anyway**.
 ## Updating
 
 Waku updates itself. It checks once per launch, and an available update
-appears in the sidebar footer; clicking it downloads the installer, verifies
-its signature, and runs it. Waku closes, is replaced in place, and reopens.
-Turn the check off in **Settings → General → Automatic updates** — **Check for
-Updates…** in the app menu still works either way.
+appears at the top of the sidebar after its installer has been downloaded and
+verified. Clicking it installs the update. Waku closes, is replaced in place,
+and reopens. **Check for Updates…** in the app menu starts an explicit check.
 
 Updates are the same signed feed macOS uses, with one appcast per
 architecture:
 
-- `https://releases.waku.sh/appcast-windows-x86_64.xml`
-- `https://releases.waku.sh/appcast-windows-aarch64.xml`
+- `https://github.com/limboy/waku/releases/latest/download/appcast-windows-x86_64.xml`
+- `https://github.com/limboy/waku/releases/latest/download/appcast-windows-aarch64.xml`
 
 Every installer carries an EdDSA signature, and Waku refuses one that does not
 verify against the public key built into it — so a compromised mirror or a

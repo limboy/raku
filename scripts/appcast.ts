@@ -8,7 +8,8 @@
 // <updates-dir> holds the packaged archives (e.g. Waku-0.2.0.zip) plus any
 // older archives so Sparkle can build binary deltas. appcast.xml is written
 // into that directory. The private EdDSA key is read from SPARKLE_PRIVATE_KEY
-// when set, otherwise from the login keychain (see RELEASING.md).
+// when set, otherwise from the sh.waku.updates login keychain account (see
+// RELEASING.md).
 //
 // Env overrides:
 //   SPARKLE_BIN                dir containing the Sparkle tools
@@ -68,7 +69,7 @@ export async function generateAppcast(
     downloadUrlPrefix,
     "--release-notes-url-prefix",
     downloadUrlPrefix,
-    ...(privateKey ? ["--ed-key-file", "-"] : []),
+    ...(privateKey ? ["--ed-key-file", "-"] : ["--account", "sh.waku.updates"]),
     updatesDir,
   ];
   // The key is fed on stdin (`--ed-key-file -`) so it never lands on disk.

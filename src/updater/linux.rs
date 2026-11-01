@@ -20,7 +20,7 @@ use base64::Engine as _;
 use ed25519_dalek::{Signature, VerifyingKey};
 use flate2::read::GzDecoder;
 
-use super::feed::{self, AppcastItem};
+use super::feed::{self, AppcastItem, validate_release_version};
 use super::{UpdateStatus, UpdaterEvent};
 
 const PUBLIC_ED_KEY: &str = env!("WAKU_SPARKLE_PUBLIC_ED_KEY");
@@ -37,9 +37,11 @@ const MAX_ERROR_BYTES: u64 = 16 * 1024;
 static TEMPORARY_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
-const FEED_URL: Option<&str> = Some("https://releases.waku.sh/appcast-linux-aarch64.xml");
+const FEED_URL: Option<&str> =
+    Some("https://github.com/limboy/waku/releases/latest/download/appcast-linux-aarch64.xml");
 #[cfg(target_arch = "x86_64")]
-const FEED_URL: Option<&str> = Some("https://releases.waku.sh/appcast-linux-x86_64.xml");
+const FEED_URL: Option<&str> =
+    Some("https://github.com/limboy/waku/releases/latest/download/appcast-linux-x86_64.xml");
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 const FEED_URL: Option<&str> = None;
 
@@ -395,7 +397,7 @@ fn fetch_and_stage(layout: &InstallLayout) -> anyhow::Result<Option<StagedUpdate
         return Ok(None);
     }
     validate_release_version(&item.version)?;
-    validate_download_url(&item.url)?;
+    feed::validate_download_url(&item.url)?;
     let declared_length = item
         .length
         .filter(|length| *length > 0 && *length <= MAX_ARCHIVE_BYTES)
@@ -520,30 +522,6 @@ fn validate_packaged_layout(prefix: &Path) -> anyhow::Result<()> {
             "the update is missing executable bin/{executable}"
         );
     }
-    Ok(())
-}
-
-fn validate_release_version(version: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !version.is_empty()
-            && version.len() <= 64
-            && version.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_')
-            }),
-        "the update feed contains an invalid version"
-    );
-    Ok(())
-}
-
-fn validate_download_url(value: &str) -> anyhow::Result<()> {
-    let url = url::Url::parse(value)?;
-    anyhow::ensure!(
-        url.scheme() == "https"
-            && url.host_str() == Some("releases.waku.sh")
-            && url.username().is_empty()
-            && url.password().is_none(),
-        "the update feed points outside releases.waku.sh"
-    );
     Ok(())
 }
 

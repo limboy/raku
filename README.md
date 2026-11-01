@@ -6,7 +6,7 @@ and keeps projects, sessions, transcripts on your machine.
 
 ## Install
 
-On macOS, [download the signed `.dmg`](https://waku.sh). It updates itself.
+On macOS, [download the signed `.dmg`](https://waku.sh).
 
 On Linux:
 
@@ -19,10 +19,22 @@ The script installs into `~/.local` without root. See
 uninstalling.
 
 On Windows, run `Waku-<version>-<arch>-Setup.exe` from the
-[latest release](https://github.com/egoist/waku/releases/latest). It installs
-per-user and updates itself. A portable `.zip` is published alongside it. See
+[latest release](https://github.com/limboy/waku/releases/latest). It installs
+per-user. A portable `.zip` is published alongside it. See
 [docs/windows.md](docs/windows.md) for requirements and what is not available
 there yet.
+
+## Updates
+
+Release builds check for signed updates in the background. When an update is
+available, an **Install update** icon appears at the top of the sidebar. Click
+it, or focus it and press Enter or Space, to install and relaunch Waku. Use
+**Check for Updates…** in the app menu to check manually.
+
+macOS uses Sparkle; Windows and managed user-local Linux installs verify
+updates with the same Ed25519 signing key. Package-manager-owned Linux builds
+are updated through their package manager. Development builds keep automatic
+updates disabled.
 
 ## Supported agents
 
@@ -91,7 +103,26 @@ remain macOS-only. Agent sessions, projects, transcripts, skills, usage,
 diffs, file editing, and the terminal run natively on Linux and Windows.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and checks.
-Release maintainers should also read [RELEASING.md](RELEASING.md).
+
+## Releases
+
+[GitHub Actions](.github/workflows/release.yml) builds macOS, Linux, and Windows
+releases when a `v<version>` tag is pushed, or when the Release workflow is run
+manually. The tag must match the version in `Cargo.toml`. The workflow creates
+a draft GitHub release; publishing it makes the update available to installed
+clients.
+
+Each release includes signed update archives, `appcast.xml` for macOS, and
+architecture-specific appcasts for Linux and Windows. Clients read these
+feeds directly from GitHub Releases. CI verifies every feed's download URL,
+archive length, and signature before creating the draft. Published assets are
+also mirrored to R2 for the website and install script.
+
+Release setup uses repository Actions secrets for the Developer ID
+certificate, App Store Connect API key, and `SPARKLE_PRIVATE_KEY`. Local macOS
+releases use Waku's dedicated `sh.waku.updates` Keychain account. See
+[RELEASING.md](RELEASING.md) for the complete secret list, key export commands,
+notarization, and release steps.
 
 ## Sponsorship
 

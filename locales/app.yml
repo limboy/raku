@@ -80,7 +80,7 @@ window.restore:
   en: Restore
 
 updater.update:
-  en: Update
+  en: Install update
 updater.updating:
   en: Updating…
 updater.up_to_date:

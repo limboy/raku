@@ -1137,6 +1137,9 @@ pub struct Waku {
     settings_focus_generation: u64,
     sidebar_settings_focus: FocusHandle,
     sidebar_search_focus: FocusHandle,
+    sidebar_update_focus: FocusHandle,
+    /// Updater events maintain this snapshot; frames never take its locks.
+    update_status: crate::updater::UpdateStatus,
     onboarding_add_project_focus: FocusHandle,
     onboarding_projectless_focus: FocusHandle,
     probes: Vec<ProviderProbe>,
@@ -1806,7 +1809,9 @@ impl Waku {
         cx: &mut Context<Self>,
     ) {
         match event {
-            crate::updater::UpdaterEvent::StatusChanged(_) => {}
+            crate::updater::UpdaterEvent::StatusChanged(status) => {
+                self.update_status = status;
+            }
             crate::updater::UpdaterEvent::UpToDate => {
                 self.show_success_toast(tr!("updater.up_to_date"));
             }
@@ -2293,10 +2298,11 @@ impl Waku {
         // surface falls back to freezing the page to a bitmap while an
         // overlay is open.
         let scene_overlay_enabled = window.enable_scene_overlay().is_ok();
-        let updater_events = cx
+        let updater = cx
             .try_global::<crate::updater::UpdaterState>()
-            .and_then(|state| state.0.as_ref())
-            .map(|updater| updater.events());
+            .and_then(|state| state.0.as_ref());
+        let update_status = updater.map(|updater| updater.status()).unwrap_or_default();
+        let updater_events = updater.map(|updater| updater.events());
         let entity = cx.new(|cx| {
             crate::platform::configure_window_mouse_tracking(window, cx);
             let settings_focus = cx.focus_handle();
@@ -2753,6 +2759,8 @@ impl Waku {
                 settings_focus_generation: 0,
                 sidebar_settings_focus: cx.focus_handle(),
                 sidebar_search_focus: cx.focus_handle(),
+                sidebar_update_focus: cx.focus_handle(),
+                update_status,
                 onboarding_add_project_focus,
                 onboarding_projectless_focus,
                 probes,

@@ -1,23 +1,26 @@
 # Releasing Waku
 
-Waku ships signed in-app updates on macOS, Linux, and Windows. Releases live in
-a **Cloudflare R2** bucket served at **`https://releases.waku.sh`**. macOS uses
-[Sparkle](https://sparkle-project.org), including binary deltas when available;
-the native Linux and Windows updaters read architecture-specific feeds and
-verify artifacts with the same EdDSA key. One release workflow produces all
-platform artifacts and feeds.
+Waku ships signed in-app updates on macOS, Linux, and Windows through
+**GitHub Actions and GitHub Releases**. macOS uses
+[Sparkle](https://sparkle-project.org); the native Linux and Windows updaters
+read architecture-specific feeds and verify artifacts with the same EdDSA
+key. One release workflow produces all platform artifacts and feeds. R2
+remains a download mirror for the website and install script; in-app updates
+do not depend on that mirror.
 
 Once set up, cutting a release is:
 
 ```sh
-bun run release
+git tag v<version>
+git push origin v<version>
 ```
 
 - Updater code: [`src/updater.rs`](src/updater.rs) — loads the embedded
   Sparkle.framework on macOS and owns the signed native flows on Linux and
-  Windows. Available updates appear in the sidebar footer; **Check for
-  Updates…** lives in the app menu, and **Automatic updates** lives in
-  Settings → General.
+  Windows. An **Install update** icon appears at the top-right of the sidebar
+  when an update is available; activating it downloads/installs the update
+  and relaunches Waku. Enter and Space activate the same control. **Check for
+  Updates…** lives in the app menu.
 - Feed URL + public key: [`resources/Info.plist`](resources/Info.plist)
   (`SUFeedURL`, `SUPublicEDKey`).
 - Framework embedding + pinned Sparkle version:
@@ -26,7 +29,8 @@ bun run release
   `.waku-cache/sparkle/`).
 - Release automation: [`scripts/release.ts`](scripts/release.ts),
   [`scripts/appcast.ts`](scripts/appcast.ts),
-  [`scripts/changelog.ts`](scripts/changelog.ts).
+  [`scripts/changelog.ts`](scripts/changelog.ts),
+  [`scripts/verify-update-feeds.ts`](scripts/verify-update-feeds.ts).
 - GitHub Actions: [`.github/workflows/release.yml`](.github/workflows/release.yml)
   builds Linux (x86_64, arm64), Windows (x86_64, arm64), and macOS archives on
   a `v*` tag — or on a manual **Run workflow**, which takes the version from
@@ -38,7 +42,14 @@ bun run release
 
 ## One-time setup
 
-The release runs on [Bun](https://bun.sh) and needs
+CI needs the repository secrets listed below. For notarization, it accepts
+either an App Store Connect API key or an Apple ID and app-specific password.
+The signing identity is derived from the imported Developer ID Application
+certificate unless `WAKU_SIGNING_IDENTITY` overrides it. An unencrypted `.p12`
+needs no `APPLE_CERTIFICATE_PASSWORD` secret.
+
+For local macOS packaging,
+the release script runs on [Bun](https://bun.sh) and needs
 [`create-dmg`](https://github.com/create-dmg/create-dmg) and
 [rclone](https://rclone.org) (`brew install bun create-dmg rclone`).
 
@@ -47,9 +58,10 @@ The release runs on [Bun](https://bun.sh) and needs
 Updates are signed with an ed25519 key; the private half stays in the login
 keychain and the public half ships in Info.plist as `SUPublicEDKey`.
 
-**This Mac already has the key** — Waku signs with the same default-account
-Sparkle key as kero, and the matching public key is already in Info.plist.
-Nothing to do.
+Waku uses its own key in the **`sh.waku.updates`** login Keychain account.
+`scripts/appcast.ts` selects that account for local releases. CI instead reads
+the matching exported key from the `SPARKLE_PRIVATE_KEY` repository secret.
+The public key in Info.plist must match this dedicated Waku key.
 
 On a fresh machine, restore the key from the password-manager backup with the
 Sparkle tools (they land in `.waku-cache/sparkle/<version>/bin` after any
@@ -57,19 +69,34 @@ build, or download the release from
 [sparkle-project/Sparkle](https://github.com/sparkle-project/Sparkle/releases)):
 
 ```sh
-./bin/generate_keys -f sparkle_private_key.txt   # import the backed-up key
-./bin/generate_keys -p                            # prints the public key — must
-                                                  # match SUPublicEDKey
+./bin/generate_keys --account sh.waku.updates -f sparkle_private_key.txt
+./bin/generate_keys --account sh.waku.updates -p  # must match SUPublicEDKey
 ```
 
 > ⚠️ Lose the private key and existing installs can never update again. Keep
 > the backup current.
 
-To split Waku onto its own key later: `generate_keys --account waku`, put the
-new public key in Info.plist, and pass `--account waku` through to
-`generate_appcast` in `scripts/appcast.ts`. Users on old builds only trust the
-old key, so do this on a release that still signs with the old key… in other
-words, don't do it casually.
+To configure CI from this Mac, export the dedicated account to a temporary
+local file and upload it directly to GitHub without printing it:
+
+```sh
+(
+  set -eu
+  umask 077
+  sparkle_tmp=$(mktemp -d)
+  trap 'rm -rf "$sparkle_tmp"' EXIT
+  .waku-cache/sparkle/2.9.4/bin/generate_keys --account sh.waku.updates \
+    -x "$sparkle_tmp/private-key"
+  gh secret set SPARKLE_PRIVATE_KEY --repo limboy/waku \
+    < "$sparkle_tmp/private-key"
+)
+```
+
+This key replaces the previously shared key. Linux and Windows installations
+that trust the old key need one manual upgrade to the first build containing
+the new public key. macOS Sparkle can rotate the key if the update retains
+the same Developer ID signing identity; do not change both identities in the
+same release.
 
 ### 2. Developer ID signing + notarization
 
@@ -87,7 +114,7 @@ xcrun notarytool store-credentials NOTARY \
 Override the environment with `--signing-identity`, or change the notary
 profile with `--notary-profile` / `WAKU_NOTARY_PROFILE`.
 
-### 3. Cloudflare R2 bucket + domain  ← **still to do once**
+### 3. Cloudflare R2 mirror (optional for in-app updates)
 
 1. Create the bucket **`waku-releases`** (Cloudflare dashboard → R2 → Create
    bucket). The release script will not create it — a bucket-scoped API token
@@ -117,25 +144,33 @@ Cloudflare, `no_check_bucket = true`) is shared with kero and needs no change.
    [`CHANGELOG.md`](CHANGELOG.md).
 3. **Run it:**
    ```sh
-   bun run release
+   git tag v<version>
+   git push origin v<version>
    ```
 
-The script checks R2 up front (bucket reachable, version not already
-published), builds and signs the app via `scripts/bundle.sh release`, verifies
-the bundled JS REPL and computer-use helper, builds the styled DMG, notarizes
-and staples DMG + app, zips the app for Sparkle, pulls the recent archives
-from R2 so `generate_appcast` can build binary deltas, attaches the changelog
-section as release notes, regenerates the signed `appcast.xml`, and uploads
-everything with immutable cache headers (the appcast itself stays
-`max-age=300`). When it finishes:
+The Release workflow builds all platforms, signs the update archives,
+notarizes the macOS app and DMG, generates the appcasts, and opens a draft
+GitHub release with the matching changelog section. Review and publish the
+draft to make it available to installed clients. The update feeds and all
+their downloads are release assets:
 
-- **Download link**: `https://releases.waku.sh/Waku-<version>.dmg`
-- **In-app updates**: served from the same origin via the appcast.
+- **macOS feed**: `https://github.com/limboy/waku/releases/latest/download/appcast.xml`
+- **Native feeds**: the same URL prefix with `appcast-linux-<arch>.xml` or
+  `appcast-windows-<arch>.xml` (`x86_64` and `aarch64`).
+- **Archives and release notes**: immutable versioned URLs under
+  `https://github.com/limboy/waku/releases/download/v<version>/`.
+
+CI verifies that all five feeds reference the matching release assets and
+that their declared lengths and Ed25519 signatures match the actual bytes
+and the app's public key. Missing assets, unsigned items, wrong keys, or
+incorrect URLs fail the job before it creates the draft. Publishing marks
+the release as latest, moving the stable feed URLs only after every asset
+has been uploaded. A published version is never rebuilt by this workflow.
 
 Test by keeping an older build around, launching it, and choosing
 **Check for Updates…**.
 
-### GitHub draft release + R2 sync
+### GitHub release assets
 
 The Release workflow runs two ways:
 
@@ -202,8 +237,9 @@ rolls back if the replacement cannot open its main window.
   with Node's Ed25519 over the same `SPARKLE_PRIVATE_KEY`, and refuse to run
   when the key does not derive `SUPublicEDKey` (signing with the wrong key
   ships a feed the app rejects).
-- The step pulls the live feeds down first and merges, so previously published
-  releases keep their entries.
+- The step pulls the native feeds from the latest GitHub release first and
+  merges, so previously published releases keep their entries. macOS CI
+  generates a full-update feed for this release without requiring R2 history.
 
 Both Linux jobs run on **Ubuntu 22.04**, and that choice is load-bearing: the
 binaries link against the build machine's glibc, so the runner sets the oldest
@@ -212,8 +248,9 @@ Moving those jobs to a newer runner silently drops support for everything
 older.
 
 The workflow opens (or updates) a **draft** GitHub release with those files and
-the matching `CHANGELOG.md` section. Publishing the GitHub release syncs the
-assets — including every signed update feed — to R2.
+the matching `CHANGELOG.md` section. Clients read the feeds directly from
+GitHub once the release is published. The separate Sync release workflow
+also mirrors the assets to R2 for the website and existing mirror consumers.
 
 `appcast.xml`, the architecture-specific Linux/Windows appcasts,
 `latest-linux.txt`, and `latest-windows.txt` are the bucket's mutable pointers
@@ -230,12 +267,15 @@ secrets first:
 | --- | --- |
 | `WAKU_ANALYTICS_ENDPOINT` | embedded in every desktop CI build |
 | `WAKU_ANALYTICS_WEBSITE_ID` | embedded in every desktop CI build |
-| `WAKU_SIGNING_IDENTITY` | Developer ID identity selector |
+| `WAKU_SIGNING_IDENTITY` | optional; overrides the imported Developer ID Application identity |
 | `APPLE_CERTIFICATE` | base64-encoded Developer ID Application `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | password for that `.p12` |
-| `APPLE_ID` | Apple ID used by `notarytool` |
-| `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password for that Apple ID |
-| `APPLE_TEAM_ID` | Developer Team ID |
+| `APPLE_CERTIFICATE_PASSWORD` | password for that `.p12`; omit for an empty password |
+| `ASC_PRIVATE_KEY` | App Store Connect API key: raw contents of the `.p8` file |
+| `ASC_KEY_ID` | API key ID, from `AuthKey_<ID>.p8` |
+| `ASC_ISSUER_ID` | issuer UUID for a team API key; omit for an individual key |
+| `APPLE_ID` | fallback when no API key is supplied: Apple ID used by `notarytool` |
+| `APPLE_APP_SPECIFIC_PASSWORD` | fallback: app-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | fallback: Developer Team ID |
 | `SPARKLE_PRIVATE_KEY` | EdDSA private key for `generate_appcast` |
 | `WINDOWS_CERTIFICATE` | optional; base64-encoded Authenticode `.pfx` |
 | `WINDOWS_CERTIFICATE_PASSWORD` | optional; password for that `.pfx` |
@@ -244,7 +284,17 @@ secrets first:
 | `R2_SECRET_ACCESS_KEY` | matching secret |
 | `R2_BUCKET` | optional; defaults to `waku-releases` |
 
-### Options
+### Local macOS packaging
+
+`bun run release --local` builds a signed, notarized DMG, update zip, release
+notes, and appcast under `dist/` without publishing. Set
+`WAKU_DOWNLOAD_URL_PREFIX=https://github.com/limboy/waku/releases/download/v<version>/`
+when preparing assets for GitHub by hand, as CI does. The bare
+`bun run release` command retains the legacy R2 publishing path; it does not
+publish a GitHub release or advance the feeds installed clients follow.
+That R2 path can pull recent archives to generate binary deltas.
+
+### Local script options
 
 | Flag / Env | Default | Purpose |
 | --- | --- | --- |
@@ -285,8 +335,8 @@ secrets first:
   check finishes. With no automatic session active, it starts Sparkle's
   standard user-initiated check directly.
 - **First-run consent:** Sparkle shows its one-time "check automatically?"
-  prompt on the second launch. The Settings → General toggle reads and writes
-  the same persisted value.
+  prompt on the second launch and persists the user's choice. Explicit
+  checks remain available through the app menu.
 - **Waku isn't sandboxed**, so Sparkle's XPC services are unnecessary;
   `bundle.sh` strips them (plus headers/modules) from the embedded framework
   and re-signs the rest with the app's identity — hardened-runtime library

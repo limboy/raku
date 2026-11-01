@@ -68,8 +68,8 @@ sed -i "s|^Icon=sh.waku$|Icon=$HOME/.local/waku.app/share/icons/hicolor/256x256/
 ## Updating
 
 Tarball installs under the user's home directory update themselves. Waku
-checks once per launch by default; an available release appears in the sidebar
-footer. Clicking it validates the staged installation, quits through Waku's
+checks once per launch by default; an available release appears at the top
+of the sidebar. Clicking it validates the staged installation, quits through Waku's
 normal draft/state saves, swaps the complete prefix, and relaunches. If the new
 build exits before opening its window, the helper restores and relaunches the
 previous version.
@@ -77,11 +77,11 @@ previous version.
 Every archive is verified with the same Ed25519 release key used by the macOS
 and Windows updaters. The architecture-specific feeds are:
 
-- `https://releases.waku.sh/appcast-linux-x86_64.xml`
-- `https://releases.waku.sh/appcast-linux-aarch64.xml`
+- `https://github.com/limboy/waku/releases/latest/download/appcast-linux-x86_64.xml`
+- `https://github.com/limboy/waku/releases/latest/download/appcast-linux-aarch64.xml`
 
-Use **Check for Updates** for an explicit check, or disable launch checks in
-**Settings → General → Automatic updates**. System-wide installs such as
+Use **Check for Updates** in the app menu for an explicit check. System-wide
+installs such as
 `/usr/local`, builds without the managed-install marker, root sessions, and
 package-manager-owned builds do not modify themselves; upgrade those through
 their original installation method. Re-running `install.sh` remains a safe
