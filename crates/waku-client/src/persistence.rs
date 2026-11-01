@@ -960,6 +960,9 @@ impl StateStore {
     }
 
     pub fn default_path() -> PathBuf {
+        if let Some(directory) = std::env::var_os("WAKU_SUBAGENT_SMOKE_DATA_DIR") {
+            return PathBuf::from(directory).join("app.db");
+        }
         if cfg!(debug_assertions) {
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()

@@ -2164,7 +2164,8 @@ impl Waku {
         }
         let attachments = self
             .composer_attachments
-            .drain(..)
+            .iter()
+            .cloned()
             .map(MessageAttachment::from)
             .collect::<Vec<_>>();
         let mentions = attachments
@@ -2173,11 +2174,30 @@ impl Waku {
             .collect::<Vec<_>>();
         let submission = merged_submission(prompt, &mentions)?;
         let display_content = (!attachments.is_empty()).then(|| prompt.trim().to_owned());
+        self.refresh_delegation_model_index();
+        let model_references = match crate::composer_complete::resolve_model_references(
+            &submission,
+            &self.delegation_model_index,
+            &self.composer_targets,
+        ) {
+            Ok(references) => references,
+            Err(label) => {
+                self.show_toast(tr!("composer.invalid_model_reference", label = label));
+                return None;
+            }
+        };
+        if !model_references.is_empty() && !self.supports_delegation() {
+            self.show_toast(tr!("composer.delegation_unavailable"));
+            return None;
+        }
+        self.composer_attachments.clear();
+        self.composer_targets.clear();
         self.discard_current_composer_draft(cx);
         Some(ComposerSubmission {
             prompt: submission,
             display_content,
             attachments,
+            model_references,
         })
     }
 
@@ -2314,6 +2334,7 @@ impl Waku {
             .into_iter()
             .map(ComposerAttachment::from)
             .collect();
+        self.composer_targets = submission.model_references;
         let content = submission.display_content.unwrap_or(submission.prompt);
         self.composer
             .update(cx, |input, cx| input.set_content(content, cx));

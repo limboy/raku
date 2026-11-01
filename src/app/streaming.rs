@@ -28,18 +28,8 @@ impl Waku {
     }
 
     fn complete_reasoning_activity(&mut self, session_id: Uuid) {
-        let Some(session) = self.state.session_mut(session_id) else {
-            return;
-        };
-        let reasoning = session
-            .transcript_blocks
-            .iter_mut()
-            .rev()
-            .flat_map(|block| block.activities.iter_mut().rev())
-            .find(|activity| activity.reasoning.is_some() && !activity.complete);
-        if let Some(reasoning) = reasoning {
-            reasoning.complete = true;
-            session.updated_at = unix_time();
+        if let Some(session) = self.state.session_mut(session_id) {
+            complete_session_reasoning(session);
         }
     }
 
@@ -49,45 +39,11 @@ impl Waku {
         runtime: &mut SessionRuntime,
         delta: String,
     ) {
-        let previous_phase = runtime.stream_phase;
-        let continuing = previous_phase == Some(StreamPhase::Reasoning);
-        if !continuing && delta.trim().is_empty() {
-            return;
+        if let Some(session) = self.state.session_mut(session_id)
+            && append_session_reasoning(session, runtime.stream_phase, delta, unix_time_millis())
+        {
+            runtime.stream_phase = Some(StreamPhase::Reasoning);
         }
-        let now = unix_time_millis();
-        if !continuing {
-            self.finish_streaming_assistant(session_id);
-        }
-        if let Some(session) = self.state.session_mut(session_id) {
-            if continuing
-                && let Some(reasoning) = session
-                    .transcript_blocks
-                    .last_mut()
-                    .and_then(|block| block.activities.last_mut())
-                    .and_then(|activity| activity.reasoning.as_mut())
-            {
-                reasoning.content.push_str(&delta);
-                reasoning.finished_at_ms = now;
-            } else {
-                push_transcript_activity(
-                    session,
-                    ActivityItem::from_reasoning(
-                        ReasoningBlock {
-                            content: delta,
-                            started_at_ms: now,
-                            finished_at_ms: now,
-                        },
-                        false,
-                    ),
-                    matches!(
-                        previous_phase,
-                        Some(StreamPhase::Reasoning | StreamPhase::Activity)
-                    ),
-                );
-            }
-            session.updated_at = unix_time();
-        }
-        runtime.stream_phase = Some(StreamPhase::Reasoning);
     }
 
     pub(super) fn update_activity(
@@ -96,83 +52,12 @@ impl Waku {
         runtime: &mut SessionRuntime,
         item: ActivityItem,
     ) {
-        let previous_phase = runtime.stream_phase;
-        if previous_phase == Some(StreamPhase::Text) {
-            self.finish_streaming_assistant(session_id);
-        }
-        if previous_phase == Some(StreamPhase::Reasoning) {
-            self.complete_reasoning_activity(session_id);
-        }
-
-        let continuing_work = matches!(
-            previous_phase,
-            Some(StreamPhase::Reasoning | StreamPhase::Activity)
-        );
         if let Some(session) = self.state.session_mut(session_id) {
-            for block in session.transcript_blocks.iter_mut().rev() {
-                let matching = block.activities.iter_mut().rev().find(|activity| {
-                    item.source_id
-                        .as_ref()
-                        .is_some_and(|id| activity.source_id.as_ref() == Some(id))
-                        || (item.source_id.is_none()
-                            && activity.title == item.title
-                            && !activity.complete)
-                });
-                if let Some(activity) = matching {
-                    let has_arguments = item.arguments.is_some();
-                    let replaces_changes = !item.file_changes.is_empty();
-                    let activity_id = activity.id;
-                    activity.kind = item.kind;
-                    activity.title = item.title;
-                    if item.tool_name.is_some() {
-                        activity.tool_name = item.tool_name;
-                    }
-                    if item.mcp_server.is_some() {
-                        activity.mcp_server = item.mcp_server;
-                    }
-                    activity.complete = item.complete;
-                    activity.failed = item.failed;
-                    if item.detail.is_some() {
-                        activity.detail = item.detail;
-                    }
-                    if item.arguments.is_some() {
-                        activity.arguments = item.arguments;
-                    }
-                    if item.output.is_some() {
-                        activity.output = item.output;
-                    }
-                    if !item.image_urls.is_empty() {
-                        activity.image_urls = item.image_urls;
-                    }
-                    if !item.file_changes.is_empty() {
-                        activity.file_changes = item.file_changes;
-                    }
-                    if item.display_target.is_some()
-                        && (activity.display_target.is_none() || has_arguments)
-                    {
-                        activity.display_target = item.display_target;
-                    }
-                    if item.display_description.is_some()
-                        && (activity.display_description.is_none() || has_arguments)
-                    {
-                        activity.display_description = item.display_description;
-                    }
-                    if item.reasoning.is_some() {
-                        activity.reasoning = item.reasoning;
-                    }
-                    session.updated_at = unix_time();
-                    runtime.stream_phase = Some(StreamPhase::Activity);
-                    if replaces_changes {
-                        // The rows this activity's diff was built from are gone;
-                        // an expanded card rebuilds from the new ones.
-                        self.activity_diffs.borrow_mut().remove(&activity_id);
-                    }
-                    return;
-                }
+            let replaced = !item.file_changes.is_empty();
+            let id = update_session_activity(session, runtime.stream_phase, item);
+            if replaced {
+                self.activity_diffs.borrow_mut().remove(&id);
             }
-
-            push_transcript_activity(session, item, continuing_work);
-            session.updated_at = unix_time();
         }
         runtime.stream_phase = Some(StreamPhase::Activity);
     }
@@ -689,6 +574,11 @@ impl Waku {
                         crate::analytics::TurnOutcome::Failed
                     },
                 );
+                // Subtask results belong to this turn; re-read the group so
+                // the card shows its settled conclusions.
+                if self.state.selected_session == Some(session_id) {
+                    self.refresh_session_delegations(cx);
+                }
                 runtime.pending_permission = None;
                 runtime.pending_user_input = None;
                 runtime.pending_computer_approval = None;
@@ -1036,4 +926,143 @@ pub(super) fn append_text_delta_to_session(
         session.messages.push(message);
     }
     session.updated_at = unix_time();
+}
+
+pub(super) fn finish_session_messages(session: &mut AgentSession) {
+    for message in &mut session.messages {
+        if message.role == MessageRole::Assistant {
+            message.streaming = false;
+        }
+    }
+}
+
+pub(super) fn complete_session_reasoning(session: &mut AgentSession) {
+    if let Some(activity) = session
+        .transcript_blocks
+        .iter_mut()
+        .rev()
+        .flat_map(|block| block.activities.iter_mut().rev())
+        .find(|activity| activity.reasoning.is_some() && !activity.complete)
+    {
+        activity.complete = true;
+        session.updated_at = unix_time();
+    }
+}
+
+/// Main and delegated streams share phase boundaries and activity grouping.
+pub(super) fn append_session_reasoning(
+    session: &mut AgentSession,
+    previous_phase: Option<StreamPhase>,
+    delta: String,
+    now: u64,
+) -> bool {
+    let continuing = previous_phase == Some(StreamPhase::Reasoning);
+    if !continuing && delta.trim().is_empty() {
+        return false;
+    }
+    if !continuing {
+        finish_session_messages(session);
+    }
+    if continuing
+        && let Some(reasoning) = session
+            .transcript_blocks
+            .last_mut()
+            .and_then(|block| block.activities.last_mut())
+            .and_then(|activity| activity.reasoning.as_mut())
+    {
+        reasoning.content.push_str(&delta);
+        reasoning.finished_at_ms = now;
+    } else {
+        push_transcript_activity(
+            session,
+            ActivityItem::from_reasoning(
+                ReasoningBlock {
+                    content: delta,
+                    started_at_ms: now,
+                    finished_at_ms: now,
+                },
+                false,
+            ),
+            matches!(
+                previous_phase,
+                Some(StreamPhase::Reasoning | StreamPhase::Activity)
+            ),
+        );
+    }
+    session.updated_at = unix_time();
+    true
+}
+
+/// Merge provider snapshots without moving their original ordered row.
+pub(super) fn update_session_activity(
+    session: &mut AgentSession,
+    previous_phase: Option<StreamPhase>,
+    item: ActivityItem,
+) -> Uuid {
+    if previous_phase == Some(StreamPhase::Text) {
+        finish_session_messages(session);
+    }
+    if previous_phase == Some(StreamPhase::Reasoning) {
+        complete_session_reasoning(session);
+    }
+    for block in session.transcript_blocks.iter_mut().rev() {
+        if let Some(activity) = block.activities.iter_mut().rev().find(|activity| {
+            item.source_id
+                .as_ref()
+                .is_some_and(|id| activity.source_id.as_ref() == Some(id))
+                || (item.source_id.is_none() && activity.title == item.title && !activity.complete)
+        }) {
+            let has_arguments = item.arguments.is_some();
+            activity.kind = item.kind;
+            activity.title = item.title;
+            activity.complete = item.complete;
+            activity.failed = item.failed;
+            if item.tool_name.is_some() {
+                activity.tool_name = item.tool_name;
+            }
+            if item.mcp_server.is_some() {
+                activity.mcp_server = item.mcp_server;
+            }
+            if item.detail.is_some() {
+                activity.detail = item.detail;
+            }
+            if item.arguments.is_some() {
+                activity.arguments = item.arguments;
+            }
+            if item.output.is_some() {
+                activity.output = item.output;
+            }
+            if !item.image_urls.is_empty() {
+                activity.image_urls = item.image_urls;
+            }
+            if !item.file_changes.is_empty() {
+                activity.file_changes = item.file_changes;
+            }
+            if item.display_target.is_some() && (activity.display_target.is_none() || has_arguments)
+            {
+                activity.display_target = item.display_target;
+            }
+            if item.display_description.is_some()
+                && (activity.display_description.is_none() || has_arguments)
+            {
+                activity.display_description = item.display_description;
+            }
+            if item.reasoning.is_some() {
+                activity.reasoning = item.reasoning;
+            }
+            session.updated_at = unix_time();
+            return activity.id;
+        }
+    }
+    let id = item.id;
+    push_transcript_activity(
+        session,
+        item,
+        matches!(
+            previous_phase,
+            Some(StreamPhase::Reasoning | StreamPhase::Activity)
+        ),
+    );
+    session.updated_at = unix_time();
+    id
 }

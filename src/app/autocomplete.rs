@@ -60,6 +60,7 @@ pub fn init(cx: &mut App) {
 pub(super) enum AutocompleteRow {
     Command(Scored<SlashCommand>),
     File(Scored<FileEntry>),
+    Model(Scored<composer_complete::ModelCandidate>),
 }
 
 /// Filter results for one (kind, query, source index) — the popup's rows are
@@ -111,12 +112,85 @@ impl AutocompleteUi {
 }
 
 impl Waku {
+    /// Rebuild the delegation candidates from the model catalogue.
+    ///
+    /// Reads only in-memory probes: a catalogue change is what re-runs this,
+    /// never a frame. Disabled providers are excluded because a subtask cannot
+    /// be started on them, and offering one would make `^` lie.
+    pub(super) fn refresh_delegation_model_index(&mut self) {
+        let models = self
+            .probes
+            .iter()
+            .filter(|probe| probe.installed)
+            .filter(|probe| !self.state.disabled_providers.contains(&probe.provider))
+            // A model the provider cannot run read-only would be offered and
+            // then fail; only list real destinations.
+            .filter(|probe| probe.provider.supports_review_subtask())
+            .flat_map(|probe| {
+                probe
+                    .models
+                    .iter()
+                    .cloned()
+                    .map(move |model| (probe.provider, model))
+            })
+            .collect::<Vec<_>>();
+        self.delegation_model_index = Rc::new(composer_complete::model_candidates(&models));
+    }
+
+    /// Whether this session can delegate at all: the parent agent needs the
+    /// Waku tools, which arrive as MCP servers on Codex and OpenCode and as a
+    /// Pi extension on Pi and Oh My Pi.
+    pub(super) fn supports_delegation(&self) -> bool {
+        matches!(
+            self.selected_session().map(|session| session.provider),
+            Some(
+                ProviderKind::Codex
+                    | ProviderKind::OpenCode
+                    | ProviderKind::Pi
+                    | ProviderKind::OhMyPi
+            )
+        )
+    }
+
+    /// Record a chosen candidate as this draft's target, reusing an identical
+    /// existing one so the same model never appears twice under two ids.
+    fn push_composer_target(
+        &mut self,
+        candidate: composer_complete::ModelCandidate,
+    ) -> crate::delegation::ModelReference {
+        let existing = self.composer_targets.iter().find(|target| {
+            target.provider == candidate.provider
+                && target.model_id == candidate.model_id
+                && target.sub_provider == candidate.sub_provider
+                && target.reasoning_effort
+                    == candidate
+                        .reasoning
+                        .as_ref()
+                        .map(|reasoning| reasoning.id.clone())
+        });
+        if let Some(existing) = existing {
+            return existing.clone();
+        }
+        let reference_id = (1..)
+            .map(|suffix| format!("target-{suffix}"))
+            .find(|id| {
+                self.composer_targets
+                    .iter()
+                    .all(|target| &target.reference_id != id)
+            })
+            .unwrap();
+        let reference = candidate.reference(reference_id);
+        self.composer_targets.push(reference.clone());
+        reference
+    }
+
     /// Refresh the drawn command and file indexes for the selected session.
     ///
     /// A cache hit lands immediately; a miss starts discovery on the
     /// background executor and re-runs this when it arrives. Nothing here may
     /// touch the filesystem directly.
     pub(super) fn refresh_composer_sources(&mut self, cx: &mut Context<Self>) {
+        self.refresh_delegation_model_index();
         let Some(project_path) = self
             .selected_workspace_path()
             .map(std::path::Path::to_path_buf)
@@ -307,6 +381,7 @@ impl Waku {
         let source = match trigger.kind {
             TriggerKind::Command => Rc::as_ptr(&self.slash_command_index) as usize,
             TriggerKind::File => Rc::as_ptr(&self.mention_file_index) as usize,
+            TriggerKind::Model => Rc::as_ptr(&self.delegation_model_index) as usize,
         };
         {
             let memo = self.composer_autocomplete.results.borrow();
@@ -333,6 +408,15 @@ impl Waku {
             )
             .into_iter()
             .map(AutocompleteRow::File)
+            .collect(),
+            TriggerKind::Model if !self.supports_delegation() => Vec::new(),
+            TriggerKind::Model => composer_complete::filter_models(
+                &self.delegation_model_index,
+                &trigger.query,
+                &mut matcher,
+            )
+            .into_iter()
+            .map(AutocompleteRow::Model)
             .collect(),
         };
         let rows = Rc::new(rows);
@@ -393,6 +477,15 @@ impl Waku {
                 format!("{composer_text} ")
             }
             AutocompleteRow::File(scored) => format!("@{} ", scored.item.path),
+            AutocompleteRow::Model(scored) => {
+                let reference = self.push_composer_target(scored.item.clone());
+                composer_complete::model_reference_text(
+                    reference
+                        .marker_label
+                        .as_deref()
+                        .unwrap_or(&reference.display_label),
+                )
+            }
         };
         if matches!(row, AutocompleteRow::Command(_)) {
             let mut submission = self.composer.read(cx).content(cx).to_owned();
@@ -425,8 +518,13 @@ impl Waku {
         let loading = match trigger.kind {
             TriggerKind::Command => self.slash_command_index_loading,
             TriggerKind::File => self.mention_file_index_loading,
+            TriggerKind::Model => false,
         };
-        if rows.is_empty() && !loading {
+        // A parent agent without the Waku tools cannot delegate. Say so in the
+        // popup rather than silently offering models that would go nowhere.
+        let delegation_unsupported =
+            trigger.kind == TriggerKind::Model && !self.supports_delegation();
+        if rows.is_empty() && !loading && !delegation_unsupported {
             return None;
         }
         // The probe records during paint, so the first frame a composer ever
@@ -446,7 +544,21 @@ impl Waku {
             .overflow_y_scroll()
             .track_scroll(&self.composer_autocomplete.scroll)
             .p(px(4.0));
-        if rows.is_empty() {
+        if rows.is_empty() && delegation_unsupported {
+            list = list.child(
+                div()
+                    .min_h(px(30.0))
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .text_size(sp(12.5))
+                    .text_color(theme.text_secondary)
+                    .child(icon("icons/alert.svg", 12.0, theme.warning))
+                    .child(tr!("composer.delegation_unavailable")),
+            );
+        } else if rows.is_empty() {
             list = list.child(
                 div()
                     .h(px(30.0))
@@ -596,6 +708,56 @@ impl Waku {
                     )
                     .into_any_element()
             }
+            AutocompleteRow::Model(scored) => {
+                let candidate = &scored.item;
+                let provider = candidate.provider;
+                // Name and reasoning first, then the calling channel, then the
+                // provider short name: two same-named models under different
+                // channels stay tellable apart.
+                base.child(icon("icons/sparkle.svg", 12.0, theme.text_tertiary))
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(260.0))
+                            .truncate()
+                            .text_size(sp(12.5))
+                            .text_color(theme.text)
+                            .child(SharedString::from(candidate.model_name.clone())),
+                    )
+                    .when_some(candidate.reasoning.clone(), |element, reasoning| {
+                        element.child(
+                            div()
+                                .flex_none()
+                                .h(px(18.0))
+                                .px(px(5.0))
+                                .rounded(px(4.0))
+                                .border_1()
+                                .border_color(theme.border)
+                                .flex()
+                                .items_center()
+                                .text_size(sp(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text_tertiary)
+                                .child(SharedString::from(reasoning.label)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(sp(12.5))
+                            .text_color(theme.text_tertiary)
+                            .child(SharedString::from(
+                                candidate
+                                    .sub_provider
+                                    .clone()
+                                    .unwrap_or_else(|| provider.short_name().to_owned()),
+                            )),
+                    )
+                    .into_any_element()
+            }
+
             AutocompleteRow::File(scored) => {
                 let file = &scored.item;
                 // The row draws basename then directory, but the positions

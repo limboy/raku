@@ -23,6 +23,8 @@ pub struct ComposerDraft {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<ComposerDraftAttachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_references: Vec<crate::delegation::ModelReference>,
 }
 
 impl ComposerDraft {
@@ -56,12 +58,8 @@ pub enum ComposerDraftKey {
     rename_all_fields = "camelCase"
 )]
 pub enum ComposerDraftTarget {
-    NewSession {
-        project_id: Uuid,
-    },
-    Session {
-        session_id: Uuid,
-    },
+    NewSession { project_id: Uuid },
+    Session { session_id: Uuid },
 }
 
 impl From<ComposerDraftKey> for ComposerDraftTarget {

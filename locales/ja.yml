@@ -587,6 +587,10 @@ composer.starting_agent: エージェントを起動中…
 composer.suggestions: 入力候補
 composer.loading_suggestions: 入力候補を読み込み中…
 composer.remove_attachment: "%{name} を削除"
+composer.remove_target: 委譲先を削除
+composer.delegation_target_added: 委譲先を追加しました
+composer.delegation_unavailable: この Agent は委譲できません。Codex、OpenCode、Pi、Oh My Pi に切り替えてください
+composer.invalid_model_reference: "モデルの参照が曖昧か利用できません。選択し直してください：%{label}"
 composer.queued_message_actions: フォローアップの操作
 
 branches.detached_head: Detached HEAD
@@ -1093,3 +1097,15 @@ backup.invalid_response: "デーモンから無効なバックアップ応答が
 backup.restore_failed: "復元に失敗しました。元のデータは保持されています: %{error}"
 backup.automatic_description: "Waku の起動中は 24 時間ごとに自動バックアップし、期限を過ぎていた場合は次回起動時に実行します。最新の 1 件のみ保持します。"
 backup.latest: "最新のバックアップ"
+
+delegation.status_queued: 待機中
+delegation.status_starting: 起動中
+delegation.status_running: 実行中
+delegation.status_completed: 完了
+delegation.status_failed: 失敗
+delegation.status_cancelled: キャンセル済み
+delegation.status_timed_out: タイムアウト
+delegation.status_interrupted: 中断
+delegation.detail_unavailable: このセッションでは、このサブタスクを表示できません。
+delegation.detail_waiting: サブタスクは実行中です。結果が届くと、ここに表示されます。
+delegation.detail_no_result: サブタスクは結果を返さずに終了しました。

@@ -74,6 +74,11 @@ impl Waku {
     fn current_composer_draft(&self, cx: &App) -> crate::persistence::ComposerDraft {
         crate::persistence::ComposerDraft {
             text: self.composer.read(cx).content(cx).to_owned(),
+            model_references: crate::composer_complete::extract_model_references(
+                self.composer.read(cx).content(cx),
+                &self.delegation_model_index,
+                &self.composer_targets,
+            ),
             attachments: self
                 .composer_attachments
                 .iter()
@@ -170,6 +175,13 @@ impl Waku {
             .into_iter()
             .map(ComposerAttachment::from)
             .collect();
+        // Preserve the selected route even if another provider exposes the
+        // same display name or the catalogue changes while this draft is idle.
+        self.composer_targets = crate::composer_complete::extract_model_references(
+            &draft.text,
+            &self.delegation_model_index,
+            &draft.model_references,
+        );
         self.composer
             .update(cx, |input, cx| input.set_content(draft.text, cx));
         cx.notify();

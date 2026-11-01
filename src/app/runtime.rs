@@ -2187,6 +2187,18 @@ impl Waku {
             .collect::<Vec<_>>();
         let provider_prompt = composer::merged_submission(&prompt, &mentions)
             .expect("edited text or retained attachments always form a submission");
+        self.refresh_delegation_model_index();
+        let model_references = match crate::composer_complete::resolve_model_references(
+            &provider_prompt,
+            &self.delegation_model_index,
+            &[],
+        ) {
+            Ok(references) => references,
+            Err(label) => {
+                self.show_toast(tr!("composer.invalid_model_reference", label = label));
+                return;
+            }
+        };
         let display_content = (!edit.attachments.is_empty()).then_some(prompt);
         self.start_message_rewind(
             edit.clone(),
@@ -2194,6 +2206,7 @@ impl Waku {
                 prompt: provider_prompt,
                 display_content,
                 attachments: edit.attachments,
+                model_references,
             },
             cx,
         );
@@ -2773,6 +2786,7 @@ impl Waku {
                 binary,
                 cwd,
                 mode,
+                execution_policy: Default::default(),
                 model,
                 reasoning_effort,
                 service_tier,
@@ -3029,6 +3043,12 @@ impl Waku {
         };
         if !session.is_busy() {
             self.submit_composer_submission(submission, cx);
+            return;
+        }
+        // A steer belongs to the active turn, whose pinned targets may
+        // already be running. Preserve a newly selected set for a fresh turn.
+        if !submission.model_references.is_empty() {
+            self.enqueue_follow_up_submission(session.id, submission, cx);
             return;
         }
         // A turn that has not reached the provider yet cannot be steered; the
@@ -3515,10 +3535,36 @@ impl Waku {
         // while templates expand and skills adopt provider-native syntax.
         // Claude's commands pass through untouched; its CLI owns expansion.
         let prompt = submission.prompt;
-        let driver_prompt = self.resolve_provider_submission(provider, &prompt);
+        // The transport only carries a string, so a turn that names delegation
+        // targets must also carry the target manifest in the prompt itself.
+        let driver_prompt = match delegation::delegation_prompt_suffix(&submission.model_references)
+        {
+            Some(suffix) => format!(
+                "{}\n\n{}",
+                self.resolve_provider_submission(provider, &prompt),
+                suffix
+            ),
+            None => self.resolve_provider_submission(provider, &prompt),
+        };
+        let active_turn_id = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(AgentSession::active_turn_id)
+            .map(|id| id.to_string())
+            .or_else(|| Some(session_id.to_string()));
+        let delegation = (!submission.model_references.is_empty()).then(|| {
+            waku_client::delegation::PromptDelegationContext {
+                turn_id: active_turn_id,
+                model_references: submission.model_references.clone(),
+                review_source: None,
+            }
+        });
         let mut failed_to_start = false;
+        let delegated = delegation.is_some();
         match driver {
-            Ok(driver) => driver.prompt(driver_prompt),
+            Ok(driver) => driver.prompt_with_context(driver_prompt, delegation),
             Err(error) => {
                 failed_to_start = true;
                 let message = tr!("errors.start_agent", error = error);
@@ -3540,6 +3586,11 @@ impl Waku {
         if failed_to_start {
             self.capture_latest_turn_checkpoint_for(session_id);
             self.start_pending_checkpoint_captures(cx);
+        }
+        if (delegated || self.supports_delegation()) && !failed_to_start {
+            // The subtasks are created on the daemon during the turn; start
+            // mirroring their progress so the turn's card fills in while it runs.
+            self.refresh_session_delegations(cx);
         }
         cx.notify();
         // Persist on the next frame boundary. Saving is intentionally after

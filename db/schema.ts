@@ -12,7 +12,7 @@
  * fetched only when a session is opened.
  */
 
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -89,3 +89,87 @@ export const sessionDetails = sqliteTable("session_details", {
   sessionId: text("session_id").primaryKey(),
   data: text("data").notNull(),
 });
+
+/**
+ * Review contexts storing immutable Git snapshot and patch information.
+ */
+export const reviewContexts = sqliteTable("review_contexts", {
+  id: text("id").primaryKey(),
+  cwd: text("cwd").notNull(),
+  /** JSON-serialized ReviewDiffSource */
+  source: text("source").notNull(),
+  baseOid: text("base_oid").notNull(),
+  targetOid: text("target_oid").notNull(),
+  numstat: text("numstat").notNull(),
+  patch: text("patch").notNull(),
+  completeContext: integer("complete_context", { mode: "boolean" }).notNull(),
+  snapshotDir: text("snapshot_dir"),
+  createdAt: integer("created_at").notNull(),
+});
+
+/**
+ * Top-level groups of delegated subtasks spawned by a parent turn.
+ */
+export const delegationGroups = sqliteTable(
+  "delegation_groups",
+  {
+    id: text("id").primaryKey(),
+    parentSessionId: text("parent_session_id").notNull(),
+    parentTurnId: text("parent_turn_id"),
+    parentRuntimeId: text("parent_runtime_id"),
+    requestKey: text("request_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    contextId: text("context_id").notNull(),
+    status: text("status").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("delegation_groups_by_parent").on(table.parentSessionId, table.createdAt),
+    uniqueIndex("delegation_groups_by_request_key").on(table.parentSessionId, table.requestKey),
+  ],
+);
+
+/**
+ * Individual subtasks belonging to a delegation group.
+ */
+export const delegatedTasks = sqliteTable(
+  "delegated_tasks",
+  {
+    id: text("id").primaryKey(),
+    groupId: text("group_id").notNull(),
+    taskKey: text("task_key").notNull(),
+    childSessionId: text("child_session_id").notNull(),
+    runtimeId: text("runtime_id"),
+    /** JSON-serialized ModelReference */
+    targetConfig: text("target_config").notNull(),
+    instructions: text("instructions").notNull(),
+    status: text("status").notNull(),
+    finalConclusion: text("final_conclusion"),
+    errorMessage: text("error_message"),
+    latestActivity: text("latest_activity"),
+    startedAt: integer("started_at"),
+    finishedAt: integer("finished_at"),
+  },
+  (table) => [
+    index("delegated_tasks_by_group").on(table.groupId),
+    index("delegated_tasks_by_child").on(table.childSessionId),
+  ],
+);
+
+/**
+ * Ordered stream events emitted by child runtimes for replay and persistence.
+ */
+export const delegationEvents = sqliteTable(
+  "delegation_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: text("task_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    event: text("event").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("delegation_events_by_task").on(table.taskId, table.id),
+  ],
+);

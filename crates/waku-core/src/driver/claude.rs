@@ -39,8 +39,8 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey, BackgroundWorkKind,
-    BackgroundWorkStatus, DriverEvent, PermissionOption, ProviderResumeCursor, RuntimeMode,
-    UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
+    BackgroundWorkStatus, DriverEvent, ExecutionPolicy, PermissionOption, ProviderResumeCursor,
+    RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 enum CommandMessage {
@@ -88,6 +88,39 @@ pub struct ClaudeDriver {
     commands: Sender<CommandMessage>,
     pending_user_inputs: Arc<Mutex<HashMap<String, Value>>>,
     mode: RuntimeMode,
+}
+
+/// Who answers Claude's permission requests.
+///
+/// `ReviewReadOnly` is the subtask posture: the agent may read and search, but
+/// a write or a command is denied without ever reaching a UI that is not there
+/// to answer it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PermissionPolicy {
+    Ask,
+    AutoApprove,
+    DenyWrites,
+}
+
+fn permission_policy(mode: RuntimeMode, execution_policy: ExecutionPolicy) -> PermissionPolicy {
+    if execution_policy == ExecutionPolicy::ReviewReadOnly {
+        return PermissionPolicy::DenyWrites;
+    }
+    if mode == RuntimeMode::Ask {
+        PermissionPolicy::Ask
+    } else {
+        PermissionPolicy::AutoApprove
+    }
+}
+
+/// Tools a review subtask may use. Everything else — shells, editors,
+/// notebook writes, subagents — is denied, so an unattended run cannot change
+/// the workspace it is reviewing.
+fn is_read_only_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "Read" | "Grep" | "Glob" | "LS" | "NotebookRead" | "WebFetch" | "WebSearch" | "TodoWrite"
+    )
 }
 
 /// The permission posture Claude is launched with.
@@ -172,6 +205,7 @@ impl ClaudeDriver {
             binary,
             cwd,
             mode,
+            execution_policy,
             model,
             reasoning_effort,
             service_tier: _,
@@ -179,6 +213,7 @@ impl ClaudeDriver {
             agent_preset: _,
             computer_use_enabled: _,
             provider_cursor,
+            ..
         } = options;
         let (resume_session_id, resume_at) = match provider_cursor {
             Some(ProviderResumeCursor::Claude {
@@ -244,7 +279,7 @@ impl ClaudeDriver {
         });
 
         let (commands, command_rx) = unbounded();
-        let auto_approve = mode != RuntimeMode::Ask;
+        let permission_policy = permission_policy(mode, execution_policy);
         let turn_active = Arc::new(Mutex::new(false));
         let pending_task_stops = Arc::new(Mutex::new(HashMap::<String, BackgroundWorkKey>::new()));
         let pending_user_inputs = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
@@ -276,7 +311,7 @@ impl ClaudeDriver {
                         &reader_events,
                         &reader_commands,
                         &reader_turn,
-                        auto_approve,
+                        permission_policy,
                         &mut state,
                     );
                 }
@@ -1290,7 +1325,7 @@ fn handle_message(
     events: &DriverEventSender,
     commands: &Sender<CommandMessage>,
     turn_active: &Mutex<bool>,
-    auto_approve: bool,
+    permission_policy: PermissionPolicy,
     state: &mut ClaudeStreamState,
 ) {
     match value.get("type").and_then(Value::as_str) {
@@ -1317,8 +1352,10 @@ fn handle_message(
         Some("control_request") => {
             if value.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool") {
                 begin_unprompted_turn(turn_active, state, events);
-                if !request_user_input(value, events, state) {
-                    request_permission(value, events, commands, auto_approve);
+                if permission_policy == PermissionPolicy::DenyWrites {
+                    request_permission(value, events, commands, permission_policy);
+                } else if !request_user_input(value, events, state) {
+                    request_permission(value, events, commands, permission_policy);
                 }
             }
         }
@@ -1698,17 +1735,38 @@ fn request_permission(
     value: &Value,
     events: &impl DriverEventSink,
     commands: &Sender<CommandMessage>,
-    auto_approve: bool,
+    policy: PermissionPolicy,
 ) {
     let Some(request_id) = value.get("request_id").and_then(Value::as_str) else {
         return;
     };
-    if auto_approve {
-        let _ = commands.send(CommandMessage::Respond {
-            request_id: request_id.to_owned(),
-            option_id: "allow".into(),
-        });
-        return;
+    let tool_name = value
+        .pointer("/request/tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match policy {
+        PermissionPolicy::AutoApprove => {
+            let _ = commands.send(CommandMessage::Respond {
+                request_id: request_id.to_owned(),
+                option_id: "allow".into(),
+            });
+            return;
+        }
+        // A review subtask has no UI behind it: answer every request now, so a
+        // write or command is refused instead of hanging the run.
+        PermissionPolicy::DenyWrites => {
+            let option_id = if is_read_only_tool(tool_name) {
+                "allow"
+            } else {
+                "deny"
+            };
+            let _ = commands.send(CommandMessage::Respond {
+                request_id: request_id.to_owned(),
+                option_id: option_id.into(),
+            });
+            return;
+        }
+        PermissionPolicy::Ask => {}
     }
 
     let request = value.get("request").unwrap_or(&Value::Null);
@@ -1883,6 +1941,7 @@ mod tests {
                 binary,
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
+                execution_policy: Default::default(),
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
@@ -1890,6 +1949,8 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -1952,12 +2013,15 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
                 model: Some("claude-haiku-4-5-20251001".into()),
+                execution_policy: Default::default(),
                 reasoning_effort: None,
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -2074,7 +2138,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         assert!(matches!(
@@ -2106,7 +2170,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         assert!(matches!(
@@ -2128,7 +2192,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let DriverEvent::BackgroundWork(BackgroundWorkEvent::Upsert(started)) =
@@ -2155,7 +2219,15 @@ mod tests {
                 "input": {"description": "Inspect the parser"}
             }]}
         });
-        handle_message(&tool, "s", &events, &commands, &turn, true, &mut state);
+        handle_message(
+            &tool,
+            "s",
+            &events,
+            &commands,
+            &turn,
+            PermissionPolicy::AutoApprove,
+            &mut state,
+        );
         let _ = event_rx.try_recv().unwrap();
 
         handle_message(
@@ -2172,7 +2244,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let DriverEvent::BackgroundWork(BackgroundWorkEvent::Upsert(started)) =
@@ -2196,7 +2268,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let DriverEvent::BackgroundWork(BackgroundWorkEvent::Upsert(completed)) =
@@ -2230,7 +2302,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let DriverEvent::BackgroundWork(BackgroundWorkEvent::Upsert(started)) =
@@ -2260,7 +2332,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let DriverEvent::BackgroundWork(BackgroundWorkEvent::Upsert(progress)) =
@@ -2292,7 +2364,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let DriverEvent::BackgroundWork(BackgroundWorkEvent::Upsert(settled)) =
@@ -2332,7 +2404,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let _ = event_rx.try_recv().unwrap();
@@ -2351,7 +2423,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         handle_message(
@@ -2362,7 +2434,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let mut seen = Vec::new();
@@ -2396,7 +2468,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let DriverEvent::BackgroundWork(BackgroundWorkEvent::Upsert(settled)) =
@@ -2419,7 +2491,15 @@ mod tests {
             json!({"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}),
         ];
         for message in wire {
-            handle_message(&message, "s", &events, &commands, &turn, true, &mut state);
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
         }
         let deltas = std::iter::from_fn(|| event_rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -2448,7 +2528,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         let DriverEvent::RichActivity(item) = event_rx.try_recv().unwrap() else {
@@ -2488,7 +2568,15 @@ mod tests {
             json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}),
         ];
         for message in wire {
-            handle_message(&message, "s", &events, &commands, &turn, true, &mut state);
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
         }
 
         let mut seen = Vec::new();
@@ -2523,7 +2611,15 @@ mod tests {
             }
         });
 
-        handle_message(&request, "s", &events, &commands, &turn, false, &mut state);
+        handle_message(
+            &request,
+            "s",
+            &events,
+            &commands,
+            &turn,
+            PermissionPolicy::Ask,
+            &mut state,
+        );
         let DriverEvent::Permission {
             request_id,
             detail,
@@ -2541,7 +2637,15 @@ mod tests {
         );
         assert!(command_rx.try_recv().is_err());
 
-        handle_message(&request, "s", &events, &commands, &turn, true, &mut state);
+        handle_message(
+            &request,
+            "s",
+            &events,
+            &commands,
+            &turn,
+            PermissionPolicy::AutoApprove,
+            &mut state,
+        );
         let Ok(CommandMessage::Respond { option_id, .. }) = command_rx.try_recv() else {
             panic!("auto modes must answer without the user");
         };
@@ -2573,7 +2677,15 @@ mod tests {
         });
 
         // Even Full Access cannot invent an answer to a content question.
-        handle_message(&request, "s", &events, &commands, &turn, true, &mut state);
+        handle_message(
+            &request,
+            "s",
+            &events,
+            &commands,
+            &turn,
+            PermissionPolicy::AutoApprove,
+            &mut state,
+        );
         let DriverEvent::UserInputRequested {
             request_id,
             questions,
@@ -2593,7 +2705,15 @@ mod tests {
         let (events, event_rx, commands, _command_rx, turn, mut state) = harness();
         let result = json!({"type":"result","is_error":false,"stop_reason":"end_turn"});
 
-        handle_message(&result, "s", &events, &commands, &turn, true, &mut state);
+        handle_message(
+            &result,
+            "s",
+            &events,
+            &commands,
+            &turn,
+            PermissionPolicy::AutoApprove,
+            &mut state,
+        );
         // The checkpoint read is best-effort; the turn must settle regardless.
         let settled = std::iter::from_fn(|| event_rx.try_recv().ok())
             .filter(|event| matches!(event, DriverEvent::TurnFinished { .. }))
@@ -2601,7 +2721,15 @@ mod tests {
         assert_eq!(settled, 1);
         assert!(!*turn.lock());
 
-        handle_message(&result, "s", &events, &commands, &turn, true, &mut state);
+        handle_message(
+            &result,
+            "s",
+            &events,
+            &commands,
+            &turn,
+            PermissionPolicy::AutoApprove,
+            &mut state,
+        );
         assert!(
             !std::iter::from_fn(|| event_rx.try_recv().ok())
                 .any(|event| matches!(event, DriverEvent::TurnFinished { .. })),
@@ -2625,7 +2753,15 @@ mod tests {
             json!({"type":"result","is_error":false,"stop_reason":"end_turn","num_turns":2}),
         ];
         for message in reply {
-            handle_message(&message, "s", &events, &commands, &turn, true, &mut state);
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
         }
         let seen: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
         assert!(
@@ -2649,7 +2785,15 @@ mod tests {
             json!({"type":"system","subtype":"status","status":"requesting"}),
         ];
         for message in prelude {
-            handle_message(&message, "s", &events, &commands, &turn, true, &mut state);
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
         }
         // `init` and `status` also open a resume handshake that never runs
         // the model; only model output reports the wake.
@@ -2669,7 +2813,15 @@ mod tests {
             json!({"type":"result","is_error":false,"stop_reason":"end_turn","num_turns":1}),
         ];
         for message in wake {
-            handle_message(&message, "s", &events, &commands, &turn, true, &mut state);
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
         }
         let seen: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
         assert!(
@@ -2701,7 +2853,7 @@ mod tests {
             &events,
             &commands,
             &turn,
-            true,
+            PermissionPolicy::AutoApprove,
             &mut state,
         );
         while event_rx.try_recv().is_ok() {}
@@ -2714,7 +2866,15 @@ mod tests {
                 "message":{"content":[{"type":"text","text":"still going"}]}}),
         ];
         for message in wire {
-            handle_message(&message, "s", &events, &commands, &turn, true, &mut state);
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
         }
         assert!(!*turn.lock());
         assert!(
@@ -2739,7 +2899,15 @@ mod tests {
                 "status":"completed","output_file":"","summary":"","ambient":true}),
         ];
         for message in wire {
-            handle_message(&message, "s", &events, &commands, &turn, true, &mut state);
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
         }
         let seen: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
         assert_eq!(seen.len(), 1, "only the level signal carries user work");
@@ -2782,7 +2950,15 @@ mod tests {
             }}),
         ];
         for message in wire {
-            handle_message(&message, "s", &events, &commands, &turn, true, &mut state);
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
         }
 
         let usage: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok())
@@ -2797,5 +2973,67 @@ mod tests {
         // 2+100+10+8 from the last iteration, then the main model's window —
         // not the subagent's tokens, not the smaller subagent window.
         assert_eq!(usage, [(Some(120), None), (None, Some(1_000_000))]);
+    }
+}
+
+#[cfg(test)]
+mod review_policy_tests {
+    use super::*;
+
+    #[test]
+    fn an_unattended_question_is_denied_instead_of_waiting_for_ui() {
+        let (events, receiver) = crate::driver::test_event_channel();
+        let (commands, replies) = unbounded();
+        let mut state = ClaudeStreamState::default();
+        handle_message(
+            &json!({"type":"control_request", "request_id":"question",
+            "request":{"subtype":"can_use_tool", "tool_name":"AskUserQuestion",
+                "input":{"questions":[{"question":"Which module?", "options":[{"label":"A"}]}]}}}),
+            "session",
+            &events,
+            &commands,
+            &Mutex::new(true),
+            PermissionPolicy::DenyWrites,
+            &mut state,
+        );
+        assert!(
+            matches!(replies.try_recv(), Ok(CommandMessage::Respond { option_id, .. }) if option_id == "deny")
+        );
+        assert!(
+            !receiver
+                .try_iter()
+                .any(|event| matches!(event, DriverEvent::UserInputRequested { .. }))
+        );
+    }
+
+    #[test]
+    fn a_review_subtask_denies_everything_that_can_change_the_workspace() {
+        let policy = permission_policy(RuntimeMode::Ask, ExecutionPolicy::ReviewReadOnly);
+        assert_eq!(policy, PermissionPolicy::DenyWrites);
+        // Even Full access on the parent session cannot widen a subtask: the
+        // execution policy is the subtask's own posture, not the user's.
+        assert_eq!(
+            permission_policy(RuntimeMode::FullAccess, ExecutionPolicy::ReviewReadOnly),
+            PermissionPolicy::DenyWrites
+        );
+
+        for tool in ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Task"] {
+            assert!(!is_read_only_tool(tool), "{tool} must be denied");
+        }
+        for tool in ["Read", "Grep", "Glob", "LS", "WebSearch"] {
+            assert!(is_read_only_tool(tool), "{tool} must stay available");
+        }
+    }
+
+    #[test]
+    fn an_interactive_session_keeps_its_own_permission_posture() {
+        assert_eq!(
+            permission_policy(RuntimeMode::Ask, ExecutionPolicy::Interactive),
+            PermissionPolicy::Ask
+        );
+        assert_eq!(
+            permission_policy(RuntimeMode::FullAccess, ExecutionPolicy::Interactive),
+            PermissionPolicy::AutoApprove
+        );
     }
 }

@@ -259,7 +259,7 @@ fn helper_executable_name() -> &'static str {
     }
 }
 
-fn resources_directory(executable: &Path, os: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn resources_directory(executable: &Path, os: &str) -> anyhow::Result<PathBuf> {
     let directory = executable
         .parent()
         .ok_or_else(|| anyhow!("Waku executable has no parent"))?;
@@ -276,7 +276,7 @@ fn resources_directory(executable: &Path, os: &str) -> anyhow::Result<PathBuf> {
     })
 }
 
-fn packaged_file(path: &Path, name: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn packaged_file(path: &Path, name: &str) -> anyhow::Result<PathBuf> {
     if !path.is_file() {
         bail!("{name} is missing from this Waku build: {}", path.display());
     }
@@ -391,7 +391,7 @@ pub fn skill_root_path() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-fn host_executable_path() -> anyhow::Result<PathBuf> {
+pub(crate) fn host_executable_path() -> anyhow::Result<PathBuf> {
     std::env::var_os(crate::APP_EXECUTABLE_ENV)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)

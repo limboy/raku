@@ -511,6 +511,12 @@ try {
       "computer-use",
       "pi-extension.ts",
     ),
+    join(
+      mountedContents,
+      "Resources",
+      "delegation",
+      "pi-extension.ts",
+    ),
     mountedComputerUseHelper,
     join(mountedSparkleFramework, "Sparkle"),
   ]) {

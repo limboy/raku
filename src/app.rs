@@ -326,6 +326,8 @@ struct ComposerSubmission {
     prompt: String,
     display_content: Option<String>,
     attachments: Vec<MessageAttachment>,
+    /// Models this turn may delegate review subtasks to, chosen with `^`.
+    model_references: Vec<crate::delegation::ModelReference>,
 }
 
 impl ComposerSubmission {
@@ -334,11 +336,17 @@ impl ComposerSubmission {
             prompt,
             display_content: None,
             attachments: Vec::new(),
+            model_references: Vec::new(),
         }
     }
 
     fn into_queued_message(self) -> QueuedMessage {
-        QueuedMessage::with_presentation(self.prompt, self.display_content, self.attachments)
+        QueuedMessage::with_presentation_and_targets(
+            self.prompt,
+            self.display_content,
+            self.attachments,
+            self.model_references,
+        )
     }
 
     fn from_queued_message(message: QueuedMessage) -> Self {
@@ -346,6 +354,7 @@ impl ComposerSubmission {
             prompt: message.content,
             display_content: message.display_content,
             attachments: message.attachments,
+            model_references: message.model_references,
         }
     }
 
@@ -520,6 +529,11 @@ enum RightPanelSurface {
     Terminal(Uuid),
     BackgroundWork {
         key: BackgroundWorkKey,
+        title: String,
+    },
+    DelegatedTask {
+        group_id: Uuid,
+        task_id: Uuid,
         title: String,
     },
     Files,
@@ -1281,6 +1295,21 @@ pub struct Waku {
     /// Files dropped onto the composer, drawn as chips above the input and
     /// drained into the next submission.
     composer_attachments: Vec<ComposerAttachment>,
+    /// Structured identities selected for inline `^` references. Retained
+    /// during edits for Undo; only markers still present are submitted.
+    composer_targets: Vec<crate::delegation::ModelReference>,
+    /// Every delegation target the model catalogue offers, resolved once per
+    /// catalogue change so the popup's render path stays pure.
+    delegation_model_index: Rc<Vec<crate::composer_complete::ModelCandidate>>,
+    /// Delegation groups per parent session, as last read from the daemon. The
+    /// daemon owns these rows; the client only mirrors them for rendering.
+    session_delegations:
+        std::collections::HashMap<Uuid, Vec<crate::delegation::DelegationGroupInfo>>,
+    /// Sessions with a delegation refresh in flight, so a frame that draws a
+    /// running group cannot stack a second request per frame.
+    delegation_refresh_pending: HashSet<Uuid>,
+    /// Parsed Markdown and independent selection/scroll state for the visible subtask detail.
+    delegation_detail: RefCell<Option<delegation_detail::DelegationDetailState>>,
     /// Window-modal expansion of an image attachment. The path is already
     /// cached attachment metadata; render never probes the filesystem.
     image_preview: Option<image_preview::ImagePreviewState>,
@@ -1632,6 +1661,8 @@ mod command_palette;
 mod commit_dialog;
 mod components;
 mod composer;
+mod delegation;
+mod delegation_detail;
 mod drafts;
 mod file_search;
 mod goal_dialog;
@@ -1880,6 +1911,8 @@ impl Waku {
         cx: &mut App,
         daemon: waku_client::DaemonSupervisor,
     ) -> Entity<Self> {
+        let start_background_work =
+            !cfg!(test) || std::env::var_os("WAKU_DELEGATION_SMOKE_PATH").is_none();
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let store = StateStore::remote(daemon.clone());
         let restore_error = crate::persistence::take_restore_error().ok().flatten();
@@ -2093,6 +2126,7 @@ impl Waku {
         let crate::persistence::ComposerDraft {
             text: initial_composer_text,
             attachments: initial_composer_attachments,
+            model_references: initial_composer_targets,
         } = initial_composer_draft;
         if !initial_composer_text.is_empty() {
             composer.update(cx, |input, cx| input.set_content(initial_composer_text, cx));
@@ -2119,7 +2153,7 @@ impl Waku {
         let (event_wake_tx, event_wake_events) = smol::channel::bounded(1);
         let (task_state_sync_tx, task_state_sync_events) = unbounded();
         #[cfg(target_os = "macos")]
-        if crate::computer_use::is_available() {
+        if start_background_work && crate::computer_use::is_available() {
             let computer_permission_tx = computer_permission_tx.clone();
             let event_wake = event_wake_tx.clone();
             let daemon = daemon.client();
@@ -2757,6 +2791,11 @@ impl Waku {
                 composer_sources_stale: false,
                 composer_autocomplete: autocomplete::AutocompleteUi::new(),
                 composer_attachments,
+                composer_targets: initial_composer_targets,
+                delegation_model_index: Rc::new(Vec::new()),
+                session_delegations: std::collections::HashMap::new(),
+                delegation_refresh_pending: HashSet::new(),
+                delegation_detail: RefCell::new(None),
                 image_preview: None,
                 image_preview_generation: 0,
                 remote_images: RefCell::new(HashMap::new()),
@@ -2948,6 +2987,9 @@ impl Waku {
         // Everything launch needs from `git` or the filesystem, started now
         // that there is an entity to notify and deliberately not before the
         // first frame.
+        if !start_background_work {
+            return entity;
+        }
         entity.update(cx, |this, cx| {
             if let Some(error) = restore_error {
                 let message = tr!("backup.restore_failed", error = error);
@@ -2964,6 +3006,7 @@ impl Waku {
             // The autocomplete indexes prefetch alongside, so typing `/` or
             // `@` into the very first prompt already has data to draw.
             this.refresh_composer_sources(cx);
+            this.refresh_session_delegations(cx);
             // Re-detect providers after resolving the user's login-shell
             // environment off-thread. Detection then starts model and version
             // discovery for every CLI it finds, including nvm/fnm-managed

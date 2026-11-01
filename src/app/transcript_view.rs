@@ -1964,6 +1964,50 @@ impl Waku {
         .detach();
     }
 
+    fn toggle_activity_surface_group(
+        &mut self,
+        detail: Option<Uuid>,
+        block: usize,
+        current: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(generation) = detail {
+            self.toggle_detail_group(generation, block, current, cx);
+        } else {
+            self.toggle_activities(block, current, cx);
+        }
+    }
+
+    fn toggle_activity_surface_item(
+        &mut self,
+        detail: Option<Uuid>,
+        id: Uuid,
+        current: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(generation) = detail {
+            self.toggle_detail_item(generation, id, current, cx);
+        } else {
+            self.toggle_activity_item(id, current, cx);
+        }
+    }
+
+    fn activity_surface_markdown_ctx<'a>(
+        &self,
+        surface: &ActivityRenderContext<'_>,
+        row: String,
+        palette: &'a MarkdownPalette,
+        metrics: MarkdownMetrics,
+        animate: bool,
+    ) -> MarkdownCtx<'a> {
+        if surface.detail_generation.is_none() {
+            return self.markdown_ctx(row, palette, metrics, animate);
+        }
+        MarkdownCtx::new(row, palette, metrics, surface.selection.clone())
+            .with_math_enabled(self.state.render_math)
+            .with_link_handler(super::delegation_detail::safe_detail_link_handler())
+            .with_streaming_animation(animate)
+    }
     pub(super) fn render_activities_row(
         &self,
         activities: &[ActivityItem],
@@ -1991,11 +2035,6 @@ impl Waku {
                     )
                 })
         });
-        let expanded = self
-            .activities_expanded
-            .get(&block_index)
-            .copied()
-            .unwrap_or(live_group);
         let live_reasoning_id = (self
             .selected_runtime()
             .is_some_and(|runtime| runtime.stream_phase == Some(StreamPhase::Reasoning))
@@ -2011,92 +2050,150 @@ impl Waku {
                 .map(|activity| activity.id)
         })
         .flatten();
-        let header_title = activity_header_title(activities, live_group, live_reasoning_id);
-        let (group_failed, group_running) =
-            activities
-                .iter()
-                .fold((false, false), |(failed, running), activity| {
-                    (failed || activity.failed, running || !activity.complete)
-                });
-        let header_focus =
-            self.transcript_control_focus(format!("activity-toggle-{block_index}"), cx);
-        let cluster = div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .child(
-                div()
-                    .id(SharedString::from(format!("activity-toggle-{block_index}")))
-                    .track_focus(&header_focus)
-                    .tab_index(0)
-                    .w_full()
-                    .min_w_0()
-                    .h(px(28.0))
-                    .px(px(4.0))
-                    .rounded(px(5.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .text_size(sp(12.5))
-                    .line_height(sp(16.0))
-                    .cursor_default()
-                    .focus_visible(|style| style.bg(theme.overlay))
-                    .hover(|style| style.bg(theme.overlay))
-                    .tooltip(Tooltip::text(activity_summary(activities)))
-                    .child(icon(
-                        if expanded {
-                            "icons/chevron-down.svg"
-                        } else {
-                            "icons/chevron-right.svg"
-                        },
-                        10.0,
-                        theme.text_tertiary,
-                    ))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_secondary)
-                            .child(SharedString::from(header_title)),
-                    )
-                    .when(!live_group, |header| {
-                        header.child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.0))
-                                .text_color(if group_failed {
-                                    theme.danger
-                                } else {
-                                    theme.text_tertiary
-                                })
-                                .when(group_failed, |status| {
-                                    status.child(icon("icons/x.svg", 10.0, theme.danger))
-                                })
-                                .child(tr!(if group_failed {
-                                    "activity.status_failed"
-                                } else if group_running {
-                                    "activity.status_running"
-                                } else {
-                                    "activity.status_completed"
-                                })),
-                        )
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_activities(block_index, expanded, cx);
-                    }))
-                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.toggle_activities(block_index, expanded, cx);
-                            cx.stop_propagation();
-                        }
-                    })),
+        self.render_activity_cluster(
+            activities,
+            block_index,
+            ActivityRenderContext {
+                detail_generation: None,
+                live_group,
+                part: ActivityClusterPart::All,
+                live_reasoning_id,
+                expanded: self
+                    .activities_expanded
+                    .get(&block_index)
+                    .copied()
+                    .unwrap_or(live_group),
+                expanded_items: &self.expanded_activity_items,
+                markdown: &self.activity_markdown,
+                window_starts: &self.reasoning_window_starts,
+                viewports: &self.activity_scroll_viewports,
+                selection: self.transcript_selection.clone(),
+            },
+            theme,
+            window,
+            cx,
+        )
+    }
+
+    pub(super) fn render_activity_cluster(
+        &self,
+        activities: &[ActivityItem],
+        block_index: usize,
+        surface: ActivityRenderContext<'_>,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ActivityRenderContext {
+            live_group,
+            live_reasoning_id,
+            expanded,
+            detail_generation,
+            ..
+        } = surface;
+        let cluster = if surface.part == ActivityClusterPart::Item {
+            div().w_full().min_w_0()
+        } else {
+            let group_key = detail_generation.map_or_else(
+                || format!("activity-toggle-{block_index}"),
+                |generation| format!("detail-{generation}-activity-toggle-{block_index}"),
             );
-        if !expanded {
+            let header_title = activity_header_title(activities, live_group, live_reasoning_id);
+            let (group_failed, group_running) =
+                activities
+                    .iter()
+                    .fold((false, false), |(failed, running), activity| {
+                        (failed || activity.failed, running || !activity.complete)
+                    });
+            let header_focus = self.transcript_control_focus(group_key.clone(), cx);
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .id(SharedString::from(group_key))
+                        .track_focus(&header_focus)
+                        .tab_index(0)
+                        .w_full()
+                        .min_w_0()
+                        .h(px(28.0))
+                        .px(px(4.0))
+                        .rounded(px(5.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(sp(12.5))
+                        .line_height(sp(16.0))
+                        .cursor_default()
+                        .focus_visible(|style| style.bg(theme.overlay))
+                        .hover(|style| style.bg(theme.overlay))
+                        .tooltip(Tooltip::text(activity_summary(activities)))
+                        .child(icon(
+                            if expanded {
+                                "icons/chevron-down.svg"
+                            } else {
+                                "icons/chevron-right.svg"
+                            },
+                            10.0,
+                            theme.text_tertiary,
+                        ))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.text_secondary)
+                                .child(SharedString::from(header_title)),
+                        )
+                        .when(!live_group, |header| {
+                            header.child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .text_color(if group_failed {
+                                        theme.danger
+                                    } else {
+                                        theme.text_tertiary
+                                    })
+                                    .when(group_failed, |status| {
+                                        status.child(icon("icons/x.svg", 10.0, theme.danger))
+                                    })
+                                    .child(tr!(if group_failed {
+                                        "activity.status_failed"
+                                    } else if group_running {
+                                        "activity.status_running"
+                                    } else {
+                                        "activity.status_completed"
+                                    })),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_activity_surface_group(
+                                detail_generation,
+                                block_index,
+                                expanded,
+                                cx,
+                            );
+                        }))
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.toggle_activity_surface_group(
+                                    detail_generation,
+                                    block_index,
+                                    expanded,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            }
+                        })),
+                )
+        };
+        if !expanded || surface.part == ActivityClusterPart::Header {
             return cluster.into_any_element();
         }
         // `Theme::overlay` is 5% alpha and GPUI's `opacity` multiplies it.
@@ -2104,7 +2201,6 @@ impl Waku {
         let activity_hover_surface = theme.surface.blend(theme.overlay);
         let activity_active_surface = theme.surface.blend(theme.overlay_strong.opacity(0.72));
         let mut items = div()
-            .w_full()
             .min_w_0()
             .ml(px(6.0))
             .pl(px(12.0))
@@ -2119,6 +2215,7 @@ impl Waku {
             let background_work = self
                 .state
                 .selected_session
+                .filter(|_| detail_generation.is_none())
                 .zip(activity.source_id.as_deref())
                 .and_then(|(session_id, source_id)| {
                     self.background_work_for_activity(session_id, source_id)
@@ -2192,7 +2289,9 @@ impl Waku {
             // open it. A change touching several names each file in the diff
             // below, and each of those rows opens its own.
             let open_file_button = match activity.file_changes.as_slice() {
-                [change] if activity.kind == ActivityKind::FileChange => {
+                [change]
+                    if activity.kind == ActivityKind::FileChange && detail_generation.is_none() =>
+                {
                     Some(self.render_activity_open_file_button(
                         format!("activity-open-{id}"),
                         change.path.clone(),
@@ -2202,14 +2301,15 @@ impl Waku {
                 }
                 _ => None,
             };
-            let shows_diff = reasoning.is_none() && activity_shows_diff(activity);
+            let shows_diff =
+                detail_generation.is_none() && reasoning.is_none() && activity_shows_diff(activity);
             let has_detail = reasoning
                 .is_some_and(|reasoning| !reasoning.content.trim().is_empty())
                 || !sections.is_empty()
                 || shows_diff;
             let item_expanded = has_detail
-                && self
-                    .expanded_activity_items
+                && surface
+                    .expanded_items
                     .get(&id)
                     .copied()
                     .unwrap_or(reasoning_live);
@@ -2320,12 +2420,22 @@ impl Waku {
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if has_detail {
-                            this.toggle_activity_item(id, item_expanded, cx);
+                            this.toggle_activity_surface_item(
+                                detail_generation,
+                                id,
+                                item_expanded,
+                                cx,
+                            );
                         }
                     }))
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                         if has_detail && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.toggle_activity_item(id, item_expanded, cx);
+                            this.toggle_activity_surface_item(
+                                detail_generation,
+                                id,
+                                item_expanded,
+                                cx,
+                            );
                             cx.stop_propagation();
                         }
                     })),
@@ -2358,26 +2468,34 @@ impl Waku {
                 palette.text = theme.text_secondary;
                 palette.secondary = theme.text_tertiary;
                 let ctx = self
-                    .markdown_ctx(
+                    .activity_surface_markdown_ctx(
+                        &surface,
                         format!("reasoning-{id}"),
                         &palette,
                         self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
                         reasoning_live && !cx.reduce_motion(),
                     )
                     .with_math_context_menu(self.menu_handle(format!("reasoning-math-{id}"), cx));
-                let reasoning_viewport = self
-                    .activity_scroll_viewports
+                let reasoning_viewport = surface
+                    .viewports
                     .borrow_mut()
                     .entry(id)
                     .or_default()
                     .clone();
-                let mut views = self.activity_markdown.borrow_mut();
+                let mut views = surface.markdown.borrow_mut();
                 let view = views.entry(id).or_default();
                 if reasoning_live {
-                    let start = self.live_reasoning_window_start(id, &reasoning.content, view);
-                    view.set_text(&reasoning.content[start..], true);
+                    let content = reasoning.content.trim_end();
+                    let mut starts = surface.window_starts.borrow_mut();
+                    let cached = starts.entry(id).or_insert(0);
+                    let start = live_reasoning_window_anchor(*cached, content);
+                    if start != *cached {
+                        *cached = start;
+                        *view = MarkdownView::seeded();
+                    }
+                    view.set_text(&content[start..], true);
                 } else {
-                    self.reasoning_window_starts.borrow_mut().remove(&id);
+                    surface.window_starts.borrow_mut().remove(&id);
                     view.set_text(&reasoning.content, false);
                 }
                 let wheel_scroll = reasoning_viewport.scroll_handle.clone();
@@ -2456,7 +2574,8 @@ impl Waku {
             }
             if reasoning.is_none() && (!sections.is_empty() || !activity.image_urls.is_empty()) {
                 let palette = MarkdownPalette::from_theme(theme);
-                let ctx = self.markdown_ctx(
+                let ctx = self.activity_surface_markdown_ctx(
+                    &surface,
                     format!("activity-{id}"),
                     &palette,
                     self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
@@ -2577,8 +2696,8 @@ impl Waku {
                         if activity.kind == ActivityKind::Command
                             && section_kind == ActivityDisclosureSectionKind::Output
                         {
-                            let output_viewport = self
-                                .activity_scroll_viewports
+                            let output_viewport = surface
+                                .viewports
                                 .borrow_mut()
                                 .entry(id)
                                 .or_default()
@@ -2901,10 +3020,8 @@ fn activity_scroll_follow_state(
     }
 }
 
-/// Pure window arithmetic behind [`Waku::live_reasoning_window_start`]:
-/// given the cached start and the current content, the byte offset the
-/// window should render from. Every returned offset is a character boundary
-/// of `content`, so callers may slice with it directly.
+/// Pure byte-window arithmetic shared by main and delegated reasoning peeks.
+/// Every returned offset is a character boundary of `content`.
 fn live_reasoning_window_anchor(cached: usize, content: &str) -> usize {
     // A restarted block can leave the cached start past the end of the new
     // content or inside a multibyte character; either way the window is
@@ -2931,29 +3048,24 @@ fn live_reasoning_window_anchor(cached: usize, content: &str) -> usize {
         .unwrap_or(cut)
 }
 
-impl Waku {
-    /// Byte offset the live reasoning peek renders from, slid forward as the
-    /// thought grows. The peek pins a 400 px viewport to the tail, but
-    /// markdown cost is O(rendered source) per pulse tick regardless of block
-    /// shape, so the window keeps parse, flatten, elements, and veil all
-    /// O(window); the full trace renders once the turn settles. A slide
-    /// re-anchors at a block boundary and reseeds the view so already-shown
-    /// text never re-dissolves.
-    fn live_reasoning_window_start(
-        &self,
-        id: Uuid,
-        content: &str,
-        view: &mut MarkdownView,
-    ) -> usize {
-        let mut starts = self.reasoning_window_starts.borrow_mut();
-        let start = starts.entry(id).or_insert(0);
-        let next = live_reasoning_window_anchor(*start, content);
-        if next != *start {
-            *start = next;
-            *view = MarkdownView::seeded();
-        }
-        *start
-    }
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum ActivityClusterPart {
+    All,
+    Header,
+    Item,
+}
+
+pub(super) struct ActivityRenderContext<'a> {
+    pub(super) part: ActivityClusterPart,
+    pub(super) detail_generation: Option<Uuid>,
+    pub(super) live_group: bool,
+    pub(super) live_reasoning_id: Option<Uuid>,
+    pub(super) expanded: bool,
+    pub(super) expanded_items: &'a HashMap<Uuid, bool>,
+    pub(super) markdown: &'a RefCell<HashMap<Uuid, MarkdownView>>,
+    pub(super) window_starts: &'a RefCell<HashMap<Uuid, usize>>,
+    pub(super) viewports: &'a RefCell<HashMap<Uuid, ActivityScrollViewport>>,
+    pub(super) selection: TranscriptSelection,
 }
 
 fn activity_scroll_guard(viewport: ActivityScrollViewport, live: bool) -> impl IntoElement {

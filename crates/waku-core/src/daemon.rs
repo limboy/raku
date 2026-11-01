@@ -44,7 +44,7 @@ fn trim_resident_transcripts(state: &mut PersistedState, pinned: &HashSet<Uuid>)
 
 pub struct WakuBackend {
     sessions: Mutex<HashMap<Uuid, (Uuid, DriverHandle)>>,
-    settings: DaemonSettingsStore,
+    settings: Arc<DaemonSettingsStore>,
     backup_lock: Mutex<()>,
     task_store: StateStore,
     task_state: Mutex<PersistedState>,
@@ -55,6 +55,8 @@ pub struct WakuBackend {
     checkpoint_capture_locks: Mutex<HashMap<(PathBuf, Uuid, usize), Arc<Mutex<()>>>>,
     usage_rates_dir: std::path::PathBuf,
     default_cwd: std::path::PathBuf,
+    hub: Arc<crate::server::Hub>,
+    delegation: crate::delegation::DelegationManager,
 }
 
 impl WakuBackend {
@@ -76,6 +78,13 @@ impl WakuBackend {
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_owned();
+        let settings = Arc::new(settings);
+        let hub = Arc::new(crate::server::Hub::default());
+        let delegation = crate::delegation::DelegationManager::new(
+            task_store.path().to_path_buf(),
+            settings.clone(),
+            hub.clone(),
+        )?;
         Ok(Self {
             sessions: Mutex::new(HashMap::new()),
             settings,
@@ -89,7 +98,17 @@ impl WakuBackend {
             checkpoint_capture_locks: Mutex::new(HashMap::new()),
             usage_rates_dir,
             default_cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            hub,
+            delegation,
         })
+    }
+
+    pub fn hub(&self) -> Arc<crate::server::Hub> {
+        self.hub.clone()
+    }
+
+    pub fn delegation(&self) -> &crate::delegation::DelegationManager {
+        &self.delegation
     }
 
     /// Capture and persist one ending checkpoint exactly once per daemon.
@@ -440,6 +459,9 @@ impl Backend for WakuBackend {
                 Ok(ResponsePayload::TaskStateSaved { sessions })
             }
             Command::RemoveSession => {
+                self.delegation
+                    .scheduler()
+                    .cancel_parent(session_id, false)?;
                 {
                     let mut state = self.task_state.lock();
                     self.removed_session_ids.lock().insert(session_id);
@@ -467,6 +489,9 @@ impl Backend for WakuBackend {
                 }
                 let removed = self.sessions.lock().remove(&session_id);
                 drop(removed);
+                self.delegation.delete_session_delegations(session_id)?;
+                self.delegation
+                    .unregister_parent_session(&session_id.to_string());
                 Ok(ResponsePayload::Ack)
             }
             Command::HydrateSession { session_id } => {
@@ -732,12 +757,19 @@ impl Backend for WakuBackend {
             }),
             Command::Start { options } => {
                 let previous = self.sessions.lock().remove(&session_id);
+                if previous.is_some() {
+                    self.delegation
+                        .scheduler()
+                        .cancel_parent(session_id, false)?;
+                }
                 drop(previous);
                 let provider = decode_enum(&options.provider)?;
+                let start_cwd = options.cwd.clone();
                 let options = DriverStartOptions {
                     binary: options.binary,
                     cwd: options.cwd,
                     mode: decode_enum(&options.mode)?,
+                    execution_policy: options.execution_policy,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
                     service_tier: options.service_tier,
@@ -749,6 +781,23 @@ impl Backend for WakuBackend {
                         .map(serde_json::from_value)
                         .transpose()
                         .context("daemon received an invalid provider cursor")?,
+                    delegation_session_path: Some(
+                        self.delegation
+                            .register_parent_session_with_cwd(
+                                &session_id.to_string(),
+                                session_id,
+                                None,
+                                Some(runtime_id),
+                                Some(start_cwd),
+                                Vec::new(),
+                            )
+                            .unwrap_or_else(|_| {
+                                self.delegation
+                                    .registry()
+                                    .session_file_path(&session_id.to_string())
+                            }),
+                    ),
+                    delegation_registry_dir: Some(self.delegation.registry_dir().to_path_buf()),
                 };
                 let (wake, _wake_events) = smol::channel::bounded(1);
                 let (event_sender, event_receiver) = driver::event_channel(wake);
@@ -786,7 +835,100 @@ impl Backend for WakuBackend {
                         .then(|| sessions.remove(&session_id))
                         .flatten()
                 };
+                if removed.is_some() {
+                    self.delegation
+                        .scheduler()
+                        .cancel_parent(session_id, false)?;
+                }
                 drop(removed);
+                Ok(ResponsePayload::Ack)
+            }
+            Command::Cancel => {
+                let driver = {
+                    let sessions = self.sessions.lock();
+                    let (active, driver) = sessions
+                        .get(&session_id)
+                        .ok_or_else(|| anyhow!("daemon session {session_id} is not running"))?;
+                    anyhow::ensure!(
+                        *active == runtime_id,
+                        "daemon session belongs to another runtime"
+                    );
+                    driver.clone()
+                };
+                let cancelled = self.delegation.scheduler().cancel_parent(session_id, false);
+                driver.cancel();
+                cancelled?;
+                Ok(ResponsePayload::Ack)
+            }
+            Command::Prompt {
+                prompt,
+                delegation_context,
+            } => {
+                let (turn_id, mut targets) = match delegation_context.as_ref() {
+                    Some(ctx) => (ctx.turn_id.clone(), ctx.model_references.clone()),
+                    None => (None, Vec::new()),
+                };
+                if targets.is_empty() && prompt.contains("^[") {
+                    targets = waku_protocol::composer::extract_model_references(
+                        &prompt,
+                        &crate::delegation::scheduler::catalog_model_candidates(),
+                        &[],
+                    );
+                }
+                let driver = {
+                    let sessions = self.sessions.lock();
+                    let (active_runtime_id, driver) = sessions
+                        .get(&session_id)
+                        .ok_or_else(|| anyhow!("daemon session {session_id} is not running"))?;
+                    if *active_runtime_id != runtime_id {
+                        bail!(
+                            "daemon session {session_id} belongs to runtime {active_runtime_id}, not {runtime_id}"
+                        );
+                    }
+                    driver.clone()
+                };
+                self.delegation.register_parent_session_with_context(
+                    &session_id.to_string(),
+                    session_id,
+                    turn_id,
+                    Some(runtime_id),
+                    None,
+                    targets,
+                    delegation_context.and_then(|context| context.review_source),
+                )?;
+                driver.prompt(prompt);
+                Ok(ResponsePayload::Ack)
+            }
+            Command::GetDelegationGroup { group_id } => {
+                let group = self.delegation.get_group_info(group_id)?;
+                Ok(ResponsePayload::DelegationGroup { group })
+            }
+            Command::ListSessionDelegations { session_id } => {
+                let groups = self.delegation.list_session_groups(session_id)?;
+                Ok(ResponsePayload::SessionDelegations { groups })
+            }
+            Command::ReadDelegatedTaskEvents {
+                session_id,
+                group_id,
+                task_id,
+                after_sequence,
+            } => {
+                let connection = self.delegation.scheduler().open_connection()?;
+                let page = crate::delegation::store::read_delegated_task_events(
+                    &connection,
+                    session_id,
+                    group_id,
+                    task_id,
+                    after_sequence,
+                )?;
+                Ok(ResponsePayload::DelegatedTaskEvents { page })
+            }
+            Command::CancelDelegation { group_id, task_id } => {
+                self.delegation.cancel(group_id, task_id)?;
+                Ok(ResponsePayload::Ack)
+            }
+            Command::RetryDelegatedTask { group_id, task_id } => {
+                self.delegation.retry_task(group_id, task_id)?;
                 Ok(ResponsePayload::Ack)
             }
             command => {
@@ -807,7 +949,14 @@ impl Backend for WakuBackend {
         }
     }
 
+    fn hub(&self) -> Option<Arc<crate::server::Hub>> {
+        Some(self.hub.clone())
+    }
+
     fn shutdown(&self) {
+        if let Err(error) = self.delegation.scheduler().shutdown() {
+            eprintln!("could not stop delegated work on shutdown: {error}");
+        }
         let sessions = std::mem::take(&mut *self.sessions.lock());
         drop(sessions);
     }
@@ -1008,6 +1157,9 @@ impl WakuBackend {
             (source, cwd)
         };
         validate_message_rewind(&source, turn_count)?;
+        self.delegation
+            .scheduler()
+            .cancel_parent(session_id, false)?;
 
         // Resolve the executable before touching the worktree. Even native
         // transcript operations are immediately followed by a replacement
@@ -1289,6 +1441,7 @@ impl WakuBackend {
                 binary: self.provider_binary(source.provider)?,
                 cwd: cwd.to_owned(),
                 mode: source.runtime_mode,
+                execution_policy: Default::default(),
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
                 service_tier: source.service_tier.clone(),
@@ -1296,6 +1449,8 @@ impl WakuBackend {
                 agent_preset: source.agent_preset.clone(),
                 computer_use_enabled: false,
                 provider_cursor: source.provider_cursor.clone(),
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             event_sender,
         )?;
@@ -1449,6 +1604,7 @@ impl WakuBackend {
                 binary: binary.to_owned(),
                 cwd: cwd.to_owned(),
                 mode: source.runtime_mode,
+                execution_policy: Default::default(),
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
                 service_tier: source.service_tier.clone(),
@@ -1456,6 +1612,8 @@ impl WakuBackend {
                 agent_preset: source.agent_preset.clone(),
                 computer_use_enabled: false,
                 provider_cursor: source.provider_cursor.clone(),
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             event_sender,
         )?;
@@ -1651,7 +1809,14 @@ fn handle_driver_command(
     command: Command,
 ) -> anyhow::Result<ResponsePayload> {
     match command {
-        Command::Prompt { prompt } => driver.prompt(prompt),
+        Command::Prompt { .. }
+        | Command::GetDelegationGroup { .. }
+        | Command::ListSessionDelegations { .. }
+        | Command::ReadDelegatedTaskEvents { .. }
+        | Command::CancelDelegation { .. }
+        | Command::RetryDelegatedTask { .. } => {
+            bail!("daemon received a command in the wrong dispatch path")
+        }
         Command::Steer { prompt } => driver.steer(prompt),
         Command::Cancel => driver.cancel(),
         Command::CancelComputerUse => driver.cancel_computer_use(),
@@ -1758,6 +1923,162 @@ fn ensure_shell_environment() {
     REFRESHED.get_or_init(|| {
         crate::command_env::refresh_from_default_shell();
     });
+}
+
+#[cfg(all(test, unix))]
+mod delegation_lifecycle_tests {
+    use super::*;
+    use crate::delegation::{
+        context::CapturedReviewContext,
+        store::{self, DelegatedTaskRow, DelegationGroupRow},
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use waku_protocol::delegation::{DelegatedTaskStatus, DelegationGroupStatus, ModelReference};
+    use waku_protocol::model::ProviderKind;
+    use waku_protocol::workspace::ReviewDiffSource;
+
+    struct Parent(Arc<AtomicBool>);
+    impl crate::driver::DriverControl for Parent {
+        fn prompt(&self, _: String) {}
+        fn cancel(&self) {
+            self.0.store(true, Ordering::Release);
+        }
+        fn respond(&self, _: String, _: String) {}
+        fn rollback(&self, _: usize) -> anyhow::Result<Option<crate::model::ProviderResumeCursor>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn parent_stop_and_delete_commands_revoke_capabilities_and_cancel_delegation() {
+        for command in [
+            Command::Cancel,
+            Command::CloseSession,
+            Command::RemoveSession,
+        ] {
+            let directory =
+                std::env::temp_dir().join(format!("waku-parent-lifecycle-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let settings = DaemonSettingsStore::open(directory.join("settings.json")).unwrap();
+            let backend =
+                WakuBackend::new(settings, StateStore::daemon(directory.join("app.db"))).unwrap();
+            let parent = Uuid::new_v4();
+            let runtime = Uuid::new_v4();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            backend.sessions.lock().insert(
+                parent,
+                (
+                    runtime,
+                    DriverHandle::from_control(Arc::new(Parent(cancelled.clone()))),
+                ),
+            );
+            let registration = backend
+                .delegation
+                .register_parent_session(
+                    &parent.to_string(),
+                    parent,
+                    Some("turn".into()),
+                    Some(runtime),
+                    Vec::new(),
+                )
+                .unwrap();
+            let connection = backend.delegation.scheduler().open_connection().unwrap();
+            let context = Uuid::new_v4();
+            let group = Uuid::new_v4();
+            let task = Uuid::new_v4();
+            store::insert_review_context(
+                &connection,
+                &CapturedReviewContext {
+                    id: context,
+                    cwd: directory.clone(),
+                    source: ReviewDiffSource::Uncommitted,
+                    base_oid: String::new(),
+                    target_oid: String::new(),
+                    numstat: String::new(),
+                    patch: String::new(),
+                    complete_context: true,
+                    snapshot_dir: None,
+                    created_at: 0,
+                },
+            )
+            .unwrap();
+            store::insert_delegation_group(
+                &connection,
+                &DelegationGroupRow {
+                    id: group,
+                    parent_session_id: parent,
+                    parent_turn_id: Some("turn".into()),
+                    parent_runtime_id: Some(runtime.to_string()),
+                    request_key: "key".into(),
+                    request_hash: "hash".into(),
+                    context_id: context,
+                    status: DelegationGroupStatus::Running,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            )
+            .unwrap();
+            store::insert_delegated_task(
+                &connection,
+                &DelegatedTaskRow {
+                    id: task,
+                    group_id: group,
+                    task_key: "task".into(),
+                    child_session_id: Uuid::new_v4(),
+                    runtime_id: None,
+                    target_config: ModelReference::new(
+                        "target",
+                        ProviderKind::Claude,
+                        "fixture",
+                        "Fixture",
+                    ),
+                    instructions: "queued".into(),
+                    status: DelegatedTaskStatus::Queued,
+                    final_conclusion: None,
+                    error_message: None,
+                    latest_activity: None,
+                    started_at: None,
+                    finished_at: None,
+                },
+            )
+            .unwrap();
+            let deleting = matches!(command, Command::RemoveSession);
+            let stopping = matches!(command, Command::Cancel);
+            backend
+                .handle(
+                    Request {
+                        request_id: Uuid::new_v4(),
+                        session_id: parent,
+                        runtime_id: runtime,
+                        command,
+                    },
+                    backend.hub.event_sink(parent, runtime),
+                )
+                .unwrap();
+            assert!(!registration.exists());
+            if deleting {
+                assert!(
+                    store::get_delegated_task(&connection, task)
+                        .unwrap()
+                        .is_none()
+                );
+            } else {
+                assert_eq!(
+                    store::get_delegated_task(&connection, task)
+                        .unwrap()
+                        .unwrap()
+                        .status,
+                    DelegatedTaskStatus::Cancelled
+                );
+            }
+            if stopping {
+                assert!(cancelled.load(Ordering::Acquire));
+            }
+            drop(connection);
+            drop(backend);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
 }
 
 fn decode_enum<T: DeserializeOwned>(value: &str) -> anyhow::Result<T> {

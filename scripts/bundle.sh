@@ -173,6 +173,8 @@ fi
 cp resources/Info.plist "$contents/Info.plist"
 cp "resources/$icon_file" "$contents/Resources/AppIcon.icns"
 cp resources/computer-use/pi-extension.ts "$contents/Resources/computer-use/pi-extension.ts"
+mkdir -p "$contents/Resources/delegation"
+cp resources/delegation/pi-extension.ts "$contents/Resources/delegation/pi-extension.ts"
 bun scripts/cua-api.ts "$cached_helper_bundle/Contents/MacOS/$helper_name" "$contents/Resources/skills/waku-computer-use/SKILL.md"
 frameworks_directory="$contents/Frameworks"
 sparkle_framework="$frameworks_directory/Sparkle.framework"

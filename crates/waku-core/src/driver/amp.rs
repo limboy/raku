@@ -88,6 +88,7 @@ impl AmpDriver {
             binary,
             cwd,
             mode,
+            execution_policy: _,
             model,
             reasoning_effort,
             service_tier,
@@ -95,6 +96,7 @@ impl AmpDriver {
             agent_preset: _,
             computer_use_enabled: _,
             provider_cursor,
+            ..
         } = options;
         if mode != RuntimeMode::FullAccess {
             return Err(anyhow!("Amp currently supports Full access only"));
@@ -565,6 +567,7 @@ mod tests {
                 binary,
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
+                execution_policy: Default::default(),
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
@@ -572,6 +575,8 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -624,12 +629,15 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
                 model: None,
+                execution_policy: Default::default(),
                 reasoning_effort: None,
                 service_tier: Some("fast".into()),
                 context_window: None,
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )

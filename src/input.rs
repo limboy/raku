@@ -642,6 +642,8 @@ pub struct TextInput {
     /// Image and file pastes surface as [`MediaPaste`] instead of being
     /// swallowed by the text path.
     accepts_media_paste: bool,
+    /// Composer-only grammar-aware Backspace for inline `^[model]` markers.
+    atomic_model_references: bool,
     /// Escape clears the field when it has content; an empty field lets the
     /// keystroke fall through to the surface's own escape.
     clear_on_escape: bool,
@@ -741,6 +743,7 @@ impl TextInput {
             submit_on_enter: false,
             auto_height: false,
             accepts_media_paste: false,
+            atomic_model_references: false,
             clear_on_escape: false,
             select_all_on_focus_click: false,
             focus_click_select_all: false,
@@ -883,6 +886,11 @@ impl TextInput {
     /// swallowing them; text-first clipboards still paste as text.
     pub fn media_paste(mut self) -> Self {
         self.accepts_media_paste = true;
+        self
+    }
+
+    fn atomic_model_references(mut self) -> Self {
+        self.atomic_model_references = true;
         self
     }
 
@@ -1563,6 +1571,20 @@ impl TextInput {
             // Nothing to delete; owners with something staged behind the
             // field (the composer's attachments) listen for this instead.
             cx.emit(InputEvent::BackspaceOnEmpty);
+            return;
+        }
+        if self.atomic_model_references
+            && self.selected_range.is_empty()
+            && self.marked_range.is_none()
+            && let Some(range) = crate::composer_complete::model_reference_range_before_caret(
+                &self.content,
+                self.cursor_offset(),
+            )
+        {
+            // Use the same sealed, undoable splice as a completion insert.
+            // Leave surrounding whitespace and the original caret untouched
+            // until recording, so Undo restores this whole atom and its caret.
+            self.replace_range(range, "", cx);
             return;
         }
         if self.selected_range.is_empty() {
@@ -2964,6 +2986,7 @@ impl ComposerInput {
                 .submit_on_enter()
                 .auto_height()
                 .media_paste()
+                .atomic_model_references()
                 .placeholder(tr!("input.do_anything"))
         });
         let focus_handle = input.read(cx).focus();
@@ -3168,6 +3191,95 @@ mod tests {
         cx.update(|window, cx| window.focus(&composer.read(cx).focus(), cx));
         cx.run_until_parked();
         (composer, cx)
+    }
+
+    #[gpui::test]
+    fn composer_model_backspace_is_one_sealed_undoable_edit(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        let original = "评审 ^[模型 · High] ";
+        cx.update(|_, cx| {
+            composer.update(cx, |composer, cx| composer.set_content(original, cx));
+        });
+        let input = cx.read_entity(&composer, |composer, _| composer.input.clone());
+
+        // The completion's trailing space remains ordinary text, and the
+        // following Backspace removes only the complete inline atom.
+        cx.simulate_keystrokes("backspace");
+        cx.simulate_keystrokes("backspace");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.content(), "评审 ");
+            assert_eq!(input.selected_range, "评审 ".len().."评审 ".len());
+        });
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.content(), original.trim_end());
+            assert_eq!(input.cursor(), original.trim_end().len());
+        });
+        cx.simulate_keystrokes("secondary-shift-z");
+        cx.read_entity(&input, |input, _| assert_eq!(input.content(), "评审 "));
+
+        // Later ordinary deletion must not coalesce into the atom either.
+        cx.simulate_keystrokes("backspace");
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&input, |input, _| assert_eq!(input.content(), "评审 "));
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.content(), original.trim_end())
+        });
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&input, |input, _| assert_eq!(input.content(), original));
+    }
+
+    #[gpui::test]
+    fn model_atoms_leave_plain_mid_marker_and_selected_edits_native(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        let input = cx.read_entity(&composer, |composer, _| composer.input.clone());
+        for (text, selection, expected) in [
+            ("plain", 5..5, "plai"),
+            ("^[Model]", 7..7, "^[Mode]"),
+            ("^[Model]", 7..8, "^[Model"),
+            ("^[Model", 7..7, "^[Mode"),
+            ("^[outer ^[Model]]", 17..17, "^[outer ^[Model]"),
+        ] {
+            cx.update(|_, cx| {
+                input.update(cx, |input, cx| {
+                    input.set_content(text, cx);
+                    input.selected_range = selection;
+                });
+            });
+            cx.simulate_keystrokes("backspace");
+            cx.read_entity(&input, |input, _| {
+                assert_eq!(input.content(), expected, "{text}")
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn model_backspace_does_not_override_an_ime_marked_range(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        let input = cx.read_entity(&composer, |composer, _| composer.input.clone());
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                input.set_content("^[Model]", cx);
+                input.marked_range = Some(2..7);
+            });
+        });
+        cx.simulate_keystrokes("backspace");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(
+                input.content(),
+                "^[]",
+                "the native IME replacement range owns deletion"
+            );
+            assert!(input.marked_range.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn other_text_inputs_do_not_treat_model_markers_as_atoms(cx: &mut TestAppContext) {
+        let (input, cx) = setup_input(cx, "^[Model]", px(300.));
+        cx.simulate_keystrokes("backspace");
+        cx.read_entity(&input, |input, _| assert_eq!(input.content(), "^[Model"));
     }
 
     #[gpui::test]

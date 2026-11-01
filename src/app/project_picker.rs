@@ -239,7 +239,9 @@ impl Waku {
                                                 .child(name),
                                         )
                                         .when_some(
-                                            status.and_then(|s| project_picker_status_icon(s, &theme)),
+                                            status.and_then(|s| {
+                                                project_picker_status_icon(s, &theme)
+                                            }),
                                             |element, icon| {
                                                 element.child(div().flex_none().child(icon))
                                             },
@@ -516,10 +518,7 @@ impl Waku {
     /// Rows have one fixed height, so a changed set only needs its count.
     fn sync_project_picker_rows(&self, rows: &[ProjectPickerEntry]) {
         let mut cached = self.project_picker_row_cache.borrow_mut();
-        if cached
-            .iter()
-            .eq(rows.iter().map(|entry| &entry.id))
-        {
+        if cached.iter().eq(rows.iter().map(|entry| &entry.id)) {
             return;
         }
         *cached = rows.iter().map(|entry| entry.id).collect();
@@ -758,10 +757,7 @@ fn visible_project_entries(
         .collect::<Vec<_>>();
     // Stable, so full ties hold their unfiltered order.
     scored.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
-    scored
-        .into_iter()
-        .map(|(_, _, entry)| entry)
-        .collect()
+    scored.into_iter().map(|(_, _, entry)| entry).collect()
 }
 
 fn resolve_ongoing_status(
@@ -788,22 +784,12 @@ fn project_picker_status_icon(status: SessionStatus, theme: &Theme) -> Option<An
             12.0,
             status_color(theme, status),
         ))),
-        SessionStatus::Background => Some(
-            icon(
-                "icons/hourglass.svg",
-                12.0,
-                status_color(theme, status),
-            )
-            .into_any_element(),
-        ),
-        SessionStatus::Waiting => Some(
-            icon(
-                "icons/alert.svg",
-                12.0,
-                status_color(theme, status),
-            )
-            .into_any_element(),
-        ),
+        SessionStatus::Background => {
+            Some(icon("icons/hourglass.svg", 12.0, status_color(theme, status)).into_any_element())
+        }
+        SessionStatus::Waiting => {
+            Some(icon("icons/alert.svg", 12.0, status_color(theme, status)).into_any_element())
+        }
         SessionStatus::Idle | SessionStatus::Failed => None,
     }
 }
@@ -984,15 +970,17 @@ mod tests {
         );
         assert_eq!(names(&entries), vec!["speech-to-subtitle"]);
 
-        assert!(visible_project_entries(
-            &projects,
-            &[],
-            &HashSet::new(),
-            &HashSet::new(),
-            "zzz",
-            &mut matcher
-        )
-        .is_empty());
+        assert!(
+            visible_project_entries(
+                &projects,
+                &[],
+                &HashSet::new(),
+                &HashSet::new(),
+                "zzz",
+                &mut matcher
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1027,15 +1015,17 @@ mod tests {
             &mut matcher,
         );
         assert_eq!(names(&entries), vec!["waku"]);
-        assert!(visible_project_entries(
-            &projects,
-            &sessions,
-            &removed,
-            &HashSet::new(),
-            "crow",
-            &mut matcher
-        )
-        .is_empty());
+        assert!(
+            visible_project_entries(
+                &projects,
+                &sessions,
+                &removed,
+                &HashSet::new(),
+                "crow",
+                &mut matcher
+            )
+            .is_empty()
+        );
         removed.remove(&projects[0].id);
         let entries = visible_project_entries(
             &projects,

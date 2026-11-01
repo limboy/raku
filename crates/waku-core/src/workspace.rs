@@ -10,7 +10,7 @@ use std::process::Output;
 
 use anyhow::{Context as _, anyhow, bail};
 
-const MAX_HYDRATED_PATCH_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_HYDRATED_PATCH_BYTES: usize = 32 * 1024 * 1024;
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 pub use waku_protocol::workspace::{
@@ -301,12 +301,15 @@ fn list_directory(directory: &Path) -> anyhow::Result<Vec<WorkingTreeEntry>> {
 }
 
 #[derive(Clone, Debug)]
-struct DiffRange {
-    from: String,
-    to: String,
+pub(crate) struct DiffRange {
+    pub(crate) from: String,
+    pub(crate) to: String,
 }
 
-fn collect_review_diff(cwd: &Path, source: ReviewDiffSource) -> anyhow::Result<ReviewDiffData> {
+pub(crate) fn collect_review_diff(
+    cwd: &Path,
+    source: ReviewDiffSource,
+) -> anyhow::Result<ReviewDiffData> {
     ensure_repository(cwd)?;
     let range = resolve_diff_range(cwd, source)?;
     let numstat = diff_output(cwd, &range, &["--numstat"])?;
@@ -324,7 +327,10 @@ fn collect_review_diff(cwd: &Path, source: ReviewDiffSource) -> anyhow::Result<R
     })
 }
 
-fn resolve_diff_range(cwd: &Path, source: ReviewDiffSource) -> anyhow::Result<DiffRange> {
+pub(crate) fn resolve_diff_range(
+    cwd: &Path,
+    source: ReviewDiffSource,
+) -> anyhow::Result<DiffRange> {
     let head = resolve(cwd, "HEAD").unwrap_or_else(|| EMPTY_TREE.to_owned());
     Ok(match source {
         ReviewDiffSource::LastTurn {
@@ -425,7 +431,7 @@ fn index_tree(cwd: &Path) -> anyhow::Result<String> {
     }
 }
 
-fn diff_output(cwd: &Path, range: &DiffRange, modes: &[&str]) -> anyhow::Result<String> {
+pub(crate) fn diff_output(cwd: &Path, range: &DiffRange, modes: &[&str]) -> anyhow::Result<String> {
     let output = crate::command_env::plain_command("git")
         .args([
             "-c",
@@ -449,7 +455,7 @@ fn diff_output(cwd: &Path, range: &DiffRange, modes: &[&str]) -> anyhow::Result<
     }
 }
 
-fn ensure_repository(cwd: &Path) -> anyhow::Result<()> {
+pub(crate) fn ensure_repository(cwd: &Path) -> anyhow::Result<()> {
     let output = crate::command_env::plain_command("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(cwd)

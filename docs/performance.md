@@ -124,6 +124,37 @@ moment any scrollbar became visible.
   (`LIVE_REASONING_WINDOW_MAX`) because fast reasoning appends several KB per
   commit and each slide rebuilds the window from a fresh view. The full trace
   renders once the turn settles.
+- An open delegated-task detail polls persisted provider events in the
+  background at 300 ms, with immediate pagination while catching up. Pages
+  are bounded to 1024 events / 256 KiB JSON (one oversized event still
+  advances); the `(task_id, id)` index avoids sorting or rescanning the whole
+  task for each cursor. Initial history reduces on the background executor and
+  publishes once pagination catches up, so opening a task never plays old
+  thoughts as live output. Events reduce into ordered messages and activity
+  blocks using the main agent's reducers; tool snapshots merge by source ID.
+  Transcript rows and expanded activity items use `list()`, sharing the main
+  activity renderer and its 6 KiB target / 18 KiB maximum live reasoning
+  window. Selection, disclosure, Markdown and scroll state belong to the
+  visible task generation. Persisted receipt times drive reasoning duration
+  rather than the replay clock. Only a running task's current activity group
+  opens automatically; a terminal projection folds it before the final cursor
+  drains. Live output follows the tail until the reader scrolls away or expands
+  historical details. Stable rows are remeasured rather than replaced, and
+  disclosure splices retain unchanged rows on both sides to preserve the
+  reader's position within a message.
+  Hidden/inactive details stop polling; stale identity/generation results
+  cannot update a replacement detail. A read begun before settlement cannot
+  establish the final drained cursor, even if the terminal projection arrives
+  while that request is in flight.
+  Retry attempts have separate runtime identities and explicit replay boundaries;
+  a new attempt invalidates the visible detail generation. Old event history is
+  retained, but it cannot be merged into the new attempt's displayed answer.
+- The info popover combines native background work and delegated subagents
+  from the selected session in one flat virtualized `list()`. Its entries
+  contain only lightweight identity, label and status metadata, never copied
+  conclusions or transcript output. Only visible rows build element trees;
+  keyboard navigation reveals offscreen controls before transferring focus.
+  Delegation progress no longer invalidates or remeasures parent transcript rows.
 - `markdown_tail` and block-index element ordinals
   (`block_ix << 16 | position`, [src/md/render.rs](../src/md/render.rs)) let
   a capped walk hand settled blocks the same flatten-cache and veil keys as a

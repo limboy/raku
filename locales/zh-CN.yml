@@ -558,6 +558,10 @@ composer.starting_agent: 正在启动智能体…
 composer.suggestions: 输入建议
 composer.loading_suggestions: 正在加载建议…
 composer.remove_attachment: 移除 %{name}
+composer.remove_target: 移除委派目标
+composer.delegation_target_added: 已添加委派目标
+composer.delegation_unavailable: 当前 Agent 无法委派，切换到 Codex、OpenCode、Pi 或 Oh My Pi 才能使用 ^
+composer.invalid_model_reference: "此模型引用不明确或不可用，请重新选择：%{label}"
 composer.queued_message_actions: 后续消息操作
 branches.detached_head: 游离 HEAD
 branches.search_project: 搜索 %{project} 的分支
@@ -1041,3 +1045,15 @@ backup.invalid_response: "后台服务返回了无效的备份响应。"
 backup.restore_failed: "恢复失败，已保留原有数据：%{error}"
 backup.automatic_description: "Waku 打开时每 24 小时自动备份一次；错过时会在下次启动补备份。仅保留最新 1 份备份。"
 backup.latest: "最新备份"
+
+delegation.status_queued: 排队中
+delegation.status_starting: 启动中
+delegation.status_running: 运行中
+delegation.status_completed: 已完成
+delegation.status_failed: 失败
+delegation.status_cancelled: 已取消
+delegation.status_timed_out: 已超时
+delegation.status_interrupted: 已中断
+delegation.detail_unavailable: 此会话暂时无法显示该子任务。
+delegation.detail_waiting: 子任务仍在执行，完成后将在此显示结论。
+delegation.detail_no_result: 子任务已结束，但未返回结论。

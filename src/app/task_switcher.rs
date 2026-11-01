@@ -546,12 +546,7 @@ impl Waku {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(
-                                        div()
-                                            .size(px(6.0))
-                                            .rounded_full()
-                                            .bg(theme.accent),
-                                    ),
+                                    .child(div().size(px(6.0)).rounded_full().bg(theme.accent)),
                             )
                         },
                     ),

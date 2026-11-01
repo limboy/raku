@@ -9,10 +9,8 @@ pub fn start_process() -> anyhow::Result<waku_client::DaemonSupervisor> {
         .context("could not prepare backup restore")?;
     let _ = waku_client::persistence::load_or_create_app_settings()
         .context("could not load desktop daemon settings")?;
-    let daemon = waku_client::DaemonSupervisor::spawn(
-        &daemon_executable_path()?,
-        cfg!(debug_assertions),
-    )?;
+    let daemon =
+        waku_client::DaemonSupervisor::spawn(&daemon_executable_path()?, cfg!(debug_assertions))?;
     waku_client::persistence::finish_pending_restore()
         .context("could not restore desktop preferences")?;
     Ok(daemon)

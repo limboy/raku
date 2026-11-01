@@ -1146,6 +1146,14 @@ composer.loading_suggestions:
   en: Loading suggestions…
 composer.remove_attachment:
   en: Remove %{name}
+composer.remove_target:
+  en: Remove delegation target
+composer.delegation_target_added:
+  en: Delegation target added
+composer.delegation_unavailable:
+  en: This agent cannot delegate; switch to Codex, OpenCode, Pi, or Oh My Pi to use ^
+composer.invalid_model_reference:
+  en: "Select this model again; its reference is ambiguous or unavailable: %{label}"
 
 branches.detached_head:
   en: Detached HEAD
@@ -2137,3 +2145,26 @@ backup.automatic_description:
   en: "Backs up automatically every 24 hours while Waku is open, or on the next launch if overdue. Only the latest backup is kept."
 backup.latest:
   en: "Latest backup"
+
+delegation.status_queued:
+  en: Queued
+delegation.status_starting:
+  en: Starting
+delegation.status_running:
+  en: Running
+delegation.status_completed:
+  en: Completed
+delegation.status_failed:
+  en: Failed
+delegation.status_cancelled:
+  en: Cancelled
+delegation.status_timed_out:
+  en: Timed out
+delegation.status_interrupted:
+  en: Interrupted
+delegation.detail_unavailable:
+  en: This delegated task is not available in this session.
+delegation.detail_waiting:
+  en: The subtask is still working. Its conclusion will appear here when available.
+delegation.detail_no_result:
+  en: This subtask finished without a conclusion.

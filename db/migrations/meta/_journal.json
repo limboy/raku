@@ -22,6 +22,20 @@
       "when": 1786435875650,
       "tag": "0002_cute_miracleman",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1793448958280,
+      "tag": "0003_unknown_ulik",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793464089115,
+      "tag": "0004_delegation_event_cursor",
+      "breakpoints": true
     }
   ]
 }

@@ -19,7 +19,7 @@ use crate::usage::PlanUsage;
 use crate::usage_history::{UsageHistory, UsageWindow};
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 11;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "WAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "WAKU_DAEMON_ADDRESS";
@@ -87,6 +87,8 @@ pub enum Command {
     },
     Prompt {
         prompt: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delegation_context: Option<crate::delegation::PromptDelegationContext>,
     },
     Steer {
         prompt: String,
@@ -252,6 +254,27 @@ pub enum Command {
         operation: WorkspaceOperation,
     },
     CloseSession,
+    GetDelegationGroup {
+        group_id: Uuid,
+    },
+    ListSessionDelegations {
+        session_id: Uuid,
+    },
+    ReadDelegatedTaskEvents {
+        session_id: Uuid,
+        group_id: Uuid,
+        task_id: Uuid,
+        after_sequence: u64,
+    },
+    CancelDelegation {
+        group_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<Uuid>,
+    },
+    RetryDelegatedTask {
+        group_id: Uuid,
+        task_id: Uuid,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -268,6 +291,8 @@ pub struct WireDriverStartOptions {
     pub agent_preset: Option<String>,
     pub computer_use_enabled: bool,
     pub provider_cursor: Option<Value>,
+    #[serde(default)]
+    pub execution_policy: crate::model::ExecutionPolicy,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -440,6 +465,15 @@ pub enum ResponsePayload {
     AttachmentStored {
         attachment: StoredAttachment,
     },
+    DelegationGroup {
+        group: Option<crate::delegation::DelegationGroupInfo>,
+    },
+    SessionDelegations {
+        groups: Vec<crate::delegation::DelegationGroupInfo>,
+    },
+    DelegatedTaskEvents {
+        page: crate::delegation::DelegatedTaskEvents,
+    },
     BlobData {
         #[serde(with = "base64_bytes")]
         bytes: Vec<u8>,
@@ -520,7 +554,6 @@ mod tests {
 
         assert_eq!(json["type"], "forkSessionFromResponse");
         assert_eq!(json["turnCount"], 7);
-        assert_eq!(PROTOCOL_VERSION, 7);
     }
 
     #[test]
@@ -529,7 +562,6 @@ mod tests {
 
         assert_eq!(json["type"], "rewindSessionToMessage");
         assert_eq!(json["turnCount"], 4);
-        assert_eq!(PROTOCOL_VERSION, 7);
     }
 
     #[test]
@@ -576,7 +608,6 @@ mod tests {
         let json = serde_json::to_value(message).unwrap();
 
         assert_eq!(json["type"], "hello");
-        assert_eq!(json["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(json["resumeFrom"][0]["sessionId"], session_id.to_string());
         assert_eq!(json["resumeFrom"][0]["runtimeId"], runtime_id.to_string());
         assert_eq!(
@@ -584,6 +615,65 @@ mod tests {
             Uuid::from_u128(3).to_string()
         );
         assert!(json.get("protocol_version").is_none());
+    }
+
+    #[test]
+    fn prompt_delegation_targets_survive_the_wire() {
+        use crate::delegation::{ModelReference, PromptDelegationContext};
+        use crate::model::ProviderKind;
+
+        let mut target = ModelReference::new(
+            "target-1",
+            ProviderKind::OpenCode,
+            "github-copilot/gemini-3.8-flash",
+            "Gemini 3.8 Flash · High",
+        );
+        target.reasoning_effort = Some("high".into());
+        target.sub_provider = Some("Github Copilot".into());
+
+        let command = Command::Prompt {
+            prompt: "review this diff".into(),
+            delegation_context: Some(PromptDelegationContext {
+                turn_id: Some("turn-1".into()),
+                model_references: vec![target.clone()],
+                review_source: None,
+            }),
+        };
+        let json = serde_json::to_value(&command).unwrap();
+        assert_eq!(json["type"], "prompt");
+        assert_eq!(
+            json["delegationContext"]["modelReferences"][0]["reasoningEffort"],
+            "high"
+        );
+        assert_eq!(
+            json["delegationContext"]["modelReferences"][0]["subProvider"],
+            "Github Copilot"
+        );
+
+        let decoded: Command = serde_json::from_value(json).unwrap();
+        let Command::Prompt {
+            delegation_context: Some(context),
+            ..
+        } = decoded
+        else {
+            panic!("delegation context must round-trip");
+        };
+        assert_eq!(context.model_references, vec![target]);
+    }
+
+    #[test]
+    fn a_plain_prompt_stays_backwards_compatible() {
+        // Older clients omit the field entirely; the daemon must not reject
+        // their prompts or invent a delegation context.
+        let json = serde_json::json!({"type": "prompt", "prompt": "hi"});
+        let decoded: Command = serde_json::from_value(json).unwrap();
+        let Command::Prompt {
+            delegation_context, ..
+        } = decoded
+        else {
+            panic!("expected a prompt");
+        };
+        assert!(delegation_context.is_none());
     }
 
     #[test]
@@ -595,6 +685,7 @@ mod tests {
                 draft: Some(crate::persistence::ComposerDraft {
                     text: "unfinished".into(),
                     attachments: Vec::new(),
+                    ..Default::default()
                 }),
             }],
         };

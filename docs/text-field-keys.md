@@ -113,6 +113,28 @@ Everything in the platform-neutral block above (arrows, shift-arrows, alt word
 motion, the modified deletes, Enter and its variants, the clipboard chords)
 applies here too.
 
+## Composer model references
+
+The composer keeps delegation targets inline as `^[Model · High]`, without a
+second row of model pills. With no selection or active IME composition,
+Backspace (the macOS Delete key) immediately after the closing `]` removes
+the entire complete, non-nested marker as one undoable edit. Undo restores
+both the marker and its caret; Redo removes it again. A completion's trailing
+space remains ordinary text and is deleted separately.
+
+This is a marker-grammar match, not a model-catalogue lookup, so pasted and
+restored markers can still be erased while a provider is unavailable.
+Incomplete/nested markers, a caret inside the marker, selections, IME edits,
+and every other text field retain ordinary deletion. Submission binds only
+markers still present in the draft; deleting all copies cannot leave a hidden
+delegation target.
+
+Same-named models include their route in the marker. Drafts persist the selected
+model, channel and reasoning configuration, so returning to a draft cannot
+silently choose another provider. Ambiguous legacy or pasted markers must be
+selected again before sending. A steering message containing model references
+is queued for the next turn, preserving the active turn's pinned targets.
+
 ## Popup contexts
 
 While the composer's autocomplete popup is open (`ComposerAutocomplete >

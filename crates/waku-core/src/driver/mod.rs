@@ -22,8 +22,8 @@ use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 
 use crate::computer_use::ComputerToolRequest;
 use crate::model::{
-    BackgroundWorkKey, DriverEvent, GoalOperation, ProviderKind, ProviderResumeCursor, RuntimeMode,
-    UserInputAnswer,
+    BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, ProviderKind,
+    ProviderResumeCursor, RuntimeMode, UserInputAnswer,
 };
 
 /// Provider events remain synchronous to send from reader threads, while the
@@ -185,6 +185,7 @@ pub struct DriverStartOptions {
     pub binary: PathBuf,
     pub cwd: PathBuf,
     pub mode: RuntimeMode,
+    pub execution_policy: ExecutionPolicy,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
@@ -192,6 +193,8 @@ pub struct DriverStartOptions {
     pub agent_preset: Option<String>,
     pub computer_use_enabled: bool,
     pub provider_cursor: Option<ProviderResumeCursor>,
+    pub delegation_session_path: Option<PathBuf>,
+    pub delegation_registry_dir: Option<PathBuf>,
 }
 
 /// The subset of `DriverStartOptions` a user can change without starting a new

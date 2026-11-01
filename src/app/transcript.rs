@@ -428,7 +428,7 @@ impl Waku {
         self.remeasure_transcript_row(target);
     }
 
-    fn remeasure_transcript_row(&self, target: TranscriptRowKind) {
+    pub(super) fn remeasure_transcript_row(&self, target: TranscriptRowKind) {
         self.sync_transcript_rows();
         let row = self
             .transcript_row_kinds
@@ -964,10 +964,11 @@ pub(super) fn folded_transcript_rows(
             continue;
         }
         let turn_rows = turn_rows(session, turn.id);
+        let answer_start = turn_answer_start(session, &turn_rows);
         if let Some(message_index) = response_footer_message_index_from_rows(session, &turn_rows) {
             response_footers.insert(turn.id, message_index);
         }
-        let hidden = &turn_rows[..turn_answer_start(session, &turn_rows)];
+        let hidden = &turn_rows[..answer_start];
         let Some(anchor) = hidden.first().copied() else {
             continue;
         };

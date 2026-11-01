@@ -64,6 +64,10 @@ impl Drop for ConnectionPermit {
 pub trait Backend: Send + Sync + 'static {
     fn handle(&self, request: Request, events: EventSink) -> anyhow::Result<ResponsePayload>;
 
+    fn hub(&self) -> Option<Arc<Hub>> {
+        None
+    }
+
     fn shutdown(&self) {}
 }
 
@@ -165,7 +169,7 @@ impl From<&AgentSession> for SessionCatalogEntry {
     }
 }
 
-struct Hub {
+pub struct Hub {
     epoch: Uuid,
     state: Mutex<HubState>,
 }
@@ -206,7 +210,7 @@ struct RequestDispatcher {
 }
 
 impl Hub {
-    fn event_sink(self: &Arc<Self>, session_id: Uuid, runtime_id: Uuid) -> EventSink {
+    pub(crate) fn event_sink(self: &Arc<Self>, session_id: Uuid, runtime_id: Uuid) -> EventSink {
         EventSink {
             session_id,
             runtime_id,
@@ -214,7 +218,7 @@ impl Hub {
         }
     }
 
-    fn begin_runtime(&self, session_id: Uuid, runtime_id: Uuid) {
+    pub(crate) fn begin_runtime(&self, session_id: Uuid, runtime_id: Uuid) {
         let mut state = self.state.lock();
         state.active_runtimes.insert(session_id, runtime_id);
         state
@@ -225,7 +229,7 @@ impl Hub {
             .retain(|(candidate, _), _| *candidate != session_id);
     }
 
-    fn end_runtime(&self, session_id: Uuid, runtime_id: Option<Uuid>) {
+    pub(crate) fn end_runtime(&self, session_id: Uuid, runtime_id: Option<Uuid>) {
         let mut state = self.state.lock();
         let matches_active = runtime_id
             .is_none_or(|runtime_id| state.active_runtimes.get(&session_id) == Some(&runtime_id));
@@ -607,7 +611,7 @@ pub fn serve(
     listener
         .set_nonblocking(true)
         .context("could not configure Waku daemon listener")?;
-    let hub = Arc::new(Hub::default());
+    let hub = backend.hub().unwrap_or_else(|| Arc::new(Hub::default()));
     let dispatcher = Arc::new(RequestDispatcher::new(backend.clone(), hub.clone()));
     let options = Arc::new(options);
     let active_connections = Arc::new(AtomicUsize::new(0));
@@ -847,10 +851,7 @@ fn run_runtime_mailbox(
             },
         };
         let runtime_id = dispatched.request.runtime_id;
-        let starts_runtime = matches!(
-            &dispatched.request.command,
-            Command::Start { .. }
-        );
+        let starts_runtime = matches!(&dispatched.request.command, Command::Start { .. });
         let closes_runtime = matches!(
             &dispatched.request.command,
             Command::CloseSession | Command::RemoveSession
@@ -963,10 +964,7 @@ fn handle_request(
     let session_id = request.session_id;
     let runtime_id = request.runtime_id;
     let task_catalog_action = task_catalog_action(&request.command);
-    let starts_runtime = matches!(
-        &request.command,
-        Command::Start { .. }
-    );
+    let starts_runtime = matches!(&request.command, Command::Start { .. });
     let (outcome, executed) = if !notification && let Some(cached) = hub.cached_response(request_id)
     {
         (cached, false)
@@ -1137,7 +1135,7 @@ mod tests {
                 Command::GetSettings => Ok(ResponsePayload::Settings {
                     settings: DaemonSettings::default(),
                 }),
-                Command::Prompt { prompt } => {
+                Command::Prompt { prompt, .. } => {
                     events.send(WireDriverEvent::new("textDelta", json!(prompt)))?;
                     Ok(ResponsePayload::Ack)
                 }
@@ -1436,6 +1434,7 @@ mod tests {
                         agent_preset: None,
                         computer_use_enabled: false,
                         provider_cursor: None,
+                        execution_policy: Default::default(),
                     },
                 },
             )
@@ -1503,6 +1502,7 @@ mod tests {
                         agent_preset: None,
                         computer_use_enabled: false,
                         provider_cursor: None,
+                        execution_policy: Default::default(),
                     },
                 },
             )
@@ -1536,6 +1536,7 @@ mod tests {
                 runtime_id,
                 Command::Prompt {
                     prompt: "streamed from the first client".into(),
+                    delegation_context: None,
                 },
             )
             .unwrap();
@@ -1599,7 +1600,10 @@ mod tests {
         let request = HandshakeRequest::builder().uri("/v1").body(()).unwrap();
         assert!(validate_handshake(&request, HandshakeResponse::new(())).is_ok());
 
-        let invalid = HandshakeRequest::builder().uri("/invalid").body(()).unwrap();
+        let invalid = HandshakeRequest::builder()
+            .uri("/invalid")
+            .body(())
+            .unwrap();
         assert_eq!(
             validate_handshake(&invalid, HandshakeResponse::new(()))
                 .unwrap_err()
@@ -1932,6 +1936,7 @@ mod tests {
                 runtime_id: blocked_runtime_id,
                 command: Command::Prompt {
                     prompt: "after start".into(),
+                    delegation_context: None,
                 },
             },
             second_client_outgoing,
@@ -2033,6 +2038,7 @@ mod tests {
             agent_preset: None,
             computer_use_enabled: false,
             provider_cursor: None,
+            execution_policy: Default::default(),
         }
     }
 }

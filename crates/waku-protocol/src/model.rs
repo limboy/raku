@@ -143,6 +143,19 @@ impl ProviderKind {
         )
     }
 
+    /// Whether this provider can run a delegated, read-only review subtask.
+    ///
+    /// False means the driver cannot guarantee "read and search allowed,
+    /// writes and commands denied" without a human answering approvals — a
+    /// subtask launched there would either hang on an unanswerable permission
+    /// request or run unconstrained.
+    pub fn supports_review_subtask(self) -> bool {
+        matches!(
+            self,
+            Self::Codex | Self::Claude | Self::DeepSeek | Self::OpenCode | Self::Pi | Self::OhMyPi
+        )
+    }
+
     pub fn supports_model_discovery(self) -> bool {
         matches!(
             self,
@@ -284,6 +297,14 @@ impl ProviderResumeCursor {
             Self::Codex { thread_id } => thread_id,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionPolicy {
+    #[default]
+    Interactive,
+    ReviewReadOnly,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -717,6 +738,9 @@ pub struct QueuedMessage {
     pub display_content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MessageAttachment>,
+    /// Delegation targets chosen for this queued prompt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_references: Vec<crate::delegation::ModelReference>,
     pub created_at: u64,
 }
 
@@ -727,6 +751,7 @@ impl QueuedMessage {
             content: content.into(),
             display_content: None,
             attachments: Vec::new(),
+            model_references: Vec::new(),
             created_at: unix_time(),
         }
     }
@@ -740,6 +765,19 @@ impl QueuedMessage {
             display_content,
             attachments,
             ..Self::new(content)
+        }
+    }
+
+    /// Queue a prompt that also names the models it may delegate to.
+    pub fn with_presentation_and_targets(
+        content: impl Into<String>,
+        display_content: Option<String>,
+        attachments: Vec<MessageAttachment>,
+        model_references: Vec<crate::delegation::ModelReference>,
+    ) -> Self {
+        Self {
+            model_references,
+            ..Self::with_presentation(content, display_content, attachments)
         }
     }
 
@@ -1386,7 +1424,6 @@ impl AgentSession {
         self.updated_at = now;
         id
     }
-
 
     /// Whether the running turn is a provider-initiated one whose pursuit has
     /// not been confirmed — no user message belongs to it and the provider
@@ -4806,5 +4843,43 @@ mod tests {
         assert!(projection.transcript_blocks.is_empty());
         assert!(projection.turns.is_empty());
         assert!(projection.queued_messages.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod review_subtask_tests {
+    use super::ProviderKind;
+
+    #[test]
+    fn only_providers_with_a_read_only_posture_can_be_delegated_to() {
+        for provider in [
+            ProviderKind::Codex,
+            ProviderKind::Claude,
+            ProviderKind::DeepSeek,
+            ProviderKind::OpenCode,
+            // Pi and Oh My Pi launch subtasks with a read-only tool allowlist.
+            ProviderKind::Pi,
+            ProviderKind::OhMyPi,
+        ] {
+            assert!(
+                provider.supports_review_subtask(),
+                "{} has a verified read-only path",
+                provider.display_name()
+            );
+        }
+        // These would wait on an approval no subtask can answer.
+        for provider in [
+            ProviderKind::Amp,
+            ProviderKind::Cursor,
+            ProviderKind::Fx,
+            ProviderKind::Grok,
+            ProviderKind::Kimi,
+        ] {
+            assert!(
+                !provider.supports_review_subtask(),
+                "{} must not be offered as a review target",
+                provider.display_name()
+            );
+        }
     }
 }

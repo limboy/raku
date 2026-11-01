@@ -1015,6 +1015,10 @@ impl StateStore {
         &self.path
     }
 
+    pub fn open_connection(&self) -> io::Result<Connection> {
+        self.open()
+    }
+
     fn open(&self) -> io::Result<Connection> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -1885,6 +1889,7 @@ mod tests {
         ComposerDraft {
             text: text.to_owned(),
             attachments: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -2082,6 +2087,7 @@ mod tests {
         let project_id = Uuid::new_v4();
         let draft = ComposerDraft {
             text: "compare these".to_owned(),
+            model_references: Vec::new(),
             attachments: vec![ComposerDraftAttachment {
                 path: PathBuf::from("/tmp/reference image.png"),
                 mention: "/tmp/reference image.png".to_owned(),
@@ -2544,6 +2550,7 @@ mod tests {
             ComposerDraftKey::NewSession(project_id),
             ComposerDraft {
                 text: String::new(),
+                model_references: Vec::new(),
                 attachments: vec![ComposerDraftAttachment {
                     path: path.clone(),
                     mention: path.display().to_string(),
@@ -3134,24 +3141,76 @@ mod tests {
     }
 
     #[test]
-    fn a_half_applied_run_resumes_from_where_it_stopped() {
+    fn an_unrecorded_non_idempotent_migration_reports_its_tag() {
         let connection = Connection::open_in_memory().unwrap();
         apply_migrations(&connection).unwrap();
 
-        // Drop the record of the last migration without dropping its tables,
-        // as an interrupted run would leave things.
-        let (last, _) = MIGRATIONS.last().expect("at least one migration");
+        // A missing record is an inconsistent database, not a recoverable
+        // interrupted transaction. Use the stable, non-idempotent baseline.
+        let (tag, _) = MIGRATIONS[0];
         connection
-            .execute("DELETE FROM migrations WHERE tag = ?1", params![last])
+            .execute("DELETE FROM migrations WHERE tag = ?1", params![tag])
             .unwrap();
-
-        // It re-runs and fails loudly rather than silently skipping, because
-        // the tables it creates already exist.
         let error = apply_migrations(&connection).unwrap_err();
         assert!(
-            error.to_string().contains(last),
+            error.to_string().contains(tag),
             "the failure names the migration: {error}"
         );
+    }
+
+    #[test]
+    fn a_failed_migration_record_rolls_back_schema_and_resumes_after_reopening() {
+        let directory = temporary_directory();
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("app.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(MIGRATIONS_TABLE).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_migration_record BEFORE INSERT ON migrations
+                 WHEN (SELECT COUNT(*) FROM migrations) = 1
+                 BEGIN SELECT RAISE(ABORT, 'simulated migration record failure'); END;",
+            )
+            .unwrap();
+
+        // The baseline commits, then the next migration's SQL succeeds but
+        // recording it fails. Its schema changes must roll back with its tag.
+        let error = apply_migrations(&connection).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("simulated migration record failure")
+        );
+        assert_eq!(
+            connection
+                .query_row::<String, _, _>("SELECT tag FROM migrations", [], |row| row.get(0))
+                .unwrap(),
+            MIGRATIONS[0].0
+        );
+        assert_eq!(
+            connection
+                .query_row::<i64, _, _>("SELECT COUNT(*) FROM migrations", [], |row| row.get(0))
+                .unwrap(),
+            1
+        );
+        assert!(
+            connection
+                .prepare("SELECT auto_title FROM sessions")
+                .is_err()
+        );
+        drop(connection);
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER fail_migration_record")
+            .unwrap();
+        assert_eq!(apply_migrations(&connection).unwrap(), MIGRATIONS.len() - 1);
+        connection
+            .prepare("SELECT auto_title FROM sessions")
+            .unwrap();
+        assert_eq!(apply_migrations(&connection).unwrap(), 0);
+        drop(connection);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

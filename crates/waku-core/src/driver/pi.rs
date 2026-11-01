@@ -23,7 +23,146 @@ use super::{activity, computer_use as computer_use_runtime};
 use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
-use crate::model::{ActivityKind, DriverEvent, ProviderResumeCursor, ReportedCommand, RuntimeMode};
+use crate::model::{
+    ActivityKind, DriverEvent, ExecutionPolicy, ProviderResumeCursor, ReportedCommand, RuntimeMode,
+};
+
+/// The tool allowlist a review subtask is launched with.
+///
+/// Both Pi and Oh My Pi take the same read-tool names, and an allowlist that
+/// omits every mutating tool is stronger than an approval prompt nobody can
+/// answer: the capability is not there to be requested.
+const REVIEW_READ_ONLY_TOOLS: &str = "read,grep,glob,lsp,web_search";
+
+/// The tool names the CLI itself ships with.
+///
+/// A parent session must keep every built-in tool and *add* Waku's two
+/// delegation tools, but `--tools` is a strict allowlist that replaces the
+/// defaults. The CLI prints its own list when asked for an unknown tool, which
+/// is the only version-accurate source: Oh My Pi ships a different set from
+/// Pi, and both grow over time.
+fn builtin_tool_names(binary: &Path, cwd: &Path) -> Option<Vec<String>> {
+    use std::collections::HashMap;
+    use std::sync::LazyLock;
+
+    // Keyed by working directory too: tool availability follows the project's
+    // own configuration, so one project's answer is not another's.
+    static TOOL_CACHE: LazyLock<parking_lot::Mutex<HashMap<(PathBuf, PathBuf), Vec<String>>>> =
+        LazyLock::new(Default::default);
+    let key = (binary.to_path_buf(), cwd.to_path_buf());
+
+    if let Some(cached) = TOOL_CACHE.lock().get(&key) {
+        return Some(cached.clone());
+    }
+
+    let output = crate::command_env::plain_command(binary)
+        .args(["--mode", "rpc", "--tools", "-waku-delegation-probe"])
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let mut names = parse_builtin_tools(&text)?;
+
+    // The first probe lists every tool the CLI knows; some of them are disabled
+    // for this session and are rejected if named. A second probe with the list
+    // reveals that difference, and the result is cached, so this costs one
+    // extra process per binary per daemon lifetime.
+    for _ in 0..4 {
+        let Ok(output) = crate::command_env::plain_command(binary)
+            .args(["--mode", "rpc", "--tools", &names.join(",")])
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .output()
+        else {
+            break;
+        };
+        let mut again = String::from_utf8_lossy(&output.stdout).into_owned();
+        again.push_str(&String::from_utf8_lossy(&output.stderr));
+        let unavailable = parse_unavailable_tools(&again);
+        if unavailable.is_empty() {
+            break;
+        }
+        // Each pass can reveal more disabled tools, so repeat until the CLI
+        // accepts the list or stops naming any.
+        names.retain(|name| !unavailable.contains(name));
+        if names.is_empty() {
+            return None;
+        }
+    }
+    TOOL_CACHE.lock().insert(key, names.clone());
+    Some(names)
+}
+
+/// Read the `Built-in tools:` list out of a CLI's unknown-tool diagnostic.
+///
+/// One line packs several lists: the CLI's own tools, then `Other registered
+/// tools:` (extensions and MCP servers). Only the first is wanted — the second
+/// names tools the session keeps whether or not they are allowed.
+fn parse_builtin_tools(text: &str) -> Option<Vec<String>> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = normalized.split("Built-in tools:").nth(1)?;
+    let builtins = split_tool_list(
+        line.split("Other registered tools:")
+            .next()
+            .unwrap_or(line)
+            .split("Built-in tools unavailable")
+            .next()
+            .unwrap_or(line),
+    );
+    (!builtins.is_empty()).then_some(builtins)
+}
+
+/// Read `Built-in tools unavailable in this session: …`, which the CLI reports
+/// when a named tool exists but is disabled here. Naming one of those in
+/// `--tools` is an error, so they must be dropped from the allowlist.
+fn parse_unavailable_tools(text: &str) -> Vec<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized
+        .split("Built-in tools unavailable in this session:")
+        .nth(1)
+        .or_else(|| {
+            normalized
+                .split("Built-in tool unavailable in this session:")
+                .nth(1)
+        })
+        // The CLI follows the list with a usage hint; that prose must not be
+        // read as part of the last tool name.
+        .map(|list| list.split("Run `omp --help`").next().unwrap_or(list))
+        .map(split_tool_list)
+        .unwrap_or_default()
+}
+
+fn split_tool_list(text: &str) -> Vec<String> {
+    text.trim()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches('.')
+        .split(',')
+        .map(str::trim)
+        .map(|name| name.trim_end_matches('.'))
+        .filter(|name| !name.is_empty() && name.chars().all(is_tool_name_char))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Tool names are identifiers; anything else in the diagnostic is prose that
+/// must not end up in an allowlist.
+fn is_tool_name_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | ':')
+}
+
+/// The delegation tools the extension registers, named so a parent session can
+/// enable them explicitly.
+const DELEGATION_TOOL_NAMES: [&str; 2] = ["delegate_batch", "wait_delegates"];
+
+/// The arguments a review subtask is launched with. No `--approve` / `--yolo`:
+/// those would auto-approve exactly the writes the allowlist removes.
+fn review_read_only_args() -> [&'static str; 4] {
+    ["--mode", "rpc", "--tools", REVIEW_READ_ONLY_TOOLS]
+}
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -184,6 +323,52 @@ pub struct PiDriver {
     computer_use: Option<computer_use_runtime::ComputerUseRuntime>,
 }
 
+/// Give the parent agent Waku's delegation tools.
+///
+/// Pi cannot inherit an MCP server the way Codex does, so the tools arrive as
+/// an extension that spawns `waku-daemon mcp-agent-tools` itself; the session
+/// registration file tells that bridge whose turn this is. Without the
+/// extension the task still runs, so a missing asset is reported and skipped
+/// rather than failing the launch.
+fn configure_pi_delegation_command(
+    command: &mut std::process::Command,
+    flavor: PiFlavor,
+    binary: &Path,
+    cwd: &Path,
+    session_path: Option<&Path>,
+    extension: impl FnOnce() -> anyhow::Result<PathBuf>,
+) {
+    let Some(session_path) = session_path else {
+        return;
+    };
+    match extension() {
+        Ok(extension) => {
+            let daemon = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
+            // `--tools` replaces the default tool set, so it must carry the
+            // CLI's own built-ins as well as ours — otherwise enabling
+            // delegation would silently take away editing and shell access.
+            if let Some(mut tools) = builtin_tool_names(binary, cwd) {
+                tools.extend(DELEGATION_TOOL_NAMES.iter().map(|name| (*name).to_owned()));
+                command.arg("--tools").arg(tools.join(","));
+            } else {
+                eprintln!(
+                    "{} cannot list its built-in tools, so delegation stays unavailable",
+                    flavor.display_name()
+                );
+            }
+            command
+                .arg("--extension")
+                .arg(extension)
+                .env("WAKU_AGENT_TOOLS_SERVER", daemon)
+                .env("WAKU_DELEGATION_SESSION_PATH", session_path);
+        }
+        Err(error) => eprintln!(
+            "{} will not be able to delegate: {error:#}",
+            flavor.display_name()
+        ),
+    }
+}
+
 fn configure_pi_computer_use_command(
     command: &mut std::process::Command,
     config: Option<(&computer_use_runtime::ComputerUseConfig, &Path)>,
@@ -213,6 +398,7 @@ impl PiDriver {
             binary,
             cwd,
             mode,
+            execution_policy,
             model,
             reasoning_effort,
             service_tier: _,
@@ -220,10 +406,22 @@ impl PiDriver {
             agent_preset: _,
             computer_use_enabled,
             provider_cursor,
+            delegation_session_path,
+            delegation_registry_dir: _,
         } = options;
-        if mode != RuntimeMode::FullAccess {
+        // A review subtask runs unattended, so it never gets the full-access
+        // launch: the tool allowlist below is what makes it read-only, and it
+        // is enforced by the CLI refusing to expose anything else.
+        let review_read_only = execution_policy == ExecutionPolicy::ReviewReadOnly;
+        if !review_read_only && mode != RuntimeMode::FullAccess {
             return Err(anyhow!(
                 "{} currently supports Full access only",
+                flavor.display_name()
+            ));
+        }
+        if review_read_only && computer_use_enabled {
+            return Err(anyhow!(
+                "{} cannot run Computer Use in a review subtask",
                 flavor.display_name()
             ));
         }
@@ -258,7 +456,15 @@ impl PiDriver {
             .map(|_| crate::computer_use::pi_extension_path())
             .transpose()?;
         let mut command = crate::command_env::command(&binary);
-        command.args(["--mode", "rpc", flavor.full_access_arg()]);
+        if review_read_only {
+            // Only read-capable tools exist in this session. Shells, editors,
+            // notebooks and subagents are absent rather than denied, and the
+            // delegation extension's tools are not in the allowlist, so a
+            // subtask cannot recurse.
+            command.args(review_read_only_args());
+        } else {
+            command.args(["--mode", "rpc", flavor.full_access_arg()]);
+        }
         if flavor.skips_version_check_by_env() {
             command.env("PI_SKIP_VERSION_CHECK", "1");
         }
@@ -268,6 +474,14 @@ impl PiDriver {
                 .as_ref()
                 .zip(pi_extension.as_deref())
                 .map(|(runtime, extension)| (&runtime.config, extension)),
+        );
+        configure_pi_delegation_command(
+            &mut command,
+            flavor,
+            &binary,
+            &cwd,
+            delegation_session_path.as_deref(),
+            crate::delegation::pi_extension_path,
         );
         let command = command
             .current_dir(&cwd)
@@ -1807,9 +2021,12 @@ mod tests {
                 reasoning_effort: None,
                 service_tier: None,
                 context_window: None,
+                execution_policy: Default::default(),
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -2055,8 +2272,11 @@ mod tests {
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
+                execution_policy: Default::default(),
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -2644,5 +2864,169 @@ mod tests {
             event_rx.recv().unwrap(),
             DriverEvent::TurnFinished { success: true, .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod delegation_tests {
+    use super::*;
+
+    fn command() -> std::process::Command {
+        std::process::Command::new("omp")
+    }
+
+    fn args(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn env(command: &std::process::Command, key: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == key)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn a_session_with_targets_gets_the_delegation_extension() {
+        let mut command = command();
+        configure_pi_delegation_command(
+            &mut command,
+            PiFlavor::OhMyPi,
+            Path::new("/nonexistent/omp"),
+            Path::new("/tmp"),
+            Some(Path::new("/tmp/registration.json")),
+            || Ok(PathBuf::from("/bundle/delegation/pi-extension.ts")),
+        );
+
+        let args = args(&command);
+        let flag = args.iter().position(|arg| arg == "--extension").unwrap();
+        assert_eq!(args[flag + 1], "/bundle/delegation/pi-extension.ts");
+        assert_eq!(
+            env(&command, "WAKU_DELEGATION_SESSION_PATH").as_deref(),
+            Some("/tmp/registration.json")
+        );
+        // The bridge executable must be the daemon that owns this task, never
+        // an arbitrary path from the model.
+        assert_eq!(
+            env(&command, "WAKU_AGENT_TOOLS_SERVER").as_deref(),
+            std::env::current_exe()
+                .ok()
+                .as_deref()
+                .map(|path| path.to_string_lossy())
+                .as_deref()
+        );
+    }
+
+    #[test]
+    fn a_session_without_targets_spawns_no_extension() {
+        let mut command = command();
+        configure_pi_delegation_command(
+            &mut command,
+            PiFlavor::Pi,
+            Path::new("/nonexistent/pi"),
+            Path::new("/tmp"),
+            None,
+            || panic!("the extension must not be probed without a registration"),
+        );
+        assert!(args(&command).is_empty());
+        assert!(env(&command, "WAKU_AGENT_TOOLS_SERVER").is_none());
+    }
+
+    /// The subtask launch must not carry the full-access flag: `--approve` /
+    /// `--yolo` would auto-approve the writes the allowlist exists to prevent.
+    #[test]
+    fn a_review_subtask_is_launched_with_a_read_only_tool_allowlist() {
+        for _flavor in [PiFlavor::Pi, PiFlavor::OhMyPi] {
+            let mut command = command();
+            command.args(review_read_only_args());
+            let args = args(&command);
+            let tools = args
+                .iter()
+                .position(|arg| arg == "--tools")
+                .map(|index| args[index + 1].clone())
+                .expect("a review subtask must carry a tool allowlist");
+            for denied in ["bash", "edit", "write", "python", "notebook", "task"] {
+                assert!(!tools.split(',').any(|tool| tool == denied), "{denied}");
+            }
+            for allowed in ["read", "grep", "glob"] {
+                assert!(tools.split(',').any(|tool| tool == allowed), "{allowed}");
+            }
+            assert!(!args.iter().any(|arg| arg == "--approve" || arg == "--yolo"));
+        }
+    }
+
+    #[test]
+    fn a_missing_extension_leaves_the_task_runnable() {
+        let mut command = command();
+        // A build without the asset still launches the agent; it simply cannot
+        // delegate, which is what the eprintln! records.
+        configure_pi_delegation_command(
+            &mut command,
+            PiFlavor::Pi,
+            Path::new("/nonexistent/pi"),
+            Path::new("/tmp"),
+            Some(Path::new("/tmp/registration.json")),
+            || anyhow::bail!("asset missing"),
+        );
+        assert!(args(&command).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod builtin_tool_tests {
+    use super::{parse_builtin_tools, parse_unavailable_tools};
+
+    #[test]
+    fn the_cli_diagnostic_yields_its_builtin_tool_names() {
+        // Shape taken from a real `omp --mode rpc --tools -probe` run.
+        let text = "Error: Unknown tool in --tools: -probe.\nBuilt-in tools: read, bash, edit, ast_grep, glob, grep, lsp, task, wait, todo, web_search, write.\nOther registered tools: goal, mcp__server_tool.\nRun `omp --help` for available flags.\n";
+        let names = parse_builtin_tools(text).expect("the list is present");
+        assert_eq!(names.first().map(String::as_str), Some("read"));
+        assert!(names.iter().any(|name| name == "write"));
+        assert!(names.iter().any(|name| name == "task"));
+        // Only the CLI's own tools: another registered tool is not part of the
+        // set a parent session would otherwise lose.
+        assert!(!names.iter().any(|name| name == "goal"));
+        assert!(!names.iter().any(|name| name.starts_with("mcp__")));
+    }
+
+    #[test]
+    fn the_other_registered_tools_are_not_taken_for_builtins() {
+        // Real shape: both lists share one line, which is why a naive split
+        // produced names like "goal" that the CLI then rejected.
+        let text = "Error: Unknown tool in --tools: -probe.\nBuilt-in tools: read, bash, write. Other registered tools: goal, mcp__server_tool.\n";
+        let names = parse_builtin_tools(text).expect("the list is present");
+        assert_eq!(names, vec!["read", "bash", "write"]);
+    }
+
+    #[test]
+    fn builtins_that_are_unavailable_here_are_dropped() {
+        // The CLI answers a second time when a named tool exists but is
+        // disabled here; naming it is an error, so it must not reach the
+        // allowlist. This text is the real shape, wrapped mid-list.
+        let text = "Error: Built-in tools unavailable in this session: ast_grep, ask,\nida, github, find.\nRun `omp --help` for available flags.\n";
+        let unavailable = parse_unavailable_tools(text);
+        assert_eq!(
+            unavailable,
+            vec!["ast_grep", "ask", "ida", "github", "find"]
+        );
+    }
+
+    #[test]
+    fn prose_never_becomes_a_tool_name() {
+        let text = "Built-in tools: read, bash, write. Other registered tools: goal. Run `omp --help` for available flags.\n";
+        let names = parse_builtin_tools(text).expect("the list is present");
+        assert_eq!(names, vec!["read", "bash", "write"]);
+        assert!(!names.iter().any(|name| name.contains(' ')));
+    }
+
+    #[test]
+    fn an_unexpected_diagnostic_is_not_guessed_at() {
+        assert!(parse_builtin_tools("Error: something else entirely").is_none());
+        assert!(parse_builtin_tools("Built-in tools: \n").is_none());
     }
 }

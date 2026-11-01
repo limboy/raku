@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Fix cross-model subagent tool calls and OpenCode routing, accept long wait requests as bounded progress polls, keep cancelled tasks stopped, make retries start a new attempt, and report failed or timed-out groups accurately; code reviews use complete snapshots that are reclaimed when their parent task is deleted
+- Show delegated subagents alongside background work under the info icon, with a live indicator and task controls; their details share the main agent's thinking, tool activity, and answer presentation with compact spacing, folded historical thinking, and stable scrolling
+- Keep selected delegation models inline in the composer instead of duplicate pills, with one-step Backspace deletion and undo/redo; preserve model and channel selections across draft restoration and queued messages
+
 ## [0.1.20]
 
 - Support the OpenCode 2.0 release, which now installs as `opencode`: OpenCode runs on its shared background service, OpenCode 2 beta and OpenCode 1 tasks continue as OpenCode tasks, and OpenCode's free models work in Waku tasks

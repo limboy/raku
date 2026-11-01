@@ -38,6 +38,7 @@
 //! a daemon request thread. Nothing here is reachable from a frame.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -55,8 +56,8 @@ use crate::driver::{
 use crate::http_wire::Endpoint;
 use crate::model::{
     ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKind,
-    BackgroundWorkStatus, DriverEvent, PermissionOption, ProviderResumeCursor, ReportedCommand,
-    RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
+    BackgroundWorkStatus, DriverEvent, ExecutionPolicy, PermissionOption, ProviderResumeCursor,
+    ReportedCommand, RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
 };
 use crate::opencode_api::{
     self, ApiError, AssistantContent, Delivery, FormAnswer, FormField, FormInfo, FormValue,
@@ -233,6 +234,7 @@ struct PendingInput {
 struct StreamState {
     session_id: String,
     mode: RuntimeMode,
+    execution_policy: ExecutionPolicy,
     parts: HashMap<(String, u64), PartKind>,
     tools: HashMap<(String, String), ToolSlot>,
     /// Stable placement per assistant message, so a reconnect repairs tool
@@ -271,12 +273,14 @@ impl StreamState {
     fn new(
         session_id: String,
         mode: RuntimeMode,
+        execution_policy: ExecutionPolicy,
         model: Option<ModelRef>,
         generation: u64,
     ) -> Self {
         Self {
             session_id,
             mode,
+            execution_policy,
             parts: HashMap::new(),
             tools: HashMap::new(),
             tool_order: HashMap::new(),
@@ -441,6 +445,7 @@ impl OpenCodeDriver {
             binary,
             cwd,
             mode,
+            execution_policy,
             model,
             reasoning_effort,
             service_tier: _,
@@ -448,7 +453,11 @@ impl OpenCodeDriver {
             agent_preset,
             computer_use_enabled,
             provider_cursor,
+            delegation_session_path,
+            delegation_registry_dir,
         } = options;
+        let computer_use_enabled =
+            computer_use_enabled && execution_policy != ExecutionPolicy::ReviewReadOnly;
 
         let resumed = match provider_cursor {
             Some(ProviderResumeCursor::OpenCode { session_id, .. }) => {
@@ -483,6 +492,12 @@ impl OpenCodeDriver {
         let endpoint = service.endpoint();
         let resuming = resumed.is_some();
         let session_id = resumed.unwrap_or_else(opencode_api::new_session_id);
+        if execution_policy != ExecutionPolicy::ReviewReadOnly
+            && let Some(path) = delegation_session_path.as_deref()
+        {
+            crate::delegation::auth::DelegationRegistry::register_alias(path, &session_id)
+                .context("could not register OpenCode delegation routing")?;
+        }
 
         // SUBSCRIBE BEFORE CREATE. The service can emit this session's first
         // event before `POST /api/session` has answered; the create body takes
@@ -491,7 +506,11 @@ impl OpenCodeDriver {
         let frames = subscription.rx.clone();
 
         let agents = opencode_api::list_agents(&endpoint, Some(&directory)).unwrap_or_default();
-        let requested_agent = agent_preset.filter(|preset| !preset.is_empty());
+        let requested_agent = if execution_policy == ExecutionPolicy::ReviewReadOnly {
+            Some("plan".to_owned())
+        } else {
+            agent_preset.filter(|preset| !preset.is_empty())
+        };
         let agent = resolve_agent(requested_agent.as_deref(), &agents);
         let model = model_ref(model.as_deref(), reasoning_effort.as_deref());
 
@@ -559,6 +578,33 @@ impl OpenCodeDriver {
             let _ = opencode_api::remove_instruction_entry(&endpoint, &session_id, INSTRUCTION_KEY);
             None
         };
+        if let Some(registry_dir) = delegation_registry_dir.as_ref()
+            && execution_policy != ExecutionPolicy::ReviewReadOnly
+        {
+            let daemon_bin =
+                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
+            let _ = opencode_api::add_mcp(
+                &endpoint,
+                &directory,
+                "waku_agent_tools",
+                &json!({
+                    "type": "local",
+                    "command": [daemon_bin, "mcp-agent-tools"],
+                    "cwd": directory,
+                    "environment": {
+                        "WAKU_AGENT_TOOLS_SESSIONS_DIRECTORY": registry_dir,
+                    },
+                    "timeout": {"startup": 10000, "catalog": 10000, "execution": 300000},
+                }),
+            );
+            let instructions = "You have access to the `delegate_batch` and `wait_delegates` tools from MCP server `waku_agent_tools` to run independent code review subtasks across multiple models in parallel.";
+            let _ = opencode_api::put_instruction_entry(
+                &endpoint,
+                &session_id,
+                "waku-delegation",
+                instructions,
+            );
+        }
 
         // The session's own token totals are a LIFETIME cumulative counter and
         // cannot gauge how full the window is, so read the latest assistant
@@ -606,7 +652,13 @@ impl OpenCodeDriver {
             computer_use: computer_use.clone(),
         };
         let generation = service.generation();
-        let mut state = StreamState::new(session_id.clone(), mode, session_model, generation);
+        let mut state = StreamState::new(
+            session_id.clone(),
+            mode,
+            execution_policy,
+            session_model,
+            generation,
+        );
         thread::Builder::new()
             .name(format!("waku-opencode-{session_id}"))
             .spawn(move || {
@@ -2162,6 +2214,12 @@ fn shell_work(data: &Value, events: &impl DriverEventSink, running: bool) {
 }
 
 fn surface_form(form: FormInfo, state: &mut StreamState, events: &impl DriverEventSink) {
+    if state.execution_policy == ExecutionPolicy::ReviewReadOnly {
+        let _ = events.send(DriverEvent::Error(
+            "OpenCode requested a form in an unattended review subtask".into(),
+        ));
+        return;
+    }
     if state.forms.contains_key(&form.id) {
         return;
     }
@@ -2330,10 +2388,21 @@ fn request_permission(
     {
         return;
     }
+    if state.execution_policy == ExecutionPolicy::ReviewReadOnly {
+        let is_read_only = matches!(
+            request.permission.as_str(),
+            "read" | "search" | "fetch" | "glob" | "list"
+        );
+        let option_id = if is_read_only { "once" } else { "reject" };
+        state.permissions.responding.insert(request_id.to_owned());
+        let _ = commands.send(DriverCommand::Respond {
+            request_id: request_id.to_owned(),
+            option_id: option_id.into(),
+        });
+        return;
+    }
     if auto_replies(state.mode, &request.permission) || state.permissions.is_approved(&request) {
         state.permissions.responding.insert(request_id.to_owned());
-        // Posted back through the worker's own channel rather than inline so
-        // one slow reply cannot stall the decoding of the frames behind it.
         let _ = commands.send(DriverCommand::Respond {
             request_id: request_id.to_owned(),
             option_id: "once".into(),
@@ -2419,7 +2488,13 @@ mod tests {
                 commands,
                 issued,
                 windows: HashMap::new(),
-                state: StreamState::new("ses_1".into(), mode, None, 0),
+                state: StreamState::new(
+                    "ses_1".into(),
+                    mode,
+                    ExecutionPolicy::Interactive,
+                    None,
+                    0,
+                ),
             }
         }
 
@@ -3557,6 +3632,7 @@ mod tests {
                 binary,
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
+                execution_policy: Default::default(),
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
@@ -3564,6 +3640,8 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -3646,6 +3724,7 @@ mod tests {
             binary: binary.clone(),
             cwd: workspace.clone(),
             mode: RuntimeMode::FullAccess,
+            execution_policy: Default::default(),
             model: Some(model.clone()),
             reasoning_effort: None,
             service_tier: None,
@@ -3653,6 +3732,8 @@ mod tests {
             agent_preset: None,
             computer_use_enabled: false,
             provider_cursor,
+            delegation_session_path: None,
+            delegation_registry_dir: None,
         };
         let (events, event_rx) = crate::driver::test_event_channel();
         let driver = OpenCodeDriver::start(options(None), events).unwrap();
@@ -3814,6 +3895,7 @@ mod tests {
                 binary: binary.clone(),
                 cwd: workspace.clone(),
                 mode: RuntimeMode::FullAccess,
+                execution_policy: Default::default(),
                 model: Some(model),
                 reasoning_effort: None,
                 service_tier: None,
@@ -3821,6 +3903,8 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -3934,6 +4018,7 @@ mod tests {
                     binary: binary.clone(),
                     cwd: test_directory.clone(),
                     mode: RuntimeMode::FullAccess,
+                    execution_policy: Default::default(),
                     model: None,
                     reasoning_effort: None,
                     service_tier: None,
@@ -3941,6 +4026,8 @@ mod tests {
                     agent_preset: None,
                     computer_use_enabled: true,
                     provider_cursor: None,
+                    delegation_session_path: None,
+                    delegation_registry_dir: None,
                 },
                 events,
             )

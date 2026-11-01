@@ -4,54 +4,15 @@ use std::ops::Range;
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
-pub use waku_protocol::composer::{CommandScope, FileEntry, SlashCommand};
+pub use waku_protocol::composer::{
+    CommandScope, FileEntry, ModelCandidate, SlashCommand, Trigger, TriggerKind, detect_trigger,
+    extract_model_references, model_candidates, model_reference_range_before_caret,
+    model_reference_text, resolve_model_references,
+};
 use waku_protocol::model::{ProviderKind, ProviderModelOption, ReportedCommand};
 
 pub const FILTER_CAP: usize = 64;
 pub const FILE_INDEX_CAP: usize = 50_000;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TriggerKind {
-    Command,
-    File,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Trigger {
-    pub kind: TriggerKind,
-    pub query: String,
-    pub range: Range<usize>,
-}
-
-pub fn detect_trigger(text: &str, cursor: usize) -> Option<Trigger> {
-    let cursor = cursor.min(text.len());
-    if !text.is_char_boundary(cursor) {
-        return None;
-    }
-    let line_start = text[..cursor].rfind('\n').map_or(0, |index| index + 1);
-    let line_prefix = &text[line_start..cursor];
-    if let Some(query) = line_prefix.strip_prefix('/') {
-        if !query.chars().any(char::is_whitespace) {
-            return Some(Trigger {
-                kind: TriggerKind::Command,
-                query: query.to_owned(),
-                range: line_start..cursor,
-            });
-        }
-        return None;
-    }
-    let token_start = text[..cursor]
-        .rfind(char::is_whitespace)
-        .map_or(0, |index| {
-            index + text[index..].chars().next().unwrap().len_utf8()
-        });
-    let token = &text[token_start..cursor];
-    Some(Trigger {
-        kind: TriggerKind::File,
-        query: token.strip_prefix('@')?.to_owned(),
-        range: token_start..cursor,
-    })
-}
 
 pub fn merge_reported_commands(
     discovered: &[SlashCommand],
@@ -349,6 +310,27 @@ pub fn filter_files(
         .into_iter()
         .map(|(index, positions)| Scored {
             item: files[index].clone(),
+            positions,
+        })
+        .collect()
+}
+
+/// Fuzzy-filter delegation candidates over the text a user actually types:
+/// model name, provider, channel and reasoning level all match.
+pub fn filter_models(
+    candidates: &[ModelCandidate],
+    query: &str,
+    matcher: &mut Matcher,
+) -> Vec<Scored<ModelCandidate>> {
+    let searchable = candidates
+        .iter()
+        .map(ModelCandidate::searchable)
+        .collect::<Vec<_>>();
+    let haystacks = searchable.iter().map(String::as_str).collect::<Vec<_>>();
+    filter_scored(&haystacks, query, matcher, FILTER_CAP)
+        .into_iter()
+        .map(|(index, positions)| Scored {
+            item: candidates[index].clone(),
             positions,
         })
         .collect()

@@ -23,9 +23,9 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
-    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, GoalOperation, PermissionOption,
-    ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus, UserInputAnswer,
-    UserInputOption, UserInputQuestion, unix_time_millis,
+    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, ExecutionPolicy, GoalOperation,
+    PermissionOption, ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus,
+    UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 const DISABLE_EXTERNAL_COMPUTER_USE_PLUGIN: &str =
@@ -215,6 +215,7 @@ impl CodexDriver {
             binary,
             cwd,
             mode,
+            execution_policy,
             model,
             reasoning_effort,
             service_tier,
@@ -222,6 +223,8 @@ impl CodexDriver {
             agent_preset: _,
             computer_use_enabled,
             provider_cursor,
+            delegation_session_path,
+            delegation_registry_dir: _,
         } = options;
         let provider_session_id = match provider_cursor {
             Some(ProviderResumeCursor::Codex { thread_id }) => Some(thread_id),
@@ -233,7 +236,8 @@ impl CodexDriver {
             }
             None => None,
         };
-        let computer_use = computer_use_enabled
+        let computer_use = (computer_use_enabled
+            && execution_policy != ExecutionPolicy::ReviewReadOnly)
             .then(CodexComputerUseConfig::load)
             .transpose()?;
         let computer_use_skill_root = computer_use
@@ -250,6 +254,21 @@ impl CodexDriver {
         let mut command = crate::command_env::command(&binary);
         command.args(["app-server", "--stdio"]);
         configure_computer_use_command(&mut command, computer_use.as_ref());
+        if let Some(session_path) = delegation_session_path.as_ref() {
+            let daemon_bin =
+                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
+            let bin_str = toml_string(&daemon_bin.display().to_string());
+            let path_str = toml_string(&session_path.display().to_string());
+            command
+                .arg("-c")
+                .arg(format!("mcp_servers.waku_agent_tools.command={bin_str}"))
+                .arg("-c")
+                .arg("mcp_servers.waku_agent_tools.args=[\"mcp-agent-tools\"]")
+                .arg("-c")
+                .arg(format!(
+                    "mcp_servers.waku_agent_tools.env.WAKU_DELEGATION_SESSION_PATH={path_str}"
+                ));
+        }
         let command = command
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -367,7 +386,8 @@ impl CodexDriver {
                 // one of those is a new value here rather than a new process.
                 // The permission policy is deliberately not in that set — see
                 // `apply_options`.
-                let (approval_policy, sandbox, approvals_reviewer) = codex_permissions(mode);
+                let (approval_policy, sandbox, approvals_reviewer) =
+                    codex_permissions(mode, execution_policy);
                 let mut model = model;
                 let mut reasoning_effort = reasoning_effort;
                 let mut service_tier = service_tier;
@@ -872,7 +892,13 @@ impl CodexDriver {
     }
 }
 
-fn codex_permissions(mode: RuntimeMode) -> (&'static str, &'static str, &'static str) {
+fn codex_permissions(
+    mode: RuntimeMode,
+    execution_policy: ExecutionPolicy,
+) -> (&'static str, &'static str, &'static str) {
+    if execution_policy == ExecutionPolicy::ReviewReadOnly {
+        return ("never", "read-only", "user");
+    }
     match mode {
         RuntimeMode::Ask => ("untrusted", "read-only", "user"),
         RuntimeMode::AutoAcceptEdits => ("on-request", "workspace-write", "user"),
@@ -2502,6 +2528,7 @@ mod tests {
                     binary: binary.clone(),
                     cwd: directory.clone(),
                     mode: RuntimeMode::Ask,
+                    execution_policy: Default::default(),
                     model: None,
                     reasoning_effort: None,
                     service_tier: None,
@@ -2509,6 +2536,8 @@ mod tests {
                     agent_preset: None,
                     computer_use_enabled: false,
                     provider_cursor: Some(cursor),
+                    delegation_session_path: None,
+                    delegation_registry_dir: None,
                 },
                 events,
             )
@@ -2587,6 +2616,7 @@ mod tests {
                     binary: binary.clone(),
                     cwd: cwd.clone(),
                     mode: RuntimeMode::Ask,
+                    execution_policy: Default::default(),
                     model: Some(CODEX_TITLE_MODEL.to_owned()),
                     reasoning_effort: Some("low".to_owned()),
                     service_tier: None,
@@ -2594,6 +2624,8 @@ mod tests {
                     agent_preset: None,
                     computer_use_enabled: false,
                     provider_cursor: cursor,
+                    delegation_session_path: None,
+                    delegation_registry_dir: None,
                 },
                 events,
             )
@@ -2936,20 +2968,28 @@ mod tests {
     #[test]
     fn access_modes_match_codex_permission_profiles() {
         assert_eq!(
-            codex_permissions(RuntimeMode::Ask),
+            codex_permissions(RuntimeMode::Ask, ExecutionPolicy::Interactive),
             ("untrusted", "read-only", "user")
         );
         assert_eq!(
-            codex_permissions(RuntimeMode::AutoAcceptEdits),
+            codex_permissions(RuntimeMode::AutoAcceptEdits, ExecutionPolicy::Interactive),
             ("on-request", "workspace-write", "user")
         );
         assert_eq!(
-            codex_permissions(RuntimeMode::Auto),
+            codex_permissions(RuntimeMode::Auto, ExecutionPolicy::Interactive),
             ("on-request", "workspace-write", "auto_review")
         );
         assert_eq!(
-            codex_permissions(RuntimeMode::FullAccess),
+            codex_permissions(RuntimeMode::FullAccess, ExecutionPolicy::Interactive),
             ("never", "danger-full-access", "user")
+        );
+        assert_eq!(
+            codex_permissions(RuntimeMode::Ask, ExecutionPolicy::ReviewReadOnly),
+            ("never", "read-only", "user")
+        );
+        assert_eq!(
+            codex_permissions(RuntimeMode::FullAccess, ExecutionPolicy::ReviewReadOnly),
+            ("never", "read-only", "user")
         );
     }
 

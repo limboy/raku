@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use crate::model::{ProviderKind, ReportedCommand};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
-pub use waku_protocol::composer::{CommandScope, FileEntry, SlashCommand};
+pub use waku_protocol::composer::{
+    CommandScope, FileEntry, ModelCandidate, SlashCommand, Trigger, TriggerKind, detect_trigger,
+    extract_model_references, model_candidates, model_reference_text, resolve_model_references,
+};
 
 /// How many rows a filter pass returns. The popup shows a screenful and the
 /// keyboard walks the rest; past this the tail is noise, not choice.
@@ -26,61 +29,6 @@ pub const FILE_INDEX_CAP: usize = 50_000;
 const COMMAND_SCAN_CAP: usize = 500;
 const COMMAND_FILE_MAX_BYTES: u64 = 64 * 1024;
 const WALK_MAX_DEPTH: usize = 8;
-
-// ── Trigger detection ──────────────────────────────────────────────────────
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TriggerKind {
-    Command,
-    File,
-}
-
-/// An autocompletion site under the caret: the token being typed, and the byte
-/// range an accepted choice replaces (including the `/` or `@` sigil).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Trigger {
-    pub kind: TriggerKind,
-    pub query: String,
-    pub range: Range<usize>,
-}
-
-/// The trigger at `cursor`, if the text under it is one.
-///
-/// A slash command must be the first token of its line — `/` mid-sentence is
-/// prose. An `@` mention starts at any whitespace boundary, so `see @src/` in
-/// the middle of a prompt still completes, while `user@host` does not: its `@`
-/// is inside a token, not at the start of one.
-pub fn detect_trigger(text: &str, cursor: usize) -> Option<Trigger> {
-    let cursor = cursor.min(text.len());
-    if !text.is_char_boundary(cursor) {
-        return None;
-    }
-    let line_start = text[..cursor].rfind('\n').map_or(0, |index| index + 1);
-    let line_prefix = &text[line_start..cursor];
-    if let Some(query) = line_prefix.strip_prefix('/') {
-        if !query.chars().any(char::is_whitespace) {
-            return Some(Trigger {
-                kind: TriggerKind::Command,
-                query: query.to_owned(),
-                range: line_start..cursor,
-            });
-        }
-        return None;
-    }
-
-    let token_start = text[..cursor]
-        .rfind(char::is_whitespace)
-        .map_or(0, |index| {
-            index + text[index..].chars().next().unwrap().len_utf8()
-        });
-    let token = &text[token_start..cursor];
-    let query = token.strip_prefix('@')?;
-    Some(Trigger {
-        kind: TriggerKind::File,
-        query: query.to_owned(),
-        range: token_start..cursor,
-    })
-}
 
 // ── Slash commands ─────────────────────────────────────────────────────────
 

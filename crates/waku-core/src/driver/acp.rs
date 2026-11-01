@@ -34,8 +34,8 @@ use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
 use crate::model::{
-    ActivityKind, DriverEvent, PermissionOption, ProviderKind, ProviderResumeCursor, RuntimeMode,
-    UserInputAnswer, UserInputOption, UserInputQuestion,
+    ActivityKind, DriverEvent, ExecutionPolicy, PermissionOption, ProviderKind,
+    ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
 };
 use waku_protocol::model_catalog::{
     CursorModelSelection, cursor_suffix_has, normalize_cursor_reasoning_effort,
@@ -114,6 +114,7 @@ impl AcpDriver {
             binary,
             cwd,
             mode,
+            execution_policy,
             model,
             reasoning_effort,
             service_tier,
@@ -121,7 +122,17 @@ impl AcpDriver {
             agent_preset: _,
             computer_use_enabled,
             provider_cursor,
+            ..
         } = options;
+        // ACP providers ask a human before running a tool. A review subtask has
+        // no such human, so it must fail here instead of hanging on a request
+        // nobody will answer.
+        if execution_policy == ExecutionPolicy::ReviewReadOnly {
+            return Err(anyhow!(
+                "{} cannot run a read-only review subtask",
+                provider.display_name()
+            ));
+        }
         let fork_context = match &provider_cursor {
             Some(ProviderResumeCursor::Cursor { fork_context, .. }) => fork_context.clone(),
             _ => None,
@@ -2629,6 +2640,7 @@ mod tests {
                 binary,
                 cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
                 mode: RuntimeMode::FullAccess,
+                execution_policy: Default::default(),
                 model: Some("grok-4.5".into()),
                 reasoning_effort: None,
                 service_tier: None,
@@ -2636,6 +2648,8 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -2682,6 +2696,7 @@ mod tests {
                 binary,
                 cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
                 mode: RuntimeMode::FullAccess,
+                execution_policy: Default::default(),
                 model: Some("cursor-grok-4.6-xhigh".into()),
                 reasoning_effort: None,
                 service_tier: None,
@@ -2689,6 +2704,8 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )
@@ -2740,6 +2757,7 @@ mod tests {
                 binary,
                 cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
                 mode: RuntimeMode::FullAccess,
+                execution_policy: Default::default(),
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
@@ -2747,6 +2765,8 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
             },
             events,
         )

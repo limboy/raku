@@ -42,11 +42,203 @@ impl Default for BackgroundOutputViewport {
 
 #[derive(Clone)]
 struct BackgroundSummaryEntry {
-    item: BackgroundWorkItem,
+    target: BackgroundSummaryTarget,
+    kind: BackgroundWorkKind,
+    title: String,
+    tooltip: String,
+    status: BackgroundSummaryStatus,
+    can_stop: bool,
     row_focus: FocusHandle,
     stop_focus: FocusHandle,
 }
 
+struct BackgroundSummaryListState {
+    list: ListState,
+    scrollbar: Rc<ScrollbarState>,
+    row_keys: Vec<String>,
+    environment_focus: FocusHandle,
+    identifiers_focus: FocusHandle,
+    navigation_focus: Option<FocusHandle>,
+    navigation_generation: u64,
+}
+
+enum BackgroundSummaryRow {
+    Environment(EnvironmentSummary),
+    Separator(&'static str),
+    Heading(&'static str, String),
+    Work(BackgroundSummaryEntry),
+    Identifiers(TaskIdentifierSection),
+}
+
+impl BackgroundSummaryRow {
+    fn key(&self) -> String {
+        match self {
+            Self::Environment(_) => "environment".into(),
+            Self::Separator(key) | Self::Heading(key, _) => (*key).into(),
+            Self::Work(entry) => entry.target.control_id(),
+            Self::Identifiers(section) => {
+                format!(
+                    "identifiers-{}",
+                    section.values.agent_cli_thread_id.is_some()
+                )
+            }
+        }
+    }
+
+    fn height(&self) -> f32 {
+        match self {
+            Self::Environment(_) => 94.0,
+            Self::Separator(_) => 17.0,
+            Self::Heading(_, _) => 26.0,
+            Self::Work(_) => 34.0,
+            Self::Identifiers(section) => {
+                if section.values.agent_cli_thread_id.is_some() {
+                    109.0
+                } else {
+                    51.0
+                }
+            }
+        }
+    }
+
+    fn list_focus(
+        &self,
+        environment_focus: &FocusHandle,
+        identifiers_focus: &FocusHandle,
+    ) -> Option<FocusHandle> {
+        match self {
+            Self::Environment(_) => Some(environment_focus.clone()),
+            Self::Identifiers(_) => Some(identifiers_focus.clone()),
+            Self::Work(entry) => Some(entry.row_focus.clone()),
+            Self::Separator(_) | Self::Heading(_, _) => None,
+        }
+    }
+
+    fn focus_targets(&self, row: usize, targets: &mut Vec<(usize, FocusHandle)>) {
+        match self {
+            Self::Environment(environment) => {
+                if environment.commit_status.is_none() {
+                    targets.push((row, environment.commit_focus.clone()));
+                }
+                targets.push((row, environment.compare_focus.clone()));
+            }
+            Self::Work(entry) => {
+                targets.push((row, entry.row_focus.clone()));
+                if entry.can_stop && entry.status.is_stoppable() {
+                    targets.push((row, entry.stop_focus.clone()));
+                }
+            }
+            Self::Identifiers(section) => {
+                targets.push((row, section.task_id_copy_focus.clone()));
+                if section.values.agent_cli_thread_id.is_some() {
+                    targets.push((row, section.agent_cli_thread_id_copy_focus.clone()));
+                }
+            }
+            Self::Separator(_) | Self::Heading(_, _) => {}
+        }
+    }
+}
+
+#[derive(Clone)]
+enum BackgroundSummaryTarget {
+    Native(BackgroundWorkKey),
+    Delegated { group_id: Uuid, task_id: Uuid },
+}
+
+impl BackgroundSummaryTarget {
+    fn control_id(&self) -> String {
+        match self {
+            Self::Native(key) => format!("native-{}-{}", key.provider_id, key.kind as u8),
+            Self::Delegated { group_id, task_id } => format!("delegated-{group_id}-{task_id}"),
+        }
+    }
+
+    fn open(&self, session_id: Uuid, waku: &mut Waku, window: &mut Window, cx: &mut Context<Waku>) {
+        if waku.state.selected_session != Some(session_id) {
+            return;
+        }
+        match self {
+            Self::Native(key) => waku.open_background_work_surface(session_id, key.clone(), cx),
+            Self::Delegated { group_id, task_id } => {
+                waku.open_delegated_task(*group_id, *task_id, window, cx);
+            }
+        }
+    }
+
+    fn stop(&self, session_id: Uuid, waku: &mut Waku, cx: &mut Context<Waku>) {
+        if waku.state.selected_session != Some(session_id) {
+            return;
+        }
+        match self {
+            Self::Native(key) => waku.stop_background_work(session_id, key.clone(), cx),
+            Self::Delegated { group_id, task_id } => {
+                let live = waku
+                    .selected_delegations()
+                    .iter()
+                    .find(|group| group.id == *group_id)
+                    .and_then(|group| group.tasks.iter().find(|task| task.task_id == *task_id))
+                    .is_some_and(|task| !task.status.is_terminal());
+                if live {
+                    waku.cancel_delegation(*group_id, Some(*task_id), cx);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BackgroundSummaryStatus {
+    Native(BackgroundWorkStatus),
+    Delegated(waku_client::delegation::DelegatedTaskStatus),
+}
+
+impl BackgroundSummaryStatus {
+    fn label(self) -> String {
+        match self {
+            Self::Native(status) => work_status_label(status),
+            Self::Delegated(status) => super::delegation::task_status_label(status),
+        }
+    }
+
+    fn is_stoppable(self) -> bool {
+        match self {
+            Self::Native(status) => status.is_stoppable(),
+            Self::Delegated(status) => !status.is_terminal(),
+        }
+    }
+
+    fn color(self, theme: Theme) -> Hsla {
+        match self {
+            Self::Native(status) => work_status_color(status, theme),
+            Self::Delegated(status) => super::delegation::task_status_color(&theme, status),
+        }
+    }
+
+    fn render_icon(self, kind: BackgroundWorkKind) -> bool {
+        match self {
+            Self::Native(status) => background_summary_process_status_icon(kind, status).is_some(),
+            Self::Delegated(_) => true,
+        }
+    }
+
+    fn icon(self, theme: Theme) -> AnyElement {
+        match self {
+            Self::Native(status) => rendered_work_status_icon(status, 12.0, self.color(theme)),
+            Self::Delegated(status) => {
+                let icon = icon(
+                    super::delegation::task_status_icon(status),
+                    12.0,
+                    self.color(theme),
+                );
+                if status.is_terminal() {
+                    icon.into_any_element()
+                } else {
+                    motion::spin_slow(icon)
+                }
+            }
+        }
+    }
+}
 #[derive(Clone)]
 struct EnvironmentSummary {
     commit_status: Option<String>,
@@ -733,9 +925,14 @@ impl Waku {
         self.open_right_panel_surface(RightPanelSurface::BackgroundWork { key, title }, cx);
     }
 
-    pub(super) fn render_background_work_summary(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_current_background_summary_card(
+        &self,
+        handle: &ContextMenuHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let session = self.selected_session();
-        let session_id = session.map(|session| session.id);
+        let session_id = session.map(|session| session.id).unwrap_or_else(Uuid::nil);
         let identifiers = session.map(|session| TaskIdentifierSection {
             values: TaskIdentifiers::from(session),
             task_id_copy_focus: self.transcript_control_focus(TASK_ID_COPY_CONTROL_ID, cx),
@@ -744,31 +941,85 @@ impl Waku {
             task_id_copied: self.control_was_copied(TASK_ID_COPY_CONTROL_ID),
             agent_cli_thread_id_copied: self.control_was_copied(AGENT_THREAD_ID_COPY_CONTROL_ID),
         });
-        let entries = session_id
-            .and_then(|session_id| self.background_work.get(&session_id))
-            .map(|registry| {
-                registry
-                    .ordered_items()
-                    .into_iter()
-                    .cloned()
-                    .map(|item| {
-                        let kind = item.key.kind as u8;
-                        let provider_id = &item.key.provider_id;
-                        BackgroundSummaryEntry {
-                            row_focus: self.transcript_control_focus(
-                                format!("background-summary-row-{provider_id}-{kind}"),
-                                cx,
-                            ),
-                            stop_focus: self.transcript_control_focus(
-                                format!("background-summary-stop-{provider_id}-{kind}"),
-                                cx,
-                            ),
-                            item,
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let mut entries = Vec::new();
+        if let Some(registry) = self.background_work.get(&session_id) {
+            for item in registry.ordered_items() {
+                let target = BackgroundSummaryTarget::Native(item.key.clone());
+                let id = target.control_id();
+                let status = BackgroundSummaryStatus::Native(item.status);
+                let tooltip = match item.model.as_deref() {
+                    Some(model) => format!("{}\n{model}\n{}", item.title, status.label()),
+                    None => format!("{}\n{}", item.title, status.label()),
+                };
+                entries.push(BackgroundSummaryEntry {
+                    target,
+                    kind: item.key.kind,
+                    title: item.title.clone(),
+                    tooltip,
+                    status,
+                    can_stop: item.can_stop,
+                    row_focus: self
+                        .transcript_control_focus(format!("background-summary-row-{id}"), cx),
+                    stop_focus: self
+                        .transcript_control_focus(format!("background-summary-stop-{id}"), cx),
+                });
+            }
+        }
+        for group in self.selected_delegations() {
+            for task in &group.tasks {
+                let target = BackgroundSummaryTarget::Delegated {
+                    group_id: group.id,
+                    task_id: task.task_id,
+                };
+                let id = target.control_id();
+                let status = BackgroundSummaryStatus::Delegated(task.status);
+                let channel = task.target.sub_provider.as_deref().unwrap_or_default();
+                let provider = task.target.provider.display_name();
+                let source = if channel.is_empty() {
+                    provider.to_owned()
+                } else {
+                    format!("{provider} · {channel}")
+                };
+                entries.push(BackgroundSummaryEntry {
+                    target,
+                    kind: BackgroundWorkKind::Subagent,
+                    title: task.target.display_label.clone(),
+                    tooltip: format!(
+                        "{}\n{source} · {}\n{}\n{}",
+                        task.target.display_label,
+                        task.target.model_id,
+                        task.task_key,
+                        status.label(),
+                    ),
+                    status,
+                    can_stop: !task.status.is_terminal(),
+                    row_focus: self
+                        .transcript_control_focus(format!("background-summary-row-{id}"), cx),
+                    stop_focus: self
+                        .transcript_control_focus(format!("background-summary-stop-{id}"), cx),
+                });
+            }
+        }
+        let environment = Some(EnvironmentSummary {
+            commit_status: self.commit_operation_status_label(),
+            commit_focus: self.transcript_control_focus("environment-summary-commit", cx),
+            compare_focus: self.transcript_control_focus("environment-summary-compare", cx),
+        });
+        render_background_summary_card(
+            handle,
+            session_id,
+            identifiers,
+            environment,
+            entries,
+            cx.entity().downgrade(),
+            window,
+            cx,
+        )
+    }
+
+    pub(super) fn render_background_work_summary(&self, cx: &mut Context<Self>) -> AnyElement {
+        let session = self.selected_session();
+        let session_id = session.map(|session| session.id);
         let workspace_path = session
             .and_then(|session| self.workspace_path_for_session(session))
             .or_else(|| {
@@ -784,14 +1035,14 @@ impl Waku {
         let change_counts = snapshot
             .map(|snapshot| (snapshot.additions, snapshot.deletions))
             .filter(|(additions, deletions)| *additions > 0 || *deletions > 0);
-        let environment = Some(EnvironmentSummary {
-            commit_status: self.commit_operation_status_label(),
-            commit_focus: self.transcript_control_focus("environment-summary-commit", cx),
-            compare_focus: self.transcript_control_focus("environment-summary-compare", cx),
-        });
-        let (processes, agents) = session_id
-            .map(|session_id| self.background_work_counts(session_id))
-            .unwrap_or_default();
+        let (processes, agents) = background_summary_counts(
+            session_id
+                .map(|session_id| self.background_work_counts(session_id))
+                .unwrap_or_default(),
+            self.selected_delegations()
+                .iter()
+                .flat_map(|group| group.tasks.iter().map(|task| task.status)),
+        );
         let has_live_work = processes > 0 || agents > 0;
         let summary = background_work_count_summary(processes, agents);
         let theme = Theme::current(cx);
@@ -891,22 +1142,18 @@ impl Waku {
                 .into_any_element()
         });
         let open_in = self.render_open_in_control(workspace_path, cx);
-        let entries = Rc::new(entries);
         let weak = cx.entity().downgrade();
         let info = popover(
             trigger,
             &handle,
             MenuAlign::BelowRight,
-            move |handle, _, cx| {
-                render_background_summary_card(
-                    handle,
-                    session_id.unwrap_or_else(Uuid::nil),
-                    identifiers.clone(),
-                    environment.clone(),
-                    entries.clone(),
-                    weak.clone(),
-                    cx,
-                )
+            move |handle, window, cx| {
+                // Re-read the selected session when the open surface renders:
+                // polling/status changes must not retain a trigger-time snapshot.
+                weak.update(cx, |this, cx| {
+                    this.render_current_background_summary_card(handle, window, cx)
+                })
+                .unwrap_or_else(|_| div().into_any_element())
             },
         );
         div()
@@ -1413,6 +1660,19 @@ fn background_work_selection_input(selection: TranscriptSelection) -> impl IntoE
     .h(px(0.0))
 }
 
+fn background_summary_counts(
+    native: (usize, usize),
+    delegated_statuses: impl Iterator<Item = waku_client::delegation::DelegatedTaskStatus>,
+) -> (usize, usize) {
+    (
+        native.0,
+        native.1
+            + delegated_statuses
+                .filter(|status| !status.is_terminal())
+                .count(),
+    )
+}
+
 fn background_work_count_summary(processes: usize, agents: usize) -> String {
     let mut parts = Vec::new();
     if processes > 0 {
@@ -1432,78 +1692,205 @@ fn background_work_count_summary(processes: usize, agents: usize) -> String {
     parts.join(" · ")
 }
 
+fn background_summary_navigation_index(
+    key: &str,
+    shift: bool,
+    current: Option<usize>,
+    count: usize,
+) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let current = current.filter(|index| *index < count);
+    match key {
+        "home" => Some(0),
+        "end" => Some(count - 1),
+        "up" | "tab" if key == "up" || shift => Some(
+            current
+                .and_then(|index| index.checked_sub(1))
+                .unwrap_or(count - 1),
+        ),
+        "down" | "tab" => Some(current.map(|index| (index + 1) % count).unwrap_or(0)),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn render_background_summary_card(
     handle: &ContextMenuHandle,
     session_id: Uuid,
     identifiers: Option<TaskIdentifierSection>,
     environment: Option<EnvironmentSummary>,
-    entries: Rc<Vec<BackgroundSummaryEntry>>,
+    entries: Vec<BackgroundSummaryEntry>,
     weak: WeakEntity<Waku>,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let theme = Theme::current(cx);
-    let processes = entries
-        .iter()
-        .filter(|entry| entry.item.key.kind != BackgroundWorkKind::Subagent)
-        .cloned()
-        .collect::<Vec<_>>();
-    let agents = entries
-        .iter()
-        .filter(|entry| entry.item.key.kind == BackgroundWorkKind::Subagent)
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut content = div()
-        .id("background-summary-scroll")
-        .max_h(px(420.0))
-        .overflow_y_scroll()
-        .p(px(8.0))
-        .flex()
-        .flex_col()
-        .gap(px(8.0));
-    let has_environment = environment.is_some();
-    let has_background = !processes.is_empty() || !agents.is_empty();
-    let has_identifiers = identifiers.is_some();
+    let (agents, processes): (Vec<_>, Vec<_>) = entries
+        .into_iter()
+        .partition(|entry| entry.kind == BackgroundWorkKind::Subagent);
+    let mut rows = Vec::new();
     if let Some(environment) = environment {
-        content = content.child(render_environment_summary_section(
-            environment,
-            handle.clone(),
-            weak.clone(),
-            &theme,
-        ));
+        rows.push(BackgroundSummaryRow::Environment(environment));
     }
-    if has_environment && has_background {
-        content = content.child(div().mx(px(8.0)).h(px(1.0)).bg(theme.border));
+    if !rows.is_empty() && (!processes.is_empty() || !agents.is_empty()) {
+        rows.push(BackgroundSummaryRow::Separator("environment-separator"));
     }
-    if !processes.is_empty() {
-        content = content.child(render_background_summary_section(
-            tr!("background.processes"),
-            processes,
-            session_id,
-            handle.clone(),
-            weak.clone(),
-            &theme,
-        ));
-    }
-    if !agents.is_empty() {
-        content = content.child(render_background_summary_section(
-            tr!("background.agents"),
-            agents,
-            session_id,
-            handle.clone(),
-            weak.clone(),
-            &theme,
-        ));
-    }
-    if has_identifiers && (has_environment || has_background) {
-        content = content.child(div().mx(px(8.0)).h(px(1.0)).bg(theme.border));
+    for (key, label, entries) in [
+        ("processes", tr!("background.processes"), processes),
+        ("agents", tr!("background.agents"), agents),
+    ] {
+        if !entries.is_empty() {
+            rows.push(BackgroundSummaryRow::Heading(key, label));
+            rows.extend(entries.into_iter().map(BackgroundSummaryRow::Work));
+        }
     }
     if let Some(identifiers) = identifiers {
-        content = content.child(render_task_identifiers_section(identifiers, weak, &theme));
+        if !rows.is_empty() {
+            rows.push(BackgroundSummaryRow::Separator("identifiers-separator"));
+        }
+        rows.push(BackgroundSummaryRow::Identifiers(identifiers));
     }
+    let height = rows.iter().map(BackgroundSummaryRow::height).sum::<f32>();
+    let keys = rows
+        .iter()
+        .map(BackgroundSummaryRow::key)
+        .collect::<Vec<_>>();
+    let mut targets = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        row.focus_targets(index, &mut targets);
+    }
+    let state = window.use_keyed_state(
+        SharedString::from(format!("background-summary-list-{session_id}")),
+        cx,
+        |_, cx| {
+            let list = ListState::new(0, ListAlignment::Top, px(0.0));
+            list.set_scroll_handler(|_, window, _| window.refresh());
+            BackgroundSummaryListState {
+                list,
+                scrollbar: ScrollbarState::new(),
+                row_keys: Vec::new(),
+                environment_focus: cx.focus_handle(),
+                identifiers_focus: cx.focus_handle(),
+                navigation_focus: None,
+                navigation_generation: 0,
+            }
+        },
+    );
+    let (list_state, scrollbar_state, environment_focus, identifiers_focus) =
+        state.update(cx, |state, _| {
+            if state.row_keys != keys {
+                let prefix = state
+                    .row_keys
+                    .iter()
+                    .zip(&keys)
+                    .take_while(|(old, new)| old == new)
+                    .count();
+                let suffix = state.row_keys[prefix..]
+                    .iter()
+                    .rev()
+                    .zip(keys[prefix..].iter().rev())
+                    .take_while(|(old, new)| old == new)
+                    .count();
+                state.list.splice_focusable(
+                    prefix..state.row_keys.len() - suffix,
+                    rows[prefix..rows.len() - suffix].iter().map(|row| {
+                        row.list_focus(&state.environment_focus, &state.identifiers_focus)
+                    }),
+                );
+                state.list = state.list.clone().with_uniform_item_height(px(34.0));
+                state.row_keys = keys;
+                state.navigation_focus = None;
+                state.navigation_generation = state.navigation_generation.wrapping_add(1);
+            }
+            if state
+                .navigation_focus
+                .as_ref()
+                .is_some_and(|focus| !targets.iter().any(|(_, candidate)| candidate == focus))
+            {
+                state.navigation_focus = None;
+                state.navigation_generation = state.navigation_generation.wrapping_add(1);
+            }
+            (
+                state.list.clone(),
+                state.scrollbar.clone(),
+                state.environment_focus.clone(),
+                state.identifiers_focus.clone(),
+            )
+        });
+    let targets = Rc::new(targets);
+    let rows = Rc::new(rows);
+    let row_handle = handle.clone();
+    let keyboard_handle = handle.clone();
+    let keyboard_list = list_state.clone();
+    let keyboard_weak = weak.clone();
+    let content = div()
+        .id("background-summary-scroll")
+        .relative()
+        .w_full()
+        .h(px(height.min(402.0)))
+        .child(
+            list(list_state.clone(), move |index, _, _| {
+                let row = &rows[index];
+                let child = match row {
+                    BackgroundSummaryRow::Environment(environment) => {
+                        render_environment_summary_section(
+                            environment.clone(),
+                            row_handle.clone(),
+                            weak.clone(),
+                            &theme,
+                        )
+                        .into_any_element()
+                    }
+                    BackgroundSummaryRow::Separator(_) => div()
+                        .pt(px(8.0))
+                        .child(div().mx(px(8.0)).h(px(1.0)).bg(theme.border))
+                        .into_any_element(),
+                    BackgroundSummaryRow::Heading(_, label) => div()
+                        .h(px(26.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .text_size(sp(13.0))
+                        .text_color(theme.text_tertiary)
+                        .child(label.clone())
+                        .into_any_element(),
+                    BackgroundSummaryRow::Work(entry) => render_background_summary_row(
+                        entry.clone(),
+                        session_id,
+                        row_handle.clone(),
+                        weak.clone(),
+                        &theme,
+                    )
+                    .into_any_element(),
+                    BackgroundSummaryRow::Identifiers(identifiers) => {
+                        render_task_identifiers_section(identifiers.clone(), weak.clone(), &theme)
+                            .into_any_element()
+                    }
+                };
+                div()
+                    .id(SharedString::from(row.key()))
+                    .w_full()
+                    .h(px(row.height()))
+                    .when(matches!(row, BackgroundSummaryRow::Environment(_)), |row| {
+                        row.track_focus(&environment_focus)
+                    })
+                    .when(matches!(row, BackgroundSummaryRow::Identifiers(_)), |row| {
+                        row.track_focus(&identifiers_focus)
+                    })
+                    .child(child)
+                    .into_any_element()
+            })
+            .size_full(),
+        )
+        .child(scrollbar::vertical(&list_state, &scrollbar_state));
     div()
         .id("background-summary-card")
         .track_focus(handle.focus_handle())
         .w(px(300.0))
+        .h(px((height + 18.0).min(420.0)))
+        .p(px(8.0))
         .rounded(px(12.0))
         .border_1()
         .border_color(theme.border_strong)
@@ -1511,6 +1898,78 @@ fn render_background_summary_card(
         .bg(theme.raised)
         .shadow_lg()
         .child(content)
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            let key = event.keystroke.key.as_str();
+            if !matches!(key, "up" | "down" | "home" | "end" | "tab")
+                || event.keystroke.modifiers.control
+                || event.keystroke.modifiers.platform
+                || event.keystroke.modifiers.alt
+            {
+                return;
+            }
+            let Some((index, generation)) = state.update(cx, |state, _| {
+                let current = targets
+                    .iter()
+                    .position(|(_, focus)| focus.is_focused(window))
+                    .or_else(|| {
+                        state.navigation_focus.as_ref().and_then(|focus| {
+                            targets.iter().position(|(_, candidate)| candidate == focus)
+                        })
+                    });
+                let index = background_summary_navigation_index(
+                    key,
+                    event.keystroke.modifiers.shift,
+                    current,
+                    targets.len(),
+                )?;
+                state.navigation_focus = Some(targets[index].1.clone());
+                state.navigation_generation = state.navigation_generation.wrapping_add(1);
+                Some((index, state.navigation_generation))
+            }) else {
+                return;
+            };
+            let (row, focus) = &targets[index];
+            if !matches!(key, "home" | "end") && keyboard_list.bounds_for_item(*row).is_some() {
+                keyboard_list.scroll_to_reveal_item(*row);
+            } else {
+                // Unmeasured rows have no reliable pixel position yet.
+                // Anchor directly by item so End reaches the unseen ID controls.
+                keyboard_list.scroll_to(ListOffset {
+                    item_ix: *row,
+                    offset_in_item: px(0.0),
+                });
+            }
+            // Keep dispatch on the card while the destination control is
+            // mounted by the next layout, including offscreen copy/stop buttons.
+            keyboard_handle.focus_handle().focus(window, cx);
+            let focus = focus.clone();
+            let state = state.downgrade();
+            let handle = keyboard_handle.clone();
+            let weak = keyboard_weak.clone();
+            window.on_next_frame(move |window, _| {
+                window.on_next_frame(move |window, cx| {
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
+                    let same_session = weak.upgrade().is_some_and(|waku| {
+                        waku.read(cx)
+                            .selected_session()
+                            .map(|session| session.id)
+                            .unwrap_or_else(Uuid::nil)
+                            == session_id
+                    });
+                    if same_session
+                        && handle.is_open()
+                        && state.read(cx).navigation_generation == generation
+                    {
+                        focus.focus(window, cx);
+                        window.refresh();
+                    }
+                });
+            });
+            window.refresh();
+            cx.stop_propagation();
+        })
         .into_any_element()
 }
 
@@ -1788,39 +2247,6 @@ fn render_environment_action_row(
         })
 }
 
-fn render_background_summary_section(
-    label: String,
-    entries: Vec<BackgroundSummaryEntry>,
-    session_id: Uuid,
-    handle: ContextMenuHandle,
-    weak: WeakEntity<Waku>,
-    theme: &Theme,
-) -> Div {
-    let mut rows = div().w_full().flex().flex_col().gap(px(2.0));
-    for entry in entries {
-        rows = rows.child(render_background_summary_row(
-            entry,
-            session_id,
-            handle.clone(),
-            weak.clone(),
-            theme,
-        ));
-    }
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap(px(5.0))
-        .child(
-            div()
-                .px(px(8.0))
-                .text_size(sp(13.0))
-                .text_color(theme.text_tertiary)
-                .child(label),
-        )
-        .child(rows)
-}
-
 fn render_background_summary_row(
     entry: BackgroundSummaryEntry,
     session_id: Uuid,
@@ -1828,37 +2254,27 @@ fn render_background_summary_row(
     weak: WeakEntity<Waku>,
     theme: &Theme,
 ) -> Stateful<Div> {
-    let item = entry.item;
-    let group_name = SharedString::from(format!(
-        "background-summary-group-{}-{}",
-        item.key.provider_id, item.key.kind as u8
-    ));
-    let status = background_summary_process_status_icon(item.key.kind, item.status).map(|_| {
+    let id = entry.target.control_id();
+    let group_name = SharedString::from(format!("background-summary-group-{id}"));
+    let status = entry.status.render_icon(entry.kind).then(|| {
         div()
             .absolute()
             .inset_0()
             .flex()
             .items_center()
             .justify_center()
-            .when(item.status.is_stoppable() && item.can_stop, |status| {
+            .when(entry.status.is_stoppable() && entry.can_stop, |status| {
                 status.group_hover(group_name.clone(), |style| style.invisible())
             })
-            .child(rendered_work_status_icon(
-                item.status,
-                12.0,
-                work_status_color(item.status, *theme),
-            ))
+            .child(entry.status.icon(*theme))
     });
-    let stop = (item.status.is_stoppable() && item.can_stop).then(|| {
-        let click_key = item.key.clone();
+    let stop = (entry.status.is_stoppable() && entry.can_stop).then(|| {
+        let click_target = entry.target.clone();
         let click_weak = weak.clone();
-        let key_key = item.key.clone();
+        let key_target = entry.target.clone();
         let key_weak = weak.clone();
         div()
-            .id(SharedString::from(format!(
-                "background-summary-stop-{}-{}",
-                item.key.provider_id, item.key.kind as u8
-            )))
+            .id(SharedString::from(format!("background-summary-stop-{id}")))
             .track_focus(&entry.stop_focus)
             .tab_index(0)
             .size(px(24.0))
@@ -1884,13 +2300,13 @@ fn render_background_summary_row(
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 let _ = click_weak.update(cx, |this, cx| {
-                    this.stop_background_work(session_id, click_key.clone(), cx);
+                    click_target.stop(session_id, this, cx);
                 });
             })
             .on_key_down(move |event: &KeyDownEvent, _, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                     let _ = key_weak.update(cx, |this, cx| {
-                        this.stop_background_work(session_id, key_key.clone(), cx);
+                        key_target.stop(session_id, this, cx);
                     });
                     cx.stop_propagation();
                 }
@@ -1904,18 +2320,15 @@ fn render_background_summary_row(
             .children(status)
             .children(stop)
     });
-    let is_process = item.key.kind != BackgroundWorkKind::Subagent;
-    let open_key = item.key.clone();
-    let key_key = open_key.clone();
+    let is_process = entry.kind != BackgroundWorkKind::Subagent;
+    let open_target = entry.target.clone();
+    let key_target = entry.target.clone();
     let click_handle = handle.clone();
     let click_weak = weak.clone();
     let key_handle = handle;
     let key_weak = weak;
     div()
-        .id(SharedString::from(format!(
-            "background-summary-row-{}-{}",
-            item.key.provider_id, item.key.kind as u8
-        )))
+        .id(SharedString::from(format!("background-summary-row-{id}")))
         .group(group_name)
         .track_focus(&entry.row_focus)
         .tab_index(0)
@@ -1929,11 +2342,8 @@ fn render_background_summary_row(
         .cursor_default()
         .focus_visible(|style| style.border_1().border_color(theme.accent))
         .hover(|style| style.bg(theme.overlay_strong))
-        .child(icon(
-            work_kind_icon(item.key.kind),
-            14.0,
-            theme.text_secondary,
-        ))
+        .tooltip(Tooltip::text(entry.tooltip))
+        .child(icon(work_kind_icon(entry.kind), 14.0, theme.text_secondary))
         .child(
             div()
                 .min_w_0()
@@ -1945,14 +2355,24 @@ fn render_background_summary_row(
                 } else {
                     theme.text
                 })
-                .child(single_line_label(&item.title)),
+                .child(single_line_label(&entry.title)),
         )
+        .when(!is_process, |row| {
+            row.child(
+                div()
+                    .flex_none()
+                    .text_size(sp(11.0))
+                    .text_color(theme.text_tertiary)
+                    .child(entry.status.label()),
+            )
+        })
         .children(trailing)
         .on_click(move |_, window, cx| {
+            cx.stop_propagation();
             click_handle.close(window, cx);
             window.refresh();
             let _ = click_weak.update(cx, |this, cx| {
-                this.open_background_work_surface(session_id, open_key.clone(), cx);
+                open_target.open(session_id, this, window, cx);
             });
         })
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -1960,7 +2380,7 @@ fn render_background_summary_row(
                 key_handle.close(window, cx);
                 window.refresh();
                 let _ = key_weak.update(cx, |this, cx| {
-                    this.open_background_work_surface(session_id, key_key.clone(), cx);
+                    key_target.open(session_id, this, window, cx);
                 });
                 cx.stop_propagation();
             }
@@ -1983,54 +2403,83 @@ mod tests {
     }
 
     #[test]
-    fn info_popover_uses_distinct_process_status_icons() {
+    fn summary_keyboard_navigation_reaches_and_wraps_all_controls() {
         assert_eq!(
-            background_summary_process_status_icon(
-                BackgroundWorkKind::Process,
-                BackgroundWorkStatus::Completed,
-            ),
-            Some("icons/check.svg")
+            background_summary_navigation_index("home", false, Some(200), 204),
+            Some(0)
         );
         assert_eq!(
-            background_summary_process_status_icon(
-                BackgroundWorkKind::Monitor,
-                BackgroundWorkStatus::Failed,
-            ),
-            Some("icons/x.svg")
+            background_summary_navigation_index("end", false, Some(0), 204),
+            Some(203)
         );
         assert_eq!(
-            background_summary_process_status_icon(
-                BackgroundWorkKind::Process,
-                BackgroundWorkStatus::Running,
-            ),
-            Some("icons/loader-circle.svg")
+            background_summary_navigation_index("down", false, Some(203), 204),
+            Some(0)
         );
         assert_eq!(
-            background_summary_process_status_icon(
-                BackgroundWorkKind::Subagent,
-                BackgroundWorkStatus::Completed,
-            ),
+            background_summary_navigation_index("up", false, Some(0), 204),
+            Some(203)
+        );
+        assert_eq!(
+            background_summary_navigation_index("tab", false, Some(200), 204),
+            Some(201)
+        );
+        assert_eq!(
+            background_summary_navigation_index("tab", true, Some(201), 204),
+            Some(200)
+        );
+        assert_eq!(
+            background_summary_navigation_index("down", false, None, 204),
+            Some(0)
+        );
+        assert_eq!(
+            background_summary_navigation_index("up", false, None, 204),
+            Some(203)
+        );
+        assert_eq!(
+            background_summary_navigation_index("end", false, None, 0),
+            None
+        );
+        assert_eq!(
+            background_summary_navigation_index("enter", false, Some(0), 204),
             None
         );
     }
 
     #[test]
-    fn info_popover_background_titles_stay_on_one_line() {
-        let source = include_str!("background_work.rs");
-        let row = source
-            .split_once("\nfn render_background_summary_row(")
-            .expect("background summary row renderer")
-            .1
-            .split_once("\n#[cfg(test)]")
-            .expect("background summary row renderer end")
-            .0;
+    fn summary_counts_include_only_live_delegated_tasks() {
+        use waku_client::delegation::DelegatedTaskStatus::*;
 
-        assert!(row.contains(".truncate()"));
-        assert!(row.contains(".child(single_line_label(&item.title))"));
-        assert!(!row.contains(".line_clamp(1)"));
+        let statuses = [
+            Queued,
+            Starting,
+            Running,
+            Completed,
+            Failed,
+            Cancelled,
+            TimedOut,
+            Interrupted,
+        ];
         assert_eq!(
-            single_line_label("/bin/zsh -lc 'set -euo pipefail\n  for n in one two'"),
-            "/bin/zsh -lc 'set -euo pipefail for n in one two'"
+            background_summary_counts((2, 1), statuses.into_iter()),
+            (2, 4),
+        );
+        assert_eq!(
+            background_summary_counts(
+                (0, 0),
+                statuses.into_iter().map(|status| {
+                    if status.is_terminal() {
+                        status
+                    } else {
+                        Completed
+                    }
+                }),
+            ),
+            (0, 0),
+        );
+        assert_eq!(
+            background_summary_counts((1, 2), std::iter::empty()),
+            (1, 2),
         );
     }
 

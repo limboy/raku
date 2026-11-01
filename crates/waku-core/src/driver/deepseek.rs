@@ -23,8 +23,8 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKind,
-    BackgroundWorkStatus, DriverEvent, PermissionOption, ProviderResumeCursor, ReportedCommand,
-    RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
+    BackgroundWorkStatus, DriverEvent, ExecutionPolicy, PermissionOption, ProviderResumeCursor,
+    ReportedCommand, RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
 };
 
 enum CommandMessage {
@@ -70,13 +70,13 @@ struct ToolCallState {
 struct StreamState {
     last_seq: i64,
     turn_active: bool,
+    execution_policy: ExecutionPolicy,
     command_names: HashSet<String>,
     completed_turn_seqs: Arc<Mutex<Vec<u64>>>,
     streamed_steps: HashSet<(u64, u64)>,
     tools: HashMap<String, ToolCallState>,
     pending: HashMap<String, PendingInteraction>,
 }
-
 struct HistorySnapshot {
     events: Vec<Value>,
     projection_values: Option<Value>,
@@ -102,6 +102,7 @@ impl DeepSeekDriver {
             binary,
             cwd,
             mode,
+            execution_policy,
             model,
             reasoning_effort,
             service_tier,
@@ -109,6 +110,7 @@ impl DeepSeekDriver {
             agent_preset,
             computer_use_enabled: _,
             provider_cursor,
+            ..
         } = options;
         let (requested_session_id, resuming) = match provider_cursor {
             Some(ProviderResumeCursor::DeepSeek { session_id }) if !session_id.is_empty() => {
@@ -157,8 +159,24 @@ impl DeepSeekDriver {
 
         let baseline = fetch_history(&server, &session_id)
             .context("could not read DeepSeek Harness session history")?;
-        normalize_legacy_read_only_mode(&server, &session_id, baseline.projection_values.as_ref())
+        if execution_policy == ExecutionPolicy::ReviewReadOnly {
+            if !legacy_read_only_mode_active(baseline.projection_values.as_ref()) {
+                let execution = execute_harness_command(&server, &session_id, "/plan on")
+                    .context("could not enable read-only review mode")?;
+                anyhow::ensure!(
+                    execution.success,
+                    "read-only review command failed: {}",
+                    execution.text.unwrap_or_else(|| "unknown error".into())
+                );
+            }
+        } else {
+            normalize_legacy_read_only_mode(
+                &server,
+                &session_id,
+                baseline.projection_values.as_ref(),
+            )
             .context("could not normalize the DeepSeek Harness session")?;
+        }
         let available_commands = fetch_commands(&server, &session_id)
             .context("could not read DeepSeek Harness commands")?;
         let command_names = available_commands
@@ -214,6 +232,7 @@ impl DeepSeekDriver {
                 let mut state = StreamState {
                     last_seq: history.last_seq,
                     turn_active: history.turn_active,
+                    execution_policy,
                     command_names,
                     completed_turn_seqs: worker_completed_turn_seqs,
                     streamed_steps: HashSet::new(),
@@ -912,6 +931,17 @@ fn handle_approval_request(
     let Some(approval_id) = payload.get("approvalId").and_then(Value::as_str) else {
         return;
     };
+    if state.execution_policy == ExecutionPolicy::ReviewReadOnly {
+        let _ = server.respond(
+            rpc_id,
+            json!({
+                "sessionId": session_id,
+                "approvalId": approval_id,
+                "outcome": "rejected",
+            }),
+        );
+        return;
+    }
     if *mode.lock() != RuntimeMode::Ask {
         if let Err(error) = server.respond(
             rpc_id,
@@ -973,6 +1003,10 @@ fn handle_question_request(
     let Some(rpc_id) = envelope.get("rpcId").and_then(Value::as_str) else {
         return;
     };
+    if state.execution_policy == ExecutionPolicy::ReviewReadOnly {
+        let _ = server.reject_response(rpc_id, "questions are not supported in review subtasks");
+        return;
+    }
     let Some(questions) = payload.get("questions").and_then(Value::as_array) else {
         return;
     };
@@ -1505,6 +1539,7 @@ mod tests {
         let state = StreamState {
             last_seq: -1,
             turn_active: false,
+            execution_policy: ExecutionPolicy::Interactive,
             command_names: HashSet::new(),
             completed_turn_seqs: Arc::new(Mutex::new(Vec::new())),
             streamed_steps: HashSet::new(),
