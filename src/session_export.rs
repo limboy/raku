@@ -179,8 +179,9 @@ fn write_activity(out: &mut String, activity: &ActivityItem) {
             )
             .unwrap();
         }
+        let summary = item.summary_for_display();
         for (label, text) in [
-            ("Summary", item.summary.as_deref()),
+            ("Summary", summary.as_deref()),
             ("Notice", item.notice.as_deref()),
             ("Error", item.error.as_deref()),
         ] {

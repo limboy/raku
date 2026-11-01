@@ -1047,4 +1047,5 @@ compaction.unsupported: "このプロバイダーは手動圧縮に対応して�
 compaction.busy: "現在の処理が終了してから圧縮してください。"
 compaction.focus_unsupported: "このプロバイダーは圧縮の追加指示に対応していません。"
 compaction.no_history: "メッセージを送信してから圧縮してください。"
-compaction.waiting_usage: "使用量を更新中…"
+compaction.waiting_usage: "次の応答後に更新"
+compaction.history_archived: "以前のメッセージをアーカイブして、コンテキストに空きを作りました。会話を続けると、モデルは必要に応じてアーカイブされた履歴を参照します。"

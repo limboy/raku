@@ -2043,4 +2043,6 @@ compaction.focus_unsupported:
 compaction.no_history:
   en: "Send a message before compacting this conversation."
 compaction.waiting_usage:
-  en: "Updating usage…"
+  en: "Updates after next reply"
+compaction.history_archived:
+  en: "Earlier messages have been archived to free up context. You can continue the conversation; the model will use the archived history as needed."

@@ -2,6 +2,7 @@
 
 use crate::model::ProviderKind;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +66,21 @@ impl ContextCompaction {
         self.status = status;
         self.completed_at_ms = Some(now);
     }
+
+    /// Snapcompact's summary is an instruction envelope for the model; the
+    /// archived transcript lives separately in the native provider session.
+    /// Keep that envelope in storage, but never present it as a readable recap.
+    /// Recognizing it here also covers snapshots saved by older Waku versions.
+    pub fn summary_for_display(&self) -> Option<Cow<'_, str>> {
+        let summary = self.summary.as_deref()?;
+        if summary
+            .starts_with("Resume prior conversation. Earlier turns archived under HISTORY below,")
+        {
+            Some(Cow::Owned(tr!("compaction.history_archived")))
+        } else {
+            Some(Cow::Borrowed(summary))
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -99,5 +115,29 @@ impl ProviderKind {
             },
             _ => CompactionCapabilities::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archived_history_envelopes_are_hidden_including_restored_snapshots() {
+        let raw = "Resume prior conversation. Earlier turns archived under HISTORY below, oldest→newest.\n\nArchived transcript scopes:\n- `¶user:`, `¶think:`, `¶ai:`, `¶call:`\n\nHISTORY\n===================";
+        let mut item = ContextCompaction::new("archive", None, 0);
+        item.summary = Some(raw.into());
+        let restored: ContextCompaction =
+            serde_json::from_str(&serde_json::to_string(&item).unwrap()).unwrap();
+        let display = restored.summary_for_display().unwrap();
+        assert!(!display.contains("HISTORY"));
+        assert!(!display.contains("¶"));
+        assert_eq!(restored.summary.as_deref(), Some(raw));
+
+        item.summary = Some("## Remaining work\nKeep the API stable.".into());
+        assert_eq!(
+            item.summary_for_display().as_deref(),
+            item.summary.as_deref()
+        );
     }
 }

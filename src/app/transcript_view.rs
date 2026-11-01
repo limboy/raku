@@ -2215,11 +2215,12 @@ impl Waku {
             );
             let mut views = surface.markdown.borrow_mut();
             let view = views.entry(id).or_default();
+            let summary = item.summary_for_display();
             let content = item
                 .error
                 .as_deref()
                 .or(item.notice.as_deref())
-                .or(item.summary.as_deref())
+                .or(summary.as_deref())
                 .unwrap_or_default();
             view.set_text(content, false);
             card = card.child(

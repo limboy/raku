@@ -69,6 +69,32 @@ mod tests {
         );
         assert!(records.last().unwrap().summary.is_none());
     }
+
+    #[test]
+    fn native_after_tokens_take_precedence_over_estimates_and_survive_repeated_results() {
+        let (events, _) = crossbeam_channel::unbounded();
+        let mut tracker = CompactionTracker::default();
+        tracker.finish(
+            CompactionStatus::Completed,
+            Some(&serde_json::json!({
+                "tokensBefore": 30113,
+                "tokensAfter": 26229,
+                "estimatedTokensAfter": 27000
+            })),
+            None,
+            &events,
+        );
+        tracker.finish(
+            CompactionStatus::Completed,
+            Some(&serde_json::json!({"estimatedTokensAfter": 27000})),
+            None,
+            &events,
+        );
+        let item = tracker.current.unwrap();
+        assert_eq!(item.before_tokens, Some(30113));
+        assert_eq!(item.after_tokens, Some(26229));
+        assert!(!item.after_tokens_estimated);
+    }
 }
 
 impl CompactionTracker {
@@ -162,7 +188,12 @@ impl CompactionTracker {
                 .get("tokensBefore")
                 .and_then(Value::as_u64)
                 .or(item.before_tokens);
-            if let Some(after) = result.get("estimatedTokensAfter").and_then(Value::as_u64) {
+            if let Some(after) = result.get("tokensAfter").and_then(Value::as_u64) {
+                item.after_tokens = Some(after);
+                item.after_tokens_estimated = false;
+            } else if let Some(after) = result.get("estimatedTokensAfter").and_then(Value::as_u64)
+                && (item.after_tokens.is_none() || item.after_tokens_estimated)
+            {
                 item.after_tokens = Some(after);
                 item.after_tokens_estimated = true;
             }

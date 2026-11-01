@@ -176,6 +176,7 @@ impl PiFlavor {
 
 enum CommandMessage {
     Compact(CompactionRequest),
+    RefreshContextUsage,
     AutoTitle {
         request: AutoTitleRequest,
         phase: AutoTitlePhase,
@@ -826,6 +827,24 @@ impl PiDriver {
                 let mut current_effort = reasoning_effort;
                 while let Ok(message) = command_rx.recv() {
                     match message {
+                        CommandMessage::RefreshContextUsage => {
+                            // Compaction can finish without a model call. OMP
+                            // persists tokensAfter but omits it from the RPC
+                            // result; fetch its rebased occupancy on this worker.
+                            if let Ok(stats) = send_request(
+                                &mut stdin,
+                                &writer_pending,
+                                &mut next_request_id,
+                                json!({"type": "get_session_stats"}),
+                            ) && let Some((context_tokens, context_window)) =
+                                pi_context_usage(&Value::Null, Some(&stats))
+                            {
+                                let _ = writer_events.send(DriverEvent::UsageUpdated {
+                                    context_tokens,
+                                    context_window,
+                                });
+                            }
+                        }
                         CommandMessage::AutoTitle { request, phase } => {
                             if !auto_title.is_current(&request) {
                                 continue;
@@ -1824,6 +1843,9 @@ fn handle_pi_message(
                 if cancelled { None } else { error },
                 events,
             );
+            if success && !cancelled {
+                let _ = commands.send(CommandMessage::RefreshContextUsage);
+            }
             if same_operation
                 || state
                     .compaction
@@ -1950,7 +1972,7 @@ fn handle_pi_message(
     }
 
     match event_type {
-        "compaction_start" | "auto_compaction_start" => {
+        "compaction_start" | "auto_compaction_start" | "manual_compaction_start" => {
             let manual = pending.lock().values().find_map(|entry| match entry {
                 PendingResponse::Compact(item) => Some(item.clone()),
                 _ => None,
@@ -1962,12 +1984,19 @@ fn handle_pi_message(
                 Some("manual") => Some(CompactionTrigger::Manual),
                 Some("threshold" | "overflow") => Some(CompactionTrigger::Auto),
                 _ if event_type == "auto_compaction_start" => Some(CompactionTrigger::Auto),
+                _ if event_type == "manual_compaction_start" => Some(CompactionTrigger::Manual),
                 _ => None,
             };
             state.compaction.start(None, trigger, events);
         }
-        "compaction_end" | "auto_compaction_end" => {
-            let status = if value.get("aborted").and_then(Value::as_bool) == Some(true) {
+        "compaction_end" | "auto_compaction_end" | "manual_compaction_end" => {
+            let manual = pending.lock().values().find_map(|entry| match entry {
+                PendingResponse::Compact(item) => Some(item.status),
+                _ => None,
+            });
+            let status = if manual == Some(CompactionStatus::Interrupted)
+                || value.get("aborted").and_then(Value::as_bool) == Some(true)
+            {
                 CompactionStatus::Interrupted
             } else if value.get("result").is_some_and(|result| !result.is_null()) {
                 CompactionStatus::Completed
@@ -1983,6 +2012,11 @@ fn handle_pi_message(
                     .map(str::to_owned),
                 events,
             );
+            // A manual RPC response refreshes once it settles. Automatic and
+            // provider-initiated compactions have no command response to do so.
+            if status == CompactionStatus::Completed && manual.is_none() {
+                let _ = commands.send(CommandMessage::RefreshContextUsage);
+            }
         }
         "command_output" => {
             if flavor == PiFlavor::OhMyPi
@@ -2497,7 +2531,7 @@ mod tests {
 
     #[test]
     fn native_compaction_response_is_metadata_and_never_an_assistant_turn() {
-        let (pending, commands, _command_rx, mut state) = harness();
+        let (pending, commands, command_rx, mut state) = harness();
         let (events, received) = unbounded();
         let item = ContextCompaction::new("manual", Some(CompactionTrigger::Manual), 1000);
         pending
@@ -2531,11 +2565,93 @@ mod tests {
             record.summary.as_deref(),
             Some("Keep the public API stable")
         );
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(CommandMessage::RefreshContextUsage)
+        ));
+        assert!(command_rx.is_empty());
+    }
+
+    #[test]
+    fn ohmypi_compaction_events_refresh_usage_without_generating_an_assistant_turn() {
+        for manual in [false, true] {
+            let (pending, commands, command_rx, mut state) = harness();
+            let (events, received) = unbounded();
+            if manual {
+                pending.lock().insert(
+                    "rpc-compact".into(),
+                    PendingResponse::Compact(ContextCompaction::new(
+                        "manual",
+                        Some(CompactionTrigger::Manual),
+                        1000,
+                    )),
+                );
+            }
+            // OMP 18.14.2 returns its instruction envelope, without the
+            // tokensAfter count it writes into the native session file.
+            let result = json!({
+                "summary": "Resume prior conversation. Earlier turns archived under HISTORY below, oldest→newest.\n\nHISTORY\n===================",
+                "shortSummary": "Archived 10,120 chars of history onto 0 snapcompact frames (+10,120 chars as text)",
+                "firstKeptEntryId": "kept",
+                "tokensBefore": 30113,
+                "preserveData": {"snapcompact": {"frames": [], "text": "archived history"}}
+            });
+            for frame in [
+                json!({"type": if manual { "manual_compaction_start" } else { "auto_compaction_start" }}),
+                json!({"type": if manual { "manual_compaction_end" } else { "auto_compaction_end" }, "result": result, "aborted": false}),
+            ] {
+                handle_pi_message(
+                    PiFlavor::OhMyPi,
+                    frame,
+                    &pending,
+                    &commands,
+                    &events,
+                    &mut state,
+                );
+            }
+            if manual {
+                assert!(
+                    command_rx.is_empty(),
+                    "refresh once the RPC response settles"
+                );
+                handle_pi_message(
+                    PiFlavor::OhMyPi,
+                    json!({"type":"response", "id":"rpc-compact", "command":"compact", "success":true, "data":result}),
+                    &pending,
+                    &commands,
+                    &events,
+                    &mut state,
+                );
+            }
+            let item = state.compaction.current.unwrap();
+            assert_eq!(item.status, CompactionStatus::Completed);
+            assert_eq!(
+                item.trigger,
+                Some(if manual {
+                    CompactionTrigger::Manual
+                } else {
+                    CompactionTrigger::Auto
+                })
+            );
+            assert_eq!(item.before_tokens, Some(30113));
+            assert_eq!(item.after_tokens, None);
+            assert!(!item.summary_for_display().unwrap().contains("HISTORY"));
+            assert!(
+                received
+                    .try_iter()
+                    .all(|event| matches!(event, DriverEvent::CompactionUpdated(_)))
+            );
+            assert!(matches!(
+                command_rx.try_recv(),
+                Ok(CommandMessage::RefreshContextUsage)
+            ));
+            assert!(command_rx.is_empty());
+        }
     }
 
     #[test]
     fn cancelled_manual_compaction_response_preserves_interrupted_status() {
-        let (pending, commands, _command_rx, mut state) = harness();
+        let (pending, commands, command_rx, mut state) = harness();
         let (events, received) = unbounded();
         let item = ContextCompaction::new("manual", Some(CompactionTrigger::Manual), 1);
         state.compaction.seed(item.clone());
@@ -2543,6 +2659,14 @@ mod tests {
             .lock()
             .insert("rpc-compact".into(), PendingResponse::Compact(item));
         interrupt_pending_compactions(&pending, &events);
+        handle_pi_message(
+            PiFlavor::OhMyPi,
+            json!({"type":"manual_compaction_end", "result":{"summary":"A late result"}, "aborted":false}),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
         handle_pi_message(
             PiFlavor::OhMyPi,
             json!({"type":"response","id":"rpc-compact","command":"compact","success":false,"error":"Compaction aborted"}),
@@ -2562,6 +2686,7 @@ mod tests {
             state.compaction.current.as_ref().unwrap().status,
             CompactionStatus::Interrupted
         );
+        assert!(command_rx.is_empty());
     }
 
     #[test]
@@ -3141,6 +3266,119 @@ mod tests {
         assert!(finished, "Oh My Pi never settled the probe turn");
         assert!(context_tokens.is_some_and(|tokens| tokens > 0));
         assert!(context_window.is_some_and(|window| window > 0));
+    }
+
+    /// Replays a native session on a private copy, without submitting a prompt.
+    #[test]
+    #[ignore = "requires omp and WAKU_TEST_OMP_SESSION pointing to a compactable native session"]
+    fn ohmypi_compaction_usage_against_the_real_rpc() {
+        let source = std::env::var_os("WAKU_TEST_OMP_SESSION").expect("set WAKU_TEST_OMP_SESSION");
+        let mut entries: Vec<Value> = std::fs::read_to_string(source)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        // Replay the state immediately before the last observed compaction.
+        if let Some(index) = entries
+            .iter()
+            .rposition(|entry| entry["type"] == "compaction")
+        {
+            entries.truncate(index);
+        }
+        // OMP may put its reserved title slot before the session header.
+        let header = entries
+            .iter_mut()
+            .find(|entry| entry["type"] == "session")
+            .expect("session has no header");
+        let cwd = PathBuf::from(header["cwd"].as_str().expect("session has no cwd"));
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let directory = std::env::temp_dir().join(format!("waku-omp-compact-{session_id}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        let directory = directory.canonicalize().unwrap();
+        header["id"] = json!(session_id);
+        let native_file = directory.join("session.jsonl");
+        let mut transcript = String::new();
+        for entry in entries {
+            transcript.push_str(&serde_json::to_string(&entry).unwrap());
+            transcript.push('\n');
+        }
+        std::fs::write(&native_file, transcript).unwrap();
+        let (events, received) = crate::driver::test_event_channel();
+        let driver = PiDriver::start(
+            PiFlavor::OhMyPi,
+            DriverStartOptions {
+                binary: crate::command_env::find_executable("omp").expect("omp is not installed"),
+                cwd,
+                mode: RuntimeMode::FullAccess,
+                model: None,
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+                execution_policy: Default::default(),
+                agent_preset: None,
+                computer_use_enabled: false,
+                provider_cursor: Some(ProviderResumeCursor::OhMyPi {
+                    session_id,
+                    session_file: Some(native_file),
+                }),
+                delegation_session_path: None,
+                delegation_registry_dir: None,
+            },
+            events,
+        )
+        .unwrap();
+        let before = loop {
+            match received.recv_timeout(Duration::from_secs(45)).unwrap() {
+                DriverEvent::UsageUpdated {
+                    context_tokens: Some(tokens),
+                    ..
+                } => break tokens,
+                DriverEvent::Error(error) => panic!("Oh My Pi initialization failed: {error}"),
+                _ => {}
+            }
+        };
+        driver.compact(CompactionRequest {
+            id: "probe-compact".into(),
+            instructions: None,
+        });
+        let mut completed = false;
+        let after = loop {
+            match received.recv_timeout(Duration::from_secs(45)).unwrap() {
+                DriverEvent::CompactionUpdated(item)
+                    if item.status != CompactionStatus::Running =>
+                {
+                    assert_eq!(item.id, "probe-compact");
+                    assert_eq!(item.status, CompactionStatus::Completed, "{item:?}");
+                    assert!(
+                        !item
+                            .summary_for_display()
+                            .unwrap_or_default()
+                            .contains("HISTORY")
+                    );
+                    completed = true;
+                }
+                DriverEvent::UsageUpdated {
+                    context_tokens: Some(tokens),
+                    ..
+                } if completed => break tokens,
+                DriverEvent::TextDelta(text) => {
+                    panic!("compaction generated assistant text: {text}")
+                }
+                DriverEvent::Error(error) => panic!("Oh My Pi compaction failed: {error}"),
+                _ => {}
+            }
+        };
+        assert!(
+            after > 0 && after < before,
+            "occupancy did not shrink: {before} → {after}"
+        );
+        eprintln!("Oh My Pi compaction occupancy: {before} → {after}");
+        drop(driver);
+        while !matches!(
+            received.recv_timeout(Duration::from_secs(10)).unwrap(),
+            DriverEvent::ProcessExited
+        ) {}
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
