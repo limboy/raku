@@ -1703,6 +1703,9 @@ pub struct MessageAttachment {
     /// name is retained for storage compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_reference: Option<String>,
+    /// Ephemeral or persisted content of pasted text converted to a snippet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pasted_text: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3624,6 +3627,7 @@ mod tests {
             is_dir: false,
             is_image: true,
             blob_reference: Some("waku-blob:ab/reference.png".to_owned()),
+            pasted_text: None,
         };
 
         session.begin_turn_with_presentation(

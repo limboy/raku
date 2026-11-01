@@ -431,6 +431,7 @@ mod tests {
             is_dir: false,
             is_image: true,
             blob_reference: None,
+            pasted_text: None,
         });
         let out = markdown(&session, ExportScope::Conversation).unwrap();
         for included in [

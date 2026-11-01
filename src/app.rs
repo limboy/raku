@@ -27,7 +27,10 @@ use crate::computer_use::{
 };
 use crate::driver::{self, DriverHandle, DriverStartOptions, SessionOptions};
 use crate::git_branch::BranchSnapshot;
-use crate::input::{ComposerAttachmentPaste, ComposerEvent, ComposerInput, InputEvent, TextInput};
+use crate::input::{
+    ComposerAttachmentPaste, ComposerEvent, ComposerInput, ComposerTextSnippetPaste, InputEvent,
+    TextInput,
+};
 use crate::md;
 use crate::model::{
     ActivityItem, ActivityKind, AgentSession, BackgroundWorkEvent, BackgroundWorkItem,
@@ -309,6 +312,8 @@ struct ComposerAttachment {
     is_image: bool,
     /// Daemon-issued durable reference retained by task persistence.
     blob_reference: Option<String>,
+    /// Ephemeral or restored content of pasted text staged as a snippet.
+    pasted_text: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -540,6 +545,13 @@ enum RightPanelSurface {
     Files,
     Diff,
     File(String),
+    /// A pasted text attachment, shown from the in-memory text its chip
+    /// carries rather than from a workspace file.
+    PastedText {
+        id: Uuid,
+        name: SharedString,
+        text: SharedString,
+    },
 }
 
 /// A turn whose checkpoint still has to be captured.
@@ -1438,6 +1450,11 @@ pub struct Waku {
     right_panel_files_selected_path: Option<String>,
     right_panel_file_tree_width: f32,
     right_panel_file_editors: HashMap<String, RightPanelFileEditor>,
+    /// Read-only viewers for pasted text attachments, keyed by the attachment
+    /// they show so reopening a chip's tab reuses its scroll and selection.
+    pasted_text_views: HashMap<Uuid, Entity<TextInput>>,
+    pasted_text_scroll: ScrollHandle,
+    pasted_text_scrollbar: Rc<ScrollbarState>,
     /// Find-and-replace over the visible file editor. Created on first use of
     /// the primary find shortcut and kept for the window's lifetime so the
     /// query and toggles survive closing the bar; `open` says whether it shows.
@@ -1965,7 +1982,11 @@ impl Waku {
                 .count(),
         });
 
-        let composer = cx.new(|cx| ComposerInput::new(window, cx).padding_x(px(14.0), cx));
+        let composer = cx.new(|cx| {
+            ComposerInput::new(window, cx)
+                .text_snippet_paste(cx)
+                .padding_x(px(14.0), cx)
+        });
         let user_input_answer = cx
             .new(|cx| TextInput::new(window, cx).placeholder(tr!("user_input.other_placeholder")));
         let command_palette_search = cx.new(|cx| {
@@ -2443,6 +2464,14 @@ impl Waku {
             )
             .detach();
 
+            cx.subscribe(
+                &composer,
+                |this: &mut Self, _, event: &ComposerTextSnippetPaste, cx| {
+                    this.stage_pasted_text_snippet(event.0.clone(), cx);
+                },
+            )
+            .detach();
+
             // A normal Cmd-Q waits briefly for this future, so even an edit
             // made inside the debounce window is durable before the process
             // exits. Filesystem work still stays off the UI thread.
@@ -2886,6 +2915,9 @@ impl Waku {
                 right_panel_files_selected_path: None,
                 right_panel_file_tree_width: DEFAULT_FILE_TREE_WIDTH,
                 right_panel_file_editors: HashMap::new(),
+                pasted_text_views: HashMap::new(),
+                pasted_text_scroll: ScrollHandle::new(),
+                pasted_text_scrollbar: ScrollbarState::new(),
                 file_search: None,
                 right_panel_diff_source: ReviewDiffSource::default(),
                 right_panel_diff_snapshot: None,

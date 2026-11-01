@@ -569,6 +569,37 @@ pub enum InputEvent {
 #[derive(Clone)]
 pub struct MediaPaste(pub Vec<ClipboardEntry>);
 
+/// Long text payload emitted by fields that opted in via
+/// [`TextInput::set_text_snippet_paste`], presented as a staged text snippet card.
+#[derive(Clone, Debug)]
+pub struct TextSnippetPaste(pub String);
+
+pub const PASTED_TEXT_LINE_THRESHOLD: usize = 10;
+pub const PASTED_TEXT_CHAR_THRESHOLD: usize = 1000;
+
+pub fn is_pasted_text_snippet(text: &str) -> bool {
+    let line_count = text.lines().count();
+    line_count >= PASTED_TEXT_LINE_THRESHOLD || text.chars().count() >= PASTED_TEXT_CHAR_THRESHOLD
+}
+
+pub fn pasted_text_title(text: &str) -> String {
+    let first_line = text
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if first_line.is_empty() {
+        return tr!("composer.pasted_text");
+    }
+    let mut chars = first_line.chars();
+    let truncated: String = chars.by_ref().take(28).collect();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
 /// Respect the representation priority chosen by the source application.
 /// Finder puts paths first (and a text fallback second), while screenshots put
 /// an image first. Text-first clipboard content remains ordinary text paste.
@@ -642,6 +673,9 @@ pub struct TextInput {
     /// Image and file pastes surface as [`MediaPaste`] instead of being
     /// swallowed by the text path.
     accepts_media_paste: bool,
+    /// Long text pastes surface as [`TextSnippetPaste`] instead of being
+    /// inserted directly into the text field.
+    accepts_text_snippet_paste: bool,
     /// Composer-only grammar-aware Backspace for inline `^[model]` markers.
     atomic_model_references: bool,
     /// Escape clears the field when it has content; an empty field lets the
@@ -743,6 +777,7 @@ impl TextInput {
             submit_on_enter: false,
             auto_height: false,
             accepts_media_paste: false,
+            accepts_text_snippet_paste: false,
             atomic_model_references: false,
             clear_on_escape: false,
             select_all_on_focus_click: false,
@@ -889,6 +924,14 @@ impl TextInput {
         self
     }
 
+    /// Surface long text pastes as a [`TextSnippetPaste`] event instead of
+    /// inserting them directly into the text field. Only an owner that can
+    /// stage the payload — the main composer — may enable this; every other
+    /// field keeps inserting long pastes as text.
+    pub fn set_text_snippet_paste(&mut self, enabled: bool) {
+        self.accepts_text_snippet_paste = enabled;
+    }
+
     fn atomic_model_references(mut self) -> Self {
         self.atomic_model_references = true;
         self
@@ -992,6 +1035,37 @@ impl TextInput {
         self.pause_blink_cursor(cx);
         cx.emit(InputEvent::Edited);
         cx.notify();
+    }
+
+    /// Append a previously collapsed pasted text snippet to the end of the
+    /// field, adding a leading newline when the field already has text that
+    /// does not end with one. Expanding is an append, never a paste over the
+    /// selection: the draft the user already has stays.
+    pub fn insert_pasted_text_snippet(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let content = self.content.clone();
+        let formatted_text = if !content.is_empty() && !content.ends_with('\n') {
+            format!("\n{text}")
+        } else {
+            text.to_owned()
+        };
+        let text = pasted_text_for_mode(self.mode, &formatted_text);
+        // An active composition has already spliced its marked text into the
+        // content, so ending it here keeps that text and lets the append land
+        // after it rather than inside the composition's replacement range.
+        if self.marked_range.take().is_some() {
+            self.history.finalize_composition();
+        }
+        let end = self.content.len();
+        self.selected_range = end..end;
+        self.selection_reversed = false;
+        self.history.seal();
+        self.replace_text_in_range(None, &text, window, cx);
+        self.history.seal();
     }
 
     /// Replace the painted find-match washes. Ranges must be sorted and
@@ -1752,6 +1826,10 @@ impl TextInput {
         let Some(text) = clipboard.text() else {
             return;
         };
+        if self.accepts_text_snippet_paste && is_pasted_text_snippet(&text) {
+            cx.emit(TextSnippetPaste(text));
+            return;
+        }
         let text = pasted_text_for_mode(self.mode, &text);
         // A paste is its own undo step, never part of the typing around it —
         // the native NSTextView boundary, stricter than Zed's time grouping.
@@ -2068,6 +2146,7 @@ fn word_range_at(content: &str, offset: usize) -> Range<usize> {
 
 impl EventEmitter<InputEvent> for TextInput {}
 impl EventEmitter<MediaPaste> for TextInput {}
+impl EventEmitter<TextSnippetPaste> for TextInput {}
 
 impl EntityInputHandler for TextInput {
     fn text_for_range(
@@ -2965,6 +3044,11 @@ pub enum ComposerEvent {
 #[derive(Clone)]
 pub struct ComposerAttachmentPaste(pub Vec<ClipboardEntry>);
 
+/// A long text paste, re-emitted from the embedded field's
+/// [`TextSnippetPaste`]. The owning view stages it as a snippet attachment.
+#[derive(Clone, Debug)]
+pub struct ComposerTextSnippetPaste(pub String);
+
 /// The prompt composer, built on [`TextInput`]: a self-sizing multi-line
 /// field where Enter submits the trimmed prompt and clears, the primary
 /// modifier + Enter steers it into the running turn instead, and image or
@@ -3008,12 +3092,26 @@ impl ComposerInput {
             cx.subscribe(&input, |_, _, event: &MediaPaste, cx| {
                 cx.emit(ComposerAttachmentPaste(event.0.clone()));
             }),
+            cx.subscribe(&input, |_, _, event: &TextSnippetPaste, cx| {
+                cx.emit(ComposerTextSnippetPaste(event.0.clone()));
+            }),
         ];
         Self {
             input,
             focus_handle,
             _subscriptions,
         }
+    }
+
+    /// Opt the embedded field into snippet paste: a long text paste surfaces
+    /// as [`ComposerTextSnippetPaste`] for the owner to stage, instead of
+    /// landing in the field. Only the main composer enables it, because it is
+    /// the only owner with a snippet staging area; the transient field that
+    /// edits a historical message keeps a plain text paste.
+    pub fn text_snippet_paste(self, cx: &mut Context<Self>) -> Self {
+        self.input
+            .update(cx, |input, _| input.set_text_snippet_paste(true));
+        self
     }
 
     /// Forwarded [`TextInput::set_padding_x`], for the embedded field the
@@ -3085,6 +3183,18 @@ impl ComposerInput {
     pub fn context_menu_open(&self, cx: &App) -> bool {
         self.input.read(cx).context_menu_open()
     }
+
+    /// Insert a previously collapsed pasted text snippet into the composer.
+    pub fn insert_pasted_text_snippet(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            input.insert_pasted_text_snippet(text, window, cx);
+        });
+    }
 }
 
 impl Render for ComposerInput {
@@ -3114,6 +3224,7 @@ impl Focusable for ComposerInput {
 
 impl EventEmitter<ComposerEvent> for ComposerInput {}
 impl EventEmitter<ComposerAttachmentPaste> for ComposerInput {}
+impl EventEmitter<ComposerTextSnippetPaste> for ComposerInput {}
 
 #[cfg(test)]
 mod tests {
@@ -3130,11 +3241,12 @@ mod tests {
 
     use super::TokenClass;
     use super::{
-        ComposerEvent, ComposerInput, DeleteToLineEnd, DeleteToLineStart, DeleteToParagraphEnd,
-        EditHistory, FieldMode, SearchPaint, TextInput, UNDO_GROUP_INTERVAL, UNDO_HISTORY_CAP,
-        cursor_should_be_visible, input_text_runs, media_paste_entries, next_word_boundary,
-        pasted_text_for_mode, previous_word_boundary, single_line_scroll, trimmed_splice,
-        visual_row_count, word_range_at,
+        ComposerEvent, ComposerInput, ComposerTextSnippetPaste, DeleteToLineEnd, DeleteToLineStart,
+        DeleteToParagraphEnd, EditHistory, FieldMode, SearchPaint, TextInput, UNDO_GROUP_INTERVAL,
+        UNDO_HISTORY_CAP, cursor_should_be_visible, input_text_runs, is_pasted_text_snippet,
+        media_paste_entries, next_word_boundary, pasted_text_for_mode, pasted_text_title,
+        previous_word_boundary, single_line_scroll, trimmed_splice, visual_row_count,
+        word_range_at,
     };
 
     struct InputHarness {
@@ -3185,6 +3297,21 @@ mod tests {
         cx.update(super::init);
         let (harness, cx) = cx.add_window_view(|window, cx| {
             let composer = cx.new(|cx| ComposerInput::new(window, cx));
+            ComposerHarness { composer }
+        });
+        let composer = cx.read_entity(&harness, |harness, _| harness.composer.clone());
+        cx.update(|window, cx| window.focus(&composer.read(cx).focus(), cx));
+        cx.run_until_parked();
+        (composer, cx)
+    }
+
+    /// The main composer, the only owner that stages snippet pastes.
+    fn setup_snippet_composer<'a>(
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<ComposerInput>, &'a mut gpui::VisualTestContext) {
+        cx.update(super::init);
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let composer = cx.new(|cx| ComposerInput::new(window, cx).text_snippet_paste(cx));
             ComposerHarness { composer }
         });
         let composer = cx.read_entity(&harness, |harness, _| harness.composer.clone());
@@ -4258,5 +4385,92 @@ mod tests {
             ),
             px(300.)
         );
+    }
+
+    #[test]
+    fn pasted_text_snippet_detection() {
+        assert!(!is_pasted_text_snippet("hello world"));
+        assert!(!is_pasted_text_snippet(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9"
+        ));
+        assert!(is_pasted_text_snippet(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+        ));
+        let long_line = "a".repeat(1000);
+        assert!(is_pasted_text_snippet(&long_line));
+        let short_line = "a".repeat(999);
+        assert!(!is_pasted_text_snippet(&short_line));
+    }
+
+    #[test]
+    fn pasted_text_snippet_title_formatting() {
+        assert_eq!(
+            pasted_text_title("Ran search for components across the codebase"),
+            "Ran search for components ac..."
+        );
+        assert_eq!(pasted_text_title("Short line"), "Short line");
+        assert_eq!(
+            pasted_text_title("\n\n  Indented first line  \nsecond line"),
+            "Indented first line"
+        );
+        assert_eq!(pasted_text_title("   \n\t\n  "), "Pasted text");
+    }
+
+    fn long_paste() -> String {
+        (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The field that edits a historical message builds a plain composer and
+    /// has nowhere to stage a snippet, so its long paste must stay text.
+    #[gpui::test]
+    fn a_composer_without_snippet_staging_pastes_long_text(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        let text = long_paste();
+        cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())));
+        cx.simulate_keystrokes("secondary-v");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), text)
+        });
+    }
+
+    #[gpui::test]
+    fn an_opted_in_composer_stages_a_long_paste_and_appends_it_back(cx: &mut TestAppContext) {
+        let text = long_paste();
+        let (composer, cx) = setup_snippet_composer(cx);
+        let snippets: Rc<RefCell<Vec<String>>> = Rc::default();
+        let sink = snippets.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&composer, move |_, event: &ComposerTextSnippetPaste, _| {
+                sink.borrow_mut().push(event.0.clone());
+            })
+            .detach();
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        });
+        cx.simulate_keystrokes("secondary-v");
+        assert_eq!(snippets.borrow().as_slice(), std::slice::from_ref(&text));
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), "", "the paste is staged, not typed")
+        });
+
+        // Expanding appends after the draft. A selection — here everything —
+        // is not a replacement target, and the old trailing-newline probe
+        // cannot strand the snippet at the caret.
+        cx.update(|_, cx| {
+            composer.update(cx, |composer, cx| {
+                composer.set_content("keep this draft", cx)
+            });
+        });
+        cx.simulate_keystrokes("secondary-a");
+        cx.update(|window, cx| {
+            composer.update(cx, |composer, cx| {
+                composer.insert_pasted_text_snippet(&text, window, cx);
+            });
+        });
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), format!("keep this draft\n{text}"));
+        });
     }
 }

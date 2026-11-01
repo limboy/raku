@@ -1156,6 +1156,10 @@ composer.loading_suggestions:
   en: Loading suggestions…
 composer.remove_attachment:
   en: Remove %{name}
+composer.show_in_text_field:
+  en: Show in text field
+composer.pasted_text:
+  en: Pasted text
 composer.remove_target:
   en: Remove delegation target
 composer.delegation_target_added:

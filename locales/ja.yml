@@ -592,6 +592,8 @@ composer.starting_agent: エージェントを起動中…
 composer.suggestions: 入力候補
 composer.loading_suggestions: 入力候補を読み込み中…
 composer.remove_attachment: "%{name} を削除"
+composer.show_in_text_field: 入力欄に表示
+composer.pasted_text: 貼り付けたテキスト
 composer.remove_target: 委譲先を削除
 composer.delegation_target_added: 委譲先を追加しました
 composer.delegation_unavailable: この Agent は委譲できません。Codex、OpenCode、Pi、Oh My Pi に切り替えてください

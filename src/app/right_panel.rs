@@ -865,6 +865,7 @@ impl RightPanelSurface {
             Self::Files => tr!("right_panel.files"),
             Self::Diff => tr!("right_panel.diff"),
             Self::File(path) => path.rsplit('/').next().unwrap_or(path).to_owned(),
+            Self::PastedText { name, .. } => name.to_string(),
         }
     }
 
@@ -877,6 +878,7 @@ impl RightPanelSurface {
             Self::Files => "icons/folder.svg",
             Self::Diff => "icons/file-diff.svg",
             Self::File(path) => file_icon_for_path(path),
+            Self::PastedText { .. } => "icons/file.svg",
         }
     }
 }
@@ -927,6 +929,12 @@ fn reusable_surface_index(
                 )
             })
         }
+        RightPanelSurface::PastedText { id, .. } => surfaces.iter().position(|surface| {
+            matches!(
+                surface,
+                RightPanelSurface::PastedText { id: candidate, .. } if candidate == id
+            )
+        }),
         RightPanelSurface::Files | RightPanelSurface::Diff | RightPanelSurface::File(_) => {
             surfaces.iter().position(|surface| surface == requested)
         }
@@ -1660,6 +1668,40 @@ mod tests {
     }
 
     #[test]
+    fn pasted_text_tabs_reuse_the_attachment_they_were_opened_from() {
+        let id = Uuid::new_v4();
+        let surfaces = vec![RightPanelSurface::PastedText {
+            id,
+            name: "Pasted text".into(),
+            text: "first paste".into(),
+        }];
+        assert_eq!(
+            reusable_surface_index(
+                &surfaces,
+                &RightPanelSurface::PastedText {
+                    id,
+                    name: "Pasted text".into(),
+                    text: "first paste".into(),
+                },
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            reusable_surface_index(
+                &surfaces,
+                &RightPanelSurface::PastedText {
+                    id: Uuid::new_v4(),
+                    name: "Pasted text".into(),
+                    text: "second paste".into(),
+                },
+            ),
+            None
+        );
+        assert_eq!(right_panel_tab_label(&surfaces[0], None), "Pasted text");
+        assert_eq!(right_panel_tab_icon(&surfaces[0], None), "icons/file.svg");
+    }
+
+    #[test]
     fn delegated_tabs_reuse_task_identity_not_model_title() {
         let group_id = Uuid::new_v4();
         let task_id = Uuid::new_v4();
@@ -2097,6 +2139,22 @@ impl Waku {
         }
     }
 
+    /// Show a pasted text attachment in the right panel.
+    ///
+    /// The snippet's text travels with its chip, so this opens without an I/O
+    /// pass; the read-only viewer is created on the surface's first render and
+    /// kept per attachment, which is what lets a reopened tab keep its scroll
+    /// position and text selection.
+    pub(super) fn open_pasted_text(
+        &mut self,
+        id: Uuid,
+        name: SharedString,
+        text: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_right_panel_surface(RightPanelSurface::PastedText { id, name, text }, cx);
+    }
+
     fn close_right_panel_surface(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.right_panel_surfaces.len() {
             return;
@@ -2112,6 +2170,10 @@ impl Waku {
         }
         if let Some(browser_id) = self.right_panel_surfaces[index].browser_id() {
             self.right_panel_browsers.remove(&browser_id);
+        }
+        if let RightPanelSurface::PastedText { id, .. } = &self.right_panel_surfaces[index] {
+            let id = *id;
+            self.pasted_text_views.remove(&id);
         }
         self.right_panel_surfaces.remove(index);
         self.right_panel_active_surface = if self.right_panel_surfaces.is_empty() {
@@ -2273,6 +2335,9 @@ impl Waku {
                 }),
             Some(RightPanelSurface::File(path)) => self
                 .render_right_panel_file(path, width, window, cx)
+                .into_any_element(),
+            Some(RightPanelSurface::PastedText { id, text, .. }) => self
+                .render_right_panel_pasted_text(id, &text, window, cx)
                 .into_any_element(),
             Some(RightPanelSurface::Browser(browser_id)) => {
                 let browser = self.ensure_right_panel_browser(browser_id, window, cx);
@@ -2909,6 +2974,54 @@ impl Waku {
                         &self.right_panel_files_scrollbar,
                     )),
             )
+    }
+
+    /// The read-only body for a pasted text attachment: the snippet exactly as
+    /// it was pasted, in the editor's mono metrics with the panel's overlay
+    /// scrollbar. The viewer is created once per attachment and reused, so a
+    /// reopened tab keeps the reader's scroll position and selection.
+    fn render_right_panel_pasted_text(
+        &mut self,
+        id: Uuid,
+        text: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = Theme::current(cx);
+        if !self.pasted_text_views.contains_key(&id) {
+            let state = cx.new(|cx| {
+                let mut input = TextInput::new(window, cx).multi_line().read_only(true);
+                input.set_content(text.clone(), cx);
+                input
+            });
+            self.pasted_text_views.insert(id, state);
+        }
+        let view = self
+            .pasted_text_views
+            .get(&id)
+            .expect("the viewer was just ensured")
+            .clone();
+        let text_size = self.state.code_font_size;
+        let line_height = (text_size * 1.5).round();
+        let scroll = self.pasted_text_scroll.clone();
+        div()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .relative()
+            .bg(theme.surface)
+            .font_family(md::render::MONO_FAMILY)
+            .text_size(px(text_size))
+            .line_height(px(line_height))
+            .child(
+                div()
+                    .id("pasted-text-view")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .child(div().px(px(14.0)).py(px(10.0)).child(view)),
+            )
+            .child(scrollbar::vertical(&scroll, &self.pasted_text_scrollbar))
     }
 
     fn render_right_panel_file(

@@ -563,6 +563,8 @@ composer.starting_agent: 正在启动智能体…
 composer.suggestions: 输入建议
 composer.loading_suggestions: 正在加载建议…
 composer.remove_attachment: 移除 %{name}
+composer.show_in_text_field: 在输入框中显示
+composer.pasted_text: 已粘贴文本
 composer.remove_target: 移除委派目标
 composer.delegation_target_added: 已添加委派目标
 composer.delegation_unavailable: 当前 Agent 无法委派，切换到 Codex、OpenCode、Pi 或 Oh My Pi 才能使用 ^

@@ -2030,6 +2030,7 @@ impl Waku {
             is_dir,
             is_image,
             blob_reference: Some(reference),
+            pasted_text: None,
         });
         true
     }
@@ -2129,6 +2130,93 @@ impl Waku {
             });
         })
         .detach();
+    }
+
+    /// Stage a long text paste as a collapsible text snippet attachment.
+    /// File bytes are materialized via the daemon in the background, while the
+    /// in-memory text snippet is preserved so clicking "Show in text field" can
+    /// immediately unpack it back into the composer.
+    pub(super) fn stage_pasted_text_snippet(&mut self, text: String, cx: &mut Context<Self>) {
+        let title = crate::input::pasted_text_title(&text);
+        let daemon = self.daemon.clone();
+        let draft_owner = self.selected_composer_draft_key();
+        let text_bytes = text.as_bytes().to_vec();
+        cx.spawn(async move |waku, cx| {
+            let stored = cx
+                .background_executor()
+                .spawn(async move {
+                    let file_name = format!("pasted-text-{}.txt", &Uuid::new_v4().to_string()[..8]);
+                    let response = daemon.client().request(
+                        Uuid::nil(),
+                        Uuid::nil(),
+                        waku_client::Command::ImportAttachment {
+                            name: file_name,
+                            upload: waku_client::attachments::AttachmentUpload::File {
+                                data_base64: base64::engine::general_purpose::STANDARD
+                                    .encode(&text_bytes),
+                            },
+                        },
+                    )?;
+                    let waku_client::ResponsePayload::AttachmentStored { attachment } = response
+                    else {
+                        anyhow::bail!("the daemon returned an invalid attachment response");
+                    };
+                    Ok::<_, anyhow::Error>((attachment, title, text))
+                })
+                .await;
+            let _ = waku.update(cx, |waku, cx| match stored {
+                Ok((attachment, title, text)) => {
+                    let mention = attachment.path.display().to_string();
+                    let staged = ComposerAttachment {
+                        path: attachment.path,
+                        client_preview_image: None,
+                        mention,
+                        name: SharedString::from(title),
+                        is_dir: false,
+                        is_image: false,
+                        blob_reference: Some(attachment.reference),
+                        pasted_text: Some(text),
+                    };
+                    if waku.selected_composer_draft_key() == draft_owner {
+                        waku.composer_attachments.push(staged);
+                        waku.schedule_composer_draft_save(cx);
+                    } else {
+                        // The paste left the field the moment it was made, so a
+                        // navigation during the import must keep the snippet
+                        // with the draft it came from instead of dropping it.
+                        waku.store_draft_attachment(draft_owner, staged, cx);
+                    }
+                    cx.notify();
+                }
+                Err(error) => {
+                    waku.show_toast(error.to_string());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Restore a collapsed text snippet attachment into the prompt text field.
+    pub(super) fn expand_pasted_text_snippet(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if index >= self.composer_attachments.len() {
+            return;
+        }
+        let attachment = self.composer_attachments.remove(index);
+        if let Some(text) = attachment.pasted_text {
+            self.composer.update(cx, |composer, cx| {
+                composer.insert_pasted_text_snippet(&text, window, cx);
+            });
+            let focus = self.composer.read(cx).focus();
+            window.focus(&focus, cx);
+        }
+        self.schedule_composer_draft_save(cx);
+        cx.notify();
     }
 
     /// The text and attachment presentation accepted from the composer. The
@@ -2353,6 +2441,115 @@ impl Waku {
             .gap(px(8.0));
         for (index, attachment) in self.composer_attachments.iter().enumerate() {
             let menu = self.menu_handle(format!("composer-attachment-{index}-menu"), cx);
+            let can_reveal = true;
+            let reveal_path = attachment.path.clone();
+
+            if let Some(text) = attachment.pasted_text.as_deref() {
+                let title = attachment.name.clone();
+                let detail_id = super::components::pasted_text_view_id(
+                    attachment.blob_reference.as_deref(),
+                    text,
+                );
+                let detail_name = title.clone();
+                let detail_text = SharedString::from(text);
+                let key_name = title.clone();
+                let key_text = SharedString::from(text);
+                let key_menu = menu.clone();
+                let remove = div()
+                    .id(SharedString::from(format!(
+                        "composer-attachment-remove-{index}"
+                    )))
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .flex_none()
+                    .tab_index(0)
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_default()
+                    .hover(|element| element.bg(theme.overlay_strong))
+                    .focus_visible(|style| style.border_1().border_color(theme.accent))
+                    .child(icon("icons/x.svg", 9.0, theme.text_tertiary))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        if index < this.composer_attachments.len() {
+                            this.composer_attachments.remove(index);
+                            this.schedule_composer_draft_save(cx);
+                            cx.notify();
+                        }
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            if index < this.composer_attachments.len() {
+                                this.composer_attachments.remove(index);
+                                this.schedule_composer_draft_save(cx);
+                                cx.notify();
+                            }
+                            cx.stop_propagation();
+                        }
+                    }));
+                let tile = super::components::pasted_text_chip(&theme, &title)
+                    .id(SharedString::from(format!("composer-attachment-{index}")))
+                    .pr(px(4.0))
+                    .track_focus(menu.trigger_focus_handle())
+                    .tab_index(0)
+                    .focus_visible(|style| style.border_color(theme.accent))
+                    .tooltip(Tooltip::text(title.clone()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.open_pasted_text(
+                            detail_id,
+                            detail_name.clone(),
+                            detail_text.clone(),
+                            cx,
+                        );
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                        let key = event.keystroke.key.as_str();
+                        if matches!(key, "enter" | "space") {
+                            this.open_pasted_text(
+                                detail_id,
+                                key_name.clone(),
+                                key_text.clone(),
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        } else if key == "f10" && event.keystroke.modifiers.shift {
+                            key_menu.open_context_menu(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(remove);
+
+                // Expanding back into the field is no longer the primary
+                // action, but it is the only way to edit the pasted text, so
+                // the menu keeps it within reach of both pointer and keyboard.
+                let expand_weak = cx.entity().downgrade();
+                row = row.child(context_menu(
+                    tile,
+                    SharedString::from(format!("composer-attachment-{index}-context-menu")),
+                    &menu,
+                    move |_| {
+                        let expand_weak = expand_weak.clone();
+                        let mut items = vec![MenuItem::new(
+                            tr!("composer.show_in_text_field"),
+                            move |window, cx| {
+                                let _ = expand_weak.update(cx, |this, cx| {
+                                    this.expand_pasted_text_snippet(index, window, cx);
+                                });
+                            },
+                        )];
+                        items.extend(image_preview::attachment_menu_items(
+                            reveal_path.clone(),
+                            can_reveal,
+                        ));
+                        items
+                    },
+                ));
+                continue;
+            }
+
             let icon_path = if attachment.is_dir {
                 "icons/folder.svg"
             } else {

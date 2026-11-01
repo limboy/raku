@@ -11,6 +11,7 @@ impl From<&ComposerAttachment> for crate::persistence::ComposerDraftAttachment {
             is_dir: attachment.is_dir,
             is_image: attachment.is_image,
             blob_reference: attachment.blob_reference.clone(),
+            pasted_text: attachment.pasted_text.clone(),
         }
     }
 }
@@ -25,6 +26,7 @@ impl From<crate::persistence::ComposerDraftAttachment> for ComposerAttachment {
             is_dir: attachment.is_dir,
             is_image: attachment.is_image,
             blob_reference: attachment.blob_reference,
+            pasted_text: attachment.pasted_text,
         }
     }
 }
@@ -38,6 +40,7 @@ impl From<ComposerAttachment> for MessageAttachment {
             is_dir: attachment.is_dir,
             is_image: attachment.is_image,
             blob_reference: attachment.blob_reference,
+            pasted_text: attachment.pasted_text,
         }
     }
 }
@@ -52,6 +55,7 @@ impl From<MessageAttachment> for ComposerAttachment {
             is_dir: attachment.is_dir,
             is_image: attachment.is_image,
             blob_reference: attachment.blob_reference,
+            pasted_text: attachment.pasted_text,
         }
     }
 }
@@ -157,6 +161,25 @@ impl Waku {
         cx: &mut Context<Self>,
     ) {
         if self.composer_drafts.remove(key) {
+            self.schedule_composer_draft_save(cx);
+        }
+    }
+
+    /// Append an attachment to a stored draft that is not the live composer's,
+    /// such as a snippet whose daemon import landed after the user navigated
+    /// elsewhere. Its text never returned to a field, so discarding the entry
+    /// would lose the paste outright.
+    pub(super) fn store_draft_attachment(
+        &mut self,
+        key: Option<crate::persistence::ComposerDraftKey>,
+        attachment: ComposerAttachment,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(key) = key else {
+            return;
+        };
+        let attachment = crate::persistence::ComposerDraftAttachment::from(&attachment);
+        if self.composer_drafts.append_attachment(key, attachment) {
             self.schedule_composer_draft_save(cx);
         }
     }

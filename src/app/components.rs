@@ -466,6 +466,54 @@ pub(super) struct MessageRender<'a> {
     pub(super) composer: Entity<ComposerInput>,
 }
 
+/// The one-line chip a pasted text attachment renders as: a document icon and
+/// the snippet's first line, truncated. Callers add identity, focus, and click
+/// handling; the composer adds its remove control inside the same row.
+pub(super) fn pasted_text_chip(theme: &Theme, title: &SharedString) -> Div {
+    div()
+        .h(px(28.0))
+        .min_h(px(28.0))
+        .max_w(px(320.0))
+        .rounded_full()
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.inset)
+        .px(px(9.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .cursor_default()
+        .hover(|element| element.bg(theme.overlay))
+        .child(icon("icons/file.svg", 13.0, theme.text_secondary))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_size(sp(13.0))
+                .text_color(theme.text)
+                .child(title.clone()),
+        )
+}
+
+/// Stable identity for a pasted text attachment's right-panel tab. The daemon
+/// attachment a snippet was materialized into is what a reopened draft or a
+/// sent message still carries, so the same chip keeps landing on one tab; an
+/// attachment with no reference falls back to a hash of its text, which keeps
+/// repeated clicks on it agreeing too.
+pub(super) fn pasted_text_view_id(reference: Option<&str>, text: &str) -> Uuid {
+    use std::hash::{Hash as _, Hasher as _};
+
+    reference
+        .and_then(|reference| reference.strip_prefix(waku_protocol::attachments::ATTACHMENT_SCHEME))
+        .and_then(|id| id.parse().ok())
+        .unwrap_or_else(|| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            Uuid::from_u128(hasher.finish().into())
+        })
+}
+
 fn render_sent_message_attachments(
     message_id: Uuid,
     attachments: &[MessageAttachment],
@@ -488,6 +536,51 @@ fn render_sent_message_attachments(
         let Some(menu) = attachment_menus.get(index) else {
             continue;
         };
+        if let Some(text) = attachment.pasted_text.as_deref() {
+            let name = SharedString::from(attachment.name.clone());
+            let id = pasted_text_view_id(attachment.blob_reference.as_deref(), text);
+            let click_name = name.clone();
+            let click_text = SharedString::from(text);
+            let key_name = name.clone();
+            let key_text = SharedString::from(text);
+            let click_waku = waku.clone();
+            let key_waku = waku.clone();
+            let key_menu = menu.clone();
+            let chip = pasted_text_chip(theme, &name)
+                .id(SharedString::from(format!(
+                    "message-{message_id}-attachment-{index}"
+                )))
+                .track_focus(menu.trigger_focus_handle())
+                .tab_index(0)
+                .focus_visible(|style| style.border_color(theme.accent))
+                .tooltip(Tooltip::text(name.clone()))
+                .on_click(move |_, _, cx| {
+                    let _ = click_waku.update(cx, |this, cx| {
+                        this.open_pasted_text(id, click_name.clone(), click_text.clone(), cx);
+                    });
+                    cx.stop_propagation();
+                })
+                .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                    let key = event.keystroke.key.as_str();
+                    if matches!(key, "enter" | "space") {
+                        let _ = key_waku.update(cx, |this, cx| {
+                            this.open_pasted_text(id, key_name.clone(), key_text.clone(), cx);
+                        });
+                        cx.stop_propagation();
+                    } else if key == "f10" && event.keystroke.modifiers.shift {
+                        key_menu.open_context_menu(window, cx);
+                        cx.stop_propagation();
+                    }
+                });
+            let reveal_path = attachment.path.clone();
+            row = row.child(context_menu(
+                chip,
+                SharedString::from(format!("message-{message_id}-attachment-{index}-menu")),
+                menu,
+                move |_| image_preview::attachment_menu_items(reveal_path.clone(), can_reveal),
+            ));
+            continue;
+        }
         let icon_path = if attachment.is_dir {
             "icons/folder.svg"
         } else {
@@ -1720,6 +1813,35 @@ pub(super) fn activity_preview(activity: &ActivityItem) -> String {
         return tr!("activity.image_output");
     }
     detail.to_owned()
+}
+
+#[cfg(test)]
+mod pasted_text_chip_tests {
+    use super::*;
+
+    #[test]
+    fn a_chip_reuses_the_tab_of_the_attachment_it_came_from() {
+        let id = Uuid::new_v4();
+        let reference = format!("{}{id}", waku_protocol::attachments::ATTACHMENT_SCHEME);
+
+        // A restored draft or a sent message carries the same reference, so
+        // both reopen the one tab rather than stacking duplicates.
+        assert_eq!(pasted_text_view_id(Some(&reference), "ignored"), id);
+        assert_eq!(
+            pasted_text_view_id(None, "same text"),
+            pasted_text_view_id(None, "same text")
+        );
+        assert_ne!(
+            pasted_text_view_id(None, "first paste"),
+            pasted_text_view_id(None, "second paste")
+        );
+        // A reference that is not an attachment id falls back to the text
+        // rather than inventing a new tab on every click.
+        assert_eq!(
+            pasted_text_view_id(Some("not-an-attachment"), "text"),
+            pasted_text_view_id(None, "text")
+        );
+    }
 }
 
 #[cfg(test)]

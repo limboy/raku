@@ -15,6 +15,8 @@ pub struct ComposerDraftAttachment {
     pub is_image: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pasted_text: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -133,6 +135,20 @@ impl ComposerDrafts {
         }
     }
 
+    /// Add one attachment to a draft's staging row, creating the draft when it
+    /// does not exist yet. Returns whether the stored draft changed — an
+    /// attachment-only draft counts as content, so it is kept rather than
+    /// normalized away.
+    pub fn append_attachment(
+        &mut self,
+        key: ComposerDraftKey,
+        attachment: ComposerDraftAttachment,
+    ) -> bool {
+        let mut draft = self.get(key).cloned().unwrap_or_default();
+        draft.attachments.push(attachment);
+        self.set(key, draft)
+    }
+
     pub fn move_to_empty(
         &mut self,
         source: ComposerDraftKey,
@@ -154,4 +170,48 @@ pub struct SessionMessageMatch {
     pub session_id: Uuid,
     pub source: MessageRole,
     pub snippet: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ComposerDraftAttachment, ComposerDraftKey, ComposerDrafts};
+    use uuid::Uuid;
+
+    fn snippet(text: &str) -> ComposerDraftAttachment {
+        ComposerDraftAttachment {
+            path: "/attachments/snippet.txt".into(),
+            mention: "/attachments/snippet.txt".into(),
+            name: "Pasted text".into(),
+            is_dir: false,
+            is_image: false,
+            blob_reference: Some("waku-attachment:snippet".into()),
+            pasted_text: Some(text.into()),
+        }
+    }
+
+    #[test]
+    fn an_appended_attachment_creates_its_draft_and_keeps_earlier_content() {
+        let mut drafts = ComposerDrafts::default();
+        let key = ComposerDraftKey::Session(Uuid::new_v4());
+
+        // A snippet that lands after the user navigated away has no draft to
+        // join yet; it must still be kept rather than normalized away.
+        assert!(drafts.append_attachment(key, snippet("first")));
+        let draft = drafts.get(key).expect("the attachment keeps the draft");
+        assert!(draft.text.is_empty());
+        assert_eq!(draft.attachments, vec![snippet("first")]);
+
+        drafts.set(
+            key,
+            super::ComposerDraft {
+                text: "follow up".into(),
+                attachments: vec![snippet("first")],
+                ..Default::default()
+            },
+        );
+        assert!(drafts.append_attachment(key, snippet("second")));
+        let draft = drafts.get(key).expect("the draft stays");
+        assert_eq!(draft.text, "follow up");
+        assert_eq!(draft.attachments, vec![snippet("first"), snippet("second")]);
+    }
 }
