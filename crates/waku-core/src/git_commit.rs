@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, anyhow, bail};
 use uuid::Uuid;
 
-use crate::model::ProviderKind;
+use crate::model::{ProviderKind, strip_ansi};
 pub use waku_protocol::git::{AgentInvocation, CommitSnapshot as Snapshot};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -410,24 +410,6 @@ fn normalize_message(output: &str) -> Option<String> {
         return None;
     }
     Some(candidate.chars().take(200).collect())
-}
-
-fn strip_ansi(text: &str) -> String {
-    let mut clean = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(character) = chars.next() {
-        if character == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for next in chars.by_ref() {
-                if ('@'..='~').contains(&next) {
-                    break;
-                }
-            }
-        } else {
-            clean.push(character);
-        }
-    }
-    clean
 }
 
 fn truncate_utf8(mut value: String, limit: usize) -> (String, bool) {

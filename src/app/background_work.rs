@@ -304,6 +304,9 @@ impl BackgroundWorkRegistry {
     }
 
     fn upsert(&mut self, mut incoming: BackgroundWorkItem) {
+        bound_output(&mut incoming);
+        incoming.settle_from_output();
+        incoming.populate_exit_code_from_output();
         let key = incoming.key.clone();
         // Short foreground commands belong in the transcript. Show them while
         // running, then remove them instead of turning this surface into a
@@ -324,7 +327,6 @@ impl BackgroundWorkRegistry {
             return;
         }
 
-        bound_output(&mut incoming);
         self.output_viewports.entry(key.clone()).or_default();
         let output_changed;
         if let Some(current) = self.items.get_mut(&incoming.key) {
@@ -385,6 +387,15 @@ impl BackgroundWorkRegistry {
         item.updated_at_ms = unix_time_millis();
         bound_output(item);
         self.dirty_output.insert(key.clone());
+        if item.settle_from_output()
+            && !item.background
+            && matches!(
+                item.key.kind,
+                BackgroundWorkKind::Process | BackgroundWorkKind::Monitor
+            )
+        {
+            self.remove(key);
+        }
     }
 
     fn reconcile_processes(&mut self, items: Vec<BackgroundWorkItem>) {
@@ -465,6 +476,21 @@ impl BackgroundWorkRegistry {
 
     fn mark_live_lost(&mut self) {
         let now = unix_time_millis();
+        let unbackgrounded = self
+            .items
+            .values()
+            .filter(|item| {
+                !item.background
+                    && matches!(
+                        item.key.kind,
+                        BackgroundWorkKind::Process | BackgroundWorkKind::Monitor
+                    )
+            })
+            .map(|item| item.key.clone())
+            .collect::<Vec<_>>();
+        for key in unbackgrounded {
+            self.remove(&key);
+        }
         for item in self.items.values_mut().filter(|item| item.status.is_live()) {
             item.status = BackgroundWorkStatus::Lost;
             item.can_stop = false;
@@ -476,16 +502,18 @@ impl BackgroundWorkRegistry {
         let keys = self
             .items
             .values()
-            .filter(|item| !item.background && item.status.is_live())
+            .filter(|item| !item.background)
             .map(|item| item.key.clone())
             .collect::<Vec<_>>();
         let now = unix_time_millis();
         for key in keys {
             if key.kind == BackgroundWorkKind::Subagent {
                 if let Some(item) = self.items.get_mut(&key) {
-                    item.status = status;
-                    item.can_stop = false;
-                    item.updated_at_ms = now;
+                    if item.status.is_live() {
+                        item.status = status;
+                        item.can_stop = false;
+                        item.updated_at_ms = now;
+                    }
                 }
             } else {
                 self.remove(&key);
@@ -577,24 +605,6 @@ fn bound_output(item: &mut BackgroundWorkItem) {
     }
     output.drain(..cut);
     item.output_truncated = true;
-}
-
-fn strip_ansi(text: &str) -> String {
-    let mut clean = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(character) = chars.next() {
-        if character == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for next in chars.by_ref() {
-                if ('@'..='~').contains(&next) {
-                    break;
-                }
-            }
-        } else {
-            clean.push(character);
-        }
-    }
-    clean
 }
 
 pub(super) fn work_status_label(status: BackgroundWorkStatus) -> String {
@@ -944,6 +954,15 @@ impl Waku {
         let mut entries = Vec::new();
         if let Some(registry) = self.background_work.get(&session_id) {
             for item in registry.ordered_items() {
+                if !item.background
+                    && matches!(
+                        item.key.kind,
+                        BackgroundWorkKind::Process | BackgroundWorkKind::Monitor
+                    )
+                    && !item.status.is_live()
+                {
+                    continue;
+                }
                 let target = BackgroundSummaryTarget::Native(item.key.clone());
                 let id = target.control_id();
                 let status = BackgroundSummaryStatus::Native(item.status);
@@ -957,7 +976,7 @@ impl Waku {
                     title: item.title.clone(),
                     tooltip,
                     status,
-                    can_stop: item.can_stop,
+                    can_stop: item.can_stop && item.status.is_stoppable(),
                     row_focus: self
                         .transcript_control_focus(format!("background-summary-row-{id}"), cx),
                     stop_focus: self
@@ -2508,6 +2527,94 @@ mod tests {
         assert!(registry.has_live());
         registry.upsert(item("one", BackgroundWorkStatus::Completed, false));
         assert!(registry.items.is_empty());
+    }
+
+    #[test]
+    fn foreground_command_with_exit_code_in_output_leaves_the_registry() {
+        let mut registry = BackgroundWorkRegistry::default();
+        registry.upsert(item("one", BackgroundWorkStatus::Running, false));
+        assert!(registry.has_live());
+
+        let mut finished = item("one", BackgroundWorkStatus::Running, false);
+        finished.output = Some("Wall time: 44.30 seconds\nCommand exited with code 101\n".into());
+        registry.upsert(finished);
+        assert!(registry.items.is_empty());
+        assert!(!registry.has_live());
+    }
+
+    #[test]
+    fn background_process_with_exit_code_in_output_settles_and_stops_spinning() {
+        let mut registry = BackgroundWorkRegistry::default();
+        registry.upsert(item("one", BackgroundWorkStatus::Running, true));
+        assert!(registry.has_live());
+
+        let mut finished = item("one", BackgroundWorkStatus::Running, true);
+        finished.output = Some("Wall time: 44.30 seconds\nCommand exited with code 101\n".into());
+        registry.upsert(finished);
+        let key = BackgroundWorkKey::new(BackgroundWorkKind::Process, "one");
+        assert_eq!(registry.items[&key].status, BackgroundWorkStatus::Failed);
+        assert_eq!(registry.items[&key].exit_code, Some(101));
+        assert!(!registry.has_live());
+        assert_eq!(registry.counts(), (0, 0));
+    }
+
+    #[test]
+    fn append_output_with_exit_code_settles_foreground_and_background_items() {
+        let mut registry = BackgroundWorkRegistry::default();
+        let fg_key = BackgroundWorkKey::new(BackgroundWorkKind::Process, "fg");
+        let bg_key = BackgroundWorkKey::new(BackgroundWorkKind::Process, "bg");
+        registry.upsert(item("fg", BackgroundWorkStatus::Running, false));
+        registry.upsert(item("bg", BackgroundWorkStatus::Running, true));
+
+        registry.apply(BackgroundWorkEvent::OutputDelta {
+            key: fg_key.clone(),
+            delta: "Command exited with code 0\n".into(),
+        });
+        assert!(!registry.items.contains_key(&fg_key));
+
+        registry.apply(BackgroundWorkEvent::OutputDelta {
+            key: bg_key.clone(),
+            delta: "Command exited with code 1\n".into(),
+        });
+        assert_eq!(registry.items[&bg_key].status, BackgroundWorkStatus::Failed);
+        assert_eq!(registry.items[&bg_key].exit_code, Some(1));
+        assert!(!registry.has_live());
+    }
+
+    #[test]
+    fn live_reconciliation_and_non_process_outputs_are_not_overridden_by_stale_exit_lines() {
+        let mut registry = BackgroundWorkRegistry::default();
+        let proc_key = BackgroundWorkKey::new(BackgroundWorkKind::Process, "pty-1");
+        let mut pty = item("pty-1", BackgroundWorkStatus::Running, true);
+        pty.can_stop = true;
+        pty.output = Some("subcommand failed\nExit code: 1\n".into());
+        registry.upsert(pty);
+        assert_eq!(registry.items[&proc_key].status, BackgroundWorkStatus::Failed);
+
+        // Authoritative process-table poll (`output: None`) reporting the
+        // background terminal still running must not be clobbered by old output.
+        let mut live_poll = item("pty-1", BackgroundWorkStatus::Running, true);
+        live_poll.can_stop = true;
+        registry.reconcile_processes(vec![live_poll]);
+        assert_eq!(registry.items[&proc_key].status, BackgroundWorkStatus::Running);
+        assert!(registry.items[&proc_key].can_stop);
+
+        let agent_key = BackgroundWorkKey::new(BackgroundWorkKind::Subagent, "agent-1");
+        let mut subagent = BackgroundWorkItem::new(
+            BackgroundWorkKind::Subagent,
+            "agent-1",
+            "Investigate failure",
+            BackgroundWorkStatus::Running,
+        );
+        subagent.background = true;
+        subagent.can_stop = true;
+        registry.upsert(subagent);
+        registry.apply(BackgroundWorkEvent::OutputDelta {
+            key: agent_key.clone(),
+            delta: "The test printed:\nCommand exited with code 101\n".into(),
+        });
+        assert_eq!(registry.items[&agent_key].status, BackgroundWorkStatus::Running);
+        assert!(registry.items[&agent_key].can_stop);
     }
 
     #[test]

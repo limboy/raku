@@ -2085,6 +2085,172 @@ impl BackgroundWorkItem {
             status,
         }
     }
+
+    /// Reconciles a live process item's status against terminal exit lines at
+    /// the tail of its output. Leaves subagents and long-lived monitors untouched.
+    pub fn settle_from_output(&mut self) -> bool {
+        if self.key.kind == BackgroundWorkKind::Process
+            && self.status.is_live()
+            && let Some((code, settled_status)) = self
+                .output
+                .as_deref()
+                .and_then(parse_command_exit_status)
+        {
+            self.status = settled_status;
+            if self.exit_code.is_none() {
+                self.exit_code = Some(code);
+            }
+            self.can_stop = false;
+            self.updated_at_ms = unix_time_millis();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Populates `exit_code` from output once for an already-settled process
+    /// whose transport did not report a structured exit code.
+    pub fn populate_exit_code_from_output(&mut self) {
+        if self.key.kind == BackgroundWorkKind::Process
+            && !self.status.is_live()
+            && self.exit_code.is_none()
+        {
+            self.exit_code = self
+                .output
+                .as_deref()
+                .and_then(parse_command_exit_status)
+                .map(|(code, _)| code);
+        }
+    }
+}
+
+/// Strips ANSI CSI and OSC escape sequences from terminal output.
+pub fn strip_ansi(text: &str) -> String {
+    if !text.contains('\u{1b}') {
+        return text.to_owned();
+    }
+    let mut clean = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' {
+            match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{07}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => clean.push(character),
+            }
+        } else {
+            clean.push(character);
+        }
+    }
+    clean
+}
+
+fn strip_ascii_case_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &text[prefix.len()..])
+}
+
+fn is_trailing_wrapper_footer_line(line: &str) -> bool {
+    strip_ascii_case_prefix(line, "Wall time:").is_some()
+        || (line.starts_with('[') && line.ends_with(']'))
+        || line.starts_with('…')
+        || line.starts_with("...")
+}
+
+fn parse_exit_status_line(trimmed: &str) -> Option<(i32, BackgroundWorkStatus)> {
+    if matches!(
+        trimmed,
+        "(command cancelled)" | "(process killed)" | "Command cancelled" | "Process killed"
+    ) {
+        return Some((130, BackgroundWorkStatus::Stopped));
+    }
+
+    if let Some(inner) = trimmed.strip_suffix(']')
+        && let Some(rest) = strip_ascii_case_prefix(inner, "[Process exited")
+        && rest.starts_with(char::is_whitespace)
+        && let Ok(code) = rest.trim().parse::<i32>()
+    {
+        let status = if code == 0 {
+            BackgroundWorkStatus::Completed
+        } else {
+            BackgroundWorkStatus::Failed
+        };
+        return Some((code, status));
+    }
+
+    for prefix in [
+        "Command exited with code",
+        "Process exited with code",
+        "Exit code:",
+        "Exit code",
+    ] {
+        let Some(rest) = strip_ascii_case_prefix(trimmed, prefix) else {
+            continue;
+        };
+        if !prefix.ends_with(':') && !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        if let Ok(code) = rest.trim().trim_end_matches('.').parse::<i32>() {
+            let status = if code == 0 {
+                BackgroundWorkStatus::Completed
+            } else {
+                BackgroundWorkStatus::Failed
+            };
+            return Some((code, status));
+        }
+    }
+
+    None
+}
+
+/// Parses a process/command exit status and exit code from the terminal footer
+/// of tool output. Inspects only the trailing non-empty lines without copying
+/// the full buffer.
+pub fn parse_command_exit_status(text: &str) -> Option<(i32, BackgroundWorkStatus)> {
+    let mut trailing_footer_lines = 0usize;
+    for raw_line in text.lines().rev() {
+        if raw_line.trim().is_empty() {
+            continue;
+        }
+        let stripped;
+        let trimmed = if raw_line.contains('\u{1b}') {
+            stripped = strip_ansi(raw_line);
+            stripped.trim()
+        } else {
+            raw_line.trim()
+        };
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(parsed) = parse_exit_status_line(trimmed) {
+            return Some(parsed);
+        }
+        if trailing_footer_lines < 3 && is_trailing_wrapper_footer_line(trimmed) {
+            trailing_footer_lines += 1;
+            continue;
+        }
+        break;
+    }
+    None
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3614,6 +3780,91 @@ mod tests {
             panic!("unexpected background-work event");
         };
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn parse_command_exit_status_detects_exit_codes_and_ignores_utf8_or_midstream_text() {
+        assert_eq!(
+            parse_command_exit_status("Wall time: 44.30 seconds\n\nCommand exited with code 101"),
+            Some((101, BackgroundWorkStatus::Failed))
+        );
+        assert_eq!(
+            parse_command_exit_status(
+                "Command exited with code 101\nWall time: 44.30 seconds\n[raw output: artifact://4]\n"
+            ),
+            Some((101, BackgroundWorkStatus::Failed))
+        );
+        assert_eq!(
+            parse_command_exit_status("Command exited with code 0"),
+            Some((0, BackgroundWorkStatus::Completed))
+        );
+        assert_eq!(
+            parse_command_exit_status("Process exited with code 1"),
+            Some((1, BackgroundWorkStatus::Failed))
+        );
+        assert_eq!(
+            parse_command_exit_status("Exit code: 0"),
+            Some((0, BackgroundWorkStatus::Completed))
+        );
+        assert_eq!(
+            parse_command_exit_status("exit code 2"),
+            Some((2, BackgroundWorkStatus::Failed))
+        );
+        assert_eq!(
+            parse_command_exit_status("[Process exited 127]"),
+            Some((127, BackgroundWorkStatus::Failed))
+        );
+        assert_eq!(
+            parse_command_exit_status("(command cancelled)"),
+            Some((130, BackgroundWorkStatus::Stopped))
+        );
+        assert_eq!(
+            parse_command_exit_status(
+                "\u{1b}]133;D;1\u{07}\u{1b}[31mCommand exited with code 1\u{1b}[0m"
+            ),
+            Some((1, BackgroundWorkStatus::Failed))
+        );
+        assert_eq!(
+            parse_command_exit_status("界界界界\n──────────\n测试输出 🚀"),
+            None
+        );
+        assert_eq!(
+            parse_command_exit_status("Exit code: 1\nCompiling waku v0.1.0\nrunning tests..."),
+            None
+        );
+    }
+
+    #[test]
+    fn background_work_item_settles_only_processes_from_output() {
+        let mut process = BackgroundWorkItem::new(
+            BackgroundWorkKind::Process,
+            "proc-1",
+            "cargo test",
+            BackgroundWorkStatus::Running,
+        );
+        process.can_stop = true;
+        process.output = Some("test failed\nCommand exited with code 101\n".into());
+        assert!(process.settle_from_output());
+        assert_eq!(process.status, BackgroundWorkStatus::Failed);
+        assert_eq!(process.exit_code, Some(101));
+        assert!(!process.status.is_live());
+        assert!(!process.can_stop);
+
+        for (kind, status) in [
+            (BackgroundWorkKind::Subagent, BackgroundWorkStatus::Running),
+            (
+                BackgroundWorkKind::Monitor,
+                BackgroundWorkStatus::Monitoring,
+            ),
+        ] {
+            let mut item = BackgroundWorkItem::new(kind, "live-1", "worker", status);
+            item.can_stop = true;
+            item.output = Some("quoted failure:\nExit code: 1\n".into());
+            assert!(!item.settle_from_output());
+            assert_eq!(item.status, status);
+            assert_eq!(item.exit_code, None);
+            assert!(item.can_stop);
+        }
     }
 
     #[test]

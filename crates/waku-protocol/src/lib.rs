@@ -59,5 +59,6 @@ pub use protocol::{
     ResponsePayload, RpcError, SequencedEvent, ServerMessage, WireComputerToolRequest,
     WireDriverEvent, WireDriverStartOptions, WireSessionOptions,
 };
+pub use model::{parse_command_exit_status, strip_ansi};
 pub use settings::DaemonSettings;
 pub use workspace::{WorkspaceOperation, WorkspaceResult};

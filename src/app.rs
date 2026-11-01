@@ -39,7 +39,7 @@ use crate::model::{
     PendingPermission, Project, ProviderKind, ProviderModel, ProviderProbe, ProviderResumeCursor,
     ProviderSessionHistory, ProviderSessionSummary, QueuedMessage, ReasoningBlock, RuntimeMode,
     SessionStatus, SessionWorkspace, TranscriptBlock, TurnStatus, UserInputAnswer,
-    UserInputQuestion, compact_path, unix_time, unix_time_millis,
+    UserInputQuestion, compact_path, strip_ansi, unix_time, unix_time_millis,
 };
 use unicode_segmentation::UnicodeSegmentation;
 

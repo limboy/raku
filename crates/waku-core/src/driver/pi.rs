@@ -1782,6 +1782,14 @@ fn clone_ohmypi_session(
     result
 }
 
+#[derive(Clone)]
+struct PiTrackedTool {
+    kind: ActivityKind,
+    title: String,
+    saw_end: bool,
+    settled_async: Option<(Value, bool)>,
+}
+
 #[derive(Default)]
 struct PiStreamState {
     auto_title: PiAutoTitle,
@@ -1793,7 +1801,7 @@ struct PiStreamState {
     message_pending_text: String,
     reasoning_blocks: HashMap<u64, (String, bool)>,
     failed: bool,
-    tools: HashMap<String, (ActivityKind, String)>,
+    tools: HashMap<String, PiTrackedTool>,
 }
 
 impl PiStreamState {
@@ -2273,49 +2281,133 @@ fn handle_pi_message(
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             let tool_name = value.get("toolName").and_then(Value::as_str);
-            let (kind, mut title) = id
+            let tracked = id
                 .as_ref()
                 .and_then(|id| state.tools.get(id))
-                .cloned()
+                .cloned();
+            let (kind, mut title) = tracked
+                .as_ref()
+                .map(|tool| (tool.kind, tool.title.clone()))
                 .unwrap_or_else(|| {
                     tool_name
                         .map(|tool_name| (classify_tool(tool_name), tool_title(tool_name)))
                         .unwrap_or_else(|| (ActivityKind::Tool, tr!("activity.tool")))
                 });
-            if event_type == "tool_execution_start"
+            if (event_type == "tool_execution_start" || tracked.is_none())
                 && let Some(input_title) = activity::input_title(value.get("args"))
             {
                 title = input_title;
             }
-            if event_type == "tool_execution_start"
-                && let Some(id) = id.as_ref()
-            {
-                state.tools.insert(id.clone(), (kind, title.clone()));
+            if let Some(id) = id.as_ref() {
+                if event_type == "tool_execution_start" {
+                    state.tools.insert(
+                        id.clone(),
+                        PiTrackedTool {
+                            kind,
+                            title: title.clone(),
+                            saw_end: false,
+                            settled_async: None,
+                        },
+                    );
+                } else if tracked.is_none() && event_type == "tool_execution_update" {
+                    state.tools.insert(
+                        id.clone(),
+                        PiTrackedTool {
+                            kind,
+                            title: title.clone(),
+                            saw_end: false,
+                            settled_async: None,
+                        },
+                    );
+                }
             }
             let arguments = (event_type == "tool_execution_start")
                 .then(|| value.get("args"))
                 .flatten();
-            let output = match event_type {
-                "tool_execution_update" => value.get("partialResult"),
-                "tool_execution_end" => value.get("result"),
+            let mut output = match event_type {
+                "tool_execution_update" => value.get("partialResult").cloned(),
+                "tool_execution_end" => value.get("result").cloned(),
                 _ => None,
             };
-            let complete = event_type == "tool_execution_end";
-            let failed = value.get("isError").and_then(Value::as_bool) == Some(true);
-            let item = activity::tool_activity(
+            let mut complete = event_type == "tool_execution_end";
+            let mut failed = value.get("isError").and_then(Value::as_bool) == Some(true);
+            if !failed {
+                failed = value
+                    .pointer("/partialResult/isError")
+                    .or_else(|| value.pointer("/result/isError"))
+                    .and_then(Value::as_bool)
+                    == Some(true);
+            }
+            let async_state = value
+                .pointer("/partialResult/details/async/state")
+                .or_else(|| value.pointer("/result/details/async/state"))
+                .and_then(Value::as_str);
+            match async_state {
+                Some("running") => {
+                    if event_type == "tool_execution_end"
+                        && let Some((settled_output, settled_failed)) = tracked
+                            .as_ref()
+                            .and_then(|tool| tool.settled_async.as_ref())
+                    {
+                        output = Some(settled_output.clone());
+                        failed = *settled_failed;
+                        complete = true;
+                    } else {
+                        complete = false;
+                        if event_type == "tool_execution_end"
+                            && let Some(id) = id.as_ref()
+                            && let Some(entry) = state.tools.get_mut(id)
+                        {
+                            entry.saw_end = true;
+                        }
+                    }
+                }
+                Some("completed") => {
+                    complete = true;
+                    if event_type == "tool_execution_update"
+                        && !tracked.as_ref().is_some_and(|tool| tool.saw_end)
+                        && let Some(id) = id.as_ref()
+                        && let Some(entry) = state.tools.get_mut(id)
+                    {
+                        entry.settled_async = output.clone().map(|out| (out, failed));
+                    }
+                }
+                Some("failed" | "cancelled") => {
+                    complete = true;
+                    failed = true;
+                    if event_type == "tool_execution_update"
+                        && !tracked.as_ref().is_some_and(|tool| tool.saw_end)
+                        && let Some(id) = id.as_ref()
+                        && let Some(entry) = state.tools.get_mut(id)
+                    {
+                        entry.settled_async = output.clone().map(|out| (out, true));
+                    }
+                }
+                _ => {}
+            }
+            let mut item = activity::tool_activity(
                 id.clone(),
                 kind,
                 title,
                 arguments,
-                output,
-                output,
+                output.as_ref(),
+                output.as_ref(),
                 failed,
                 complete,
             )
             .with_tool_name(tool_name);
+            if async_state == Some("running") && !complete {
+                item.complete = false;
+            }
             let _ = events.send(DriverEvent::RichActivity(item));
-            if complete && let Some(id) = id {
-                state.tools.remove(&id);
+            if let Some(id) = id {
+                let finish_tracking = (event_type == "tool_execution_end" && complete)
+                    || (event_type == "tool_execution_update"
+                        && matches!(async_state, Some("completed" | "failed" | "cancelled"))
+                        && tracked.as_ref().is_some_and(|tool| tool.saw_end));
+                if finish_tracking {
+                    state.tools.remove(&id);
+                }
             }
         }
         "auto_retry_end" => {
@@ -2898,6 +2990,133 @@ mod tests {
             DriverEvent::TurnFinished { success: true, .. }
         ));
         assert!(matches!(event_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn pi_parked_and_pre_return_async_tool_updates_preserve_title_and_settlement() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+
+        // Case 1: call parks on `tool_execution_end` with `async.state = running`
+        // and settles on a later `tool_execution_update`.
+        for value in [
+            json!({"type": "turn_start"}),
+            json!({
+                "type": "tool_execution_start",
+                "toolCallId": "tool-parked",
+                "toolName": "bash",
+                "args": {"command": "cargo test", "title": "Run tests"}
+            }),
+            json!({
+                "type": "tool_execution_end",
+                "toolCallId": "tool-parked",
+                "toolName": "bash",
+                "isError": false,
+                "result": {
+                    "content": [{"type": "text", "text": "Exit code: 0\nBackgrounded as job bg_1"}],
+                    "details": {
+                        "async": {"state": "running", "jobId": "bg_1", "type": "bash"}
+                    }
+                }
+            }),
+            json!({
+                "type": "tool_execution_update",
+                "toolCallId": "tool-parked",
+                "toolName": "bash",
+                "partialResult": {
+                    "content": [{"type": "text", "text": "FAILED\nWall time: 44.30 seconds\nCommand exited with code 101"}],
+                    "details": {
+                        "async": {"state": "failed", "jobId": "bg_1", "type": "bash"}
+                    }
+                }
+            }),
+            // Case 2: async job settles in `tool_execution_update` before
+            // `tool_execution_end` returns its initial `running` handle.
+            json!({
+                "type": "tool_execution_start",
+                "toolCallId": "tool-fast",
+                "toolName": "bash",
+                "args": {"command": "cargo check", "title": "Check workspace"}
+            }),
+            json!({
+                "type": "tool_execution_update",
+                "toolCallId": "tool-fast",
+                "toolName": "bash",
+                "partialResult": {
+                    "content": [{"type": "text", "text": "error\nCommand exited with code 1"}],
+                    "details": {
+                        "async": {"state": "failed", "jobId": "bg_2", "type": "bash"}
+                    }
+                }
+            }),
+            json!({
+                "type": "tool_execution_end",
+                "toolCallId": "tool-fast",
+                "toolName": "bash",
+                "isError": false,
+                "result": {
+                    "content": [{"type": "text", "text": "Backgrounded as job bg_2"}],
+                    "details": {
+                        "async": {"state": "running", "jobId": "bg_2", "type": "bash"}
+                    }
+                }
+            }),
+        ] {
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+
+        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
+        let DriverEvent::RichActivity(started) = event_rx.recv().unwrap() else {
+            panic!("expected started activity");
+        };
+        assert!(!started.complete);
+        assert_eq!(started.title, "Run tests");
+
+        let DriverEvent::RichActivity(parked) = event_rx.recv().unwrap() else {
+            panic!("expected parked activity");
+        };
+        assert!(!parked.complete);
+        assert_eq!(parked.title, "Run tests");
+
+        let DriverEvent::RichActivity(settled) = event_rx.recv().unwrap() else {
+            panic!("expected settled activity");
+        };
+        assert!(settled.complete);
+        assert!(settled.failed);
+        assert_eq!(settled.title, "Run tests");
+
+        let DriverEvent::RichActivity(fast_started) = event_rx.recv().unwrap() else {
+            panic!("expected fast started activity");
+        };
+        assert!(!fast_started.complete);
+        assert_eq!(fast_started.title, "Check workspace");
+
+        let DriverEvent::RichActivity(fast_update) = event_rx.recv().unwrap() else {
+            panic!("expected fast settled update");
+        };
+        assert!(fast_update.complete);
+        assert!(fast_update.failed);
+        assert_eq!(fast_update.title, "Check workspace");
+
+        let DriverEvent::RichActivity(fast_end) = event_rx.recv().unwrap() else {
+            panic!("expected fast end activity");
+        };
+        assert!(fast_end.complete);
+        assert!(fast_end.failed);
+        assert_eq!(fast_end.title, "Check workspace");
+        assert!(
+            fast_end
+                .output
+                .as_deref()
+                .is_some_and(|text| text.contains("Command exited with code 1"))
+        );
     }
 
     /// Drives the installed Oh My Pi RPC through one real provider turn.

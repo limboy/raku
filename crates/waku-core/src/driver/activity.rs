@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::model::{ActivityItem, ActivityKind};
+use crate::model::{parse_command_exit_status, ActivityItem, ActivityKind};
 
 const MAX_ACTIVITY_CHARS: usize = 16_000;
 
@@ -22,9 +22,21 @@ pub(super) fn tool_activity(
     let arguments = arguments
         .filter(|value| !value.is_null())
         .and_then(format_json);
-    let formatted_output = output
+    let raw_output = output
         .filter(|value| !value.is_null())
-        .and_then(format_output);
+        .and_then(extract_output_text);
+    let mut complete = complete;
+    let mut failed = failed;
+    if kind == ActivityKind::Command
+        && !complete
+        && let Some((code, _)) = raw_output.as_deref().and_then(parse_command_exit_status)
+    {
+        complete = true;
+        if code != 0 {
+            failed = true;
+        }
+    }
+    let formatted_output = raw_output.and_then(non_empty_text);
     let mut image_urls = Vec::new();
     if let Some(value) = output {
         collect_image_urls(value, &mut image_urls);
@@ -91,6 +103,30 @@ mod tests {
             Some("Verify Grok bridge")
         );
     }
+
+    #[test]
+    fn command_activity_detects_exit_code_at_tail_beyond_truncation_limit() {
+        let long_log = format!(
+            "{}\nCommand exited with code 101",
+            "x".repeat(MAX_ACTIVITY_CHARS + 2_048)
+        );
+        let output = serde_json::json!({
+            "content": [{"type": "text", "text": long_log}]
+        });
+        let item = tool_activity(
+            Some("cmd-1".into()),
+            ActivityKind::Command,
+            "Run tests".into(),
+            None,
+            Some(&output),
+            None,
+            false,
+            false,
+        );
+        assert!(item.complete);
+        assert!(item.failed);
+        assert!(item.output.as_deref().is_some_and(|text| text.len() < MAX_ACTIVITY_CHARS + 256));
+    }
 }
 
 pub(super) fn format_json(value: &Value) -> Option<String> {
@@ -99,18 +135,19 @@ pub(super) fn format_json(value: &Value) -> Option<String> {
         .and_then(non_empty_text)
 }
 
-fn format_output(value: &Value) -> Option<String> {
+fn extract_output_text(value: &Value) -> Option<String> {
     if let Some(text) = value.as_str() {
-        return non_empty_text(text.to_owned());
+        let trimmed = text.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
     if let Some(structured) = value
         .get("structuredContent")
         .filter(|value| !value.is_null())
     {
-        return format_json(structured);
+        return serde_json::to_string_pretty(structured).ok();
     }
     if let Some(content) = value.get("content").filter(|value| !value.is_null()) {
-        return format_output(content);
+        return extract_output_text(content);
     }
     if let Some(items) = value.as_array() {
         let text = items
@@ -121,14 +158,15 @@ fn format_output(value: &Value) -> Option<String> {
                     (item.get("type").and_then(Value::as_str) == Some("text"))
                         .then(|| item.get("text").and_then(Value::as_str).map(str::to_owned))
                         .flatten()
-                        .or_else(|| format_json(item))
+                        .or_else(|| serde_json::to_string_pretty(item).ok())
                 })
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        return non_empty_text(text);
+        let trimmed = text.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
-    format_json(value)
+    serde_json::to_string_pretty(value).ok()
 }
 
 fn collect_image_urls(value: &Value, urls: &mut Vec<String>) {
