@@ -108,15 +108,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and checks.
 
 [GitHub Actions](.github/workflows/release.yml) builds macOS, Linux, and Windows
 releases when a `v<version>` tag is pushed, or when the Release workflow is run
-manually. The tag must match the version in `Cargo.toml`. The workflow creates
-a draft GitHub release; publishing it makes the update available to installed
-clients.
+manually. The tag must match the version in `Cargo.toml`. After every platform
+build and update-feed check succeeds, the workflow automatically publishes
+the GitHub release and makes the update available to installed clients.
 
 Each release includes signed update archives, `appcast.xml` for macOS, and
 architecture-specific appcasts for Linux and Windows. Clients read these
 feeds directly from GitHub Releases. CI verifies every feed's download URL,
-archive length, and signature before creating the draft. Published assets are
-also mirrored to R2 for the website and install script.
+archive length, and signature before publishing. When R2 credentials are
+configured, published assets are also mirrored for the website and install
+script.
 
 Release setup uses repository Actions secrets for the Developer ID
 certificate, App Store Connect API key, and `SPARKLE_PRIVATE_KEY`. Local macOS

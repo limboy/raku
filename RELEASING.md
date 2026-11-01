@@ -34,7 +34,7 @@ git push origin v<version>
 - GitHub Actions: [`.github/workflows/release.yml`](.github/workflows/release.yml)
   builds Linux (x86_64, arm64), Windows (x86_64, arm64), and macOS archives on
   a `v*` tag — or on a manual **Run workflow**, which takes the version from
-  `Cargo.toml` — and opens a draft GitHub release;
+  `Cargo.toml` — and automatically publishes the GitHub release;
   [`.github/workflows/sync-release.yml`](.github/workflows/sync-release.yml)
   copies published assets into the R2 bucket.
 
@@ -150,10 +150,10 @@ Cloudflare, `no_check_bucket = true`) is shared with kero and needs no change.
    ```
 
 The Release workflow builds all platforms, signs the update archives,
-notarizes the macOS app and DMG, generates the appcasts, and opens a draft
-GitHub release with the matching changelog section. Review and publish the
-draft to make it available to installed clients. The update feeds and all
-their downloads are release assets:
+notarizes the macOS app and DMG, generates the appcasts, and automatically
+publishes the GitHub release with the matching changelog section. Installed
+clients can discover the update as soon as publication completes. The update
+feeds and all their downloads are release assets:
 
 - **macOS feed**: `https://github.com/limboy/waku/releases/latest/download/appcast.xml`
 - **Native feeds**: the same URL prefix with `appcast-linux-<arch>.xml` or
@@ -164,7 +164,7 @@ their downloads are release assets:
 CI verifies that all five feeds reference the matching release assets and
 that their declared lengths and Ed25519 signatures match the actual bytes
 and the app's public key. Missing assets, unsigned items, wrong keys, or
-incorrect URLs fail the job before it creates the draft. Publishing marks
+incorrect URLs fail the job before publication. Publishing marks
 the release as latest, moving the stable feed URLs only after every asset
 has been uploaded. A published version is never rebuilt by this workflow.
 
@@ -178,8 +178,8 @@ The Release workflow runs two ways:
 - **Push a `v*` tag** — the tag must match the `version` in `Cargo.toml`, or the
   run fails before anything builds.
 - **Actions → Release → Run workflow** — no tag needed. The run releases
-  whatever `Cargo.toml` says and drafts it as `v<version>`; that tag is created
-  at the built commit when you publish the draft.
+  whatever `Cargo.toml` says as `v<version>`; that tag is created at the built
+  commit when the workflow publishes the release.
 
 macOS CI runs `bun run release --local`, which signs, notarizes, and writes the
 same artifacts as a local release:
@@ -234,7 +234,7 @@ rolls back if the replacement cannot open its main window.
   drift onto different keys.
 - [`scripts/appcast-windows.ts`](scripts/appcast-windows.ts) and
   [`scripts/appcast-linux.ts`](scripts/appcast-linux.ts) sign the feeds in the
-  draft-release job — the only one holding all native artifacts. They sign
+  publish-release job — the only one holding all native artifacts. They sign
   with Node's Ed25519 over the same `SPARKLE_PRIVATE_KEY`, and refuse to run
   when the key does not derive `SUPublicEDKey` (signing with the wrong key
   ships a feed the app rejects).
@@ -248,10 +248,11 @@ distribution Waku can start on (2.35 — Ubuntu 22.04, Debian 12, Fedora 36).
 Moving those jobs to a newer runner silently drops support for everything
 older.
 
-The workflow opens (or updates) a **draft** GitHub release with those files and
-the matching `CHANGELOG.md` section. Clients read the feeds directly from
-GitHub once the release is published. The separate Sync release workflow
-also mirrors the assets to R2 for the website and existing mirror consumers.
+The workflow automatically publishes those files and the matching
+`CHANGELOG.md` section as the latest stable GitHub release. Clients read the
+feeds directly from GitHub. When R2 credentials are configured, it explicitly
+starts the separate Sync release workflow to mirror the assets for the
+website and existing mirror consumers.
 
 `appcast.xml`, the architecture-specific Linux/Windows appcasts,
 `latest-linux.txt`, and `latest-windows.txt` are the bucket's mutable pointers
@@ -260,9 +261,10 @@ cached forever. Linux users install from that bucket via
 [`website/public/install.sh`](website/public/install.sh), served at
 `https://waku.sh/install.sh` — see [docs/linux.md](docs/linux.md).
 
-Publishing that GitHub release (or running **Sync release** from Actions)
-uploads the assets to the `waku-releases` R2 bucket. Configure these repository
-secrets first:
+Automatic publication starts **Sync release** when the R2 credentials below
+are configured; you can also run **Sync release** manually from Actions.
+It uploads the assets to the `waku-releases` R2 bucket. Configure these
+repository secrets first:
 
 | Secret | Purpose |
 | --- | --- |

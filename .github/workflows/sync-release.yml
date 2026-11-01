@@ -23,7 +23,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Check mirror configuration
+        id: mirror
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -n "$R2_ACCOUNT_ID" ] && [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::R2 mirror credentials are not configured; skipping mirror sync."
+          fi
+
       - name: Resolve release tag
+        if: steps.mirror.outputs.enabled == 'true'
         id: release
         run: |
           tag="${{ github.event.release.tag_name || inputs.tag }}"
@@ -34,11 +49,13 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Install rclone
+        if: steps.mirror.outputs.enabled == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes rclone
 
       - name: Download release assets
+        if: steps.mirror.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -53,6 +70,7 @@ jobs:
           ls -lah assets
 
       - name: Upload assets to R2
+        if: steps.mirror.outputs.enabled == 'true'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

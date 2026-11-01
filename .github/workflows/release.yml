@@ -403,8 +403,8 @@ jobs:
             dist/appcast.xml
           if-no-files-found: error
 
-  draft-release:
-    name: Draft GitHub release
+  publish-release:
+    name: Publish GitHub release
     needs:
       [
         version,
@@ -419,6 +419,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v6
 
@@ -488,11 +489,11 @@ jobs:
 
       - uses: softprops/action-gh-release@v3
         with:
-          draft: true
+          draft: false
           # The stable appcast URLs resolve through /releases/latest/download.
-          # Upload every asset to the draft before publishing moves that pointer.
+          # v3 uploads every asset before publishing and moving that pointer.
           make_latest: true
-          # A manual run has no tag yet; publishing the draft creates this one
+          # A manual run has no tag yet; publishing creates this one
           # at the commit that was built.
           tag_name: ${{ needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
@@ -510,3 +511,21 @@ jobs:
             artifacts/appcast-windows-*.xml
             artifacts/latest-linux.txt
             artifacts/latest-windows.txt
+
+      # Publishing with GITHUB_TOKEN does not trigger the separate release
+      # event workflow. Explicit dispatch still works with that token.
+      - name: Start R2 mirror sync when configured
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -n "$R2_ACCOUNT_ID" ] && [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
+            gh workflow run sync-release.yml --repo "$GITHUB_REPOSITORY" \
+              --ref "$DEFAULT_BRANCH" -f "tag=$RELEASE_TAG"
+          else
+            echo "R2 mirror credentials are not configured; release is available on GitHub."
+          fi
