@@ -179,9 +179,13 @@ if (explicitBuildNumber && !/^\d+(?:\.\d+){0,2}$/.test(explicitBuildNumber)) {
 if (!Number.isSafeInteger(historyCount) || historyCount < 0) {
   throw new Error("WAKU_HISTORY_COUNT must be a non-negative integer.");
 }
-if (!values["skip-build"] && (!analyticsEndpoint || !analyticsWebsiteId)) {
+if (
+  !values["skip-build"] &&
+  Boolean(analyticsEndpoint) !== Boolean(analyticsWebsiteId)
+) {
   throw new Error(
-    "Set WAKU_ANALYTICS_ENDPOINT and WAKU_ANALYTICS_WEBSITE_ID before building a release.",
+    "Set both WAKU_ANALYTICS_ENDPOINT and WAKU_ANALYTICS_WEBSITE_ID, " +
+      "or leave both unset to build without analytics.",
   );
 }
 

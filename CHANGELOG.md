@@ -3,12 +3,12 @@
 All notable changes to Waku. This file is the **source of truth for the release
 notes shown in the in-app updater**: [`scripts/release.ts`](scripts/release.ts)
 extracts the section whose heading matches the version being released
-(`MARKETING_VERSION`) and publishes it next to the update, so Sparkle shows it in
+(`Cargo.toml`) and publishes it next to the update, so Sparkle shows it in
 the update prompt.
 
 Format follows [Keep a Changelog](https://keepachangelog.com). Add a new
 `## [<version>]` section at the top for each release, matching the version you
-set in the Xcode project.
+set in `Cargo.toml`.
 
 Write release notes for the final product users receive, not the development
 history. When a feature is still unreleased, fold its fixes and refinements into
@@ -16,6 +16,15 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.0.0] - 2026-11-01
+
+- Install signed updates directly from GitHub Releases using the install icon at the top of the sidebar, with native update flows on macOS, Linux, and Windows
+- Add Antigravity CLI support alongside Claude Code, Codex CLI, DeepSeek, Oh My Pi, OpenCode, and Pi; retire the Kimi, Amp, Cursor, Fx, and Grok integrations
+- Focus Waku on native desktop workflows with local agent sessions and storage; remove the web and mobile clients and remote daemon access
+- Add native context compaction across providers, automatic task titles for Oh My Pi, and collapsible text snippet attachments for long pastes
+- Pin tasks, see ongoing and unread completed tasks in the project picker, and browse session history grouped by date
+- Export conversations as Markdown, copy task details from session menus, and restore daily backups with a clean relaunch
+- Preview Mermaid diagrams natively, support CJK Markdown emphasis, and remember model picker favorites
 - Show plan usage quotas in the usage panel (`⌘U` / `Ctrl+U`) for Oh My Pi tasks backed by OAuth or subscription providers such as Codex and Antigravity, scoped to the active model family and pinned account
 - Fix cross-model subagent tool calls and OpenCode routing, accept long wait requests as bounded progress polls, keep cancelled tasks stopped, make retries start a new attempt, and report failed or timed-out groups accurately; code reviews use complete snapshots that are reclaimed when their parent task is deleted
 - Show delegated subagents alongside background work under the info icon, with a live indicator and task controls; their details share the main agent's thinking, tool activity, and answer presentation with compact spacing, folded historical thinking, and stable scrolling

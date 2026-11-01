@@ -100,8 +100,9 @@ same release.
 
 ### 2. Developer ID signing + notarization
 
-Copy `.env.example` to `.env` and replace the signing and analytics
-placeholders. Bun loads these values before Cargo compiles the release, so the
+Copy `.env.example` to `.env` and replace the signing placeholder. Configure
+both analytics values to enable analytics, or leave both unset. Bun loads
+these values before Cargo compiles the release, so the
 analytics endpoint and website ID are embedded in the executable. The script
 notarizes with the `NOTARY` keychain profile by default. On a fresh machine:
 
@@ -265,8 +266,8 @@ secrets first:
 
 | Secret | Purpose |
 | --- | --- |
-| `WAKU_ANALYTICS_ENDPOINT` | embedded in every desktop CI build |
-| `WAKU_ANALYTICS_WEBSITE_ID` | embedded in every desktop CI build |
+| `WAKU_ANALYTICS_ENDPOINT` | optional with `WAKU_ANALYTICS_WEBSITE_ID`; analytics endpoint embedded at build time |
+| `WAKU_ANALYTICS_WEBSITE_ID` | optional with `WAKU_ANALYTICS_ENDPOINT`; omit both to disable analytics |
 | `WAKU_SIGNING_IDENTITY` | optional; overrides the imported Developer ID Application identity |
 | `APPLE_CERTIFICATE` | base64-encoded Developer ID Application `.p12` |
 | `APPLE_CERTIFICATE_PASSWORD` | password for that `.p12`; omit for an empty password |
