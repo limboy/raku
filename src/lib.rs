@@ -68,6 +68,8 @@ actions!(
         NewProject,
         ExportConversation,
         ExportAll,
+        CopyConversation,
+        CopyAll,
         OpenSettings,
         CheckForUpdates,
         ToggleSidebar,

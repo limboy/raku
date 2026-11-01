@@ -143,6 +143,17 @@ impl MenuItem {
         }
     }
 
+    pub fn submenu(
+        label: impl Into<SharedString>,
+        items: impl Fn(&mut App) -> Vec<MenuItem> + 'static,
+    ) -> Self {
+        Self::Submenu {
+            label: label.into(),
+            value: None,
+            items: Rc::new(items),
+        }
+    }
+
     pub fn submenu_with_value(
         label: impl Into<SharedString>,
         value: impl Into<SharedString>,
@@ -993,6 +1004,20 @@ impl RenderOnce for MenuCard {
             Some((index, items(cx)))
         });
 
+        let submenu_offset = submenu.as_ref().map(|(parent_index, _)| {
+            items
+                .iter()
+                .take(*parent_index)
+                .map(|item| match item {
+                    MenuItem::Separator => 9.0,
+                    MenuItem::Header(_) => 22.0,
+                    MenuItem::Entry { .. }
+                    | MenuItem::Submenu { .. }
+                    | MenuItem::Custom { .. } => 26.0,
+                })
+                .sum::<f32>()
+        });
+
         let mut root_card = div()
             .id(self.id)
             .min_w(px(176.0))
@@ -1047,8 +1072,10 @@ impl RenderOnce for MenuCard {
             .child(root_card);
 
         if let Some((parent_index, submenu_items)) = submenu {
+            let offset = submenu_offset.unwrap_or(0.0);
             let mut submenu_card = div()
                 .id(SharedString::from(format!("submenu-{parent_index}")))
+                .mt(px(offset))
                 .ml(px(-4.0))
                 .min_w(px(176.0))
                 .max_w(px(320.0))
@@ -1747,10 +1774,11 @@ mod tests {
 
     #[test]
     fn submenus_are_focusable() {
-        let items = vec![MenuItem::submenu_with_value("Grouping", "Updated", |_| {
-            Vec::new()
-        })];
-        assert_eq!(*focusable_indexes(&items), vec![0]);
+        let items = vec![
+            MenuItem::submenu("Export", |_| Vec::new()),
+            MenuItem::submenu_with_value("Grouping", "Updated", |_| Vec::new()),
+        ];
+        assert_eq!(*focusable_indexes(&items), vec![0, 1]);
     }
 
     #[test]

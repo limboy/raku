@@ -18,16 +18,24 @@ session.export_conversation:
   en: Export Conversation
 session.export_all:
   en: Export All
+session.copy_conversation:
+  en: Copy Conversation
+session.copy_all:
+  en: Copy All
 session.pin:
   en: Pin
 session.unpin:
   en: Unpin
 session.exported:
   en: "Session exported to %{path}"
+session.copied:
+  en: Copied to clipboard
 errors.export_session:
   en: "Could not export session: %{error}"
 errors.export_session_missing:
   en: The session is no longer available.
+errors.copy_session:
+  en: "Could not copy session: %{error}"
 menu.edit:
   en: Edit
 menu.undo:
@@ -357,6 +365,8 @@ common.settings:
   en: Settings
 common.copy:
   en: Copy
+common.export:
+  en: Export
 common.remove:
   en: Remove
 common.rename:

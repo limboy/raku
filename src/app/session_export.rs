@@ -24,6 +24,71 @@ impl Waku {
         }
     }
 
+    pub(super) fn copy_conversation_action(
+        &mut self,
+        _: &crate::CopyConversation,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session_id) = self.state.selected_session {
+            self.copy_session(session_id, ExportScope::Conversation, cx);
+        }
+    }
+
+    pub(super) fn copy_all_action(
+        &mut self,
+        _: &crate::CopyAll,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session_id) = self.state.selected_session {
+            self.copy_session(session_id, ExportScope::All, cx);
+        }
+    }
+
+    pub(super) fn copy_session(
+        &mut self,
+        session_id: Uuid,
+        scope: ExportScope,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+        else {
+            return;
+        };
+        let snapshot = (session.clone(), self.daemon.clone());
+        cx.spawn(async move |waku, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let (session, daemon) = snapshot;
+                    let session = if session.detail_loaded {
+                        session
+                    } else {
+                        waku_client::persistence::hydrate_session(&daemon, session_id)?
+                            .ok_or_else(|| anyhow::anyhow!(tr!("errors.export_session_missing")))?
+                    };
+                    session_export::markdown(&session, scope)
+                })
+                .await;
+            let _ = waku.update(cx, |waku, cx| {
+                match result {
+                    Ok(markdown) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(markdown));
+                        waku.show_success_toast(tr!("session.copied"));
+                    }
+                    Err(error) => waku.show_toast(tr!("errors.copy_session", error = error)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn export_session(
         &mut self,
         session_id: Uuid,

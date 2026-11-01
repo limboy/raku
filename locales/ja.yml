@@ -9,11 +9,15 @@ menu.new_task: 新規タスク
 menu.new_project: 新規プロジェクト…
 session.export_conversation: 会話をエクスポート
 session.export_all: すべてエクスポート
+session.copy_conversation: 会話をコピー
+session.copy_all: すべてコピー
 session.pin: ピン留め
 session.unpin: ピン留めを解除
 session.exported: "セッションを %{path} にエクスポートしました"
+session.copied: クリップボードにコピーしました
 errors.export_session: "セッションをエクスポートできませんでした：%{error}"
 errors.export_session_missing: このセッションは存在しません。
+errors.copy_session: "セッションをコピーできませんでした: %{error}"
 menu.edit: 編集
 menu.undo: 取り消す
 menu.redo: やり直す
@@ -183,6 +187,7 @@ computer_use.permission_check_failed: コンピュータ操作の権限を確認
 
 common.settings: 設定
 common.copy: コピー
+common.export: エクスポート
 common.remove: 削除
 common.rename: 名前を変更
 

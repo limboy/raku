@@ -1216,56 +1216,7 @@ impl Waku {
                 div().w_full().child(row),
                 SharedString::from(format!("session-menu-{session_id}")),
                 &menu,
-                move |_| {
-                    let pin_waku = waku.clone();
-                    let rename_waku = waku.clone();
-                    let export_conversation_waku = waku.clone();
-                    let export_all_waku = waku.clone();
-                    let remove_waku = waku.clone();
-                    vec![
-                        MenuItem::new(tr!("common.rename"), move |window, cx| {
-                            let _ = rename_waku.update(cx, |waku, cx| {
-                                waku.begin_session_rename(session_id, window, cx);
-                            });
-                        }),
-                        MenuItem::Separator,
-                        MenuItem::new(
-                            if pinned {
-                                tr!("session.unpin")
-                            } else {
-                                tr!("session.pin")
-                            },
-                            move |_, cx| {
-                                let _ = pin_waku
-                                    .update(cx, |waku, cx| waku.toggle_session_pin(session_id, cx));
-                            },
-                        ),
-                        MenuItem::Separator,
-                        MenuItem::new(tr!("session.export_conversation"), move |_, cx| {
-                            let _ = export_conversation_waku.update(cx, |waku, cx| {
-                                waku.export_session(
-                                    session_id,
-                                    crate::session_export::ExportScope::Conversation,
-                                    cx,
-                                );
-                            });
-                        }),
-                        MenuItem::new(tr!("session.export_all"), move |_, cx| {
-                            let _ = export_all_waku.update(cx, |waku, cx| {
-                                waku.export_session(
-                                    session_id,
-                                    crate::session_export::ExportScope::All,
-                                    cx,
-                                );
-                            });
-                        }),
-                        MenuItem::Separator,
-                        MenuItem::new(tr!("common.remove"), move |_, cx| {
-                            let _ = remove_waku
-                                .update(cx, |waku, cx| waku.remove_session(session_id, cx));
-                        }),
-                    ]
-                },
+                move |_| sidebar_session_menu_items(session_id, pinned, waku.clone()),
             )
         };
 
@@ -1534,6 +1485,97 @@ pub(super) fn sidebar_session_indicates_finished(
     session_id: Uuid,
 ) -> bool {
     !selected && status == SessionStatus::Idle && finished_session_ids.contains(&session_id)
+}
+
+fn sidebar_session_menu_items(
+    session_id: Uuid,
+    pinned: bool,
+    waku: WeakEntity<Waku>,
+) -> Vec<MenuItem> {
+    let pin_waku = waku.clone();
+    let rename_waku = waku.clone();
+    let copy_waku = waku.clone();
+    let export_waku = waku.clone();
+    let remove_waku = waku;
+    vec![
+        MenuItem::new(tr!("common.rename"), move |window, cx| {
+            let _ = rename_waku.update(cx, |waku, cx| {
+                waku.begin_session_rename(session_id, window, cx);
+            });
+        }),
+        MenuItem::Separator,
+        MenuItem::new(
+            if pinned {
+                tr!("session.unpin")
+            } else {
+                tr!("session.pin")
+            },
+            move |_, cx| {
+                let _ = pin_waku
+                    .update(cx, |waku, cx| waku.toggle_session_pin(session_id, cx));
+            },
+        ),
+        MenuItem::Separator,
+        MenuItem::submenu(tr!("common.copy"), {
+            let copy_waku = copy_waku.clone();
+            move |_| {
+                let copy_conversation_waku = copy_waku.clone();
+                let copy_all_waku = copy_waku.clone();
+                vec![
+                    MenuItem::new(tr!("session.copy_conversation"), move |_, cx| {
+                        let _ = copy_conversation_waku.update(cx, |waku, cx| {
+                            waku.copy_session(
+                                session_id,
+                                crate::session_export::ExportScope::Conversation,
+                                cx,
+                            );
+                        });
+                    }),
+                    MenuItem::new(tr!("session.copy_all"), move |_, cx| {
+                        let _ = copy_all_waku.update(cx, |waku, cx| {
+                            waku.copy_session(
+                                session_id,
+                                crate::session_export::ExportScope::All,
+                                cx,
+                            );
+                        });
+                    }),
+                ]
+            }
+        }),
+        MenuItem::submenu(tr!("common.export"), {
+            let export_waku = export_waku.clone();
+            move |_| {
+                let export_conversation_waku = export_waku.clone();
+                let export_all_waku = export_waku.clone();
+                vec![
+                    MenuItem::new(tr!("session.export_conversation"), move |_, cx| {
+                        let _ = export_conversation_waku.update(cx, |waku, cx| {
+                            waku.export_session(
+                                session_id,
+                                crate::session_export::ExportScope::Conversation,
+                                cx,
+                            );
+                        });
+                    }),
+                    MenuItem::new(tr!("session.export_all"), move |_, cx| {
+                        let _ = export_all_waku.update(cx, |waku, cx| {
+                            waku.export_session(
+                                session_id,
+                                crate::session_export::ExportScope::All,
+                                cx,
+                            );
+                        });
+                    }),
+                ]
+            }
+        }),
+        MenuItem::Separator,
+        MenuItem::new(tr!("common.remove"), move |_, cx| {
+            let _ = remove_waku
+                .update(cx, |waku, cx| waku.remove_session(session_id, cx));
+        }),
+    ]
 }
 
 #[cfg(test)]
@@ -2033,5 +2075,79 @@ mod tests {
             SessionStatus::Idle,
             other_session
         ));
+    }
+
+    #[gpui::test]
+    fn sidebar_session_menu_items_has_copy_and_export_submenus(cx: &mut gpui::TestAppContext) {
+        let session_id = Uuid::new_v4();
+        let items = sidebar_session_menu_items(session_id, false, WeakEntity::new_invalid());
+        assert_eq!(items.len(), 8);
+
+        match &items[0] {
+            MenuItem::Entry { label, .. } => assert_eq!(label, tr!("common.rename").as_str()),
+            _ => panic!("expected rename entry"),
+        }
+        assert!(matches!(&items[1], MenuItem::Separator));
+        match &items[2] {
+            MenuItem::Entry { label, .. } => assert_eq!(label, tr!("session.pin").as_str()),
+            _ => panic!("expected pin entry"),
+        }
+        assert!(matches!(&items[3], MenuItem::Separator));
+
+        // Copy submenu
+        match &items[4] {
+            MenuItem::Submenu { label, items, .. } => {
+                assert_eq!(label, tr!("common.copy").as_str());
+                let sub_items = cx.update(|cx| items(cx));
+                assert_eq!(sub_items.len(), 2);
+                match &sub_items[0] {
+                    MenuItem::Entry { label, .. } => {
+                        assert_eq!(label, tr!("session.copy_conversation").as_str())
+                    }
+                    _ => panic!("expected copy conversation entry"),
+                }
+                match &sub_items[1] {
+                    MenuItem::Entry { label, .. } => {
+                        assert_eq!(label, tr!("session.copy_all").as_str())
+                    }
+                    _ => panic!("expected copy all entry"),
+                }
+            }
+            _ => panic!("expected copy submenu"),
+        }
+
+        // Export submenu
+        match &items[5] {
+            MenuItem::Submenu { label, items, .. } => {
+                assert_eq!(label, tr!("common.export").as_str());
+                let sub_items = cx.update(|cx| items(cx));
+                assert_eq!(sub_items.len(), 2);
+                match &sub_items[0] {
+                    MenuItem::Entry { label, .. } => {
+                        assert_eq!(label, tr!("session.export_conversation").as_str())
+                    }
+                    _ => panic!("expected export conversation entry"),
+                }
+                match &sub_items[1] {
+                    MenuItem::Entry { label, .. } => {
+                        assert_eq!(label, tr!("session.export_all").as_str())
+                    }
+                    _ => panic!("expected export all entry"),
+                }
+            }
+            _ => panic!("expected export submenu"),
+        }
+
+        assert!(matches!(&items[6], MenuItem::Separator));
+        match &items[7] {
+            MenuItem::Entry { label, .. } => assert_eq!(label, tr!("common.remove").as_str()),
+            _ => panic!("expected remove entry"),
+        }
+
+        let pinned_items = sidebar_session_menu_items(session_id, true, WeakEntity::new_invalid());
+        match &pinned_items[2] {
+            MenuItem::Entry { label, .. } => assert_eq!(label, tr!("session.unpin").as_str()),
+            _ => panic!("expected unpin entry"),
+        }
     }
 }

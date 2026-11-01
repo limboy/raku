@@ -238,6 +238,8 @@ impl Render for Waku {
             .on_action(cx.listener(Self::new_project_action))
             .on_action(cx.listener(Self::export_conversation_action))
             .on_action(cx.listener(Self::export_all_action))
+            .on_action(cx.listener(Self::copy_conversation_action))
+            .on_action(cx.listener(Self::copy_all_action))
             .on_action(cx.listener(Self::open_settings_action))
             .on_action(cx.listener(Self::toggle_sidebar_action))
             .on_action(cx.listener(Self::toggle_right_panel_action))
