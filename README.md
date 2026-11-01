@@ -1,35 +1,26 @@
 # Waku
 
-Waku is a fast, native desktop app for working with local coding agents. It is
-built in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)
-and keeps projects, sessions, transcripts on your machine.
+> Forked from [waku.sh](https://waku.sh) ([egoist/waku](https://github.com/egoist/waku)).
+
+Waku is a fast, native desktop app for working with local coding agents. Built
+in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui),
+it keeps all projects, sessions, transcripts, and state on your machine.
 
 ## Install
 
-On macOS, [download the signed `.dmg`](https://waku.sh).
+Download the latest build from [GitHub Releases](https://github.com/limboy/waku/releases/latest):
 
-On Linux:
-
-```sh
-curl -fsSL https://waku.sh/install.sh | sh
-```
-
-The script installs into `~/.local` without root. See
-[docs/linux.md](docs/linux.md) for requirements, manual installation, and
-uninstalling.
-
-On Windows, run `Waku-<version>-<arch>-Setup.exe` from the
-[latest release](https://github.com/limboy/waku/releases/latest). It installs
-per-user. A portable `.zip` is published alongside it. See
-[docs/windows.md](docs/windows.md) for requirements and what is not available
-there yet.
+- **macOS (Apple Silicon):** Download and open `Waku-<version>.dmg`.
+- **Linux (`x86_64` / `aarch64`):** Download `waku-<version>-<target>.tar.gz` and unpack it into `~/.local/waku.app`. See [docs/linux.md](docs/linux.md) for requirements, desktop entry setup, and uninstalling.
+- **Windows (`x86_64` / `aarch64`):** Run `Waku-<version>-<arch>-Setup.exe` for a per-user install, or use the portable `waku-<version>-<target>.zip`. See [docs/windows.md](docs/windows.md) for requirements and platform notes.
 
 ## Updates
 
-Release builds check for signed updates in the background. When an update is
-available, an **Install update** icon appears at the top of the sidebar. Click
-it, or focus it and press Enter or Space, to install and relaunch Waku. Use
-**Check for Updates…** in the app menu to check manually.
+Release builds check for signed updates from GitHub Releases in the background.
+When an update is available, an **Install update** icon appears at the top of
+the sidebar. Click it—or focus it and press Enter or Space—to install and
+relaunch Waku. You can also run **Check for Updates…** from the app menu at any
+time.
 
 macOS uses Sparkle; Windows and managed user-local Linux installs verify
 updates with the same Ed25519 signing key. Package-manager-owned Linux builds
@@ -40,6 +31,7 @@ updates disabled.
 
 Waku works with:
 
+- Antigravity CLI
 - Claude Code
 - Codex CLI
 - DeepSeek
@@ -53,13 +45,13 @@ structured protocol and session continuity.
 
 ## Highlights
 
-- Keep projects and independent agent sessions in one native app.
-- Switch models, reasoning effort, and access modes from a shared interface.
-- Queue or steer follow-up messages while an agent is working.
-- Rewind Git-backed tasks with conversation-aware checkpoints.
-- Export a session as Markdown from its context menu or File menu using
-  Export Conversation or Export All (including reasoning and tools).
-- Store app state locally, with no Waku account or remote service required.
+- Manage projects and independent agent sessions in one native interface, with pinned sessions, unread completion indicators, and project or date grouping.
+- Switch models, reasoning effort, and access modes from a unified composer, and delegate subtasks across models and providers.
+- Queue or steer follow-up messages while an agent is streaming, and trigger native context compaction across providers.
+- Inspect token usage and subscription plan quotas (`⌘U` / `Ctrl+U`).
+- Rewind Git-backed tasks with conversation-aware checkpoints and recover state from automatic daily backups.
+- Render rich transcripts with native Mermaid diagrams, LaTeX math, collapsible long-paste snippets, and full Markdown conversation export.
+- Keep all data locally on disk with no account or remote service required.
 
 ## Architecture
 
@@ -109,25 +101,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and checks.
 [GitHub Actions](.github/workflows/release.yml) builds macOS, Linux, and Windows
 releases when a `v<version>` tag is pushed, or when the Release workflow is run
 manually. The tag must match the version in `Cargo.toml`. After every platform
-build and update-feed check succeeds, the workflow automatically publishes
-the GitHub release and makes the update available to installed clients.
+build and update-feed check succeeds, the workflow automatically publishes the
+GitHub release and makes the update available to installed clients.
 
 Each release includes signed update archives, `appcast.xml` for macOS, and
-architecture-specific appcasts for Linux and Windows. Clients read these
-feeds directly from GitHub Releases. CI verifies every feed's download URL,
-archive length, and signature before publishing. When R2 credentials are
-configured, published assets are also mirrored for the website and install
-script.
+architecture-specific appcasts for Linux and Windows. Clients read these feeds
+directly from GitHub Releases, and CI verifies every feed's download URL,
+archive length, and signature before publishing.
 
 Release setup uses repository Actions secrets for the Developer ID
 certificate, App Store Connect API key, and `SPARKLE_PRIVATE_KEY`. Local macOS
 releases use Waku's dedicated `sh.waku.updates` Keychain account. See
 [RELEASING.md](RELEASING.md) for the complete secret list, key export commands,
 notarization, and release steps.
-
-## Sponsorship
-
-You can support the project development via [GitHub Sponsors](https://github.com/sponsors/egoist).
 
 ## License
 
