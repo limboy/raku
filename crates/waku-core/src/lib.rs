@@ -18,6 +18,7 @@ macro_rules! tr {
 }
 
 pub mod session_catalog;
+pub mod antigravity_session;
 pub mod attachments;
 pub mod backup;
 pub mod blob_store;

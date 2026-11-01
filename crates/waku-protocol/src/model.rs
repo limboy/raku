@@ -9,6 +9,8 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderKind {
+    #[serde(alias = "agy")]
+    Antigravity,
     Claude,
     #[default]
     Codex,
@@ -23,17 +25,19 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Claude,
         Self::Codex,
         Self::DeepSeek,
         Self::OpenCode,
         Self::OhMyPi,
         Self::Pi,
+        Self::Antigravity,
     ];
 
     pub fn id(self) -> &'static str {
         match self {
+            Self::Antigravity => "antigravity",
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::DeepSeek => "deepseek",
@@ -45,6 +49,7 @@ impl ProviderKind {
 
     pub fn display_name(self) -> &'static str {
         match self {
+            Self::Antigravity => "Antigravity CLI",
             Self::Claude => "Claude Code",
             Self::Codex => "Codex CLI",
             Self::DeepSeek => "DeepSeek Harness",
@@ -56,6 +61,7 @@ impl ProviderKind {
 
     pub fn short_name(self) -> &'static str {
         match self {
+            Self::Antigravity => "Antigravity",
             Self::Claude => "Claude",
             Self::Codex => "Codex",
             Self::DeepSeek => "DeepSeek",
@@ -67,6 +73,7 @@ impl ProviderKind {
 
     pub fn command(self) -> &'static str {
         match self {
+            Self::Antigravity => "agy",
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::DeepSeek => "dsh",
@@ -116,6 +123,7 @@ impl ProviderKind {
     pub fn supports_model_discovery(self) -> bool {
         matches!(
             self,
+            Self::Antigravity |
             Self::Claude
                 | Self::Codex
                 | Self::DeepSeek
@@ -133,6 +141,10 @@ impl ProviderKind {
     tag = "provider"
 )]
 pub enum ProviderResumeCursor {
+    #[serde(alias = "agy")]
+    Antigravity {
+        session_id: String,
+    },
     Claude {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,6 +180,7 @@ pub enum ProviderResumeCursor {
 impl ProviderResumeCursor {
     pub fn from_session_id(provider: ProviderKind, id: String) -> Self {
         match provider {
+            ProviderKind::Antigravity => Self::Antigravity { session_id: id },
             ProviderKind::Claude => Self::Claude {
                 session_id: id,
                 resume_at: None,
@@ -191,6 +204,7 @@ impl ProviderResumeCursor {
 
     pub fn provider(&self) -> ProviderKind {
         match self {
+            Self::Antigravity { .. } => ProviderKind::Antigravity,
             Self::Claude { .. } => ProviderKind::Claude,
             Self::Codex { .. } => ProviderKind::Codex,
             Self::DeepSeek { .. } => ProviderKind::DeepSeek,
@@ -202,6 +216,7 @@ impl ProviderResumeCursor {
 
     pub fn native_id(&self) -> &str {
         match self {
+            Self::Antigravity { session_id } |
             Self::Claude { session_id, .. }
             | Self::DeepSeek { session_id }
             | Self::OpenCode { session_id, .. }
@@ -1700,18 +1715,21 @@ impl ActivityKind {
 
         if matches!(
             compact.as_str(),
-            "todo" | "todowrite" | "updateplan" | "plan"
+            "todo" | "todowrite" | "updateplan" | "plan" | "managetask"
         ) {
             Self::Plan
         } else if matches!(
             compact.as_str(),
             "bash"
                 | "command"
+                | "commandstatus"
                 | "execute"
                 | "executecommand"
                 | "commandexecution"
+                | "notebookexecution"
                 | "runcommand"
                 | "runterminalcommand"
+                | "sendcommandinput"
                 | "shell"
                 | "shellcommand"
                 | "terminal"
@@ -1731,15 +1749,19 @@ impl ActivityKind {
                 | "move"
                 | "movefile"
                 | "multiedit"
+                | "multireplacefilecontent"
                 | "notebookedit"
                 | "patch"
                 | "rename"
                 | "renamefile"
                 | "replace"
+                | "replacefilecontent"
                 | "savefile"
+                | "sedfile"
                 | "strreplace"
                 | "write"
                 | "writefile"
+                | "writetofile"
         ) {
             Self::FileChange
         } else if matches!(
@@ -1751,9 +1773,11 @@ impl ActivityKind {
             compact.as_str(),
             "filesearch"
                 | "find"
+                | "findbyname"
                 | "findfiles"
                 | "glob"
                 | "grep"
+                | "grepsearch"
                 | "ripgrep"
                 | "searchfiles"
                 | "searchinfiles"
@@ -1764,6 +1788,7 @@ impl ActivityKind {
             "directorylist"
                 | "filelist"
                 | "list"
+                | "listdir"
                 | "listdirectory"
                 | "listfiles"
                 | "ls"
@@ -1772,7 +1797,7 @@ impl ActivityKind {
             Self::FileList
         } else if matches!(
             compact.as_str(),
-            "search" | "searchtool" | "webfetch" | "websearch"
+            "readurlcontent" | "search" | "searchtool" | "searchweb" | "webfetch" | "websearch"
         ) {
             Self::Search
         } else {
@@ -1791,9 +1816,6 @@ pub enum DriverEvent {
     Connected {
         provider_cursor: Option<ProviderResumeCursor>,
     },
-    /// The provider-owned agent composition this session actually runs. A
-    /// fresh Harness session may resolve its deployment default when Waku did
-    /// not name one explicitly, so the driver reports the resolved value.
     AgentPresetSelected(Option<String>),
     /// A provider-owned, automatically generated session title. `None`
     /// clears that fallback but never overwrites a user-owned title.
@@ -2535,7 +2557,7 @@ impl ActivityItem {
             self.display_target = Some(target);
         }
         if self.kind == ActivityKind::Command
-            && let Some(description) = find_activity_string(source, &["description"], 0)
+            && let Some(description) = find_activity_string(source, &["description", "toolSummary"], 0)
         {
             self.display_description = Some(compact_activity_target(&description));
         }
@@ -2574,7 +2596,7 @@ fn normalize_command_activity_command(source: String) -> Option<String> {
             )
         }
         serde_json::Value::Object(_) => {
-            find_activity_string(&value, &["command", "cmd", "script"], 0)
+            find_activity_string(&value, &["command", "cmd", "script", "CommandLine"], 0)
                 .and_then(|command| non_empty_activity_text(&command))
         }
         _ => Some(source.to_owned()),
@@ -2789,20 +2811,23 @@ fn extract_activity_display_target(
     source: &serde_json::Value,
 ) -> Option<String> {
     let keys: &[&str] = match kind {
-        ActivityKind::Command => &["command", "cmd"],
+        ActivityKind::Command => &["command", "cmd", "CommandLine"],
         ActivityKind::FileRead => &[
             "filePath",
             "file_path",
             "path",
+            "Path",
             "targetFile",
+            "TargetFile",
             "target_file",
+            "AbsolutePath",
             "notebookPath",
             "notebook_path",
         ],
-        ActivityKind::FileSearch => &["pattern", "query", "regex", "glob"],
-        ActivityKind::FileList => &["path", "directory", "dir", "root"],
-        ActivityKind::Search => &["query", "queries"],
-        ActivityKind::Tool => &["title"],
+        ActivityKind::FileSearch => &["pattern", "Pattern", "query", "Query", "regex", "glob", "SearchPath"],
+        ActivityKind::FileList => &["path", "Path", "directory", "DirectoryPath", "SearchDirectory", "dir", "root"],
+        ActivityKind::Search => &["query", "Query", "queries", "Url", "url"],
+        ActivityKind::Tool => &["title", "toolSummary"],
         _ => return None,
     };
     find_activity_string(source, keys, 0).map(|value| compact_activity_target(&value))
@@ -2846,6 +2871,7 @@ fn find_activity_string(value: &serde_json::Value, keys: &[&str], depth: usize) 
                 "args",
                 "input",
                 "params",
+                "parameters",
                 "rawInput",
                 "raw_input",
                 "toolInput",
@@ -2953,6 +2979,7 @@ fn extract_file_changes_from_value(
                 "raw_input",
                 "toolInput",
                 "tool_input",
+                "parameters",
             ] {
                 if let Some(nested) = object.get(key) {
                     extract_file_changes_from_value(nested, changes, depth + 1);
@@ -2970,12 +2997,15 @@ fn structured_file_change(
     let object = value.as_object()?;
     let path = [
         "path",
+        "Path",
         "filePath",
         "file_path",
         "filename",
         "fileName",
         "targetFile",
+        "TargetFile",
         "target_file",
+        "AbsolutePath",
         "notebookPath",
         "notebook_path",
     ]
@@ -3015,6 +3045,8 @@ fn structured_file_change(
         "old_content",
         "oldSource",
         "old_source",
+        "Target",
+        "TargetContent",
     ]
     .into_iter()
     .find_map(|key| object.get(key).and_then(serde_json::Value::as_str));
@@ -3029,6 +3061,8 @@ fn structured_file_change(
         "new_content",
         "newSource",
         "new_source",
+        "Replacement",
+        "ReplacementContent",
     ]
     .into_iter()
     .find_map(|key| object.get(key).and_then(serde_json::Value::as_str));
@@ -3062,9 +3096,19 @@ fn structured_file_change(
         normalize_unified_diff(patch)
     } else if let (Some(old), Some(new)) = (old, new) {
         replacement_diff(old, new)
-    } else if let Some(edits) = object.get("edits").and_then(serde_json::Value::as_array) {
+    } else if let Some(edits) = object
+        .get("edits")
+        .or_else(|| object.get("Edits"))
+        .or_else(|| object.get("ReplacementChunks"))
+        .and_then(serde_json::Value::as_array)
+    {
         edits_diff(edits)
-    } else if let Some(content) = object.get("content").and_then(serde_json::Value::as_str) {
+    } else if let Some(content) = object
+        .get("content")
+        .or_else(|| object.get("Content"))
+        .or_else(|| object.get("CodeContent"))
+        .and_then(serde_json::Value::as_str)
+    {
         // A write tool that only names a file and its new contents. Nothing
         // says whether the file already existed, so present it as added.
         whole_file_diff(content, true)
@@ -4332,6 +4376,8 @@ mod tests {
 
     #[test]
     fn provider_ids_are_stable() {
+        assert_eq!(ProviderKind::Antigravity.id(), "antigravity");
+        assert_eq!(ProviderKind::Antigravity.command(), "agy");
         assert_eq!(ProviderKind::Claude.id(), "claude");
         assert_eq!(ProviderKind::Codex.command(), "codex");
         assert_eq!(ProviderKind::DeepSeek.command(), "dsh");
@@ -4356,6 +4402,7 @@ mod tests {
 
     #[test]
     fn only_dynamic_provider_catalogs_are_discovered() {
+        assert!(ProviderKind::Antigravity.supports_model_discovery());
         assert!(ProviderKind::Claude.supports_model_discovery());
         assert!(ProviderKind::Codex.supports_model_discovery());
         assert!(ProviderKind::DeepSeek.supports_model_discovery());
@@ -4428,7 +4475,7 @@ mod tests {
 
     #[test]
     fn all_contains_every_provider_kind() {
-        assert_eq!(ProviderKind::ALL.len(), 6);
+        assert_eq!(ProviderKind::ALL.len(), 7);
         let ids: std::collections::HashSet<_> =
             ProviderKind::ALL.iter().map(|kind| kind.id()).collect();
         assert_eq!(
@@ -5081,5 +5128,8 @@ mod review_subtask_tests {
                 provider.display_name()
             );
         }
+        assert!(!ProviderKind::Antigravity.supports_review_subtask());
+        assert!(!ProviderKind::Antigravity.supports_conversation_fork());
+        assert!(!ProviderKind::Antigravity.supports_conversation_rollback());
     }
 }

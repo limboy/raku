@@ -31,6 +31,7 @@ pub(crate) fn discover(
 ) -> Option<Vec<SlashCommand>> {
     match provider {
         ProviderKind::Claude => discover_claude(binary, project_root),
+        ProviderKind::Antigravity => discover_antigravity(binary, project_root),
         ProviderKind::Codex => discover_codex(binary, project_root),
         ProviderKind::OpenCode => discover_opencode(binary, project_root),
         ProviderKind::OhMyPi => discover_oh_my_pi(binary, project_root),
@@ -51,6 +52,63 @@ fn discover_claude(binary: &Path, project_root: &Path) -> Option<Vec<SlashComman
     Some(parse_claude_commands(&value))
 }
 
+fn discover_antigravity(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> {
+    // `agy --output-format json --print /skills` resolves active builtin, user,
+    // plugin, and workspace skills without starting a turn, spending quota, or
+    // persisting a conversation. CLI-only TUI commands (`/model`, `/usage`,
+    // `/config`) are intentionally omitted because `--input-format stream-json`
+    // terminates the session on them.
+    let mut command = crate::command_env::command(binary);
+    command
+        .args(["--output-format", "json", "--print", "/skills"])
+        .current_dir(project_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    isolate_process_group(&mut command);
+    let mut child = crate::command_env::spawn(&mut command).ok()?;
+    let Some(stdout) = child.stdout.take() else {
+        terminate_child(&mut child);
+        return None;
+    };
+    let (tx, rx) = mpsc::channel();
+    let reader = thread::spawn(move || read_json_lines(stdout, tx));
+    let value = recv_matching(&rx, CLI_PROBE_TIMEOUT, |val| {
+        val.get("status").and_then(Value::as_str) == Some("SUCCESS")
+    });
+    terminate_child(&mut child);
+    let _ = reader.join();
+    Some(parse_antigravity_skills(&value?))
+}
+
+fn parse_antigravity_skills(value: &Value) -> Vec<SlashCommand> {
+    let mut out = Vec::new();
+    if let Some(skills) = value.pointer("/command/data/skills").and_then(Value::as_array) {
+        for skill in skills.iter().take(COMMAND_CATALOG_CAP) {
+            let Some(name) = skill
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty() && !name.chars().any(char::is_whitespace))
+            else {
+                continue;
+            };
+            let description = skill
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            out.push(SlashCommand {
+                name: name.to_owned(),
+                description: description.to_owned(),
+                argument_hint: None,
+                scope: CommandScope::Skill,
+                template: None,
+            });
+        }
+    }
+    out
+}
 fn discover_codex(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> {
     let mut command = crate::command_env::command(binary);
     command
@@ -593,6 +651,27 @@ mod tests {
                 .all(|command| command.scope == CommandScope::Builtin)
         );
         assert!(commands.iter().all(|command| command.template.is_none()));
+    }
+
+    #[test]
+    fn parses_antigravity_skills_json_payload() {
+        let commands = parse_antigravity_skills(&json!({
+            "status": "SUCCESS",
+            "command": {
+                "name": "skills",
+                "data": {
+                    "skills": [
+                        {"name": "antigravity-guide", "description": "Guide for AGY", "builtin": true},
+                        {"name": "add-word", "description": "Add vocab word", "builtin": false}
+                    ]
+                }
+            }
+        }));
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].name, "antigravity-guide");
+        assert_eq!(commands[0].scope, CommandScope::Skill);
+        assert!(commands[0].template.is_none());
+        assert_eq!(commands[1].name, "add-word");
     }
 
     #[test]

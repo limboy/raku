@@ -196,11 +196,11 @@ settings.general_keywords:
 settings.appearance_keywords:
   en: appearance theme system light dark language english chinese simplified font size text editor
 settings.providers_keywords:
-  en: providers agents models cli version install detect claude codex opencode pi deepseek ohmypi
+  en: providers agents models cli version install detect claude codex opencode pi deepseek ohmypi antigravity agy
 settings.skills:
   en: Skills
 settings.skills_keywords:
-  en: skills skill library agent disable enable delete claude codex opencode pi shared
+  en: skills skill library agent disable enable delete claude codex opencode pi antigravity agy shared
 settings.usage_keywords:
   en: usage tokens cost spend cache daily chart model breakdown history claude codex
 settings.computer_use_keywords:

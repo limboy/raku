@@ -100,6 +100,16 @@ fn assemble_slash_commands(
         .or_else(|| home.as_deref().map(|home| home.join(".claude")));
     let mut commands = Vec::new();
     match provider {
+        ProviderKind::Antigravity => {
+            for directory in [".agent/skills", "_agents/skills", "_agent/skills"] {
+                scan_skill_files(provider, &project_root.join(directory), &mut commands);
+            }
+            if let Some(home) = home.as_deref() {
+                for directory in [".gemini/antigravity-cli/skills", ".gemini/config/skills"] {
+                    scan_skill_files(provider, &home.join(directory), &mut commands);
+                }
+            }
+        }
         ProviderKind::Claude => {
             scan_command_files(
                 &project_root.join(".claude/commands"),

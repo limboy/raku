@@ -201,6 +201,22 @@ fn agent_arguments(
         args.push(OsString::from(value));
     }
     match provider {
+        ProviderKind::Antigravity => {
+            push(&mut args, "--output-format");
+            push(&mut args, "text");
+            push(&mut args, "--disable-slash-commands");
+            let (wire_model, wire_effort) =
+                crate::model_catalog::resolve_antigravity_model_and_effort(model, reasoning_effort);
+            if let Some(model) = wire_model {
+                push(&mut args, "--model");
+                push(&mut args, &model);
+            }
+            if let Some(effort) = wire_effort {
+                push(&mut args, "--effort");
+                push(&mut args, &effort);
+            }
+            push(&mut args, "--print");
+        }
         ProviderKind::Claude => {
             push(&mut args, "--print");
             push(&mut args, "--output-format");
@@ -633,6 +649,13 @@ mod tests {
             );
             assert!(has(&args, prompt));
             match provider {
+                ProviderKind::Antigravity => {
+                    assert!(has_pair(&args, "--output-format", "text"));
+                    assert!(has(&args, "--disable-slash-commands"));
+                    assert!(has_pair(&args, "--model", "model"));
+                    assert!(has_pair(&args, "--effort", "low"));
+                    assert!(has_pair(&args, "--print", prompt));
+                }
                 ProviderKind::Codex => {
                     assert_eq!(args.first().and_then(|arg| arg.to_str()), Some("exec"));
                     assert!(has_pair(&args, "--sandbox", "read-only"));

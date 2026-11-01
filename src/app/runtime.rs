@@ -474,7 +474,11 @@ fn perform_provider_rewind(
             };
             Ok((Some(cursor), None, None))
         }
-        ProviderKind::Codex | ProviderKind::DeepSeek | ProviderKind::OhMyPi | ProviderKind::Pi => {
+        ProviderKind::Antigravity
+        | ProviderKind::Codex
+        | ProviderKind::DeepSeek
+        | ProviderKind::OhMyPi
+        | ProviderKind::Pi => {
             let mut prepared_driver = None;
             let driver = if let Some(driver) = request.driver.as_ref() {
                 driver.clone()
@@ -701,6 +705,9 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                 }
                 let (cursor, prepared_driver) = fork_response_with_driver(&mut request)?;
                 Ok((cursor, None, prepared_driver))
+            }
+            ProviderKind::Antigravity => {
+                anyhow::bail!("conversation forking is not supported by Antigravity CLI");
             }
         }
     })();

@@ -30,6 +30,9 @@ pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 3] = [
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlanUsageKey {
     Provider(ProviderKind),
+    Antigravity {
+        model: Option<String>,
+    },
     OhMyPi {
         model: String,
         session_file: Option<PathBuf>,
@@ -40,6 +43,7 @@ impl PlanUsageKey {
     pub(super) fn provider(&self) -> ProviderKind {
         match self {
             Self::Provider(provider) => *provider,
+            Self::Antigravity { .. } => ProviderKind::Antigravity,
             Self::OhMyPi { .. } => ProviderKind::OhMyPi,
         }
     }
@@ -59,6 +63,14 @@ impl Waku {
         match session.provider {
             provider if PLAN_USAGE_PROVIDERS.contains(&provider) => {
                 Some(PlanUsageKey::Provider(provider))
+            }
+            ProviderKind::Antigravity => {
+                let model = self
+                    .model_for_session(session)
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_owned);
+                Some(PlanUsageKey::Antigravity { model })
             }
             ProviderKind::OhMyPi => {
                 let model = self.model_for_session(session)?.trim();
@@ -94,10 +106,12 @@ impl Waku {
                 keys.push(PlanUsageKey::Provider(provider));
             }
         }
-        if let Some(session) = self
-            .selected_session()
-            .filter(|session| session.provider == ProviderKind::OhMyPi)
-            && let Some(key) = self.plan_usage_key_for_session(session)
+        if let Some(session) = self.selected_session().filter(|session| {
+            matches!(
+                session.provider,
+                ProviderKind::OhMyPi | ProviderKind::Antigravity
+            )
+        }) && let Some(key) = self.plan_usage_key_for_session(session)
         {
             keys.push(key);
         }
@@ -132,6 +146,7 @@ impl Waku {
             let binary_override = self.state.provider_binary_overrides.get(&provider).cloned();
             let (model, session_file) = match &key {
                 PlanUsageKey::Provider(_) => (None, None),
+                PlanUsageKey::Antigravity { model } => (model.clone(), None),
                 PlanUsageKey::OhMyPi {
                     model,
                     session_file,

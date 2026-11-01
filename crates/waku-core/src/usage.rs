@@ -1509,6 +1509,188 @@ fn ohmypi_plan_label(upstream_lower: &str, report: &Value) -> Option<String> {
     }
 }
 
+/// Fetch plan usage quotas directly from `agy --output-format json --print /usage`.
+/// Read-only slash commands in `agy` print mode answer without starting an
+/// agent turn, spending quota, or creating a conversation.
+pub fn fetch_antigravity_plan_usage(
+    binary: &Path,
+    model: Option<&str>,
+) -> anyhow::Result<Option<PlanUsage>> {
+    let cwd = crate::session_catalog::catalog_working_directory()?;
+    let mut command = crate::command_env::command(binary);
+    command
+        .args(["--output-format", "json", "--print", "/usage"])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    let mut child = crate::command_env::spawn(&mut command)
+        .context("could not launch agy to read plan usage")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("could not capture agy stdout"))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            lines.push(line);
+        }
+        let _ = tx.send(lines);
+    });
+    let lines = rx
+        .recv_timeout(Duration::from_secs(15))
+        .map_err(|_| {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            anyhow!("timed out waiting for agy /usage")
+        })?;
+    let status = child.wait().ok();
+    let _ = reader.join();
+
+    let envelope = lines
+        .iter()
+        .rev()
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        .ok_or_else(|| anyhow!("agy /usage returned no JSON output"))?;
+    if envelope.get("status").and_then(Value::as_str) != Some("SUCCESS") {
+        let err = envelope
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|msg| !msg.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "agy /usage failed ({})",
+                    status.and_then(|s| s.code()).unwrap_or(1)
+                )
+            });
+        return Err(anyhow!(err));
+    }
+    Ok(parse_antigravity_plan_usage(&envelope, model))
+}
+
+fn parse_antigravity_plan_usage(envelope: &Value, model: Option<&str>) -> Option<PlanUsage> {
+    let groups = envelope
+        .pointer("/command/data/groups")
+        .and_then(Value::as_array)?;
+    let model_lower = model.unwrap_or_default().trim().to_ascii_lowercase();
+    let counter = antigravity_counter_for_model(&model_lower);
+    let is_argon = model_lower.contains("argon");
+
+    struct CandidateWindow {
+        duration_rank: u8,
+        subfamily_rank: u8,
+        window: PlanWindow,
+    }
+
+    let collect_candidates = |filter_counter: Option<&str>| -> Vec<CandidateWindow> {
+        let mut list = Vec::new();
+        for group in groups {
+            let group_name = group
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            let Some(buckets) = group.get("buckets").and_then(Value::as_array) else {
+                continue;
+            };
+            for bucket in buckets {
+                let id = bucket
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if let Some(target) = filter_counter {
+                    let is_3p = id.starts_with("3p-")
+                        || group_name.to_ascii_lowercase().contains("claude");
+                    let matches = match target {
+                        "anthropic" | "openai" => is_3p,
+                        "google" => !is_3p,
+                        _ => true,
+                    };
+                    if !matches {
+                        continue;
+                    }
+                }
+                let Some(remaining) = bucket.get("remaining_fraction").and_then(Value::as_f64)
+                else {
+                    continue;
+                };
+                let used_percent = ((1.0 - remaining).clamp(0.0, 1.0) * 1000.0).round() / 10.0;
+                let window_kind = bucket
+                    .get("window")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let (period_label, duration_rank) = match window_kind.as_str() {
+                    "5h" => (tr!("usage.five_hour_limit"), 0),
+                    "weekly" => (tr!("usage.weekly_limit"), 1),
+                    "monthly" => (tr!("usage.monthly_limit"), 2),
+                    _ => (
+                        bucket
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Quota")
+                            .to_owned(),
+                        3,
+                    ),
+                };
+                let bucket_is_argon =
+                    id.contains("argon") || group_name.to_ascii_lowercase().contains("argon");
+                let scope_suffix = if bucket_is_argon {
+                    Some("Gemini 4 Argon")
+                } else if filter_counter.is_none() && !group_name.is_empty() {
+                    Some(group_name)
+                } else {
+                    None
+                };
+                let label = match scope_suffix {
+                    Some(scope) => format!("{period_label} · {scope}"),
+                    None => period_label,
+                };
+                let resets_at = bucket
+                    .get("reset_time")
+                    .and_then(Value::as_str)
+                    .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                    .map(|dt| dt.timestamp());
+                let subfamily_rank = u8::from(bucket_is_argon != is_argon);
+                list.push(CandidateWindow {
+                    duration_rank,
+                    subfamily_rank,
+                    window: PlanWindow {
+                        label,
+                        percent: used_percent,
+                        resets_at,
+                    },
+                });
+            }
+        }
+        list
+    };
+
+    let mut candidates = collect_candidates(counter);
+    if candidates.is_empty() && counter.is_some() {
+        candidates = collect_candidates(None);
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by_key(|c| (c.duration_rank, c.subfamily_rank));
+    Some(PlanUsage {
+        plan_label: Some("Antigravity".to_owned()),
+        windows: candidates.into_iter().map(|c| c.window).collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1565,6 +1747,53 @@ mod tests {
                 .iter()
                 .all(|window| window.resets_at.is_some())
         );
+    }
+
+    #[test]
+    fn parses_live_antigravity_cli_usage_scoped_by_model_family() {
+        let body: Value = serde_json::from_str(r#"{
+            "status": "SUCCESS",
+            "command": {
+                "name": "usage",
+                "data": {
+                    "groups": [
+                        {
+                            "name": "Gemini Models",
+                            "buckets": [
+                                {"id": "gemini-weekly", "name": "Weekly Limit Remaining", "window": "weekly", "remaining_fraction": 0.9, "reset_time": "2026-11-08T08:13:04Z"},
+                                {"id": "gemini-5h", "name": "Five Hour Limit Remaining", "window": "5h", "remaining_fraction": 0.75, "reset_time": "2026-11-01T13:13:04Z"}
+                            ]
+                        },
+                        {
+                            "name": "Claude and GPT models",
+                            "buckets": [
+                                {"id": "3p-weekly", "name": "Weekly Limit Remaining", "window": "weekly", "remaining_fraction": 0.6, "reset_time": "2026-11-08T10:11:34Z"},
+                                {"id": "3p-5h", "name": "Five Hour Limit Remaining", "window": "5h", "remaining_fraction": 0.8, "reset_time": "2026-11-01T15:11:34Z"}
+                            ]
+                        },
+                        {
+                            "name": "Gemini 4 Argon",
+                            "buckets": [
+                                {"id": "gemini-argon-wtu-weekly", "name": "Gemini 4 Argon Weekly Limit", "window": "weekly", "remaining_fraction": 0.5, "reset_time": "2026-11-08T07:56:46Z"}
+                            ]
+                        }
+                    ]
+                }
+            }
+        }"#).unwrap();
+
+        let argon = parse_antigravity_plan_usage(&body, Some("gemini-4-argon")).unwrap();
+        assert_eq!(argon.plan_label.as_deref(), Some("Antigravity"));
+        assert_eq!(argon.windows.len(), 3);
+        assert_eq!(argon.windows[0].percent, 25.0);
+        assert_eq!(argon.windows[1].percent, 50.0);
+        assert!(argon.windows[1].label.contains("Argon"));
+        assert_eq!(argon.windows[2].percent, 10.0);
+
+        let claude = parse_antigravity_plan_usage(&body, Some("claude-opus-5-5")).unwrap();
+        assert_eq!(claude.windows.len(), 2);
+        assert_eq!(claude.windows[0].percent, 20.0);
+        assert_eq!(claude.windows[1].percent, 40.0);
     }
 
     #[test]

@@ -85,7 +85,7 @@ pub struct CompactionCapabilities {
 impl ProviderKind {
     pub fn compaction_capabilities(self) -> CompactionCapabilities {
         match self {
-            Self::Codex | Self::OpenCode => CompactionCapabilities {
+            Self::Antigravity | Self::Codex | Self::OpenCode => CompactionCapabilities {
                 manual: true,
                 instructions: false,
                 lifecycle: true,

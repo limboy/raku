@@ -308,6 +308,13 @@ impl Backend for WakuBackend {
                 session_file,
             } => {
                 let usage = match provider {
+                    crate::model::ProviderKind::Antigravity => {
+                        ensure_shell_environment();
+                        let probe =
+                            crate::model::provider_probe(provider, binary_override.as_deref());
+                        let binary = probe.path.ok_or_else(|| anyhow!("agy is not installed"))?;
+                        crate::usage::fetch_antigravity_plan_usage(&binary, model.as_deref())?
+                    }
                     crate::model::ProviderKind::Claude => Some(
                         crate::usage::fetch_claude_plan_usage(cli_version.as_deref())?,
                     ),
@@ -548,6 +555,9 @@ impl Backend for WakuBackend {
                 // must not start every installed agent CLI, and another
                 // provider is queried only after the user explicitly picks it.
                 let mut sessions = match provider {
+                    ProviderKind::Antigravity => {
+                        crate::antigravity_session::list_provider_sessions(limit)?
+                    }
                     ProviderKind::Claude => crate::claude_session::list_provider_sessions(limit)?,
                     ProviderKind::Codex => {
                         crate::codex_session::list_provider_sessions(&binary, limit)?
@@ -587,6 +597,13 @@ impl Backend for WakuBackend {
                 // numbering, but bound imported display text to recent turns.
                 const VISIBLE_TURN_LIMIT: usize = 100;
                 let history = match &cursor {
+                    ProviderResumeCursor::Antigravity { session_id } => {
+                        self.provider_binary(ProviderKind::Antigravity)?;
+                        crate::antigravity_session::provider_session_history(
+                            session_id,
+                            VISIBLE_TURN_LIMIT,
+                        )?
+                    }
                     ProviderResumeCursor::Claude { session_id, .. } => {
                         self.provider_binary(ProviderKind::Claude)?;
                         crate::claude_session::provider_session_history(
@@ -1277,7 +1294,8 @@ impl WakuBackend {
                 })?;
                 Ok((fork.cursor, fork.message_ids))
             }
-            ProviderKind::Codex
+            ProviderKind::Antigravity
+            | ProviderKind::Codex
             | ProviderKind::DeepSeek
             | ProviderKind::OhMyPi
             | ProviderKind::Pi => Ok((
@@ -1446,7 +1464,8 @@ impl WakuBackend {
                 };
                 Ok((Some(cursor), HashMap::new(), false))
             }
-            ProviderKind::Codex
+            ProviderKind::Antigravity
+            | ProviderKind::Codex
             | ProviderKind::DeepSeek
             | ProviderKind::OhMyPi
             | ProviderKind::Pi => Ok((
