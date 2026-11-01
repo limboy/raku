@@ -1196,7 +1196,6 @@ impl WakuBackend {
             &source,
             &cwd,
             &binary,
-            retained_turn_count,
             rollback_turns,
             provider_turn_count,
             provider_resume_at,
@@ -1276,6 +1275,19 @@ impl WakuBackend {
         turns_to_remove: usize,
     ) -> anyhow::Result<(ProviderResumeCursor, HashMap<String, String>)> {
         match source.provider {
+            ProviderKind::Antigravity => {
+                let Some(ProviderResumeCursor::Antigravity { session_id, .. }) =
+                    source.provider_cursor.as_ref()
+                else {
+                    bail!("Antigravity CLI's native session is unavailable");
+                };
+                let fork = fork_provider_session(ProviderSessionForkRequest::Antigravity {
+                    session_id: session_id.clone(),
+                    turn_count: provider_turn_count,
+                    title: fork_title.to_owned(),
+                })?;
+                Ok((fork.cursor, HashMap::new()))
+            }
             ProviderKind::Claude => {
                 let Some(ProviderResumeCursor::Claude { session_id, .. }) =
                     source.provider_cursor.as_ref()
@@ -1294,8 +1306,7 @@ impl WakuBackend {
                 })?;
                 Ok((fork.cursor, fork.message_ids))
             }
-            ProviderKind::Antigravity
-            | ProviderKind::Codex
+            ProviderKind::Codex
             | ProviderKind::DeepSeek
             | ProviderKind::OhMyPi
             | ProviderKind::Pi => Ok((
@@ -1401,13 +1412,11 @@ impl WakuBackend {
         driver.fork(turns_to_remove)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn rewind_provider_response(
         &self,
         source: &AgentSession,
         cwd: &Path,
         binary: &Path,
-        retained_turn_count: usize,
         rollback_turns: usize,
         provider_turn_count: usize,
         provider_resume_at: Option<String>,
@@ -1415,16 +1424,29 @@ impl WakuBackend {
         if rollback_turns == 0 {
             return Ok((None, HashMap::new(), false));
         }
-        let reset_native_session = retained_turn_count == 0
+        let reset_native_session = provider_turn_count == 0
             && matches!(
                 source.provider,
-                ProviderKind::Claude
+                ProviderKind::Antigravity | ProviderKind::Claude
             );
         if reset_native_session {
             return Ok((None, HashMap::new(), true));
         }
 
         match source.provider {
+            ProviderKind::Antigravity => {
+                let Some(ProviderResumeCursor::Antigravity { session_id, .. }) =
+                    source.provider_cursor.as_ref()
+                else {
+                    bail!("Antigravity CLI's native session is unavailable");
+                };
+                let fork = fork_provider_session(ProviderSessionForkRequest::Antigravity {
+                    session_id: session_id.clone(),
+                    turn_count: provider_turn_count,
+                    title: format!("{} (rewind)", source.display_title()),
+                })?;
+                Ok((Some(fork.cursor), HashMap::new(), false))
+            }
             ProviderKind::Claude => {
                 let Some(ProviderResumeCursor::Claude { session_id, .. }) =
                     source.provider_cursor.as_ref()
@@ -1464,8 +1486,7 @@ impl WakuBackend {
                 };
                 Ok((Some(cursor), HashMap::new(), false))
             }
-            ProviderKind::Antigravity
-            | ProviderKind::Codex
+            ProviderKind::Codex
             | ProviderKind::DeepSeek
             | ProviderKind::OhMyPi
             | ProviderKind::Pi => Ok((
@@ -1626,6 +1647,21 @@ fn fork_provider_session(
     use crate::model::ProviderResumeCursor;
 
     let (cursor, message_ids, source_resume_at) = match request {
+        ProviderSessionForkRequest::Antigravity {
+            session_id,
+            turn_count,
+            title,
+        } => (
+            ProviderResumeCursor::Antigravity {
+                session_id: crate::antigravity_session::fork_session_at_turn(
+                    &session_id,
+                    turn_count,
+                    &title,
+                )?,
+            },
+            HashMap::new(),
+            None,
+        ),
         ProviderSessionForkRequest::Claude {
             session_id,
             resume_at,
@@ -2360,6 +2396,74 @@ mod tests {
         let mut missing_message = session;
         missing_message.messages.clear();
         assert!(validate_message_rewind(&missing_message, 1).is_err());
+    }
+
+    #[test]
+    fn message_rewind_resets_native_session_after_retaining_only_local_failures() {
+        let directory =
+            std::env::temp_dir().join(format!("waku-rewind-local-failure-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let settings = DaemonSettingsStore::open(directory.join("settings.json")).unwrap();
+        let backend =
+            WakuBackend::new(settings, StateStore::daemon(directory.join("app.db"))).unwrap();
+
+        for cursor in [
+            ProviderResumeCursor::Antigravity {
+                session_id: Uuid::new_v4().to_string(),
+            },
+            ProviderResumeCursor::Claude {
+                session_id: Uuid::new_v4().to_string(),
+                resume_at: None,
+            },
+        ] {
+            let mut session = AgentSession::new(Uuid::new_v4(), cursor.provider());
+            session.begin_turn("failed before provider startup");
+            session.finish_active_turn(crate::model::TurnStatus::Failed);
+
+            // Rewinding a local failure alone has no native history to change.
+            let (_, _, reset_native_session) = backend
+                .rewind_provider_response(
+                    &session,
+                    &directory,
+                    Path::new("unused-provider-binary"),
+                    session.provider_turns_after(0),
+                    0,
+                    None,
+                )
+                .unwrap();
+            assert!(!reset_native_session);
+
+            session.begin_turn("successful retry");
+            session.mark_active_turn_provider_started();
+            session.finish_active_turn(crate::model::TurnStatus::Completed);
+            session.provider_cursor = Some(cursor);
+            assert!(validate_message_rewind(&session, 2).is_ok());
+
+            let retained_turn_count = 1;
+            let rollback_turns = session.provider_turns_after(retained_turn_count);
+            let provider_turn_count = session
+                .turns
+                .iter()
+                .take(retained_turn_count)
+                .filter(|turn| turn.provider_turn_started)
+                .count();
+            let (cursor, message_ids, reset_native_session) = backend
+                .rewind_provider_response(
+                    &session,
+                    &directory,
+                    Path::new("unused-provider-binary"),
+                    rollback_turns,
+                    provider_turn_count,
+                    None,
+                )
+                .unwrap();
+            assert!(cursor.is_none());
+            assert!(message_ids.is_empty());
+            assert!(reset_native_session);
+        }
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

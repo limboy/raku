@@ -388,10 +388,10 @@ fn prepared_message_rewind(
         claude_fork,
         prepared_driver,
         reset_native_session: request.rollback_turns > 0
-            && request.retained_turn_count == 0
+            && request.provider_turn_count == 0
             && matches!(
                 request.provider,
-                ProviderKind::Claude
+                ProviderKind::Antigravity | ProviderKind::Claude
             ),
         cleanup_error,
     }
@@ -408,16 +408,36 @@ fn perform_provider_rewind(
 ) -> anyhow::Result<ProviderRewindResult> {
     let provider = request.provider;
     let reset_native_session = request.rollback_turns > 0
-        && request.retained_turn_count == 0
-        && matches!(
-            provider,
-            ProviderKind::Claude
-        );
+        && request.provider_turn_count == 0
+        && matches!(provider, ProviderKind::Antigravity | ProviderKind::Claude);
     if request.rollback_turns == 0 || reset_native_session {
         return Ok((None, None, None));
     }
 
     match provider {
+        ProviderKind::Antigravity => {
+            let Some(ProviderResumeCursor::Antigravity {
+                session_id: native_session_id,
+                ..
+            }) = request.provider_cursor.as_ref()
+            else {
+                anyhow::bail!(tr!(
+                    "errors.provider_native_cursor_unavailable",
+                    provider = "Antigravity"
+                ));
+            };
+            let fork = request.workspace_client.fork_provider_session(
+                waku_client::provider_session::ProviderSessionForkRequest::Antigravity {
+                    session_id: native_session_id.clone(),
+                    turn_count: request.provider_turn_count,
+                    title: tr!(
+                        "session.rewind_title",
+                        title = request.session_title.as_str()
+                    ),
+                },
+            )?;
+            Ok((Some(fork.cursor), None, None))
+        }
         ProviderKind::Claude => {
             let Some(ProviderResumeCursor::Claude {
                 session_id: native_session_id,
@@ -474,8 +494,7 @@ fn perform_provider_rewind(
             };
             Ok((Some(cursor), None, None))
         }
-        ProviderKind::Antigravity
-        | ProviderKind::Codex
+        ProviderKind::Codex
         | ProviderKind::DeepSeek
         | ProviderKind::OhMyPi
         | ProviderKind::Pi => {
@@ -707,7 +726,30 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                 Ok((cursor, None, prepared_driver))
             }
             ProviderKind::Antigravity => {
-                anyhow::bail!("conversation forking is not supported by Antigravity CLI");
+                let Some(ProviderResumeCursor::Antigravity {
+                    session_id: native_session_id,
+                    ..
+                }) = request.source.provider_cursor.as_ref()
+                else {
+                    anyhow::bail!(tr!(
+                        "errors.provider_native_session_unavailable",
+                        provider = "Antigravity"
+                    ));
+                };
+                Ok((
+                    request
+                        .workspace_client
+                        .fork_provider_session(
+                            waku_client::provider_session::ProviderSessionForkRequest::Antigravity {
+                                session_id: native_session_id.clone(),
+                                turn_count: request.provider_turn_count,
+                                title: request.fork_title.clone(),
+                            },
+                        )?
+                        .cursor,
+                    None,
+                    None,
+                ))
             }
         }
     })();
@@ -2387,7 +2429,7 @@ impl Waku {
             || reset_native_session
             || (matches!(
                 provider,
-                ProviderKind::DeepSeek | ProviderKind::OpenCode
+                ProviderKind::Antigravity | ProviderKind::DeepSeek | ProviderKind::OpenCode
             ) && provider_rewind_cursor.is_some())
         {
             // Headless drivers retain their original native session ID. Recreate

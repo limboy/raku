@@ -102,21 +102,18 @@ impl SidebarDateBoundaries {
     }
 }
 
-/// Recency for sidebar ordering. A submitted turn promotes the
-/// task immediately, while metadata edits such as a rename do not; a task with
-/// no turns stays anchored to when it was created.
+/// Recency for sidebar ordering. Creation promotes a new fork even when its
+/// copied turns are older. Submitting a turn promotes the task immediately;
+/// metadata edits such as a rename do not.
 fn sidebar_session_timestamp(session: &AgentSession) -> u64 {
-    session.last_reply_at.unwrap_or(session.created_at)
+    session.last_reply_at.unwrap_or(0).max(session.created_at)
 }
 
 fn sort_sidebar_sessions(sessions: &mut Vec<&AgentSession>, ordering: SidebarOrdering) {
-    match ordering {
-        SidebarOrdering::Newest => {
-            sessions.sort_by_key(|session| std::cmp::Reverse(sidebar_session_timestamp(session)))
-        }
-        SidebarOrdering::Oldest => {
-            sessions.sort_by_key(|session| sidebar_session_timestamp(session))
-        }
+    sessions.sort_by_key(|session| (sidebar_session_timestamp(session), session.created_at));
+    if ordering == SidebarOrdering::Newest {
+        // Sessions are appended to the store, so reverse timestamp ties too.
+        sessions.reverse();
     }
 }
 
@@ -1943,6 +1940,52 @@ mod tests {
 
         sort_sidebar_sessions(&mut sessions, SidebarOrdering::Oldest);
         assert_eq!(sessions[0].id, renamed_old_session.id);
+    }
+
+    #[test]
+    fn sidebar_places_new_response_forks_above_their_source() {
+        let project_id = Uuid::new_v4();
+        let mut source = AgentSession::new(project_id, ProviderKind::Antigravity);
+        source.begin_turn("Check network connectivity");
+        source.mark_active_turn_provider_started();
+        source.finish_active_turn(TurnStatus::Completed);
+        source.created_at = 10;
+        source.last_reply_at = Some(20);
+
+        let fork = |title: &str| {
+            source
+                .fork_through_turn(
+                    1,
+                    ProviderResumeCursor::Antigravity {
+                        session_id: Uuid::new_v4().to_string(),
+                    },
+                    title,
+                )
+                .unwrap()
+        };
+        let first_fork = fork("Network Connectivity Test (2)");
+        let mut second_fork = fork("Network Connectivity Test (3)");
+        // Rapid forks can share the same second-resolution creation time.
+        second_fork.created_at = first_fork.created_at;
+
+        let stored = [&source, &first_fork, &second_fork];
+        for (ordering, expected) in [
+            (
+                SidebarOrdering::Newest,
+                [second_fork.id, first_fork.id, source.id],
+            ),
+            (
+                SidebarOrdering::Oldest,
+                [source.id, first_fork.id, second_fork.id],
+            ),
+        ] {
+            let mut sorted = stored.to_vec();
+            sort_sidebar_sessions(&mut sorted, ordering);
+            assert_eq!(
+                sorted.iter().map(|session| session.id).collect::<Vec<_>>(),
+                expected
+            );
+        }
     }
 
     #[test]

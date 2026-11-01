@@ -86,7 +86,8 @@ impl ProviderKind {
     pub fn supports_conversation_rollback(self) -> bool {
         matches!(
             self,
-            Self::Claude
+            Self::Antigravity
+                | Self::Claude
                 | Self::Codex
                 | Self::DeepSeek
                 | Self::OpenCode
@@ -98,7 +99,8 @@ impl ProviderKind {
     pub fn supports_conversation_fork(self) -> bool {
         matches!(
             self,
-            Self::Claude
+            Self::Antigravity
+                | Self::Claude
                 | Self::Codex
                 | Self::DeepSeek
                 | Self::OpenCode
@@ -4493,10 +4495,12 @@ mod tests {
     #[test]
     fn native_conversation_actions_include_every_provider() {
         for provider in [
+            ProviderKind::Antigravity,
             ProviderKind::Claude,
             ProviderKind::Codex,
             ProviderKind::DeepSeek,
             ProviderKind::OpenCode,
+            ProviderKind::OhMyPi,
             ProviderKind::Pi,
         ] {
             assert!(provider.supports_conversation_fork());
@@ -5281,7 +5285,7 @@ mod review_subtask_tests {
             );
         }
         assert!(!ProviderKind::Antigravity.supports_review_subtask());
-        assert!(!ProviderKind::Antigravity.supports_conversation_fork());
-        assert!(!ProviderKind::Antigravity.supports_conversation_rollback());
+        assert!(ProviderKind::Antigravity.supports_conversation_fork());
+        assert!(ProviderKind::Antigravity.supports_conversation_rollback());
     }
 }
