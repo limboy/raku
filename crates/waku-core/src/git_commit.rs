@@ -3,7 +3,6 @@
 //! background executor; render code consumes only the returned snapshots.
 
 use std::ffi::OsString;
-use std::fs;
 use std::io::Read;
 use std::path::Path;
 #[cfg(test)]
@@ -13,7 +12,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow, bail};
-use uuid::Uuid;
 
 use crate::model::{ProviderKind, strip_ansi};
 pub use waku_protocol::git::{AgentInvocation, CommitSnapshot as Snapshot};
@@ -87,23 +85,11 @@ pub fn generate_message(
     invocation: &AgentInvocation,
 ) -> anyhow::Result<String> {
     let prompt = commit_prompt(cwd, include_unstaged)?;
-    let amp_settings = if invocation.provider == ProviderKind::Amp {
-        let path = std::env::temp_dir().join(format!("waku-amp-commit-{}.json", Uuid::new_v4()));
-        fs::write(
-            &path,
-            r#"{"amp.tools.enable":[],"amp.notifications.enabled":false,"amp.skills.disableClaudeCodeSkills":true}"#,
-        )
-        .context("could not prepare Amp commit-message settings")?;
-        Some(path)
-    } else {
-        None
-    };
     let args = agent_arguments(
         invocation.provider,
         invocation.model.as_deref(),
         invocation.reasoning_effort.as_deref(),
         &prompt,
-        amp_settings.as_deref(),
     );
     let mut command = crate::command_env::command(&invocation.binary);
     command
@@ -117,9 +103,6 @@ pub fn generate_message(
             invocation.provider.display_name()
         )
     });
-    if let Some(path) = amp_settings {
-        let _ = fs::remove_file(path);
-    }
     let output = result?;
     if !output.status.success() {
         bail!(
@@ -212,31 +195,12 @@ fn agent_arguments(
     model: Option<&str>,
     reasoning_effort: Option<&str>,
     prompt: &str,
-    amp_settings: Option<&Path>,
 ) -> Vec<OsString> {
     let mut args = Vec::<OsString>::new();
     fn push(args: &mut Vec<OsString>, value: &str) {
         args.push(OsString::from(value));
     }
     match provider {
-        ProviderKind::Amp => {
-            push(&mut args, "--execute");
-            push(&mut args, "--no-color");
-            push(&mut args, "--no-ide");
-            push(&mut args, "--no-notifications");
-            if let Some(settings) = amp_settings {
-                push(&mut args, "--settings-file");
-                args.push(settings.as_os_str().to_owned());
-            }
-            if let Some(model) = model {
-                push(&mut args, "--mode");
-                push(&mut args, model);
-            }
-            if let Some(effort) = reasoning_effort {
-                push(&mut args, "--effort");
-                push(&mut args, effort);
-            }
-        }
         ProviderKind::Claude => {
             push(&mut args, "--print");
             push(&mut args, "--output-format");
@@ -266,31 +230,11 @@ fn agent_arguments(
             push(&mut args, "-c");
             push(&mut args, CODEX_COMMIT_EFFORT);
         }
-        ProviderKind::Cursor => {
-            push(&mut args, "--print");
-            push(&mut args, "--output-format");
-            push(&mut args, "text");
-            push(&mut args, "--mode");
-            push(&mut args, "ask");
-            push(&mut args, "--sandbox");
-            push(&mut args, "enabled");
-            push(&mut args, "--trust");
-            if let Some(model) = model {
-                push(&mut args, "--model");
-                push(&mut args, model);
-            }
-        }
         ProviderKind::DeepSeek => {
             // The headless profile is Harness's one-shot, stdout-only client.
             // The commit prompt embeds all context and explicitly forbids tools.
             push(&mut args, "--profile");
             push(&mut args, "headless");
-        }
-        ProviderKind::Fx => {
-            push(&mut args, "ask");
-            push(&mut args, "--no-save");
-            push(&mut args, "--no-color");
-            push(&mut args, "--");
         }
         // `opencode run` takes the message positionally. `--standalone` runs
         // the one-shot on a private server instead of starting, or occupying,
@@ -309,43 +253,6 @@ fn agent_arguments(
                     None => push(&mut args, model),
                 }
             }
-        }
-        ProviderKind::Grok => {
-            push(&mut args, "--single");
-            push(&mut args, prompt);
-            push(&mut args, "--output-format");
-            push(&mut args, "plain");
-            push(&mut args, "--permission-mode");
-            push(&mut args, "plan");
-            push(&mut args, "--tools");
-            push(&mut args, "");
-            push(&mut args, "--no-memory");
-            push(&mut args, "--no-subagents");
-            push(&mut args, "--disable-web-search");
-            push(&mut args, "--verbatim");
-            if let Some(model) = model {
-                push(&mut args, "--model");
-                push(&mut args, model);
-            }
-            if let Some(effort) = reasoning_effort {
-                push(&mut args, "--reasoning-effort");
-                push(&mut args, effort);
-            }
-            return args;
-        }
-        // Kimi carries the prompt as `--prompt`'s value rather than a trailing
-        // positional, so it returns early. It has no tool or session switches
-        // to turn off; the commit prompt is what forbids tool use.
-        ProviderKind::Kimi => {
-            push(&mut args, "--prompt");
-            push(&mut args, prompt);
-            push(&mut args, "--output-format");
-            push(&mut args, "text");
-            if let Some(model) = model {
-                push(&mut args, "--model");
-                push(&mut args, model);
-            }
-            return args;
         }
         // Oh My Pi rejects unknown flags outright, so it gets its own list
         // rather than Pi's: context files are `--no-rules`, and it has no
@@ -621,6 +528,8 @@ fn command_error(output: &CapturedOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use uuid::Uuid;
 
     fn run_git(cwd: &Path, args: &[&str]) {
         let output = crate::command_env::plain_command("git")
@@ -721,16 +630,9 @@ mod tests {
                 Some("model"),
                 Some("low"),
                 prompt,
-                Some(Path::new("/tmp/amp.json")),
             );
             assert!(has(&args, prompt));
             match provider {
-                ProviderKind::Amp => {
-                    assert!(has(&args, "--execute"));
-                    assert!(has_pair(&args, "--settings-file", "/tmp/amp.json"));
-                    assert!(has_pair(&args, "--mode", "model"));
-                    assert!(has_pair(&args, "--effort", "low"));
-                }
                 ProviderKind::Codex => {
                     assert_eq!(args.first().and_then(|arg| arg.to_str()), Some("exec"));
                     assert!(has_pair(&args, "--sandbox", "read-only"));
@@ -749,27 +651,8 @@ mod tests {
                     assert!(has_pair(&args, "--tools", ""));
                     assert!(has(&args, "--no-session-persistence"));
                 }
-                ProviderKind::Cursor => {
-                    assert!(has(&args, "--print"));
-                    assert!(has_pair(&args, "--mode", "ask"));
-                    assert!(has_pair(&args, "--sandbox", "enabled"));
-                }
                 ProviderKind::DeepSeek => {
                     assert!(has_pair(&args, "--profile", "headless"));
-                }
-                ProviderKind::Fx => {
-                    assert_eq!(args.first().and_then(|arg| arg.to_str()), Some("ask"));
-                    assert!(has(&args, "--no-save"));
-                    assert!(has(&args, "--no-color"));
-                    assert!(has(&args, "--"));
-                }
-                ProviderKind::Grok => {
-                    assert!(has_pair(&args, "--single", prompt));
-                    assert!(has_pair(&args, "--permission-mode", "plan"));
-                    assert!(has_pair(&args, "--tools", ""));
-                    assert!(has(&args, "--no-memory"));
-                    assert!(has(&args, "--no-subagents"));
-                    assert!(has_pair(&args, "--reasoning-effort", "low"));
                 }
                 ProviderKind::Pi => {
                     assert!(has(&args, "--print"));
@@ -783,11 +666,6 @@ mod tests {
                     assert!(has(&args, "--no-tools"));
                     assert!(has(&args, "--no-rules"));
                     assert!(has_pair(&args, "--thinking", "low"));
-                }
-                ProviderKind::Kimi => {
-                    assert!(has_pair(&args, "--prompt", prompt));
-                    assert!(has_pair(&args, "--output-format", "text"));
-                    assert!(has_pair(&args, "--model", "model"));
                 }
             }
         }
@@ -803,7 +681,6 @@ mod tests {
             Some("claude-opus-5"),
             Some("xhigh"),
             "Generate subject",
-            None,
         );
         assert!(has_pair(&claude, "--model", CLAUDE_COMMIT_MODEL));
         assert!(has_pair(&claude, "--effort", CLAUDE_COMMIT_EFFORT));
@@ -815,7 +692,6 @@ mod tests {
             Some("gpt-5.6-sol"),
             Some("high"),
             "Generate subject",
-            None,
         );
         assert!(has_pair(&codex, "--model", CODEX_COMMIT_MODEL));
         assert!(has_pair(&codex, "-c", CODEX_COMMIT_EFFORT));

@@ -37,10 +37,8 @@ binary path ([commit_dialog.rs:129](../src/app/commit_dialog.rs#L129)):
 | `reasoning_effort` | the session's own `reasoning_effort`, verbatim |
 
 Both are `Option`, and a `None` omits the flag, leaving the CLI on its own
-default. Two providers drop part of that by having nowhere to put it:
-**DeepSeek** is passed no model flag at all, so it always runs whatever
-`--profile headless` resolves to, and **Cursor** takes a model but no effort
-flag.
+default. **DeepSeek** is passed no model flag at all, so it always runs whatever
+`--profile headless` resolves to.
 
 ## The prompt
 
@@ -69,26 +67,15 @@ argument**; `NO_COLOR=1` and `CI=1` are set for all of them.
 
 | Provider | Command | Headless / tool-free flags | Model | Effort |
 | --- | --- | --- | --- | --- |
-| Amp | `amp` | `--execute --no-color --no-ide --no-notifications --settings-file <temp>` | `--mode` | `--effort` |
 | Claude Code | `claude` | `--print --output-format text --permission-mode plan --tools "" --disable-slash-commands --no-session-persistence --no-chrome` | pinned `claude-haiku-4-5` | pinned `low` |
 | Codex CLI | `codex exec` | `--sandbox read-only --ephemeral --color never --skip-git-repo-check` | pinned `gpt-5.6-luna` | pinned `none`, via `-c` |
-| Cursor CLI | `cursor-agent` | `--print --output-format text --mode ask --sandbox enabled --trust` | `--model` | — |
 | DeepSeek Harness | `dsh` | `--profile headless` | — | — |
-| Fx | `fx ask` | `--no-save --no-color --` | — | — |
 | OpenCode | `opencode run` | `--standalone --agent plan` | `--model` | `#<variant>` suffix on the model |
-| Grok Build | `grok` | `--single <prompt> --output-format plain --permission-mode plan --tools "" --no-memory --no-subagents --disable-web-search --verbatim` | `--model` | `--reasoning-effort` |
 | Pi | `pi` | `--print --no-session --no-tools --no-context-files --no-extensions --no-skills --no-prompt-templates --no-approve` | `--model` | `--thinking` |
 | Oh My Pi | `omp` | `--print --no-session --no-tools --no-rules --no-extensions --no-skills` | `--model` | `--thinking` |
-| Kimi Code | `kimi` | `--prompt <prompt> --output-format text` | `--model` | — |
 
 Where a provider is not simply "flags plus prompt":
 
-- **Amp** has no flag that disables tools, so Waku writes a throwaway settings
-  file to the temp directory —
-  `{"amp.tools.enable":[],"amp.notifications.enabled":false,"amp.skills.disableClaudeCodeSkills":true}`
-  — passes it with `--settings-file`, and deletes it afterwards, including on
-  the error path ([git_commit.rs:90](../crates/waku-core/src/git_commit.rs#L90)).
-  Its model selector is a *mode*, hence `--mode`.
 - **Claude Code** runs in `plan` permission mode with an empty `--tools` list,
   and `--no-session-persistence` keeps the run out of `~/.claude/projects`,
   where it would look like a task the user started. Haiku exposes no reasoning
@@ -96,23 +83,9 @@ Where a provider is not simply "flags plus prompt":
 - **Codex** runs `exec` as an ephemeral read-only turn; `--skip-git-repo-check`
   lets a workspace that is not a repo root run. Effort rides on a `-c` config
   override because `codex exec` has no flag for it.
-- **Cursor** has no tool switch either; `--mode ask` is its read-only answer
-  mode, `--sandbox enabled` the backstop, and `--trust` suppresses the
-  workspace-trust prompt that would block a piped run.
 - **DeepSeek** gets only `--profile headless`, Harness's one-shot stdout-only
   client. It has no tool switch — the prompt's "do not call tools" is the whole
   guard, which holds because all context is inlined.
-- **Grok** is the exception to prompt-last: the prompt is the value of
-  `--single` and the function returns early, so it is never appended twice
-  ([git_commit.rs:303](../crates/waku-core/src/git_commit.rs#L303)).
-  `--verbatim` stops the CLI re-wrapping the answer; `--no-memory` keeps a
-  commit subject out of Grok's long-term memory.
-- **Kimi** is the other exception to prompt-last: `--prompt` takes the prompt as
-  its value, so the function returns early rather than appending it twice. It
-  has no tool, session, or context switch to turn off, and `--plan` — its
-  read-only mode — is rejected outright when combined with `--prompt`, so the
-  prompt's "do not call tools" is the whole guard, as with DeepSeek. Prompt mode
-  exposes no thinking-level flag, hence no effort column.
 - **Oh My Pi** rejects unknown flags outright, so it gets its own list rather
   than Pi's: context files are `--no-rules`, and it has no prompt-template or
   project-trust switch to turn off.

@@ -9,18 +9,16 @@ polled off disk, and the one Waku generates itself — is in
 [titles.md](titles.md).
 
 Every provider is reached through the same driver abstraction in
-[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are seven
-transport implementations behind eleven providers, and **every one of them holds a
+[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are five
+transport implementations behind six providers, and **every one of them holds a
 session that spans the whole conversation**:
 
 | Transport | File | Providers |
 | --- | --- | --- |
 | Codex app-server (JSON-RPC over stdio) | [driver/codex.rs](../crates/waku-core/src/driver/codex.rs) | Codex CLI |
-| Agent Client Protocol (JSON-RPC over stdio) | [driver/acp.rs](../crates/waku-core/src/driver/acp.rs) | Cursor CLI, Fx, Grok Build, Kimi Code |
 | OpenCode background service (HTTP + server-sent events) | [driver/opencode.rs](../crates/waku-core/src/driver/opencode.rs) | OpenCode |
 | Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/waku-core/src/driver/pi.rs) | Pi, Oh My Pi |
 | Claude streaming-input session (NDJSON over stdio) | [driver/claude.rs](../crates/waku-core/src/driver/claude.rs) | Claude Code |
-| Amp streaming-JSON session (NDJSON over stdio) | [driver/amp.rs](../crates/waku-core/src/driver/amp.rs) | Amp |
 | Harness client API (typed HTTP + downlink streams) | [driver/deepseek.rs](../crates/waku-core/src/driver/deepseek.rs) | DeepSeek Harness |
 
 DeepSeek Harness has no dedicated section below yet; its driver's module
@@ -117,7 +115,7 @@ A runtime — and with it that session's provider process — is dropped when:
 
 | Trigger | Where |
 | --- | --- |
-| The user stops a turn, **Codex and Amp only** | [src/app/sessions.rs:3](../src/app/sessions.rs#L3) |
+| The user stops a turn, **Codex only** | [src/app/sessions.rs:3](../src/app/sessions.rs#L3) |
 | The provider changes, or an option changes that the transport cannot apply in session | `apply_session_options`, [src/app/runtime.rs](../src/app/runtime.rs) |
 | The session is deleted | [src/app/sessions.rs:178](../src/app/sessions.rs#L178) |
 | A rewind or branch leaves the driver on a stale native session | [src/app/runtime.rs](../src/app/runtime.rs) |
@@ -126,19 +124,18 @@ A runtime — and with it that session's provider process — is dropped when:
 | Waku quits | `cx.quit()` |
 
 Stop drops the runtime for Codex, whose app-server owns the Computer Use process
-tree, and for Amp, which offers no interrupt on its stream — for both, stopping
-means ending the process, and the next prompt resumes the native thread
-(`thread/resume`, `threads continue`). Every other provider has a protocol
+tree — stopping means ending the process, and the next prompt resumes the native thread
+(`thread/resume`). Every other provider has a protocol
 interrupt and keeps its runtime (`retain_runtime_after_cancel`).
 
 Option changes go through `DriverControl::apply_options`, which returns whether
 the transport absorbed the change or wants to be restarted:
 
-| Change | Codex | Pi | ACP | OpenCode | Claude | Amp |
-| --- | --- | --- | --- | --- | --- | --- |
-| Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — `session/set_model`, Cursor's parameterized `configOptions`, or Fx's advertised `model` option | in session — `POST /api/session/{id}/model`, with effort as the model's variant | in session — a `set_model` control request | restart — all three are launch arguments |
-| Access mode | restart | restart | restart | in session — the mode only decides who answers a permission request, which is the driver's own state | restart | restart |
-| Provider | restart | restart | restart | restart | restart | restart |
+| Change | Codex | Pi | OpenCode | Claude |
+| --- | --- | --- | --- | --- |
+| Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — `POST /api/session/{id}/model`, with effort as the model's variant | in session — a `set_model` control request |
+| Access mode | restart | restart | in session — the mode only decides who answers a permission request, which is the driver's own state | restart |
+| Provider | restart | restart | restart | restart |
 
 The permission policy is deliberately excluded even for Codex, which does carry
 `approvalPolicy` and `sandboxPolicy` on every `turn/start`: loosening or
@@ -161,8 +158,8 @@ the idle sweep decides otherwise.
 
 Two shapes, depending on the transport.
 
-**The stdio drivers — Codex, Pi, Claude, Amp, and the ACP agents — are never
-signalled** (except when Stop ends Amp outright).
+**The stdio drivers — Codex, Pi, and Claude — are never
+signalled**.
 Termination is by **closing stdin**:
 
 1. The driver is dropped, which sends `CommandMessage::Shutdown` (and drops the
@@ -190,30 +187,22 @@ dropping a runtime only unsubscribes that session from the shared event stream
 signals the service, never calls its stop route, and never writes its
 registration file.
 
-The other explicit kills are narrow and deliberate: Amp's process when the user
-stops a turn, and the short-lived server that backs a Grok fork.
-
 ## At a glance
 
-| | Codex CLI | Pi | Oh My Pi | Claude Code | Amp | Cursor CLI | Fx | OpenCode | Grok Build | Kimi Code |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Binary | `codex` | `pi` | `omp` | `claude` | `amp` | `cursor-agent` | `fx` | `opencode` | `grok` | `kimi` |
-| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | NDJSON RPC over stdio | stream-json over stdio | stream-json over stdio | ACP over stdio | ACP over stdio | HTTP + SSE | ACP over stdio | ACP over stdio |
-| Process spans the whole session | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
-| Process spawned per turn | no | no | no | no | no | no | no | no | no | no |
-| Bidirectional | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
-| Reasoning stream | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
-| Interactive approvals | yes | no | no (has them; Waku runs `--yolo`) | yes | no | yes | yes | yes | yes | yes |
-| Mid-turn steering | yes | yes | yes | yes | yes | yes | **no** | yes | yes | yes (transport) |
-| Model discovery | yes | yes | yes | no (fixed) | no (modes) | yes | yes | yes | yes | yes |
-| Computer Use | yes | yes | no (ships its own) | no | no | no | no | yes | yes | no |
-| Restricted to Full access | no | yes | yes | no | yes | no | no | no | no | no |
-| Rewind and branch at a turn | yes | yes | yes | yes | yes | yes | **no** | yes | yes | **no** |
-
-Kimi Code's steering is the transport's, not a probed policy: the ACP driver
-sends the second `session/prompt` for every agent it drives, but Kimi's
-superseded-prompt behaviour has not been observed against a live turn the way
-Cursor's and Grok's were.
+| | Codex CLI | Pi | Oh My Pi | Claude Code | OpenCode |
+| --- | --- | --- | --- | --- | --- |
+| Binary | `codex` | `pi` | `omp` | `claude` | `opencode` |
+| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | NDJSON RPC over stdio | stream-json over stdio | HTTP + SSE |
+| Process spans the whole session | yes | yes | yes | yes | yes |
+| Process spawned per turn | no | no | no | no | no |
+| Bidirectional | yes | yes | yes | yes | yes |
+| Reasoning stream | yes | yes | yes | yes | yes |
+| Interactive approvals | yes | no | no (has them; Waku runs `--yolo`) | yes | yes |
+| Mid-turn steering | yes | yes | yes | yes | yes |
+| Model discovery | yes | yes | yes | no (fixed) | yes |
+| Computer Use | yes | yes | no (ships its own) | no | yes |
+| Restricted to Full access | no | yes | yes | no | no |
+| Rewind and branch at a turn | yes | yes | yes | yes | yes |
 
 Every provider now holds a session across turns. That was not true when this
 document was first written: five of the seven spawned a process per prompt, and
@@ -482,8 +471,7 @@ running and without arming a new turn. The CLI holds the message and folds it
 into the running turn at its next model call — one `result` still settles the
 whole exchange, and the `isReplay` echo arrives at the moment of absorption
 rather than at write time. Verified against the real CLI by injecting an
-instruction while a Bash `sleep` ran: the same turn's reply honored it. Amp
-was probed the same way and behaves differently — see its section.
+instruction while a Bash `sleep` ran: the same turn's reply honored it.
 
 **Model changes** — a `control_request` with `subtype: "set_model"`, so switching
 models keeps the session. The permission posture is a launch flag and still
@@ -510,59 +498,6 @@ same account- and configuration-aware list used by `/model`, including custom
 routes resolved through CC Switch. Waku probes it in the background and caches
 the last successful catalog; the curated list is only the startup/failure
 fallback ([model_catalog.rs](../crates/waku-core/src/model_catalog.rs)).
-
----
-
-## Amp
-
-**Launch** — `amp [threads continue <thread-id>] --execute --stream-json-thinking
---stream-json-input --dangerously-allow-all [--mode M] [--effort E] [--fast]`
-([driver/amp.rs](../crates/waku-core/src/driver/amp.rs)). `--stream-json-thinking` implies
-`--stream-json`, which `--stream-json-input` requires.
-
-**Protocol** — newline-delimited JSON in both directions. Amp keeps the process
-alive until *both* the assistant is done and stdin closes, which is what makes
-one process serve the conversation.
-
-**Lifetime** — long-lived. Turns are written as
-`{"type":"user","message":{"role":"user","content":[…]}}`.
-
-**Turn completion is not a `result` message.** Amp emits none; the turn is over
-when an `assistant` message carries `stop_reason: "end_turn"`. A `tool_use` stop
-reason is mid-turn. This was found by probing — a driver waiting for `result`
-hangs forever.
-
-**Inbound stream** — Anthropic-shaped: `system`/`init` carries the thread id;
-`assistant` blocks carry text, thinking and `tool_use`; `user` blocks carry
-`tool_result`. Redacted thinking is ignored rather than displayed. Text arrives
-as whole blocks — Amp has no partial-message deltas.
-
-**Access modes** — Build with Full access only; the driver refuses to start
-otherwise. Amp's "models" are agent modes, and the fast service tier is `--fast`.
-All three are launch arguments, so changing any of them restarts.
-
-**Approvals** — none. Amp is the one long-lived provider that exposes no
-permission request on its stream; its rules live in `amp permissions`, so Waku
-still decides the posture at launch with `--dangerously-allow-all`.
-
-**Cancel** — no stream interrupt exists, so Stop ends the process. The thread
-survives on Amp's side and the next prompt resumes it with `threads continue`,
-which is why Amp's runtime is not retained after a cancel.
-
-**Steer** — the user message with a documented top-level `"steer": true`
-attribute. A plain mid-turn message is held until the current turn's
-`end_turn` and then runs as a turn of its own; the attribute marks it for
-handling at the next interruption point instead, so the running turn absorbs
-it and one `end_turn` settles everything. Both behaviors probed against the
-real CLI — the plain-message probe is why an unmarked write must never be
-used as a steer.
-
-**Branch** — `amp threads export <id>` dumps the thread, Waku keeps the retained
-prefix, `amp threads new` creates an empty thread, and the retained history is
-replayed as a length-delimited envelope prepended to the first prompt
-(`WAKU_AMP_BRANCH_CONTEXT_V1`). Forking a thread that was itself seeded this way
-re-expands the nested envelope first, so branches of branches stay flat
-([amp_session.rs](../crates/waku-core/src/amp_session.rs)).
 
 ---
 
@@ -682,242 +617,26 @@ instruction entry; see [computer-use.md](computer-use.md).
 
 ---
 
-## Agent Client Protocol
-
-**Launch** — `cursor-agent acp`, `fx acp`, `grok agent [--reasoning-effort E] stdio`, `kimi acp`
-([driver/acp.rs](../crates/waku-core/src/driver/acp.rs)).
-
-**Protocol** — newline-delimited JSON-RPC over stdio, bidirectional. One agent
-process serves the whole conversation, streams `session/update` notifications,
-and asks the client for tool permission with a real request it expects an answer
-to. Alongside Codex's app-server, this is the only transport where Waku's
-Supervised mode means what it says.
-
-**Lifetime** — long-lived, like Codex and Pi. Cursor and Grok previously spawned
-a process per turn; Fx and Kimi Code arrived on this transport directly.
-
-**Handshake** — `initialize` (advertising **no** `fs` or `terminal` client
-capability, since Waku does not proxy the agent's file or terminal access — an
-advertised capability the client cannot honor strands the agent mid-tool-call;
-Cursor alone receives its `_meta.parameterizedModelPicker` opt-in) →
-`session/resume` when resuming and the agent advertises it (so history is not
-replayed), otherwise a replay-suppressed `session/load` when it reports
-`loadSession`, else `session/new` → optional `session/set_mode` for Fx's access
-policy. A restore the agent no longer recognizes falls back to a fresh session
-rather than stranding the task. Kimi Code advertises both, so it takes the first
-rung — `session/resume`, verified against a session left by an earlier process.
-
-Cursor's picker opt-in makes `session/new`, `session/load`, and
-`session/resume` return provider-owned `configOptions`. Model discovery uses
-the same opt-in: Waku calls `cursor/list_available_models` after `initialize`
-and maps each model's config options onto the ordinary reasoning-effort,
-service-tier (`fast`), and context-window pickers. The CLI's flat aliases
-(`cursor-grok-4.6-xhigh-fast`) still resolve to the advertised base value,
-then Waku applies `thought_level`/`effort`, `thinking`, `fast`, and `context`
-from the session's traits (or from that alias suffix). If an older Cursor
-agent advertises no model option, Waku retains the legacy `session/set_model`
-request, and if ACP discovery is empty it falls back to parsing
-`cursor-agent models`.
-
-Fx also returns provider-owned config options, but its first model-category
-option selects an account provider while the option whose id is `model` selects
-the model. AI Gateway IDs such as `openai/gpt-5.6-luna-fast` are absent until
-Waku first selects Fx's `gateway` provider option and reads the refreshed model
-option from that response. Waku then targets the exact `model` id with
-`session/set_config_option`; falling back to the older `session/set_model`
-extension would not change Fx's model.
-
-**Per turn** — `session/prompt`, whose response stays open until the turn ends.
-It is tracked apart from the blocking request table precisely so the writer stays
-free to send a cancel while it is outstanding; its reply is what emits
-`TurnFinished`, keyed off `stopReason`.
-
-**When `stopReason` lies.** Kimi Code answers a turn its model provider
-rejected — an inactive plan, a spent quota — with a clean `end_turn` carrying no
-content at all: no error, no JSON-RPC failure, nothing on stderr. Trusting the
-protocol there shows the user an empty answer reported as a success, with no
-cause to act on. The cause is recoverable, just not from the wire: Kimi appends
-a `turn.ended` record with the real message to its own per-session log at
-`<KIMI_CODE_HOME>/sessions/<workspace>/<session>/agents/main/wire.jsonl`.
-
-[kimi_session.rs](../crates/waku-core/src/kimi_session.rs) reads it, and
-`finish_prompt` lets a recovered failure override the protocol's verdict —
-emitting `Error` with the provider's own wording and settling the turn
-unsuccessfully. Three details make it safe:
-
-- **It is scoped to a turn that produced nothing.** `AcpStreamState` tracks
-  whether any message, thought, tool call, or plan arrived. A turn that streamed
-  anything is settled by `stopReason` alone and does no I/O.
-- **It waits.** The record lands *after* the ACP response — roughly 50ms in
-  practice — so an immediate read finds nothing. The lookup polls, bounded at
-  one second, and gives up quietly.
-- **It ignores earlier turns.** The log's byte length is captured before the
-  prompt is sent, and only what is appended past that offset is scanned, so a
-  previous turn's failure can never be reported as this one's.
-
-All of it runs on the driver thread, never a frame. The invariant it protects is
-covered by `kimi_never_reports_an_empty_turn_as_a_success`, which passes whether
-or not the account can currently serve a request.
-
-**Inbound stream** — `session/update` notifications:
-
-| `sessionUpdate` | Becomes |
-| --- | --- |
-| `agent_message_chunk` | `TextDelta` |
-| `agent_thought_chunk` | `ReasoningDelta` |
-| `tool_call`, `tool_call_update` | `RichActivity`, correlated by `toolCallId` |
-| `plan` | a plan activity |
-| `usage_update` | `UsageUpdated` — the context gauge, not transcript content |
-| `available_commands_update` | `AvailableCommands` — the composer's slash-command list |
-| `session_info_update` | `AutoTitleUpdated` when it carries a `title` |
-| `user_message_chunk` | ignored — Waku's own prompt echoed back |
-
-Everything outside `session/update` on that channel is agent-private control
-traffic (Grok emits a stream of `_x.ai/*` notifications) and never reaches the
-transcript.
-
-Fx emits its context-limit and skill-discovery diagnostics as ordinary
-`agent_message_chunk` updates before the model starts. Their reserved
-`[context]` and `skill discovery warning:` prefixes are provider notices rather
-than assistant content, so Waku filters that prelude from the transcript.
-
-**Approvals** — `session/request_permission` becomes a `Permission` event whose
-options come straight from the agent, with `kind` (`allow_once`, `allow_always`,
-`reject_once`, `reject_always`) deciding which read as allow. The detail line is
-the agent's own explanation from `toolCall.content` ("Not in allowlist: cat,
-pwd") rather than a sentence synthesized from the tool kind — that reason is the
-whole basis for the user's decision. Outside Supervised, Waku answers for the
-user and prefers the durable allow so the agent stops asking about the same tool.
-
-**Why the client advertises no `fs` or `terminal` capability.** Those declare
-services *Waku offers the agent*, not permissions the agent needs. `fs` exists so
-an editor can serve unsaved buffer contents in place of what is on disk, and
-`terminal` lets the agent run commands through the client's own terminal. Waku
-provides neither, so the agent uses its own read and shell tools and reaches the
-filesystem exactly as before — verified against `cursor-agent acp` with both
-declined: it read a file, ran a shell command, and ended the turn normally.
-Advertising a capability Waku cannot service is the harmful choice, because the
-agent would call `fs/read_text_file` and wait forever for a reply.
-
-T3 Code lands in the same place: its `AcpSessionRuntime` defaults to
-`fs.readTextFile: false`, `fs.writeTextFile: false`, `terminal: false`, Grok
-passes no override, and Cursor's is only `_meta.parameterizedModelPicker`. The
-handler registration points in its `packages/effect-acp` belong to a
-general-purpose ACP library, not to the app that drives these two providers.
-
-The one case that would justify serving `fs/read_text_file` is Waku's own file
-editor, which tracks unsaved buffers
-([src/app/right_panel.rs:1004](../src/app/right_panel.rs#L1004)): an agent
-reading a file the user has unsaved edits in currently gets the disk copy. That
-is a deliberate future call, not an oversight.
-
-**Access modes** — Fx exposes native `ask` and `code` modes, so Waku maps
-Supervised to `ask` and the auto modes to `code`. Every other ACP agent stays in
-its ordinary execution mode, and `auto_approve` decides whether Waku answers
-`session/request_permission` on the user's behalf. That is why Kimi is left in
-`default` rather than switched to `auto` or `yolo`: the permission traffic is
-the feature, not an obstacle. A legacy session still reporting the removed
-read-only setting is returned to the agent's advertised `agent` or `default`
-mode when it attaches.
-
-**Model and reasoning effort** — `session/set_model` after the session opens,
-then the effort as a session config option. **The config id is the agent's to
-name**, and the two disagree: Waku sends `mode` by default, but Kimi's `mode` is
-its permission mode and its effort lives on
-`thinking`. `reasoning_effort_config_id` resolves that per provider — sending
-the default id to Kimi would silently set nothing, or worse, move the permission
-mode. The call is non-fatal either way, since an agent may expose no effort at
-all. Grok is the exception: effort rides on `session/set_model` as
-`_meta.reasoningEffort` (and as `--reasoning-effort` at launch), not as a
-session config option.
-
-Cursor is the other exception. Its parameterized picker exposes effort, fast
-mode, thinking, and context as per-model `configOptions` rather than a single
-well-known id. Discovery reads those options from `cursor/list_available_models`;
-the live session applies them with `session/set_config_option` after selecting
-the base model. Fast is Waku's service-tier control (`fast` vs Standard).
-Thinking is not a separate picker: it turns on when a non-`none` effort is
-applied, because that is what reveals the thought-level option.
-
-Grok's catalog comes from the plain-text `grok models` listing, which reports
-ids but no effort metadata. The hardcoded menu therefore covers only the exact
-built-ins (`grok-4.5` stops at high, `grok-4.6` offers xhigh): the listing also
-includes custom models from the user's config, whose effort support the id
-alone cannot establish, so they are offered without an effort menu. Discovery
-is authoritative — a stale fallback would name a model the CLI rejects.
-
-Kimi's catalog comes from `kimi provider list --json`, which covers both the
-managed plan and any registry the user imported with `kimi provider add`. Only
-the K3 family reports `supportEfforts`; the rest expose a single always-on
-thinking state, which is not a user choice and so is not offered as one. The
-JSON omits the configured default, so the plain-text listing supplies that one
-field — hence two probes
-([model_catalog.rs](../crates/waku-core/src/model_catalog.rs)).
-
-**Cancel** — `session/cancel`, a notification; the open `session/prompt` reports
-the cancellation.
-
-**Steer** — a second `session/prompt` while one is open. The agent continues
-the same conversation under the newer request; the superseded request
-resolves early — Cursor answers it `cancelled` the moment the steer lands and
-re-plans with the message in context, Grok finishes the current work first
-and answers the message before settling — and only the last open prompt's
-response settles the merged turn. Both policies probed against the real
-agents; T3 Code runs the same last-prompt-settles bookkeeping for both. Kimi
-Code takes the same path by virtue of the transport, but its superseded-prompt
-policy has not been probed against a live turn.
-
-Fx allows only one active prompt per connection, so its driver does not
-advertise steering. Follow-ups remain in Waku's queue and start after the
-current prompt settles.
-
-**Rewind and branch** — unchanged and still out of band: Grok forks through its
-own ACP server plus on-disk truncation
-([grok_session.rs](../crates/waku-core/src/grok_session.rs)), Cursor re-seeds a
-fresh session ([cursor_session.rs](../crates/waku-core/src/cursor_session.rs)).
-
-**Kimi Code and Fx have neither, deliberately.** Kimi advertises a `fork` session
-capability, but `session/fork` takes only `{sessionId, cwd}` and copies the
-whole conversation — there is no turn count, so "drop the last N turns" cannot
-be expressed. Fx exposes no turn-aware fork or truncation method.
-`ProviderKind::supports_conversation_fork` and
-`supports_conversation_rollback` are therefore false for both, which hides the
-rewind and branch affordances rather than offering a control that would silently
-keep history the user asked to discard. The daemon and desktop match arms for it
-exist only to keep the matches exhaustive; reaching them means the UI gate was
-bypassed. Restoring these depends on Kimi accepting a truncation point.
-
-**Computer Use** — Grok's isolated `GROK_HOME` and `--rules` setup is transport
-independent, so the ACP session reuses the same builder the headless driver used.
-
-**What moving to ACP gained.** Grok's Supervised mode no longer means "deny"
-(`--permission-mode dontAsk` existed because the one-shot stream had no response
-channel), Cursor's no longer means `--force`, and **Cursor streams reasoning**,
-which its `--print` transport did not emit at all.
-
----
-
 ## Access modes across providers
 
 Waku's `RuntimeMode` (Supervised / Auto-accept edits / Auto / Full access)
 maps into each CLI's own vocabulary.
 
-| Waku | Codex (`approvalPolicy` / `sandbox` / reviewer) | Claude `--permission-mode` | Cursor | Fx | OpenCode | Grok | Kimi Code |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Supervised | `untrusted` / `read-only` / `user` | `default` + `can_use_tool` reaches the user | `session/request_permission` reaches the user | `session/set_mode` → `ask` | permission requests reach the user | `session/request_permission` reaches the user | `session/request_permission` reaches the user |
-| Auto-accept edits | `on-request` / `workspace-write` / `user` | `acceptEdits` | auto-answered | `session/set_mode` → `code` | edits auto-answered (`once`), the rest reach the user | auto-answered | auto-answered |
-| Auto | `on-request` / `workspace-write` / `auto_review` | `auto` | auto-answered | `session/set_mode` → `code` | auto-answered (`once`) | auto-answered | auto-answered |
-| Full access | `never` / `danger-full-access` / `user` | `bypassPermissions` + `--dangerously-skip-permissions` | auto-answered | `session/set_mode` → `code` | auto-answered (`once`) | auto-answered | auto-answered |
+| Waku | Codex (`approvalPolicy` / `sandbox` / reviewer) | Claude `--permission-mode` | OpenCode |
+| --- | --- | --- | --- |
+| Supervised | `untrusted` / `read-only` / `user` | `default` + `can_use_tool` reaches the user | permission requests reach the user |
+| Auto-accept edits | `on-request` / `workspace-write` / `user` | `acceptEdits` | edits auto-answered (`once`), the rest reach the user |
+| Auto | `on-request` / `workspace-write` / `auto_review` | `auto` | auto-answered (`once`) |
+| Full access | `never` / `danger-full-access` / `user` | `bypassPermissions` + `--dangerously-skip-permissions` | auto-answered (`once`) |
 
-Amp, Pi, and Oh My Pi accept Full access only and always run wide open
-(`--dangerously-allow-all`, `--approve`, `--yolo`).
+Pi and Oh My Pi accept Full access only and always run wide open
+(`--approve`, `--yolo`).
 
-Every provider except those three distinguishes Supervised from the auto modes
+Every provider except those two distinguishes Supervised from the auto modes
 in a way the user can actually answer. They decide by launch flag, so
 "Supervised" degrades there to whatever the CLI does without a human at the
-terminal — for Amp because its stream carries no permission request, for Pi
-because it has no permission system to ask with, and for Oh My Pi because
-`--yolo` bypasses the one it has. Only the last of those is Waku's own
+terminal — for Pi because it has no permission system to ask with, and for Oh My Pi
+because `--yolo` bypasses the one it has. Only the last of those is Waku's own
 limitation rather than the CLI's.
 
 ## Resume cursors
@@ -931,49 +650,41 @@ persisted with the session and is what makes a Waku task outlive its process:
 | Pi | `session_id`, `session_file` | `switch_session` needs the path |
 | Oh My Pi | `session_id`, `session_file` | same, plus `--fork <file>` for a whole-session copy |
 | Claude | `session_id`, `resume_at` | `resume_at` is the transcript message uuid used for forking |
-| Amp | `thread_id`, `fork_context` | `fork_context` is the seeded history for a branch |
-| Cursor | `session_id`, `fork_context` | id is empty until a seeded branch streams one |
-| Fx | `session_id` | `session/resume`; no fork or rewind, see above |
 | OpenCode | `session_id`, `directory` | `GET /api/session/{id}` / service fork; `directory` is the workspace string the service stored |
-| Grok | `session_id` | `--resume` / ACP fork |
-| Kimi Code | `session_id` | `session/resume`; no fork, see above |
 
 A cursor from the wrong provider is rejected at driver start rather than
 silently ignored.
 
 ## Compared with T3 Code
 
-[T3 Code](https://github.com/pingdotgg/t3code) solves the same problem with five
-drivers — `codex`, `claudeAgent`, `cursor`, `grok`, `opencode` (no Amp, no Pi) —
+[T3 Code](https://github.com/pingdotgg/t3code) solves the same problem with drivers
 registered in `apps/server/src/provider/builtInDrivers.ts` and documented in its
 own `docs/internals/providers.md`.
 
-**Its one structural difference: no provider is a per-turn process.** All five
+**Its one structural difference: no provider is a per-turn process.** They
 hold a long-lived session; the transport differs, the lifetime does not.
 
 | Provider | T3 Code transport | Waku transport |
 | --- | --- | --- |
 | Codex | `codex app-server` JSON-RPC (`packages/effect-codex-app-server`) | same |
 | Claude | `@anthropic-ai/claude-agent-sdk` `query()` with an `AsyncIterable` prompt queue | same protocol, spoken directly — the SDK is a wrapper around these flags |
-| Cursor | **`cursor-agent acp`** — ACP over stdio (`packages/effect-acp`) | same |
-| Grok | **`grok agent stdio`** — ACP over stdio | same |
 | OpenCode | long-lived `opencode serve` + HTTP SDK | the user's shared OpenCode 2 background service, adopted rather than started per workspace |
 
-**All five now hold a long-lived session**, and Claude reaches the same place
+**They all hold a long-lived session**, and Claude reaches the same place
 without the SDK: there is no Rust Agent SDK, but the SDK is a wrapper around the
 `claude` CLI's own streaming-input protocol, which Waku speaks directly. No Node
 sidecar and no npm dependency.
 
-Waku goes one further than the comparison: Amp and Pi, which T3 Code does not
+Waku goes further: Pi and Oh My Pi, which T3 Code does not
 support, are long-lived here too. Every provider holds a session.
 
 What the long-lived session buys, and what Waku pays for not having it:
 
 | Capability | T3 Code | Waku |
 | --- | --- | --- |
-| Interactive approvals | Every provider: Claude via the SDK's `canUseTool` (including `AskUserQuestion` and `ExitPlanMode`), Cursor/Grok via ACP `session/request_permission`, Codex via `*requestApproval*` | Every provider except Amp and Pi, neither of which exposes a request to answer |
-| Interrupt | `session/cancel`, `query.interrupt()` (plus `stopTask()` for runaway subagents) | Protocol interrupt everywhere except Amp, which has none and is stopped outright |
-| Change model mid-session | `capabilities.sessionModelSwitch: "in-session"` → `session/set_model`, `query.setModel()` | Every transport keeps the session except Amp, whose mode is a launch argument |
+| Interactive approvals | Claude via the SDK's `canUseTool` (including `AskUserQuestion` and `ExitPlanMode`), Codex via `*requestApproval*` | Every provider except Pi, which does not expose a request to answer |
+| Interrupt | `session/cancel`, `query.interrupt()` (plus `stopTask()` for runaway subagents) | Protocol interrupt everywhere |
+| Change model mid-session | `capabilities.sessionModelSwitch: "in-session"` → `session/set_model`, `query.setModel()` | Every transport keeps the session |
 | Mid-turn prompt | Queued into the live agent loop as a **steer**, same turn | Steered into the live turn on every provider (`⌘↩`); plain `Enter` queues a visible, editable follow-up instead |
 | Native rollback | `rollbackThread` on the adapter contract | Codex/Pi natively; the rest emulated out-of-band by the `*_session.rs` helpers |
 | Idle cleanup | `ProviderSessionReaper` stops sessions idle 30 min, swept every 5 min, skipping threads with an active turn | same, on the same thresholds |
@@ -1003,11 +714,8 @@ transcript uuid as a rewind checkpoint.
 2. Add a `ProviderResumeCursor` variant carrying whatever resume actually needs
    (an id is often not enough — see Pi's session file and Claude's message uuid).
 3. Pick a transport, and look hard before settling for the one-shot path. Ask
-   whether the CLI speaks ACP (`acp` / `agent stdio` — [driver/acp.rs](../crates/waku-core/src/driver/acp.rs)
-   already covers it), serves an HTTP API, or has a persistent RPC mode; three
-   providers were on `headless.rs` until someone checked. Only when none of those
-   exist should you add a `parse_*` arm and an args builder to `headless.rs`.
-   Route the choice in `driver::start`.
+   whether the CLI serves an HTTP API or has a persistent RPC mode; check
+   what persistent interface the CLI provides. Route the choice in `driver::start`.
 4. Map its stream onto `DriverEvent` and its tools onto `ActivityKind`. **Read
    the payloads off a live provider** — every driver here was written from a
    probe transcript or an OpenAPI document, and the two bugs that reached code
@@ -1018,30 +726,19 @@ transcript uuid as a rewind checkpoint.
    `supports_steer`: inject an instruction while a slow tool runs and count the
    turn completions. Claude folds a plain message into the running turn;
    OpenCode joins it to the running execution when the prompt says
-   `delivery: "steer"`; Amp queues it unless it carries the CLI's `"steer": true`
-   attribute;
-   ACP agents take a second `session/prompt` whose superseded predecessor must
-   not settle the turn — and only a live probe tells these apart.
+   `delivery: "steer"`.
 5. Map the access modes. If the transport can ask the user, route
    Supervised to a real `Permission` event; if it cannot, pick the safe
    degradation and say so in a comment at the call site.
 6. Add an `#[ignore]`d integration test that drives the real provider through the
-   driver, as `acp.rs` and `opencode.rs` do. It is the only check that catches a
+   driver, as `opencode.rs` does. It is the only check that catches a
    transport wired to nothing.
-7. Implement rewind and branch, or emulate them the way Claude, Amp, Cursor,
-   OpenCode and Grok do. Native truncation is preferable; seeding a fresh session
-   with retained history is the fallback. If the provider offers neither — Kimi's
-   fork takes no turn count — answer the capability predicates with false and let
-   the UI hide the affordance. A control that silently keeps history the user
-   asked to discard is worse than one that is not there.
+7. Implement rewind and branch, or emulate them the way Claude and OpenCode do.
+   Native truncation is preferable; seeding a fresh session with retained history
+   is the fallback.
 8. **Do not trust a clean stop reason.** Probe what the provider does when the
-   turn cannot run at all: an expired plan, a spent quota, a rejected key. Kimi
-   reports `end_turn` with no content and no error, and the real message is only
-   in its own session log — a client that believes the protocol shows an empty
-   answer and calls it a success. Where the cause is recoverable, recover it;
-   where it is not, at least do not report success for a turn that produced
-   nothing.
+   turn cannot run at all: an expired plan, a spent quota, a rejected key.
+   Where the cause is recoverable, recover it; where it is not, at least do not
+   report success for a turn that produced nothing.
 9. Wire model discovery in `model_catalog.rs`, plus a fallback list for when the
-   binary is missing or the command fails. Some transports hand you a better
-   catalog than the CLI's `models` output — Cursor and Grok both return one in
-   their ACP handshake.
+   binary is missing or the command fails.

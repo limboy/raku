@@ -196,11 +196,11 @@ settings.general_keywords:
 settings.appearance_keywords:
   en: appearance theme system light dark language english chinese simplified font size text editor
 settings.providers_keywords:
-  en: providers agents models cli version install detect claude codex cursor opencode amp grok pi
+  en: providers agents models cli version install detect claude codex opencode pi deepseek ohmypi
 settings.skills:
   en: Skills
 settings.skills_keywords:
-  en: skills skill library agent disable enable delete claude codex cursor opencode pi amp shared
+  en: skills skill library agent disable enable delete claude codex opencode pi shared
 settings.usage_keywords:
   en: usage tokens cost spend cache daily chart model breakdown history claude codex
 settings.computer_use_keywords:
@@ -329,7 +329,7 @@ providers.checked_hours_ago:
 computer_use.allow_apps:
   en: Let Waku use apps
 computer_use.availability:
-  en: Computer Use is available with Codex, OpenCode, Grok, and Pi
+  en: Computer Use is available with Codex, OpenCode, and Pi
 computer_use.desktop_access:
   en: Desktop access
 computer_use.windows_access_description:
@@ -950,8 +950,6 @@ model_option.auto:
   en: Auto
 model_option.fast:
   en: Fast
-model_option.amp_fast_description:
-  en: Use Amp's faster serving tier at a higher usage rate
 model_option.fast_description:
   en: Faster responses at a higher usage rate
 
@@ -2076,20 +2074,6 @@ usage_error.opencode_go_not_entitled:
   en: OpenCode Go usage needs an active OpenCode Go subscription
 usage_error.no_rate_limit_windows:
   en: The usage endpoint reported no rate-limit windows
-usage_error.start_grok_probe:
-  en: Failed to start `grok agent stdio`
-usage_error.grok_stdin_unavailable:
-  en: Grok stdin is unavailable
-usage_error.grok_stdout_unavailable:
-  en: Grok stdout is unavailable
-usage_error.start_grok_reader:
-  en: Failed to start the Grok probe reader
-usage_error.grok_billing_timeout:
-  en: Grok did not answer the billing request in time
-usage_error.grok_answered:
-  en: "Grok answered: %{error}"
-usage_error.grok_no_billing_data:
-  en: Grok reported no billing data; run `grok` to sign in
 usage_error.start_omp_probe:
   en: Failed to start `omp usage`
 usage_error.omp_usage_timeout:

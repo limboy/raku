@@ -1,10 +1,9 @@
 use super::*;
 
 fn retain_runtime_after_cancel(provider: ProviderKind) -> bool {
-    // Codex's app-server owns the Computer Use process tree, and Amp offers no
-    // interrupt on its stream — stopping it means ending the process. Both
-    // resume their native thread on the next prompt.
-    !matches!(provider, ProviderKind::Codex | ProviderKind::Amp)
+    // Codex's app-server owns the Computer Use process tree; stopping it means
+    // ending the process. It resumes its native thread on the next prompt.
+    provider != ProviderKind::Codex
 }
 
 fn new_task_runtime_mode(current: Option<&AgentSession>, remembered: RuntimeMode) -> RuntimeMode {
@@ -1777,11 +1776,10 @@ mod tests {
 
     #[test]
     fn stopping_releases_the_runtimes_that_cannot_be_interrupted_in_place() {
-        // Codex owns a Computer Use process tree; Amp has no stream interrupt.
+        // Codex owns a Computer Use process tree.
         assert!(!retain_runtime_after_cancel(ProviderKind::Codex));
-        assert!(!retain_runtime_after_cancel(ProviderKind::Amp));
         for provider in ProviderKind::ALL {
-            if !matches!(provider, ProviderKind::Codex | ProviderKind::Amp) {
+            if provider != ProviderKind::Codex {
                 assert!(retain_runtime_after_cancel(provider));
             }
         }

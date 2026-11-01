@@ -17,11 +17,10 @@ const USAGE_METER_MENU_ID: &str = "usage-meter";
 /// Top-level providers with a single account-wide plan fetcher. Codex
 /// additionally refreshes live from its own stream notifications; Oh My Pi
 /// resolves per upstream/model/session key via [`PlanUsageKey::OhMyPi`].
-pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 4] = [
+pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 3] = [
     ProviderKind::Claude,
     ProviderKind::Codex,
     ProviderKind::OpenCode,
-    ProviderKind::Grok,
 ];
 
 /// Cache key for an account-level plan snapshot. Top-level providers hold one
@@ -47,9 +46,8 @@ impl PlanUsageKey {
 }
 /// Refresh cadences for the plan snapshots. Quota moves only when turns run,
 /// so idle refreshes stay rare; a settled turn or a just-opened panel asks
-/// sooner. Grok's fetch spawns a probe process, so its idle cadence is wider.
+/// sooner.
 const PLAN_USAGE_REFRESH: Duration = Duration::from_secs(300);
-const PLAN_USAGE_REFRESH_GROK: Duration = Duration::from_secs(600);
 const PLAN_USAGE_REFRESH_STALE: Duration = Duration::from_secs(30);
 const PLAN_USAGE_RETRY: Duration = Duration::from_secs(90);
 
@@ -113,8 +111,6 @@ impl Waku {
                 PLAN_USAGE_RETRY
             } else if self.plan_usage_stale.contains(&key) {
                 PLAN_USAGE_REFRESH_STALE
-            } else if provider == ProviderKind::Grok {
-                PLAN_USAGE_REFRESH_GROK
             } else {
                 PLAN_USAGE_REFRESH
             };

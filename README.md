@@ -28,13 +28,10 @@ there yet.
 
 Waku works with:
 
-- [Amp](https://ampcode.com/)
 - Claude Code
 - Codex CLI
-- Cursor CLI
-- [Fx](https://fx.sh/)
-- Grok Build
-- Kimi Code
+- DeepSeek
+- Oh My Pi
 - OpenCode
 - Pi
 

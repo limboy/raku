@@ -2082,7 +2082,7 @@ fn tab_cycle_walks_favorites_then_usable_providers_in_rail_order() {
     let probes = [
         probe(ProviderKind::Claude, true),
         probe(ProviderKind::Codex, true),
-        probe(ProviderKind::Cursor, false),
+        probe(ProviderKind::OpenCode, false),
     ];
 
     // Uninstalled providers never join the cycle; favorites leads.
@@ -2177,7 +2177,7 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
     let probes = [
         probe(ProviderKind::Claude, true),
         probe(ProviderKind::Codex, true),
-        probe(ProviderKind::Cursor, false),
+        probe(ProviderKind::OpenCode, false),
     ];
 
     // An undetected CLI and a switched-off provider both leave the rail
@@ -2186,7 +2186,7 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
         &probes,
         &[],
         None,
-        ProviderKind::Cursor
+        ProviderKind::OpenCode
     ));
     assert!(!picker_rail_shows_provider(
         &probes,

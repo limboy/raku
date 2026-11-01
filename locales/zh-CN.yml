@@ -95,9 +95,9 @@ settings.usage: 用量
 settings.computer_use: 电脑操作
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本 数学 公式 表达式 math latex
 settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
-settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex cursor opencode amp grok pi
+settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex opencode pi deepseek ohmypi
 settings.skills: 技能
-settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex cursor opencode pi amp 共享
+settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex opencode pi 共享
 settings.usage_keywords: 用量 令牌 费用 支出 缓存 每日 图表 模型 明细 历史 claude codex
 settings.computer_use_keywords: 电脑操作 屏幕录制 辅助功能 应用 控制 codex
 settings.back: 返回
@@ -159,7 +159,7 @@ providers.checked_just_now: 刚刚检查过
 providers.checked_minutes_ago: "%{count} 分钟前检查过"
 providers.checked_hours_ago: "%{count} 小时前检查过"
 computer_use.allow_apps: 允许 Waku 操作其他应用
-computer_use.availability: Codex、OpenCode、Grok 和 Pi 支持电脑操作功能
+computer_use.availability: Codex、OpenCode 和 Pi 支持电脑操作功能
 computer_use.desktop_access: 桌面权限
 computer_use.windows_access_description: 在当前 Windows 桌面会话中操作应用。Windows 可能会限制访问以管理员身份运行的应用和安全桌面。
 computer_use.linux_access_description: 在当前 Linux 桌面会话中操作应用。截图和输入支持取决于你的合成器和辅助功能服务。
@@ -463,7 +463,6 @@ model_option.context_200k: 200K
 model_option.context_1m: 1M
 model_option.auto: 自动
 model_option.fast: 快速
-model_option.amp_fast_description: 使用 Amp 的快速服务等级，但会消耗更多用量
 model_option.fast_description: 更快获得回复，但会消耗更多用量
 command_scope.project: 项目
 command_scope.user: 用户
@@ -1010,13 +1009,6 @@ usage_error.codex_access_token_missing: Codex auth.json 中没有访问令牌；
 usage_error.opencode_go_key_rejected: OpenCode Go API 密钥无法读取用量（HTTP %{status}）；请重新连接 OpenCode Go
 usage_error.opencode_go_not_entitled: OpenCode Go 用量需要有效的 OpenCode Go 订阅
 usage_error.no_rate_limit_windows: 用量接口未返回任何速率限制周期
-usage_error.start_grok_probe: 无法启动 `grok agent stdio`
-usage_error.grok_stdin_unavailable: Grok 的标准输入不可用
-usage_error.grok_stdout_unavailable: Grok 的标准输出不可用
-usage_error.start_grok_reader: 无法启动 Grok 探测读取器
-usage_error.grok_billing_timeout: Grok 未在规定时间内响应账单请求
-usage_error.grok_answered: "Grok 返回：%{error}"
-usage_error.grok_no_billing_data: Grok 未返回账单数据；请运行 `grok` 登录
 usage_error.start_omp_probe: 无法启动 `omp usage`
 usage_error.omp_usage_timeout: Oh My Pi 未在规定时间内响应用量请求
 usage_error.omp_usage_failed: "Oh My Pi 用量查询失败：%{error}"

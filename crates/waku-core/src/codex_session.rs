@@ -30,7 +30,7 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()
 }
 
 fn app_server_request(binary: &Path, request: Value) -> anyhow::Result<Value> {
-    let cwd = crate::acp_session::catalog_working_directory()?;
+    let cwd = crate::session_catalog::catalog_working_directory()?;
     app_server_request_in(binary, &cwd, request)
 }
 

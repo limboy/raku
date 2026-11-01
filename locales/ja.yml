@@ -99,9 +99,9 @@ settings.usage: 使用状況
 settings.computer_use: コンピュータ操作
 settings.general_keywords: 一般 ローカル プロジェクト 会話 プライバシー 分析 テレメトリ 匿名 共有 アップデート 自動 バージョン 数学 数式 math latex
 settings.appearance_keywords: 外観 テーマ システム ライト ダーク 言語 英語 中国語 簡体字 日本語 フォント サイズ 文字 エディタ
-settings.providers_keywords: プロバイダー エージェント モデル CLI バージョン インストール 検出 claude codex cursor opencode amp grok pi
+settings.providers_keywords: プロバイダー エージェント モデル CLI バージョン インストール 検出 claude codex opencode pi deepseek ohmypi
 settings.skills: スキル
-settings.skills_keywords: スキル ライブラリ エージェント 無効 有効 削除 claude codex cursor opencode pi amp 共有
+settings.skills_keywords: スキル ライブラリ エージェント 無効 有効 削除 claude codex opencode pi 共有
 settings.usage_keywords: 使用状況 トークン コスト 支出 キャッシュ 日別 グラフ モデル 内訳 履歴 claude codex
 settings.computer_use_keywords: コンピュータ 操作 画面収録 アクセシビリティ アプリ 制御 codex
 settings.back: 戻る
@@ -168,7 +168,7 @@ providers.checked_minutes_ago: "%{count} 分前に確認済み"
 providers.checked_hours_ago: "%{count} 時間前に確認済み"
 
 computer_use.allow_apps: Waku にアプリの操作を許可
-computer_use.availability: コンピュータ操作は Codex、OpenCode、Grok、Pi で利用できます
+computer_use.availability: コンピュータ操作は Codex、OpenCode、Pi で利用できます
 computer_use.desktop_access: デスクトップのアクセス権
 computer_use.windows_access_description: 現在の Windows デスクトップセッションでアプリを操作します。管理者権限で実行中のアプリやセキュリティで保護されたデスクトップへのアクセスは Windows により制限される場合があります。
 computer_use.linux_access_description: 現在の Linux デスクトップセッションでアプリを操作します。画面の取得と入力の対応状況は、コンポジターとアクセシビリティサービスによって異なります。
@@ -489,7 +489,6 @@ model_option.context_200k: 200K
 model_option.context_1m: 1M
 model_option.auto: 自動
 model_option.fast: 高速
-model_option.amp_fast_description: 使用量が増える代わりに、Amp の高速な処理階層を使用します
 model_option.fast_description: 使用量が増える代わりに、応答を高速化します
 
 command_scope.project: プロジェクト
@@ -1062,13 +1061,6 @@ usage_error.codex_access_token_missing: Codex の auth.json にアクセスト�
 usage_error.opencode_go_key_rejected: OpenCode Go API キーでは使用量を取得できません（HTTP %{status}）。OpenCode Go に再接続してください
 usage_error.opencode_go_not_entitled: OpenCode Go の使用量には有効な OpenCode Go サブスクリプションが必要です
 usage_error.no_rate_limit_windows: 使用量 API からレート制限期間が返されませんでした
-usage_error.start_grok_probe: "`grok agent stdio` を起動できませんでした"
-usage_error.grok_stdin_unavailable: Grok の標準入力を利用できません
-usage_error.grok_stdout_unavailable: Grok の標準出力を利用できません
-usage_error.start_grok_reader: Grok のプローブリーダーを起動できませんでした
-usage_error.grok_billing_timeout: Grok は時間内に課金リクエストへ応答しませんでした
-usage_error.grok_answered: "Grok からの応答：%{error}"
-usage_error.grok_no_billing_data: Grok から課金データが返されませんでした。`grok` を実行してログインしてください
 usage_error.start_omp_probe: "`omp usage` を起動できませんでした"
 usage_error.omp_usage_timeout: Oh My Pi は時間内に使用量リクエストへ応答しませんでした
 usage_error.omp_usage_failed: "Oh My Pi の使用量取得に失敗しました：%{error}"

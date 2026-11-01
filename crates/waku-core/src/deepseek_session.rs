@@ -394,7 +394,7 @@ impl DeepSeekServer {
 
     fn start_with_dsh_home(binary: &Path, dsh_home: Option<&Path>) -> anyhow::Result<Self> {
         let supports_no_open = web_supports_no_open(binary, dsh_home);
-        let catalog_cwd = crate::acp_session::catalog_working_directory()?;
+        let catalog_cwd = crate::session_catalog::catalog_working_directory()?;
         #[cfg(unix)]
         let mut command = {
             let mut command = crate::command_env::command("/bin/sh");
@@ -681,7 +681,7 @@ fn parse_ready_port(line: &str) -> Option<u16> {
 fn web_supports_no_open(binary: &Path, dsh_home: Option<&Path>) -> bool {
     let mut command = crate::command_env::command(binary);
     command.args(["web", "--help"]);
-    if let Ok(cwd) = crate::acp_session::catalog_working_directory() {
+    if let Ok(cwd) = crate::session_catalog::catalog_working_directory() {
         command.current_dir(cwd);
     }
     if let Some(dsh_home) = dsh_home {

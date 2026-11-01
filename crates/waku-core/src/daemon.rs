@@ -317,13 +317,6 @@ impl Backend for WakuBackend {
                     crate::model::ProviderKind::OpenCode => {
                         crate::usage::fetch_opencode_go_plan_usage()?
                     }
-                    crate::model::ProviderKind::Grok => {
-                        ensure_shell_environment();
-                        let probe =
-                            crate::model::provider_probe(provider, binary_override.as_deref());
-                        let binary = probe.path.ok_or_else(|| anyhow!("grok is not installed"))?;
-                        Some(crate::usage::fetch_grok_plan_usage(&binary)?)
-                    }
                     crate::model::ProviderKind::OhMyPi => {
                         ensure_shell_environment();
                         let probe =
@@ -555,15 +548,9 @@ impl Backend for WakuBackend {
                 // must not start every installed agent CLI, and another
                 // provider is queried only after the user explicitly picks it.
                 let mut sessions = match provider {
-                    ProviderKind::Amp => {
-                        crate::amp_session::list_provider_sessions(&binary, limit)?
-                    }
                     ProviderKind::Claude => crate::claude_session::list_provider_sessions(limit)?,
                     ProviderKind::Codex => {
                         crate::codex_session::list_provider_sessions(&binary, limit)?
-                    }
-                    ProviderKind::Cursor | ProviderKind::Fx => {
-                        crate::acp_session::list_provider_sessions(provider, &binary, &[], limit)?
                     }
                     ProviderKind::OpenCode => {
                         crate::opencode_session::list_provider_sessions(&binary, limit)?
@@ -571,8 +558,6 @@ impl Backend for WakuBackend {
                     ProviderKind::DeepSeek => {
                         crate::deepseek_session::list_provider_sessions(&binary, limit)?
                     }
-                    ProviderKind::Grok => crate::grok_session::list_provider_sessions(limit)?,
-                    ProviderKind::Kimi => crate::kimi_session::list_provider_sessions(limit)?,
                     ProviderKind::OhMyPi | ProviderKind::Pi => {
                         crate::pi_session::list_provider_sessions(provider, limit)?
                     }
@@ -597,20 +582,11 @@ impl Backend for WakuBackend {
                 sessions.truncate(limit);
                 Ok(ResponsePayload::ProviderSessions { sessions })
             }
-            Command::LoadProviderSession { cursor, cwd } => {
+            Command::LoadProviderSession { cursor, cwd: _ } => {
                 // Preserve every native turn shell for exact provider turn
                 // numbering, but bound imported display text to recent turns.
                 const VISIBLE_TURN_LIMIT: usize = 100;
                 let history = match &cursor {
-                    ProviderResumeCursor::Amp { thread_id, .. } => {
-                        let binary = self.provider_binary(ProviderKind::Amp)?;
-                        crate::amp_session::provider_session_history(
-                            &binary,
-                            &cwd,
-                            thread_id,
-                            VISIBLE_TURN_LIMIT,
-                        )?
-                    }
                     ProviderResumeCursor::Claude { session_id, .. } => {
                         self.provider_binary(ProviderKind::Claude)?;
                         crate::claude_session::provider_session_history(
@@ -632,20 +608,6 @@ impl Backend for WakuBackend {
                         let binary = self.provider_binary(ProviderKind::OpenCode)?;
                         crate::opencode_session::provider_session_history(
                             &binary,
-                            session_id,
-                            VISIBLE_TURN_LIMIT,
-                        )?
-                    }
-                    ProviderResumeCursor::Cursor { session_id, .. }
-                    | ProviderResumeCursor::Fx { session_id }
-                    | ProviderResumeCursor::Grok { session_id }
-                    | ProviderResumeCursor::Kimi { session_id } => {
-                        let provider = cursor.provider();
-                        let binary = self.provider_binary(provider)?;
-                        crate::acp_session::provider_session_history(
-                            provider,
-                            &binary,
-                            &cwd,
                             session_id,
                             VISIBLE_TURN_LIMIT,
                         )?
@@ -1322,30 +1284,6 @@ impl WakuBackend {
                 self.fork_response_with_driver(source, cwd, turns_to_remove)?,
                 HashMap::new(),
             )),
-            ProviderKind::Cursor => {
-                let fork = fork_provider_session(ProviderSessionForkRequest::Cursor {
-                    source: source.clone(),
-                    turn_count,
-                })?;
-                Ok((fork.cursor, HashMap::new()))
-            }
-            ProviderKind::Amp => {
-                let Some(ProviderResumeCursor::Amp {
-                    thread_id,
-                    fork_context,
-                }) = source.provider_cursor.as_ref()
-                else {
-                    bail!("Amp's native thread is unavailable");
-                };
-                let fork = fork_provider_session(ProviderSessionForkRequest::Amp {
-                    binary: self.provider_binary(ProviderKind::Amp)?,
-                    cwd: cwd.to_owned(),
-                    thread_id: thread_id.clone(),
-                    fork_context: fork_context.clone(),
-                    turn_count: provider_turn_count,
-                })?;
-                Ok((fork.cursor, HashMap::new()))
-            }
             ProviderKind::OpenCode => {
                 let Some(ProviderResumeCursor::OpenCode { session_id, .. }) =
                     source.provider_cursor.as_ref()
@@ -1360,28 +1298,6 @@ impl WakuBackend {
                     turn_count: provider_turn_count,
                 })?;
                 Ok((fork.cursor, HashMap::new()))
-            }
-            ProviderKind::Grok => {
-                let Some(ProviderResumeCursor::Grok { session_id }) =
-                    source.provider_cursor.as_ref()
-                else {
-                    bail!("Grok Build's native session is unavailable");
-                };
-                let fork = fork_provider_session(ProviderSessionForkRequest::Grok {
-                    binary: self.provider_binary(ProviderKind::Grok)?,
-                    cwd: cwd.to_owned(),
-                    session_id: session_id.clone(),
-                    turn_count: provider_turn_count,
-                })?;
-                Ok((fork.cursor, HashMap::new()))
-            }
-            // Unreachable through the UI, which hides branching for providers
-            // that answer `supports_conversation_fork` with false.
-            ProviderKind::Fx | ProviderKind::Kimi => {
-                bail!(
-                    "{} cannot branch a conversation at a turn",
-                    source.provider.display_name()
-                )
             }
         }
     }
@@ -1484,7 +1400,7 @@ impl WakuBackend {
         let reset_native_session = retained_turn_count == 0
             && matches!(
                 source.provider,
-                ProviderKind::Claude | ProviderKind::Cursor | ProviderKind::Grok
+                ProviderKind::Claude
             );
         if reset_native_session {
             return Ok((None, HashMap::new(), true));
@@ -1530,47 +1446,6 @@ impl WakuBackend {
                 };
                 Ok((Some(cursor), HashMap::new(), false))
             }
-            ProviderKind::Amp => {
-                let Some(ProviderResumeCursor::Amp {
-                    thread_id,
-                    fork_context,
-                }) = source.provider_cursor.as_ref()
-                else {
-                    bail!("Amp's native thread is unavailable");
-                };
-                let cursor = fork_provider_session(ProviderSessionForkRequest::Amp {
-                    binary: binary.to_owned(),
-                    cwd: cwd.to_owned(),
-                    thread_id: thread_id.clone(),
-                    fork_context: fork_context.clone(),
-                    turn_count: provider_turn_count,
-                })?
-                .cursor;
-                Ok((Some(cursor), HashMap::new(), false))
-            }
-            ProviderKind::Cursor => {
-                let cursor = fork_provider_session(ProviderSessionForkRequest::Cursor {
-                    source: source.clone(),
-                    turn_count: retained_turn_count,
-                })?
-                .cursor;
-                Ok((Some(cursor), HashMap::new(), false))
-            }
-            ProviderKind::Grok => {
-                let Some(ProviderResumeCursor::Grok { session_id }) =
-                    source.provider_cursor.as_ref()
-                else {
-                    bail!("Grok Build's native session is unavailable");
-                };
-                let cursor = fork_provider_session(ProviderSessionForkRequest::Grok {
-                    binary: binary.to_owned(),
-                    cwd: cwd.to_owned(),
-                    session_id: session_id.clone(),
-                    turn_count: provider_turn_count,
-                })?
-                .cursor;
-                Ok((Some(cursor), HashMap::new(), false))
-            }
             ProviderKind::Codex
             | ProviderKind::DeepSeek
             | ProviderKind::OhMyPi
@@ -1579,14 +1454,6 @@ impl WakuBackend {
                 HashMap::new(),
                 false,
             )),
-            // Unreachable through the UI, which hides rewinding for providers
-            // that answer `supports_conversation_rollback` with false.
-            ProviderKind::Fx | ProviderKind::Kimi => {
-                bail!(
-                    "{} cannot rewind a conversation to a turn",
-                    source.provider.display_name()
-                )
-            }
         }
     }
 
@@ -1765,44 +1632,12 @@ fn fork_provider_session(
                 Some(source_resume_at),
             )
         }
-        ProviderSessionForkRequest::Amp {
-            binary,
-            cwd,
-            thread_id,
-            fork_context,
-            turn_count,
-        } => (
-            crate::amp_session::fork_session_at_turn(
-                &binary,
-                &cwd,
-                &thread_id,
-                fork_context.as_deref(),
-                turn_count,
-            )?,
-            HashMap::new(),
-            None,
-        ),
-        ProviderSessionForkRequest::Cursor { source, turn_count } => (
-            crate::cursor_session::fork_session_at_turn(&source, turn_count)?,
-            HashMap::new(),
-            None,
-        ),
         ProviderSessionForkRequest::OpenCode {
             binary,
             session_id,
             turn_count,
         } => (
             crate::opencode_session::fork_session_at_turn(&binary, &session_id, turn_count)?,
-            HashMap::new(),
-            None,
-        ),
-        ProviderSessionForkRequest::Grok {
-            binary,
-            cwd,
-            session_id,
-            turn_count,
-        } => (
-            crate::grok_session::fork_session_at_turn(&binary, &cwd, &session_id, turn_count)?,
             HashMap::new(),
             None,
         ),

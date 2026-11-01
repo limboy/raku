@@ -42,7 +42,7 @@ use crate::opencode_api::{
 };
 use crate::opencode_service;
 
-/// Matches `acp_session`: a catalog that needs more than this many pages is
+/// Matches session catalog limits: a catalog that needs more than this many pages is
 /// either enormous or looping, and both deserve the same bound.
 const MAX_PAGES: usize = 20;
 /// The service caps nothing, so the page size is Waku's choice. Large enough
@@ -123,7 +123,7 @@ fn session_summary(session: &SessionInfo) -> Option<ProviderSessionSummary> {
             // reuse the very string the service stored.
             directory: Some(session.location.directory.clone()),
         },
-        title: crate::acp_session::session_title(
+        title: crate::session_catalog::session_title(
             ProviderKind::OpenCode,
             session.title.as_deref(),
             session_id,

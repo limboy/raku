@@ -17,8 +17,7 @@ macro_rules! tr {
     };
 }
 
-pub mod acp_session;
-pub mod amp_session;
+pub mod session_catalog;
 pub mod attachments;
 pub mod backup;
 pub mod blob_store;
@@ -29,7 +28,6 @@ pub mod codex_session;
 pub mod command_env;
 pub mod composer_complete;
 pub mod computer_use;
-pub mod cursor_session;
 pub mod daemon;
 pub mod deepseek_pool;
 pub mod deepseek_session;
@@ -38,11 +36,9 @@ pub mod driver;
 mod frontmatter;
 pub mod git_branch;
 pub mod git_commit;
-pub mod grok_session;
 mod http_wire;
 pub mod i18n;
 pub mod identity;
-pub mod kimi_session;
 pub mod model;
 pub mod model_catalog;
 pub mod opencode_api;

@@ -3862,7 +3862,7 @@ mod tests {
 
     #[test]
     fn sessions_without_transcript_blocks_remain_compatible() {
-        let session = AgentSession::new(Uuid::new_v4(), ProviderKind::Grok);
+        let session = AgentSession::new(Uuid::new_v4(), ProviderKind::Claude);
         let mut value = serde_json::to_value(session).unwrap();
         value.as_object_mut().unwrap().remove("transcript_blocks");
 
@@ -3873,15 +3873,15 @@ mod tests {
     #[test]
     fn selected_model_and_traits_are_used_for_new_sessions() {
         let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
-        state.last_provider = ProviderKind::Grok;
-        state.last_model = Some("grok-code-fast-1".into());
+        state.last_provider = ProviderKind::Claude;
+        state.last_model = Some("claude-sonnet-5".into());
         state.last_reasoning_effort = Some("high".into());
         state.last_service_tier = Some("fast".into());
 
-        let remembered = state.new_session(state.projects[0].id, ProviderKind::Grok);
+        let remembered = state.new_session(state.projects[0].id, ProviderKind::Claude);
         let other_provider = state.new_session(state.projects[0].id, ProviderKind::Codex);
 
-        assert_eq!(remembered.model.as_deref(), Some("grok-code-fast-1"));
+        assert_eq!(remembered.model.as_deref(), Some("claude-sonnet-5"));
         assert_eq!(remembered.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(remembered.service_tier.as_deref(), Some("fast"));
         assert!(other_provider.model.is_none());

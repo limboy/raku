@@ -30,27 +30,16 @@ pub(crate) fn discover(
     project_root: &Path,
 ) -> Option<Vec<SlashCommand>> {
     match provider {
-        ProviderKind::Amp => discover_amp(binary, project_root),
         ProviderKind::Claude => discover_claude(binary, project_root),
         ProviderKind::Codex => discover_codex(binary, project_root),
         ProviderKind::OpenCode => discover_opencode(binary, project_root),
         ProviderKind::OhMyPi => discover_oh_my_pi(binary, project_root),
         ProviderKind::Pi => discover_pi(binary, project_root),
-        // ACP advertises commands only after session/new. Harness likewise
-        // requires an agent id for commands/list. Creating throwaway sessions
-        // merely to seed autocomplete would pollute provider history, so their
+        // Harness requires an agent id for commands/list. Creating throwaway sessions
+        // merely to seed autocomplete would pollute provider history, so its
         // live DriverEvent::AvailableCommands update is the catalog surface.
-        ProviderKind::Cursor
-        | ProviderKind::DeepSeek
-        | ProviderKind::Fx
-        | ProviderKind::Grok
-        | ProviderKind::Kimi => None,
+        ProviderKind::DeepSeek => None,
     }
-}
-
-fn discover_amp(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> {
-    let value = capture_json(binary, &["skill", "list", "--json"], project_root)?;
-    Some(parse_amp_skills(&value))
 }
 
 fn discover_claude(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> {
@@ -180,25 +169,6 @@ fn discover_oh_my_pi(binary: &Path, project_root: &Path) -> Option<Vec<SlashComm
         &[],
     )?;
     Some(parse_oh_my_pi_commands(&value))
-}
-
-fn parse_amp_skills(value: &Value) -> Vec<SlashCommand> {
-    value
-        .get("skills")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|skill| {
-            command(
-                skill.get("name")?.as_str()?,
-                skill.get("description").and_then(Value::as_str),
-                CommandScope::Skill,
-                None,
-                None,
-            )
-        })
-        .take(COMMAND_CATALOG_CAP)
-        .collect()
 }
 
 fn parse_claude_commands(value: &Value) -> Vec<SlashCommand> {
@@ -405,28 +375,6 @@ fn command(
     })
 }
 
-fn capture_json(binary: &Path, args: &[&str], cwd: &Path) -> Option<Value> {
-    let mut command = crate::command_env::command(binary);
-    command
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    isolate_process_group(&mut command);
-    let mut child = crate::command_env::spawn(&mut command).ok()?;
-    let Some(stdout) = child.stdout.take() else {
-        terminate_child(&mut child);
-        return None;
-    };
-    let reader = thread::spawn(move || read_bounded(stdout, MAX_CAPTURE_BYTES));
-    let success = wait_for_child(&mut child, CLI_PROBE_TIMEOUT);
-    let output = reader.join().ok().flatten()?;
-    success
-        .then(|| serde_json::from_slice(&output).ok())
-        .flatten()
-}
-
 #[allow(clippy::too_many_arguments)]
 fn probe_json_lines(
     binary: &Path,
@@ -506,36 +454,6 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()
-}
-
-fn read_bounded(mut reader: impl Read, limit: usize) -> Option<Vec<u8>> {
-    let mut output = Vec::new();
-    let mut chunk = [0_u8; 8192];
-    let mut exceeded = false;
-    loop {
-        let read = reader.read(&mut chunk).ok()?;
-        if read == 0 {
-            break;
-        }
-        let remaining = limit.saturating_sub(output.len());
-        output.extend_from_slice(&chunk[..read.min(remaining)]);
-        exceeded |= read > remaining;
-    }
-    (!exceeded).then_some(output)
-}
-
-fn wait_for_child(child: &mut Child, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-            Ok(None) | Err(_) => {
-                terminate_child(child);
-                return false;
-            }
-        }
-    }
 }
 
 fn isolate_process_group(command: &mut Command) {
@@ -675,15 +593,6 @@ mod tests {
                 .all(|command| command.scope == CommandScope::Builtin)
         );
         assert!(commands.iter().all(|command| command.template.is_none()));
-    }
-
-    #[test]
-    fn parses_amp_skills() {
-        let amp = parse_amp_skills(&json!({"skills": [
-            {"name": "building-skills", "description": "Build skills", "source": "builtin"}
-        ]}));
-        assert_eq!(amp.len(), 1);
-        assert_eq!(amp[0].scope, CommandScope::Skill);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{AgentSession, ProviderResumeCursor};
+use crate::model::ProviderResumeCursor;
 
 /// Daemon-host native-session operation used when no live driver can fork.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -15,29 +15,12 @@ pub enum ProviderSessionForkRequest {
         turn_count: usize,
         title: String,
     },
-    Amp {
-        binary: PathBuf,
-        cwd: PathBuf,
-        thread_id: String,
-        fork_context: Option<String>,
-        turn_count: usize,
-    },
-    Cursor {
-        source: AgentSession,
-        turn_count: usize,
-    },
     /// OpenCode sessions carry their own `location`, so there is no server
     /// working directory to fork against; `binary` only lets the cold path
     /// reach the adopted background service.
     #[serde(alias = "openCode2")]
     OpenCode {
         binary: PathBuf,
-        session_id: String,
-        turn_count: usize,
-    },
-    Grok {
-        binary: PathBuf,
-        cwd: PathBuf,
         session_id: String,
         turn_count: usize,
     },

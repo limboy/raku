@@ -9,50 +9,35 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderKind {
-    Amp,
     Claude,
     #[default]
     Codex,
-    Cursor,
     DeepSeek,
-    Fx,
     /// OpenCode 2 shipped as its own `opencode2` provider while it was in beta.
     /// Its release took over the `opencode` command, so those sessions now
     /// load as OpenCode.
     #[serde(alias = "openCode2")]
     OpenCode,
-    Grok,
-    Kimi,
     OhMyPi,
     Pi,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 11] = [
-        Self::Amp,
+    pub const ALL: [Self; 6] = [
         Self::Claude,
         Self::Codex,
-        Self::Cursor,
         Self::DeepSeek,
-        Self::Fx,
         Self::OpenCode,
-        Self::Grok,
-        Self::Kimi,
         Self::OhMyPi,
         Self::Pi,
     ];
 
     pub fn id(self) -> &'static str {
         match self {
-            Self::Amp => "amp",
             Self::Claude => "claude",
             Self::Codex => "codex",
-            Self::Cursor => "cursor",
             Self::DeepSeek => "deepseek",
-            Self::Fx => "fx",
             Self::OpenCode => "opencode",
-            Self::Grok => "grok",
-            Self::Kimi => "kimi",
             Self::OhMyPi => "ohmypi",
             Self::Pi => "pi",
         }
@@ -60,15 +45,10 @@ impl ProviderKind {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Amp => "Amp",
             Self::Claude => "Claude Code",
             Self::Codex => "Codex CLI",
-            Self::Cursor => "Cursor CLI",
             Self::DeepSeek => "DeepSeek Harness",
-            Self::Fx => "Fx",
             Self::OpenCode => "OpenCode",
-            Self::Grok => "Grok Build",
-            Self::Kimi => "Kimi Code",
             Self::OhMyPi => "Oh My Pi",
             Self::Pi => "Pi",
         }
@@ -76,15 +56,10 @@ impl ProviderKind {
 
     pub fn short_name(self) -> &'static str {
         match self {
-            Self::Amp => "Amp",
             Self::Claude => "Claude",
             Self::Codex => "Codex",
-            Self::Cursor => "Cursor",
             Self::DeepSeek => "DeepSeek",
-            Self::Fx => "Fx",
             Self::OpenCode => "OpenCode",
-            Self::Grok => "Grok",
-            Self::Kimi => "Kimi",
             Self::OhMyPi => "Oh My Pi",
             Self::Pi => "Pi",
         }
@@ -92,37 +67,22 @@ impl ProviderKind {
 
     pub fn command(self) -> &'static str {
         match self {
-            Self::Amp => "amp",
             Self::Claude => "claude",
             Self::Codex => "codex",
-            // Cursor documents `agent` as its primary command, but that name is
-            // shared by other CLIs. The backward-compatible alias is unambiguous.
-            Self::Cursor => "cursor-agent",
             Self::DeepSeek => "dsh",
-            Self::Fx => "fx",
             Self::OpenCode => "opencode",
-            Self::Grok => "grok",
-            Self::Kimi => "kimi",
             Self::OhMyPi => "omp",
             Self::Pi => "pi",
         }
     }
 
-    /// Kimi Code and Fx are deliberately absent from this list and from
-    /// [`Self::supports_conversation_fork`]. Kimi's ACP `session/fork` copies a
-    /// whole session and takes no turn count, while Fx exposes no turn-aware
-    /// fork or truncation method. Neither can reproduce Waku's "drop the last N
-    /// turns" semantics without corrupting history.
     pub fn supports_conversation_rollback(self) -> bool {
         matches!(
             self,
-            Self::Amp
-                | Self::Claude
+            Self::Claude
                 | Self::Codex
-                | Self::Cursor
                 | Self::DeepSeek
                 | Self::OpenCode
-                | Self::Grok
                 | Self::OhMyPi
                 | Self::Pi
         )
@@ -131,13 +91,10 @@ impl ProviderKind {
     pub fn supports_conversation_fork(self) -> bool {
         matches!(
             self,
-            Self::Amp
-                | Self::Claude
+            Self::Claude
                 | Self::Codex
-                | Self::Cursor
                 | Self::DeepSeek
                 | Self::OpenCode
-                | Self::Grok
                 | Self::OhMyPi
                 | Self::Pi
         )
@@ -161,12 +118,8 @@ impl ProviderKind {
             self,
             Self::Claude
                 | Self::Codex
-                | Self::Cursor
                 | Self::DeepSeek
-                | Self::Fx
                 | Self::OpenCode
-                | Self::Grok
-                | Self::Kimi
                 | Self::OhMyPi
                 | Self::Pi
         )
@@ -180,11 +133,6 @@ impl ProviderKind {
     tag = "provider"
 )]
 pub enum ProviderResumeCursor {
-    Amp {
-        thread_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fork_context: Option<String>,
-    },
     Claude {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -192,11 +140,6 @@ pub enum ProviderResumeCursor {
     },
     Codex {
         thread_id: String,
-    },
-    Cursor {
-        session_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fork_context: Option<String>,
     },
     /// `directory` is the canonical workspace path the service stored for
     /// the session. It is absent from cursors written before OpenCode 2, whose
@@ -208,15 +151,6 @@ pub enum ProviderResumeCursor {
         directory: Option<String>,
     },
     DeepSeek {
-        session_id: String,
-    },
-    Fx {
-        session_id: String,
-    },
-    Grok {
-        session_id: String,
-    },
-    Kimi {
         session_id: String,
     },
     OhMyPi {
@@ -234,27 +168,16 @@ pub enum ProviderResumeCursor {
 impl ProviderResumeCursor {
     pub fn from_session_id(provider: ProviderKind, id: String) -> Self {
         match provider {
-            ProviderKind::Amp => Self::Amp {
-                thread_id: id,
-                fork_context: None,
-            },
             ProviderKind::Claude => Self::Claude {
                 session_id: id,
                 resume_at: None,
             },
             ProviderKind::Codex => Self::Codex { thread_id: id },
-            ProviderKind::Cursor => Self::Cursor {
-                session_id: id,
-                fork_context: None,
-            },
             ProviderKind::DeepSeek => Self::DeepSeek { session_id: id },
-            ProviderKind::Fx => Self::Fx { session_id: id },
             ProviderKind::OpenCode => Self::OpenCode {
                 session_id: id,
                 directory: None,
             },
-            ProviderKind::Grok => Self::Grok { session_id: id },
-            ProviderKind::Kimi => Self::Kimi { session_id: id },
             ProviderKind::OhMyPi => Self::OhMyPi {
                 session_id: id,
                 session_file: None,
@@ -268,15 +191,10 @@ impl ProviderResumeCursor {
 
     pub fn provider(&self) -> ProviderKind {
         match self {
-            Self::Amp { .. } => ProviderKind::Amp,
             Self::Claude { .. } => ProviderKind::Claude,
             Self::Codex { .. } => ProviderKind::Codex,
-            Self::Cursor { .. } => ProviderKind::Cursor,
             Self::DeepSeek { .. } => ProviderKind::DeepSeek,
-            Self::Fx { .. } => ProviderKind::Fx,
             Self::OpenCode { .. } => ProviderKind::OpenCode,
-            Self::Grok { .. } => ProviderKind::Grok,
-            Self::Kimi { .. } => ProviderKind::Kimi,
             Self::OhMyPi { .. } => ProviderKind::OhMyPi,
             Self::Pi { .. } => ProviderKind::Pi,
         }
@@ -284,14 +202,9 @@ impl ProviderResumeCursor {
 
     pub fn native_id(&self) -> &str {
         match self {
-            Self::Amp { thread_id, .. } => thread_id,
             Self::Claude { session_id, .. }
-            | Self::Cursor { session_id, .. }
             | Self::DeepSeek { session_id }
-            | Self::Fx { session_id }
             | Self::OpenCode { session_id, .. }
-            | Self::Grok { session_id }
-            | Self::Kimi { session_id }
             | Self::OhMyPi { session_id, .. }
             | Self::Pi { session_id, .. } => session_id,
             Self::Codex { thread_id } => thread_id,
@@ -577,12 +490,7 @@ impl ProviderProbe {
     }
 
     pub fn model(&self, requested: &str) -> Option<&ProviderModel> {
-        if self.provider == ProviderKind::Cursor {
-            crate::model_catalog::cursor_catalog_model(&self.models, requested)
-                .map(|matched| matched.model)
-        } else {
-            self.models.iter().find(|model| model.id == requested)
-        }
+        self.models.iter().find(|model| model.id == requested)
     }
 
     pub fn preferred_agent_preset(&self) -> Option<&ProviderAgentPreset> {
@@ -4113,30 +4021,6 @@ mod tests {
                 1,
             ),
             (
-                ProviderKind::Amp,
-                serde_json::json!({
-                    "path": "src/amp.rs",
-                    "old_str": "old",
-                    "new_str": "new"
-                }),
-                "src/amp.rs",
-                1,
-                1,
-            ),
-            (
-                ProviderKind::Cursor,
-                serde_json::json!({
-                    "input": {
-                        "path": "src/cursor.rs",
-                        "oldText": "old",
-                        "newText": "new\nmore"
-                    }
-                }),
-                "src/cursor.rs",
-                2,
-                1,
-            ),
-            (
                 ProviderKind::DeepSeek,
                 serde_json::json!({
                     "path": "src/deepseek.rs",
@@ -4156,17 +4040,6 @@ mod tests {
                 }),
                 "src/opencode.rs",
                 1,
-                1,
-            ),
-            (
-                ProviderKind::Grok,
-                serde_json::json!({
-                    "tool_input": {
-                        "patchText": "*** Begin Patch\n*** Update File: src/grok.rs\n@@\n-old\n+new\n+more\n*** End Patch"
-                    }
-                }),
-                "src/grok.rs",
-                2,
                 1,
             ),
             (
@@ -4459,49 +4332,34 @@ mod tests {
 
     #[test]
     fn provider_ids_are_stable() {
-        assert_eq!(ProviderKind::Amp.id(), "amp");
         assert_eq!(ProviderKind::Claude.id(), "claude");
         assert_eq!(ProviderKind::Codex.command(), "codex");
-        assert_eq!(ProviderKind::Cursor.command(), "cursor-agent");
         assert_eq!(ProviderKind::DeepSeek.command(), "dsh");
-        assert_eq!(ProviderKind::Fx.command(), "fx");
         assert_eq!(ProviderKind::OpenCode.id(), "opencode");
         assert_eq!(ProviderKind::OpenCode.command(), "opencode");
-        assert_eq!(ProviderKind::Grok.command(), "grok");
         assert_eq!(ProviderKind::Pi.command(), "pi");
     }
 
     #[test]
     fn native_conversation_actions_include_every_provider() {
         for provider in [
-            ProviderKind::Amp,
             ProviderKind::Claude,
             ProviderKind::Codex,
-            ProviderKind::Cursor,
             ProviderKind::DeepSeek,
             ProviderKind::OpenCode,
-            ProviderKind::Grok,
             ProviderKind::Pi,
         ] {
             assert!(provider.supports_conversation_fork());
             assert!(provider.supports_conversation_rollback());
         }
-        for provider in [ProviderKind::Fx, ProviderKind::Kimi] {
-            assert!(!provider.supports_conversation_fork());
-            assert!(!provider.supports_conversation_rollback());
-        }
     }
 
     #[test]
     fn only_dynamic_provider_catalogs_are_discovered() {
-        assert!(!ProviderKind::Amp.supports_model_discovery());
         assert!(ProviderKind::Claude.supports_model_discovery());
         assert!(ProviderKind::Codex.supports_model_discovery());
-        assert!(ProviderKind::Cursor.supports_model_discovery());
         assert!(ProviderKind::DeepSeek.supports_model_discovery());
-        assert!(ProviderKind::Fx.supports_model_discovery());
         assert!(ProviderKind::OpenCode.supports_model_discovery());
-        assert!(ProviderKind::Grok.supports_model_discovery());
         assert!(ProviderKind::Pi.supports_model_discovery());
     }
 
@@ -4570,7 +4428,7 @@ mod tests {
 
     #[test]
     fn all_contains_every_provider_kind() {
-        assert_eq!(ProviderKind::ALL.len(), 11);
+        assert_eq!(ProviderKind::ALL.len(), 6);
         let ids: std::collections::HashSet<_> =
             ProviderKind::ALL.iter().map(|kind| kind.id()).collect();
         assert_eq!(
@@ -4815,15 +4673,6 @@ mod tests {
         assert_eq!(value["provider"], "claude");
         assert_eq!(value["sessionId"], "session-1");
         assert_eq!(value["resumeAt"], "message-9");
-
-        let cursor = ProviderResumeCursor::Cursor {
-            session_id: String::new(),
-            fork_context: Some("[]".into()),
-        };
-        let value = serde_json::to_value(&cursor).unwrap();
-        assert_eq!(value["provider"], "cursor");
-        assert_eq!(value["sessionId"], "");
-        assert_eq!(value["forkContext"], "[]");
     }
 
     #[test]
@@ -5229,20 +5078,6 @@ mod review_subtask_tests {
             assert!(
                 provider.supports_review_subtask(),
                 "{} has a verified read-only path",
-                provider.display_name()
-            );
-        }
-        // These would wait on an approval no subtask can answer.
-        for provider in [
-            ProviderKind::Amp,
-            ProviderKind::Cursor,
-            ProviderKind::Fx,
-            ProviderKind::Grok,
-            ProviderKind::Kimi,
-        ] {
-            assert!(
-                !provider.supports_review_subtask(),
-                "{} must not be offered as a review target",
                 provider.display_name()
             );
         }

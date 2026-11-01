@@ -40,13 +40,12 @@ const WALK_MAX_DEPTH: usize = 8;
 ///
 /// - Claude Code's SDK initialization control request reports built-ins,
 ///   plugins, commands, skills, descriptions, and argument hints.
-/// - Codex app-server's `experimentalFeature/list` and `skills/list`, Amp's
-///   `skill list --json`, OpenCode's HTTP command catalogues, and Pi/Oh My
-///   Pi's RPC registries report the commands their non-TUI transports can
-///   actually invoke.
-/// - Cursor, Fx, Grok, Kimi Code, and Harness expose commands only after a real
-///   session exists, so their drivers merge the live registry instead of this
-///   function creating disposable provider sessions.
+/// - Codex app-server's `experimentalFeature/list` and `skills/list`, OpenCode's
+///   HTTP command catalogues, and Pi/Oh My Pi's RPC registries report the commands
+///   their non-TUI transports can actually invoke.
+/// - Harness exposes commands only after a real session exists, so its driver
+///   merges the live registry instead of this function creating disposable
+///   provider sessions.
 ///
 /// Filesystem discovery remains as graceful fallback metadata for configured
 /// commands and skills when a CLI is missing or an older version cannot report
@@ -57,15 +56,11 @@ const WALK_MAX_DEPTH: usize = 8;
 /// - Codex: `~/.codex/prompts`, expanded by Waku at submit.
 /// - OpenCode: `.opencode/command(s)` and `~/.config/opencode/command(s)`,
 ///   resolved by the server's native command endpoint.
-/// - Cursor: `.cursor/commands` in the project and home, expanded by Waku.
 /// - Pi: prompt templates in `.pi/prompts` and `~/.pi/agent/prompts`,
 ///   expanded by Waku, plus skills in `.pi/skills` and `~/.pi/agent/skills`.
 /// - Oh My Pi: the same layout under its own root — commands in
 ///   `.omp/commands` and `~/.omp/agent/commands`, skills in `.omp/skills`
 ///   and `~/.omp/agent/skills`.
-/// - Amp registers commands through TypeScript plugins and Grok publishes no
-///   file convention, so neither has a native command scan; Amp's skills in
-///   `~/.config/agents/skills` are listed.
 ///
 /// Skills — `SKILL.md` directories in each ecosystem's locations and the
 /// cross-tool `.agents/skills` / `~/.agents/skills` — are listed for every
@@ -179,52 +174,6 @@ fn assemble_slash_commands(
                 scan_skill_files(provider, &home.join(".claude/skills"), &mut commands);
             }
         }
-        ProviderKind::Cursor => {
-            scan_command_files(
-                &project_root.join(".cursor/commands"),
-                CommandScope::Project,
-                true,
-                &mut commands,
-            );
-            scan_skill_files(
-                provider,
-                &project_root.join(".cursor/skills"),
-                &mut commands,
-            );
-            if let Some(home) = home.as_deref() {
-                scan_command_files(
-                    &home.join(".cursor/commands"),
-                    CommandScope::User,
-                    true,
-                    &mut commands,
-                );
-                scan_skill_files(provider, &home.join(".cursor/skills"), &mut commands);
-            }
-        }
-        ProviderKind::Fx => {
-            // Fx discovers plain `skills/` plus compatibility roots from the
-            // workspace, and keeps managed installs under ~/.fx/skills.
-            for suffix in [
-                "skills",
-                ".opencode/skills",
-                ".codex/skills",
-                ".claude/skills",
-                ".claw/skills",
-            ] {
-                scan_skill_files(provider, &project_root.join(suffix), &mut commands);
-            }
-            if let Some(home) = home.as_deref() {
-                scan_skill_files(provider, &home.join(".fx/skills"), &mut commands);
-                scan_skill_files(
-                    provider,
-                    &home.join(".config/opencode/skills"),
-                    &mut commands,
-                );
-                scan_skill_files(provider, &home.join(".codex/skills"), &mut commands);
-                scan_skill_files(provider, &home.join(".claude/skills"), &mut commands);
-                scan_skill_files(provider, &home.join(".claw/skills"), &mut commands);
-            }
-        }
         ProviderKind::Pi => {
             scan_command_files(
                 &project_root.join(".pi/prompts"),
@@ -261,17 +210,11 @@ fn assemble_slash_commands(
                 scan_skill_files(provider, &home.join(".omp/agent/skills"), &mut commands);
             }
         }
-        ProviderKind::Amp => {
-            if let Some(home) = home.as_deref() {
-                scan_skill_files(provider, &home.join(".config/agents/skills"), &mut commands);
-            }
-        }
-        // Harness commands are session-scoped and reported live by the Host,
-        // and Kimi Code likewise publishes its whole command set over ACP
+        // Harness commands are session-scoped and reported live by the Host
         // rather than from files Waku could scan.
-        ProviderKind::DeepSeek | ProviderKind::Grok | ProviderKind::Kimi => {}
+        ProviderKind::DeepSeek => {}
     }
-    // The cross-tool skill standard, read by Amp and OpenCode among others;
+    // The cross-tool skill standard, read by OpenCode among others;
     // Waku lists it for every provider.
     scan_skill_files(
         provider,
@@ -635,7 +578,7 @@ pub fn resolved_skill_submission(
 ) -> Option<String> {
     if !matches!(
         provider,
-        ProviderKind::Codex | ProviderKind::Fx | ProviderKind::Pi | ProviderKind::OhMyPi
+        ProviderKind::Codex | ProviderKind::Pi | ProviderKind::OhMyPi
     ) {
         return None;
     }
@@ -651,7 +594,7 @@ pub fn resolved_skill_submission(
         return None;
     }
     Some(match provider {
-        ProviderKind::Codex | ProviderKind::Fx => format!("${invocation}"),
+        ProviderKind::Codex => format!("${invocation}"),
         ProviderKind::Pi | ProviderKind::OhMyPi => format!("/skill:{invocation}"),
         _ => unreachable!("non-native skill providers returned above"),
     })
@@ -1354,9 +1297,9 @@ mod tests {
             );
         }
         // Raw passthrough end to end: no expansion applies at submit.
-        let commands = assemble_slash_commands(ProviderKind::Amp, &root, Vec::new());
+        let commands = assemble_slash_commands(ProviderKind::OpenCode, &root, Vec::new());
         assert_eq!(
-            resolved_submission(ProviderKind::Amp, "/deploy-runbook staging", &commands),
+            resolved_submission(ProviderKind::OpenCode, "/deploy-runbook staging", &commands),
             None
         );
         assert_eq!(
@@ -1368,16 +1311,10 @@ mod tests {
                 .as_deref(),
             Some("/skill:deploy-runbook staging")
         );
-        assert_eq!(
-            resolved_submission(ProviderKind::Fx, "/deploy-runbook staging", &commands).as_deref(),
-            Some("$deploy-runbook staging")
-        );
 
         // Each ecosystem's own project-level skill tree is read too.
         for (provider, dir) in [
             (ProviderKind::Codex, ".codex/skills"),
-            (ProviderKind::Cursor, ".cursor/skills"),
-            (ProviderKind::Fx, "skills"),
             (ProviderKind::OpenCode, ".opencode/skills"),
             (ProviderKind::Pi, ".pi/skills"),
             (ProviderKind::OhMyPi, ".omp/skills"),
