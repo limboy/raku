@@ -11,12 +11,15 @@ use gpui::{
 
 use crate::theme::{Theme, sp};
 
-/// A single-line hint.
+/// A compact hover hint.
 pub struct Tooltip {
     label: SharedString,
 }
 
 impl Tooltip {
+    pub const MAX_WIDTH: f32 = 380.0;
+    pub const MAX_LINES: usize = 4;
+
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
@@ -45,6 +48,7 @@ impl Render for Tooltip {
         // cursor; the shadow needs a parent that does not clip it.
         div().pt(px(4.0)).pl(px(2.0)).child(
             div()
+                .max_w(px(Self::MAX_WIDTH))
                 .px(px(7.0))
                 .py(px(4.0))
                 .rounded(px(6.0))
@@ -52,13 +56,32 @@ impl Render for Tooltip {
                 .border_color(theme.border_strong)
                 .bg(theme.raised)
                 .shadow_md()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
                 .text_size(sp(12.5))
-                .line_height(sp(15.0))
+                .line_height(sp(16.0))
                 .text_color(theme.text_secondary)
+                .whitespace_normal()
+                .line_clamp(Self::MAX_LINES)
+                .text_ellipsis()
                 .child(self.label.clone()),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[test]
+    fn tooltip_has_bounded_maximum_dimensions() {
+        assert!(Tooltip::MAX_WIDTH > 0.0 && Tooltip::MAX_WIDTH <= 480.0);
+        assert!(Tooltip::MAX_LINES > 0 && Tooltip::MAX_LINES <= 6);
+    }
+
+    #[gpui::test]
+    fn tooltip_renders_long_labels_without_panic(cx: &mut TestAppContext) {
+        let long_label = "cd /Users/limboy/Projects/waku && python3 - <<'PY' import io p='docs/multi-model-delegation-plan.md' s=io.open(p,encoding='utf-8').read() old = '\"\"\"### 相对提案的偏差\"\"\" new = '\"\"\"### 父 agent 矩阵与提示词契约（首版实测后补充）- 父 provider 新增 **Pi / Oh My Pi**: `res...".repeat(2);
+        let (_, cx) = cx.add_window_view(|_window, _cx| Tooltip::new(long_label));
+        cx.run_until_parked();
     }
 }
