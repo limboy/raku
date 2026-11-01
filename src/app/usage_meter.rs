@@ -3,8 +3,9 @@
 //! rate-limit lanes, mirroring Claude Code's `/usage` rows. Context numbers
 //! stream in from every provider transport that reports them; plan lanes come
 //! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`]),
-//! OpenCode Go's usage endpoint, and Codex's own rate-limit
-//! notifications. Frames read only snapshots stored on the entity.
+//! OpenCode Go's usage endpoint, Codex's own rate-limit notifications, Grok's
+//! billing probe, and Oh My Pi's `omp usage --json` reports. Frames read only
+//! snapshots stored on the entity.
 
 use gpui::{PathBuilder, relative};
 
@@ -13,8 +14,9 @@ use crate::usage::{PlanUsage, format_tokens, reset_label};
 
 const USAGE_METER_MENU_ID: &str = "usage-meter";
 
-/// Providers with an account-level plan fetcher. Codex additionally refreshes
-/// live from its own stream notifications.
+/// Top-level providers with a single account-wide plan fetcher. Codex
+/// additionally refreshes live from its own stream notifications; Oh My Pi
+/// resolves per upstream/model/session key via [`PlanUsageKey::OhMyPi`].
 pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 4] = [
     ProviderKind::Claude,
     ProviderKind::Codex,
@@ -22,6 +24,27 @@ pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 4] = [
     ProviderKind::Grok,
 ];
 
+/// Cache key for an account-level plan snapshot. Top-level providers hold one
+/// account per binary; Oh My Pi multiplexes several upstream OAuth providers
+/// and per-model quota pools (such as Antigravity's Gemini vs third-party
+/// counters), and pins multi-account credentials per session file.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) enum PlanUsageKey {
+    Provider(ProviderKind),
+    OhMyPi {
+        model: String,
+        session_file: Option<PathBuf>,
+    },
+}
+
+impl PlanUsageKey {
+    pub(super) fn provider(&self) -> ProviderKind {
+        match self {
+            Self::Provider(provider) => *provider,
+            Self::OhMyPi { .. } => ProviderKind::OhMyPi,
+        }
+    }
+}
 /// Refresh cadences for the plan snapshots. Quota moves only when turns run,
 /// so idle refreshes stay rare; a settled turn or a just-opened panel asks
 /// sooner. Grok's fetch spawns a probe process, so its idle cadence is wider.
@@ -31,9 +54,35 @@ const PLAN_USAGE_REFRESH_STALE: Duration = Duration::from_secs(30);
 const PLAN_USAGE_RETRY: Duration = Duration::from_secs(90);
 
 impl Waku {
+    pub(super) fn plan_usage_key_for_session(
+        &self,
+        session: &AgentSession,
+    ) -> Option<PlanUsageKey> {
+        match session.provider {
+            provider if PLAN_USAGE_PROVIDERS.contains(&provider) => {
+                Some(PlanUsageKey::Provider(provider))
+            }
+            ProviderKind::OhMyPi => {
+                let model = self.model_for_session(session)?.trim();
+                if !model.contains('/') {
+                    return None;
+                }
+                let session_file = match session.provider_cursor.as_ref() {
+                    Some(ProviderResumeCursor::OhMyPi { session_file, .. }) => session_file.clone(),
+                    _ => None,
+                };
+                Some(PlanUsageKey::OhMyPi {
+                    model: model.to_owned(),
+                    session_file,
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Start background fetches of any plan meters whose snapshot is due.
     /// The slow maintenance clock and explicit panel-open requests call this;
-    /// guards keep it to one in-flight fetch per provider.
+    /// guards keep it to one in-flight fetch per meter key.
     pub(super) fn maybe_refresh_plan_usage(&mut self, cx: &mut Context<Self>) {
         // Disabling a provider only stops it backing new sessions; a session
         // already locked to it keeps running, and while one is selected its
@@ -41,15 +90,28 @@ impl Waku {
         // would show its loading skeleton forever: fetchable provider, no
         // snapshot, and no fetch ever allowed to start.
         let selected_provider = self.selected_session().map(|session| session.provider);
+        let mut keys = Vec::with_capacity(PLAN_USAGE_PROVIDERS.len() + 1);
         for provider in PLAN_USAGE_PROVIDERS {
-            if self.plan_usage_pending.contains(&provider)
-                || (!self.provider_enabled(provider) && selected_provider != Some(provider))
-            {
+            if self.provider_enabled(provider) || selected_provider == Some(provider) {
+                keys.push(PlanUsageKey::Provider(provider));
+            }
+        }
+        if let Some(session) = self
+            .selected_session()
+            .filter(|session| session.provider == ProviderKind::OhMyPi)
+            && let Some(key) = self.plan_usage_key_for_session(session)
+        {
+            keys.push(key);
+        }
+
+        for key in keys {
+            if self.plan_usage_pending.contains(&key) {
                 continue;
             }
-            let interval = if self.plan_usage_error.contains_key(&provider) {
+            let provider = key.provider();
+            let interval = if self.plan_usage_error.contains_key(&key) {
                 PLAN_USAGE_RETRY
-            } else if self.plan_usage_stale.contains(&provider) {
+            } else if self.plan_usage_stale.contains(&key) {
                 PLAN_USAGE_REFRESH_STALE
             } else if provider == ProviderKind::Grok {
                 PLAN_USAGE_REFRESH_GROK
@@ -58,12 +120,12 @@ impl Waku {
             };
             if self
                 .plan_usage_checked_at
-                .get(&provider)
+                .get(&key)
                 .is_some_and(|checked| checked.elapsed() < interval)
             {
                 continue;
             }
-            self.plan_usage_pending.insert(provider);
+            self.plan_usage_pending.insert(key.clone());
             let tx = self.plan_usage_tx.clone();
             let event_wake = self.event_wake_tx.clone();
             let claude_version = self
@@ -72,6 +134,13 @@ impl Waku {
                 .cloned()
                 .flatten();
             let binary_override = self.state.provider_binary_overrides.get(&provider).cloned();
+            let (model, session_file) = match &key {
+                PlanUsageKey::Provider(_) => (None, None),
+                PlanUsageKey::OhMyPi {
+                    model,
+                    session_file,
+                } => (Some(model.clone()), session_file.clone()),
+            };
             let daemon = self.daemon.client();
             cx.background_executor()
                 .spawn(async move {
@@ -82,6 +151,8 @@ impl Waku {
                             provider,
                             binary_override,
                             cli_version: claude_version,
+                            model,
+                            session_file,
                         },
                     ) {
                         Ok(waku_client::ResponsePayload::PlanUsage { usage }) => Ok(usage),
@@ -91,7 +162,7 @@ impl Waku {
                         Err(error) => Err(error),
                     };
                     if tx
-                        .send((provider, result.map_err(|error| format!("{error:#}"))))
+                        .send((key, result.map_err(|error| format!("{error:#}"))))
                         .is_ok()
                     {
                         signal_event_pump(&event_wake);
@@ -103,32 +174,32 @@ impl Waku {
 
     pub(super) fn drain_plan_usage_events(&mut self) -> bool {
         let mut changed = false;
-        while let Ok((provider, result)) = self.plan_usage_events.try_recv() {
-            self.plan_usage_pending.remove(&provider);
-            self.plan_usage_stale.remove(&provider);
-            self.plan_usage_checked_at.insert(provider, Instant::now());
+        while let Ok((key, result)) = self.plan_usage_events.try_recv() {
+            self.plan_usage_pending.remove(&key);
+            self.plan_usage_stale.remove(&key);
+            self.plan_usage_checked_at.insert(key.clone(), Instant::now());
             match result {
                 Ok(Some(usage)) => {
-                    changed |= self.plan_usage.get(&provider) != Some(&usage)
-                        || self.plan_usage_error.contains_key(&provider)
-                        || self.plan_usage_unconfigured.contains(&provider);
-                    self.plan_usage.insert(provider, usage);
-                    self.plan_usage_error.remove(&provider);
-                    self.plan_usage_unconfigured.remove(&provider);
+                    changed |= self.plan_usage.get(&key) != Some(&usage)
+                        || self.plan_usage_error.contains_key(&key)
+                        || self.plan_usage_unconfigured.contains(&key);
+                    self.plan_usage.insert(key.clone(), usage);
+                    self.plan_usage_error.remove(&key);
+                    self.plan_usage_unconfigured.remove(&key);
                 }
                 Ok(None) => {
-                    let had_usage = self.plan_usage.remove(&provider).is_some();
-                    let had_error = self.plan_usage_error.remove(&provider).is_some();
-                    let newly_unconfigured = self.plan_usage_unconfigured.insert(provider);
+                    let had_usage = self.plan_usage.remove(&key).is_some();
+                    let had_error = self.plan_usage_error.remove(&key).is_some();
+                    let newly_unconfigured = self.plan_usage_unconfigured.insert(key);
                     changed |= had_usage || had_error || newly_unconfigured;
                 }
                 Err(error) => {
-                    let was_unconfigured = self.plan_usage_unconfigured.remove(&provider);
+                    let was_unconfigured = self.plan_usage_unconfigured.remove(&key);
                     changed |=
-                        self.plan_usage_error.get(&provider) != Some(&error) || was_unconfigured;
+                        self.plan_usage_error.get(&key) != Some(&error) || was_unconfigured;
                     // Keep any previous snapshot; stale meters with reset
                     // times still self-correct visually.
-                    self.plan_usage_error.insert(provider, error);
+                    self.plan_usage_error.insert(key, error);
                 }
             }
         }
@@ -198,14 +269,43 @@ impl Waku {
             self.transcript_control_focus(format!("compact-context-{session_id}"), cx);
         let compact_owner = cx.entity().downgrade();
         let theme = Theme::current(cx);
-        let plan = self.plan_usage.get(&provider).cloned();
-        let error = self.plan_usage_error.get(&provider).cloned();
+        let key = self.plan_usage_key_for_session(session);
+        let usage_url = plan_usage_settings_url(provider, self.model_for_session(session));
+        let plan = key
+            .as_ref()
+            .and_then(|key| {
+                self.plan_usage.get(key).or_else(|| match key {
+                    // Keep the unpinned model snapshot visible on the frame a
+                    // new session first materializes its transcript file,
+                    // until the pinned lookup lands.
+                    PlanUsageKey::OhMyPi {
+                        model,
+                        session_file: Some(_),
+                    } => self.plan_usage.get(&PlanUsageKey::OhMyPi {
+                        model: model.clone(),
+                        session_file: None,
+                    }),
+                    _ => None,
+                })
+            })
+            .cloned();
+        let error = key
+            .as_ref()
+            .and_then(|key| self.plan_usage_error.get(key))
+            .cloned();
         // Fetchable but nothing cached yet: the panel shows a skeleton
         // whether the fetch is already in flight or lands on the next tick.
         let plan_loading = plan.is_none()
             && error.is_none()
-            && !self.plan_usage_unconfigured.contains(&provider)
-            && PLAN_USAGE_PROVIDERS.contains(&provider);
+            && match &key {
+                Some(key) => !self.plan_usage_unconfigured.contains(key),
+                None => {
+                    provider == ProviderKind::OhMyPi
+                        && self
+                            .provider_model_discoveries_pending
+                            .contains(&ProviderKind::OhMyPi)
+                }
+            };
 
         let weak = cx.entity().downgrade();
         let handle = self.menu_handle_with(USAGE_METER_MENU_ID, cx, move |open, window, cx| {
@@ -214,12 +314,11 @@ impl Waku {
                 let _ = weak.update(cx, |this, cx| {
                     // An opening panel wants fresh numbers; the pump honors
                     // the stale flag on its next tick once the backoff allows.
-                    if let Some(provider) = this
+                    if let Some(key) = this
                         .selected_session()
-                        .map(|session| session.provider)
-                        .filter(|provider| PLAN_USAGE_PROVIDERS.contains(provider))
+                        .and_then(|session| this.plan_usage_key_for_session(session))
                     {
-                        this.plan_usage_stale.insert(provider);
+                        this.plan_usage_stale.insert(key);
                     }
                     this.maybe_refresh_plan_usage(cx);
                     card_focus = this
@@ -290,7 +389,7 @@ impl Waku {
             move |handle, _, cx| {
                 let panel = usage_panel(
                     handle,
-                    provider,
+                    usage_url,
                     context,
                     waiting_for_context,
                     plan.clone(),
@@ -451,9 +550,32 @@ fn context_gauge(percent: Option<f64>, track: Hsla, fill: Hsla) -> impl IntoElem
     .flex_none()
 }
 
+fn plan_usage_settings_url(provider: ProviderKind, model: Option<&str>) -> Option<&'static str> {
+    match provider {
+        ProviderKind::Claude => Some("https://claude.ai/settings/usage"),
+        ProviderKind::Codex => Some("https://chatgpt.com/codex/settings/usage"),
+        ProviderKind::OhMyPi => match model
+            .and_then(|slug| slug.split_once('/'))
+            .map(|(upstream, _)| upstream.trim())
+        {
+            Some(upstream) if upstream.eq_ignore_ascii_case("anthropic") => {
+                Some("https://claude.ai/settings/usage")
+            }
+            Some(upstream)
+                if upstream.eq_ignore_ascii_case("openai-codex")
+                    || upstream.eq_ignore_ascii_case("openai-codex-device") =>
+            {
+                Some("https://chatgpt.com/codex/settings/usage")
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn usage_panel(
     handle: &ContextMenuHandle,
-    provider: ProviderKind,
+    usage_url: Option<&'static str>,
     context: Option<ContextUsage>,
     waiting_for_context: bool,
     plan: Option<PlanUsage>,
@@ -528,11 +650,6 @@ fn usage_panel(
         let header = match &plan.plan_label {
             Some(label) => tr!("usage.plan_limits_named", plan = label),
             None => tr!("usage.plan_limits"),
-        };
-        let usage_url = match provider {
-            ProviderKind::Claude => Some("https://claude.ai/settings/usage"),
-            ProviderKind::Codex => Some("https://chatgpt.com/codex/settings/usage"),
-            _ => None,
         };
         let header_row = div().flex().items_center().gap(px(6.0)).child(
             div()
@@ -734,6 +851,25 @@ mod tests {
                 tokens: 4_718_002,
                 window: Some(0),
             }),
+            None
+        );
+    }
+
+    #[test]
+    fn ohmypi_settings_url_follows_the_active_upstream_provider() {
+        assert_eq!(
+            plan_usage_settings_url(ProviderKind::OhMyPi, Some("openai-codex/gpt-5.3-codex")),
+            Some("https://chatgpt.com/codex/settings/usage")
+        );
+        assert_eq!(
+            plan_usage_settings_url(ProviderKind::OhMyPi, Some("anthropic/claude-sonnet-4-6")),
+            Some("https://claude.ai/settings/usage")
+        );
+        assert_eq!(
+            plan_usage_settings_url(
+                ProviderKind::OhMyPi,
+                Some("google-antigravity/gemini-4-argon")
+            ),
             None
         );
     }

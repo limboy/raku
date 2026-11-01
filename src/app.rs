@@ -1169,32 +1169,32 @@ pub struct Waku {
     computer_permission_tx: Sender<Result<ComputerPermissions, String>>,
     computer_permission_events: Receiver<Result<ComputerPermissions, String>>,
     computer_permission_request_pending: bool,
-    /// Account rate-limit meters per provider, fetched off-thread (Claude,
-    /// Codex, and OpenCode Go over HTTPS; Grok through a stdio probe) and
-    /// refreshed live by Codex's own stream. Frames read only this snapshot.
-    plan_usage: HashMap<ProviderKind, crate::usage::PlanUsage>,
-    /// Why a provider's last fetch failed, kept alongside stale data for the
-    /// meter's tooltip. Cleared by that provider's next success.
-    plan_usage_error: HashMap<ProviderKind, String>,
+    /// Account rate-limit meters per provider or Oh My Pi upstream/model pool,
+    /// fetched off-thread (Claude, Codex, and OpenCode Go over HTTPS; Grok and
+    /// Oh My Pi through bounded CLI probes) and refreshed live by Codex's own
+    /// stream. Frames read only this snapshot.
+    plan_usage: HashMap<usage_meter::PlanUsageKey, crate::usage::PlanUsage>,
+    /// Why a meter's last fetch failed, kept alongside stale data for the
+    /// meter's tooltip. Cleared by that meter's next success.
+    plan_usage_error: HashMap<usage_meter::PlanUsageKey, String>,
     plan_usage_tx: Sender<(
-        ProviderKind,
+        usage_meter::PlanUsageKey,
         Result<Option<crate::usage::PlanUsage>, String>,
     )>,
     plan_usage_events: Receiver<(
-        ProviderKind,
+        usage_meter::PlanUsageKey,
         Result<Option<crate::usage::PlanUsage>, String>,
     )>,
-    plan_usage_pending: HashSet<ProviderKind>,
-    /// Fetchable providers with no matching account credential. Unlike a
-    /// request failure, this hides the plan section until a later refresh
-    /// discovers a newly configured account.
-    plan_usage_unconfigured: HashSet<ProviderKind>,
-    /// When each provider's last fetch settled, successful or not — the
-    /// refresh backoff measures from here.
-    plan_usage_checked_at: HashMap<ProviderKind, Instant>,
-    /// Providers whose turn settled since the last fetch, so the meters have
-    /// moved.
-    plan_usage_stale: HashSet<ProviderKind>,
+    plan_usage_pending: HashSet<usage_meter::PlanUsageKey>,
+    /// Fetchable meters with no matching account credential. Unlike a request
+    /// failure, this hides the plan section until a later refresh discovers a
+    /// newly configured account.
+    plan_usage_unconfigured: HashSet<usage_meter::PlanUsageKey>,
+    /// When each meter's last fetch settled, successful or not — the refresh
+    /// backoff measures from here.
+    plan_usage_checked_at: HashMap<usage_meter::PlanUsageKey, Instant>,
+    /// Meters whose turn settled since the last fetch, so their quotas moved.
+    plan_usage_stale: HashSet<usage_meter::PlanUsageKey>,
     /// The settings Usage page's snapshot: historical token/cost usage
     /// scanned from provider transcripts off-thread. Frames read only this.
     usage_history: Option<crate::usage_history::UsageHistory>,

@@ -235,6 +235,7 @@ impl Waku {
         self.reset_transcript_rows(self.transcript_row_count());
         self.refresh_session_delegations(cx);
         self.save();
+        self.maybe_refresh_plan_usage(cx);
         if self
             .selected_session()
             .is_some_and(AgentSession::has_started)
@@ -991,6 +992,7 @@ impl Waku {
                 self.apply_session_options(session_id, cx);
             }
             self.save();
+            self.maybe_refresh_plan_usage(cx);
             cx.notify();
         }
     }

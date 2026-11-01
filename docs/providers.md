@@ -419,6 +419,15 @@ My Pi advertises the levels a model actually honors under `thinking.efforts`.
 yet it is always accepted, so it is added back
 ([model_catalog.rs](../crates/waku-core/src/model_catalog.rs)).
 
+**Plan usage** — Oh My Pi only: `omp usage --json --no-extensions`
+([usage.rs](../crates/waku-core/src/usage.rs)), queried off-thread for the
+selected task's `<upstream>/<model>` slug. Reports are matched to the active
+branch's `credential_pin` in the session file when multiple OAuth accounts are
+configured, scoped to the active model family (e.g. Antigravity's Gemini vs
+Claude/GPT pools, Codex's standard vs Spark lanes), and deduplicated across
+`sharedGroup` routing copies. Unmetered API-key upstreams return `None` and omit
+the plan section.
+
 **Computer Use** — Pi only: `--extension <waku pi extension>` and
 `--skill <SKILL.md>`, with the REPL and helper paths passed through the
 environment. Waku's bridge is written against Pi's extension API, and Oh My Pi

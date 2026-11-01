@@ -543,7 +543,8 @@ impl Waku {
                     .find(|session| session.id == session_id)
                     .map(|session| session.provider)
                 {
-                    self.plan_usage.insert(provider, usage);
+                    self.plan_usage
+                        .insert(usage_meter::PlanUsageKey::Provider(provider), usage);
                 }
             }
             DriverEvent::GoalUpdated(goal) => {
@@ -600,15 +601,14 @@ impl Waku {
                 // A settled turn moved the account's rate-limit needles; ask
                 // that provider's plan meter to refresh once its backoff
                 // allows.
-                if let Some(provider) = self
+                if let Some(key) = self
                     .state
                     .sessions
                     .iter()
                     .find(|session| session.id == session_id)
-                    .map(|session| session.provider)
-                    .filter(|provider| usage_meter::PLAN_USAGE_PROVIDERS.contains(provider))
+                    .and_then(|session| self.plan_usage_key_for_session(session))
                 {
-                    self.plan_usage_stale.insert(provider);
+                    self.plan_usage_stale.insert(key);
                 }
                 if self
                     .state

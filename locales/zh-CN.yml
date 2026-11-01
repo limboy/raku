@@ -1017,6 +1017,9 @@ usage_error.start_grok_reader: 无法启动 Grok 探测读取器
 usage_error.grok_billing_timeout: Grok 未在规定时间内响应账单请求
 usage_error.grok_answered: "Grok 返回：%{error}"
 usage_error.grok_no_billing_data: Grok 未返回账单数据；请运行 `grok` 登录
+usage_error.start_omp_probe: 无法启动 `omp usage`
+usage_error.omp_usage_timeout: Oh My Pi 未在规定时间内响应用量请求
+usage_error.omp_usage_failed: "Oh My Pi 用量查询失败：%{error}"
 usage_error.claude_credentials_missing: 钥匙串和 ~/.claude 中均未找到 Claude Code 凭据
 usage_error.run_security: 无法运行 /usr/bin/security
 usage_error.keychain_item_missing: 钥匙串中没有 %{service} 项

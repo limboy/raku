@@ -2090,6 +2090,12 @@ usage_error.grok_answered:
   en: "Grok answered: %{error}"
 usage_error.grok_no_billing_data:
   en: Grok reported no billing data; run `grok` to sign in
+usage_error.start_omp_probe:
+  en: Failed to start `omp usage`
+usage_error.omp_usage_timeout:
+  en: Oh My Pi did not answer the usage request in time
+usage_error.omp_usage_failed:
+  en: "Oh My Pi usage failed: %{error}"
 usage_error.claude_credentials_missing:
   en: No Claude Code credentials in the keychain or ~/.claude
 usage_error.run_security:

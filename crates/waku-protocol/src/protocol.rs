@@ -163,6 +163,10 @@ pub enum Command {
         provider: ProviderKind,
         binary_override: Option<String>,
         cli_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_file: Option<PathBuf>,
     },
     ProbeComputerPermissions {
         prompt: bool,

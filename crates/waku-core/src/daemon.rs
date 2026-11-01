@@ -304,6 +304,8 @@ impl Backend for WakuBackend {
                 provider,
                 binary_override,
                 cli_version,
+                model,
+                session_file,
             } => {
                 let usage = match provider {
                     crate::model::ProviderKind::Claude => Some(
@@ -317,13 +319,21 @@ impl Backend for WakuBackend {
                     }
                     crate::model::ProviderKind::Grok => {
                         ensure_shell_environment();
-                        let probe = match binary_override.as_deref() {
-                            override_value => {
-                                crate::model::provider_probe(provider, override_value)
-                            }
-                        };
+                        let probe =
+                            crate::model::provider_probe(provider, binary_override.as_deref());
                         let binary = probe.path.ok_or_else(|| anyhow!("grok is not installed"))?;
                         Some(crate::usage::fetch_grok_plan_usage(&binary)?)
+                    }
+                    crate::model::ProviderKind::OhMyPi => {
+                        ensure_shell_environment();
+                        let probe =
+                            crate::model::provider_probe(provider, binary_override.as_deref());
+                        let binary = probe.path.ok_or_else(|| anyhow!("omp is not installed"))?;
+                        crate::usage::fetch_ohmypi_plan_usage(
+                            &binary,
+                            model.as_deref(),
+                            session_file.as_deref(),
+                        )?
                     }
                     _ => bail!("provider has no plan usage fetcher"),
                 };
