@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.0.1] - 2026-11-01
+
+- Fork and rewind Antigravity tasks at a selected turn, with new forks appearing above their source tasks in the sidebar
+- Open text file attachments from the composer or conversation in the right detail panel
+- Remove the usage dashboard from settings
+
 ## [2.0.0] - 2026-11-01
 
 - Install signed updates directly from GitHub Releases using the install icon at the top of the sidebar, with native update flows on macOS, Linux, and Windows
