@@ -4,7 +4,7 @@
 //! does not own an OpenCode process. `opencode_service` finds the daemon the
 //! user's own terminal already started, and every Waku task rides the one
 //! `GET /api/event` stream it exposes. Dropping a driver unsubscribes and
-//! sends `Shutdown`; the worker releases its optional Computer Use attachment
+//! sends `Shutdown`; the worker releases its session state
 //! without terminating or reconfiguring the user's OpenCode service.
 //!
 //! Commands and events land in ONE worker thread driven by
@@ -49,7 +49,6 @@ use serde_json::{Value, json};
 
 use super::activity;
 use super::compaction::CompactionTracker;
-use super::opencode_computer_use::{INSTRUCTION_KEY, OpenCodeComputerUse};
 use super::support::{self, OpenCodePermissionRequest, OpenCodePermissionState};
 use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
@@ -417,7 +416,6 @@ struct Worker {
     command_names: HashSet<String>,
     events: DriverEventSender,
     commands: Sender<DriverCommand>,
-    computer_use: Option<Arc<OpenCodeComputerUse>>,
 }
 
 pub(super) struct OpenCodeDriver {
@@ -436,7 +434,6 @@ pub(super) struct OpenCodeDriver {
     mode: RuntimeMode,
     commands: Sender<DriverCommand>,
     supports_steer: bool,
-    computer_use: Option<Arc<OpenCodeComputerUse>>,
 }
 
 impl OpenCodeDriver {
@@ -458,14 +455,10 @@ impl OpenCodeDriver {
             service_tier: _,
             context_window: _,
             agent_preset,
-            computer_use_enabled,
             provider_cursor,
             delegation_session_path,
             delegation_registry_dir,
         } = options;
-        let computer_use_enabled =
-            computer_use_enabled && execution_policy != ExecutionPolicy::ReviewReadOnly;
-
         let resumed = match provider_cursor {
             Some(ProviderResumeCursor::OpenCode { session_id, .. }) => {
                 (!session_id.is_empty()).then_some(session_id)
@@ -567,24 +560,6 @@ impl OpenCodeDriver {
             let _ = opencode_api::switch_model(&endpoint, &session_id, model);
         }
 
-        let computer_use = if computer_use_enabled {
-            let attached =
-                OpenCodeComputerUse::start(&service, &directory, &session_id, events.clone());
-            match attached {
-                Ok(runtime) => Some(Arc::new(runtime)),
-                Err(error) => {
-                    if !resuming {
-                        let _ = opencode_api::delete_session(&endpoint, &session_id);
-                    }
-                    return Err(error);
-                }
-            }
-        } else {
-            // A resumed task may retain our instructions after an interrupted
-            // host shutdown. Remove only Waku's own entry when disabled.
-            let _ = opencode_api::remove_instruction_entry(&endpoint, &session_id, INSTRUCTION_KEY);
-            None
-        };
         if let Some(registry_dir) = delegation_registry_dir.as_ref()
             && execution_policy != ExecutionPolicy::ReviewReadOnly
         {
@@ -656,7 +631,6 @@ impl OpenCodeDriver {
             command_names,
             events,
             commands: commands.clone(),
-            computer_use: computer_use.clone(),
         };
         let generation = service.generation();
         let mut state = StreamState::new(
@@ -703,11 +677,6 @@ impl OpenCodeDriver {
                                     connection_lost(&mut state, &worker.events);
                                 }
                                 HubFrame::Resync { generation } => {
-                                    if let Some(computer_use) = worker.computer_use.as_ref()
-                                        && let Err(error) = computer_use.ensure_connected()
-                                    {
-                                        let _ = worker.events.send(DriverEvent::Error(error.to_string()));
-                                    }
                                     reconcile(&worker, &mut state, generation);
                                 }
                             }
@@ -729,7 +698,6 @@ impl OpenCodeDriver {
             // shipped in `ResponsePayload::Started`, so it cannot change
             // mid-session.
             supports_steer: true,
-            computer_use,
         })
     }
 }
@@ -752,14 +720,7 @@ impl DriverControl for OpenCodeDriver {
     }
 
     fn cancel(&self) {
-        self.cancel_computer_use();
         let _ = self.commands.send(DriverCommand::Cancel);
-    }
-
-    fn cancel_computer_use(&self) {
-        if let Some(computer_use) = self.computer_use.as_ref() {
-            computer_use.stop();
-        }
     }
 
     fn respond(&self, request_id: String, option_id: String) {
@@ -819,9 +780,7 @@ impl Drop for OpenCodeDriver {
         // consequence of owning no server. Unsubscribe first so the hub stops
         // fanning out, then wake the worker so it winds down.
         drop(self.subscription.take());
-        // The worker retains the final lease and cleans up the MCP runtime
-        // when it handles Shutdown; the user's service is never terminated.
-        drop(self.computer_use.take());
+        // The user's service is never terminated.
         let _ = self.commands.send(DriverCommand::Shutdown);
     }
 }
@@ -1013,9 +972,6 @@ fn submit_prompt(
     text: &str,
     delivery: Option<Delivery>,
 ) -> Result<Option<opencode_api::InboxUser>, ApiError> {
-    if let Some(computer_use) = worker.computer_use.as_ref() {
-        computer_use.ensure_connected().map_err(ApiError::from)?;
-    }
     if let Some((name, arguments)) = native_command_invocation(text, &worker.command_names) {
         opencode_api::command(endpoint, &worker.session_id, name, arguments, delivery).map(|_| None)
     } else {
@@ -2181,7 +2137,7 @@ fn emit_tool(
     failed: bool,
     complete: bool,
 ) {
-    let mut item = activity::tool_activity(
+    let item = activity::tool_activity(
         Some(id.to_owned()),
         slot.kind,
         slot.title.clone(),
@@ -2192,15 +2148,6 @@ fn emit_tool(
         complete,
     )
     .with_tool_name(slot.tool_name.as_deref());
-    if let Some((server, tool)) = slot
-        .tool_name
-        .as_deref()
-        .and_then(super::opencode_computer_use::tool_identity)
-    {
-        item = item
-            .with_tool_name(Some(tool))
-            .with_mcp_server(Some(server));
-    }
     let _ = events.send(DriverEvent::RichActivity(item));
 }
 
@@ -2912,36 +2859,6 @@ mod tests {
             harness.state.tool_order.get("msg_1").map(Vec::as_slice),
             Some(["call_1".to_owned()].as_slice())
         );
-    }
-
-    #[test]
-    fn computer_use_tools_keep_mcp_identity_and_image_results() {
-        let mut harness = Harness::new(RuntimeMode::FullAccess);
-        let server = "waku_js_repl_0123456789abcdef0123456789abcdef";
-        harness.feed(step_started("msg_cua"));
-        harness.feed(json!({"type":"session.tool.input.started","data":{
-            "assistantMessageID":"msg_cua","id":"call_cua","name":format!("{server}_js")
-        }}));
-        harness.feed(json!({"type":"session.tool.called","data":{
-            "assistantMessageID":"msg_cua","id":"call_cua","input":{"code":"await setupComputerUseRuntime({ globals: globalThis });","title":"Inspect desktop"}
-        }}));
-        harness.feed(json!({"type":"session.tool.success","data":{
-            "assistantMessageID":"msg_cua","id":"call_cua","content":[{"type":"text","text":"ready"},{"type":"file","uri":"data:image/png;base64,aGVsbG8=","mime":"image/png"}]
-        }}));
-        let events = harness.drain();
-        let item = events
-            .iter()
-            .filter_map(|event| match event {
-                DriverEvent::RichActivity(item) if item.complete => Some(item),
-                _ => None,
-            })
-            .last()
-            .expect("completed computer-use tool");
-        assert_eq!(item.tool_name.as_deref(), Some("js"));
-        assert_eq!(item.mcp_server.as_deref(), Some(server));
-        assert_eq!(item.title, "Inspect desktop");
-        assert!(!item.failed);
-        assert!(!item.image_urls.is_empty());
     }
 
     /// `session.execution.*` only arms the outcome; `session.idle` disarms it.
@@ -3718,7 +3635,6 @@ mod tests {
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
-                computer_use_enabled: false,
                 provider_cursor: None,
                 delegation_session_path: None,
                 delegation_registry_dir: None,
@@ -3810,7 +3726,6 @@ mod tests {
             service_tier: None,
             context_window: None,
             agent_preset: None,
-            computer_use_enabled: false,
             provider_cursor,
             delegation_session_path: None,
             delegation_registry_dir: None,
@@ -3981,7 +3896,6 @@ mod tests {
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
-                computer_use_enabled: false,
                 provider_cursor: None,
                 delegation_session_path: None,
                 delegation_registry_dir: None,
@@ -4063,167 +3977,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(workspace);
     }
 
-    /// Nonvisual integration check: only reads Cua configuration and emits a
-    /// synthetic image. Requires the signed app through WAKU_APP_EXECUTABLE.
-    #[test]
-    #[ignore = "requires a configured OpenCode model and a packaged Waku app"]
-    fn opencode_computer_use_against_the_adopted_service() {
-        struct Cleanup {
-            service: Arc<OpenCodeService>,
-            sessions: Vec<String>,
-            directory: std::path::PathBuf,
-        }
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                for session in &self.sessions {
-                    let _ = opencode_api::delete_session(&self.service.endpoint(), session);
-                }
-                let _ = std::fs::remove_dir_all(&self.directory);
-            }
-        }
-        let binary = crate::command_env::find_executable("opencode").unwrap();
-        let service = opencode_service::shared(&binary).unwrap();
-        let directory = std::env::temp_dir().join(format!("waku-opencode-cua-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let mut cleanup = Cleanup {
-            service,
-            sessions: Vec::new(),
-            directory,
-        };
-        let test_directory = cleanup.directory.clone();
-        let start = || {
-            let (events, received) = crate::driver::test_event_channel();
-            let driver = OpenCodeDriver::start(
-                DriverStartOptions {
-                    binary: binary.clone(),
-                    cwd: test_directory.clone(),
-                    mode: RuntimeMode::FullAccess,
-                    execution_policy: Default::default(),
-                    model: None,
-                    reasoning_effort: None,
-                    service_tier: None,
-                    context_window: None,
-                    agent_preset: None,
-                    computer_use_enabled: true,
-                    provider_cursor: None,
-                    delegation_session_path: None,
-                    delegation_registry_dir: None,
-                },
-                events,
-            )
-            .unwrap();
-            (driver, received)
-        };
-        let (a, a_events) = start();
-        cleanup.sessions.push(a.session_id.clone());
-        let (b, b_events) = start();
-        cleanup.sessions.push(b.session_id.clone());
-        let directory = std::fs::canonicalize(&cleanup.directory)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let servers = opencode_api::list_mcp(&cleanup.service.endpoint(), &directory).unwrap();
-        let owned: Vec<_> = servers
-            .iter()
-            .filter(|server| {
-                server["name"]
-                    .as_str()
-                    .is_some_and(|name| name.starts_with("waku_js_repl_"))
-            })
-            .collect();
-        assert_eq!(
-            owned.len(),
-            1,
-            "one connection should serve both Waku tasks"
-        );
-        let server = owned[0]["name"].as_str().unwrap();
-        let run = |driver: &OpenCodeDriver, events: &Receiver<DriverEvent>, code: &str| {
-            events.try_iter().for_each(drop);
-            driver.prompt(format!("Integration test. Call the js tool on MCP server {server} exactly once with this JavaScript, then reply Done. Do not perform any other operations.\n\n{code}"));
-            let deadline = std::time::Instant::now() + Duration::from_secs(120);
-            let mut calls = Vec::new();
-            loop {
-                let event = events
-                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                    .expect("OpenCode integration turn timed out");
-                match event {
-                    DriverEvent::RichActivity(item)
-                        if item.complete && item.mcp_server.as_deref() == Some(server) =>
-                    {
-                        calls.push(item)
-                    }
-                    DriverEvent::TurnFinished { success, .. } => {
-                        assert!(success);
-                        break;
-                    }
-                    DriverEvent::Error(error) => panic!("OpenCode integration failed: {error}"),
-                    _ => {}
-                }
-            }
-            assert_eq!(calls.len(), 1, "one direct MCP call should complete");
-            let item = calls.pop().unwrap();
-            assert!(!item.failed, "{:?}", item.detail);
-            item
-        };
-        let item = run(
-            &a,
-            &a_events,
-            "var wakuIsolationMarker = 41; await setupComputerUseRuntime({ globals: globalThis }); var nativeConfig = await cua.get_config(); jsRepl.write('CUA_CONFIG=' + JSON.stringify(nativeConfig)); await jsRepl.emitImage('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==');",
-        );
-        assert_eq!(item.image_urls.len(), 1, "{item:?}");
-        assert!(
-            item.output
-                .as_deref()
-                .unwrap_or_default()
-                .contains("CUA_CONFIG=")
-        );
-        let item = run(
-            &b,
-            &b_events,
-            "jsRepl.write('OTHER_SESSION=' + typeof wakuIsolationMarker);",
-        );
-        assert!(
-            item.output
-                .as_deref()
-                .unwrap_or_default()
-                .contains("OTHER_SESSION=undefined")
-        );
-        let item = run(
-            &a,
-            &a_events,
-            "jsRepl.write('PERSISTED=' + ++wakuIsolationMarker);",
-        );
-        assert!(
-            item.output
-                .as_deref()
-                .unwrap_or_default()
-                .contains("PERSISTED=42")
-        );
-        drop(a);
-        std::thread::sleep(Duration::from_millis(300));
-        let item = run(
-            &b,
-            &b_events,
-            "jsRepl.write('SURVIVED=other session closed');",
-        );
-        assert!(
-            item.output
-                .as_deref()
-                .unwrap_or_default()
-                .contains("SURVIVED=other session closed")
-        );
-        drop(b);
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        loop {
-            let servers = opencode_api::list_mcp(&cleanup.service.endpoint(), &directory).unwrap();
-            if servers.iter().all(|entry| entry["name"] != server) {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the final lease must unregister the MCP server"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
 }

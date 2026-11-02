@@ -1948,31 +1948,17 @@ fn model_picker_highlight_wraps_at_both_ends() {
 fn settings_navigation_contains_only_supported_pages() {
     use super::SettingsPage;
 
-    let mut expected = vec![
+    let expected = vec![
         SettingsPage::Appearance,
         SettingsPage::Providers,
         SettingsPage::Skills,
+        SettingsPage::Backups,
     ];
-    if cfg!(debug_assertions) {
-        expected.push(SettingsPage::ComputerUse);
-    }
-    expected.push(SettingsPage::Backups);
     assert_eq!(
         visible_settings_pages()
             .map(|(page, ..)| page)
             .collect::<Vec<_>>(),
         expected
-    );
-}
-
-#[test]
-fn computer_use_navigation_is_debug_only() {
-    use super::SettingsPage;
-
-    assert!(SettingsPage::Appearance.is_visible_in_navigation());
-    assert_eq!(
-        SettingsPage::ComputerUse.is_visible_in_navigation(),
-        cfg!(debug_assertions)
     );
 }
 

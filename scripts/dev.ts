@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun";
-import { bundleComputerUse } from "./cua-driver";
 import { watch, type FSWatcher } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -318,22 +317,10 @@ async function build(target: BuildTarget): Promise<boolean> {
   }
   const result = isMacOS
     ? await $`${join(root, "scripts/bundle.sh")} debug`.nothrow()
-    : await $`cargo build --package waku --bin waku --bin waku_js_repl --package waku-computer-use --bin waku_computer_use`.nothrow();
+    : await $`cargo build --package waku --bin waku`.nothrow();
   if (result.exitCode !== 0) {
     console.error("[waku-dev] Build failed; keeping the current app open.");
     return false;
-  }
-  if (!isMacOS) {
-    try {
-      await bundleComputerUse(
-        join(targetDir, "debug"),
-        join(targetDir, "debug", "resources"),
-        "debug",
-      );
-    } catch (error) {
-      console.error("[waku-dev] Computer Use SDK packaging failed:", error);
-      return false;
-    }
   }
   return true;
 }

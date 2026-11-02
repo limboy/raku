@@ -84,6 +84,7 @@ impl ApiError {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn tag(&self) -> Option<&str> {
         match self {
             Self::Tagged { tag, .. } => Some(tag),
@@ -104,6 +105,7 @@ impl ApiError {
     /// A location-scoped route handed a directory the service cannot resolve
     /// answers HTTP 500 with an EMPTY body. That is a bad workspace, not a
     /// server fault, and treating it as the latter would retry forever.
+    #[cfg(test)]
     pub(crate) fn is_unresolvable_location(&self) -> bool {
         matches!(self, Self::Http { status: 500, body } if body.trim().is_empty())
     }
@@ -941,6 +943,7 @@ pub(crate) fn get_session(endpoint: &Endpoint, session: &str) -> Result<SessionI
     decode(data(response, "session")?, "session")
 }
 
+#[cfg(test)]
 pub(crate) fn delete_session(endpoint: &Endpoint, session: &str) -> Result<()> {
     let path = format!("/api/session/{}", encode_path_segment(session));
     request(endpoint, "DELETE", &path, None, REQUEST_TIMEOUT)?;
@@ -970,20 +973,6 @@ pub(crate) fn add_mcp(
     Ok(())
 }
 
-pub(crate) fn list_mcp(endpoint: &Endpoint, directory: &str) -> Result<Vec<Value>> {
-    catalogue(endpoint, "/api/mcp", Some(directory), "MCP servers")
-}
-
-pub(crate) fn remove_mcp(endpoint: &Endpoint, directory: &str, server: &str) -> Result<()> {
-    let path = format!(
-        "/api/experimental/mcp/{}{}",
-        encode_path_segment(server),
-        location_query(Some(directory))
-    );
-    request(endpoint, "DELETE", &path, None, REQUEST_TIMEOUT)?;
-    Ok(())
-}
-
 pub(crate) fn put_instruction_entry(
     endpoint: &Endpoint,
     session: &str,
@@ -1002,20 +991,6 @@ pub(crate) fn put_instruction_entry(
         Some(&json!({"value": value})),
         REQUEST_TIMEOUT,
     )?;
-    Ok(())
-}
-
-pub(crate) fn remove_instruction_entry(
-    endpoint: &Endpoint,
-    session: &str,
-    key: &str,
-) -> Result<()> {
-    let path = format!(
-        "/api/experimental/session/{}/instructions/entries/{}",
-        encode_path_segment(session),
-        encode_path_segment(key)
-    );
-    request(endpoint, "DELETE", &path, None, REQUEST_TIMEOUT)?;
     Ok(())
 }
 
@@ -1676,47 +1651,38 @@ mod tests {
     }
 
     #[test]
-    fn computer_use_runtime_configuration_is_location_and_session_scoped() {
-        let (endpoint, received, server) = recording_server(vec![no_content(); 4]);
-        let config = json!({"type":"local","command":["/app/waku_js_repl"],"codemode":false});
+    fn mcp_runtime_configuration_is_location_and_session_scoped() {
+        let (endpoint, received, server) = recording_server(vec![no_content(); 2]);
+        let config = json!({"type":"local","command":["/app/waku_test"],"codemode":false});
         add_mcp(
             &endpoint,
             "/work/project with space",
-            "waku_js_repl_test",
+            "waku_test",
             &config,
         )
         .unwrap();
         put_instruction_entry(
             &endpoint,
             "ses_test",
-            "waku-computer-use",
-            "Use cua.list_apps() through js.",
+            "waku-test-instruction",
+            "Use the test tool.",
         )
         .unwrap();
-        remove_instruction_entry(&endpoint, "ses_test", "waku-computer-use").unwrap();
-        remove_mcp(&endpoint, "/work/project with space", "waku_js_repl_test").unwrap();
         server.join().unwrap();
         let requests: Vec<_> = received.try_iter().collect();
         assert_eq!(
             requests[0].0,
-            "PUT /api/experimental/mcp/waku_js_repl_test?location%5Bdirectory%5D=%2Fwork%2Fproject%20with%20space HTTP/1.1\r\n"
+            "PUT /api/experimental/mcp/waku_test?location%5Bdirectory%5D=%2Fwork%2Fproject%20with%20space HTTP/1.1\r\n"
         );
         assert_eq!(requests[0].1, json!({"config":config}));
         assert_eq!(
             requests[1].0,
-            "PUT /api/experimental/session/ses_test/instructions/entries/waku-computer-use HTTP/1.1\r\n"
+            "PUT /api/experimental/session/ses_test/instructions/entries/waku-test-instruction HTTP/1.1\r\n"
         );
         assert_eq!(
             requests[1].1,
-            json!({"value":"Use cua.list_apps() through js."})
+            json!({"value":"Use the test tool."})
         );
-        assert_eq!(
-            requests[2].0,
-            "DELETE /api/experimental/session/ses_test/instructions/entries/waku-computer-use HTTP/1.1\r\n"
-        );
-        assert!(requests[3].0.starts_with(
-            "DELETE /api/experimental/mcp/waku_js_repl_test?location%5Bdirectory%5D="
-        ));
     }
 
     /// The 2.0 release renamed or reshaped every turn-control request this

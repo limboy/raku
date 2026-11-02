@@ -187,8 +187,6 @@ settings.appearance:
   en: Appearance
 settings.providers:
   en: Providers
-settings.computer_use:
-  en: Computer Use
 settings.general_keywords:
   en: general local projects conversations privacy analytics telemetry anonymous sharing updates automatic sparkle version math latex formula expression
 settings.appearance_keywords:
@@ -199,8 +197,6 @@ settings.skills:
   en: Skills
 settings.skills_keywords:
   en: skills skill library agent disable enable delete claude codex opencode pi antigravity agy shared
-settings.computer_use_keywords:
-  en: computer use screen recording accessibility apps control codex
 settings.back:
   en: Back
 settings.close:
@@ -319,41 +315,6 @@ providers.checked_minutes_ago:
   en: Checked %{count}m ago
 providers.checked_hours_ago:
   en: Checked %{count}h ago
-
-computer_use.allow_apps:
-  en: Let Waku use apps
-computer_use.availability:
-  en: Computer Use is available with Codex, OpenCode, and Pi
-computer_use.desktop_access:
-  en: Desktop access
-computer_use.windows_access_description:
-  en: Control apps in your current Windows desktop session. Windows may restrict access to elevated apps and secure desktops.
-computer_use.linux_access_description:
-  en: Control apps in your current Linux desktop session. Capture and input support depend on your compositor and accessibility services.
-computer_use.macos_access:
-  en: macOS access
-computer_use.helper_access:
-  en: Grant access to %{helper}, Waku's isolated control helper
-computer_use.screen_recording:
-  en: Screen Recording
-computer_use.screen_recording_description:
-  en: Captures only the approved app window
-computer_use.accessibility:
-  en: Accessibility
-computer_use.accessibility_description:
-  en: Posts pointer and keyboard events after approval
-computer_use.always_allowed_apps:
-  en: Always allowed apps
-computer_use.always_allowed_apps_description:
-  en: Waku pins these grants to the app's bundle ID and signing team
-computer_use.no_always_allowed_apps:
-  en: No apps are always allowed. Task-scoped grants stay in memory only
-computer_use.access_granted:
-  en: Access Granted
-computer_use.grant_access:
-  en: Grant Access
-computer_use.permission_check_failed:
-  en: Could not check Computer Use permissions
 
 common.settings:
   en: Settings
@@ -816,29 +777,6 @@ mode.auto_description:
   en: An AI reviewer approves routine actions; risky ones still ask
 mode.full_access_description:
   en: Allow commands and edits without prompts
-computer_use.allow_for_task:
-  en: Allow for task
-computer_use.always_allow_app:
-  en: Always allow app
-computer_use.allow_control:
-  en: Allow Waku to control %{app}?
-computer_use.screenshot_shared:
-  en: A screenshot of this window will be shared with the active Codex model
-computer_use.sensitive_action:
-  en: This action can type text or press keys
-computer_use.bundle_id:
-  en: "Bundle ID: %{id}"
-computer_use.no_bundle_id:
-  en: This app has no bundle identifier, so it cannot be always allowed
-computer_use.stopped:
-  en: Stopped
-computer_use.controlling:
-  en: Controlling
-computer_use.captured:
-  en: Captured
-computer_use.preparing_preview:
-  en: Preparing preview…
-
 common.deny:
   en: Deny
 permission.allow_once:
@@ -1338,8 +1276,6 @@ errors.answer_provider_question:
   en: "Could not answer %{provider}'s question: %{error}"
 errors.initialize_codex_app_server:
   en: Failed to initialize Codex app-server
-errors.register_computer_use_skill:
-  en: Failed to register Waku Computer Use skill with Codex
 errors.codex_thread_open_incomplete:
   en: Codex did not finish opening its thread
 errors.codex_goals_unsupported:

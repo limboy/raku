@@ -231,23 +231,6 @@ fn app_icon_for_application_path(
     })
 }
 
-#[cfg(target_os = "macos")]
-pub fn load_app_icon_for_bundle_id(bundle_id: &str) -> Option<std::sync::Arc<gpui::Image>> {
-    use objc2_app_kit::NSWorkspace;
-    use objc2_foundation::NSString;
-
-    let bundle_id = NSString::from_str(bundle_id);
-    let application_url =
-        NSWorkspace::sharedWorkspace().URLForApplicationWithBundleIdentifier(&bundle_id)?;
-    let application_path = application_url.path()?;
-    app_icon_for_application_path(&application_path)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn load_app_icon_for_bundle_id(_: &str) -> Option<std::sync::Arc<gpui::Image>> {
-    None
-}
-
 /// A folder-capable application the header's "open project in" control can
 /// target, resolved against what is installed on this machine.
 #[derive(Clone)]

@@ -12,7 +12,6 @@
 //   WINDOWS_CERTIFICATE           base64 Authenticode .pfx (optional)
 //   WINDOWS_CERTIFICATE_PASSWORD  password for it
 import { $ } from "bun";
-import { bundleComputerUse } from "./cua-driver";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -127,7 +126,7 @@ const installer = join(
   `Waku-${version}-${architecture}-Setup.exe`,
 );
 
-await $`cargo build --locked --release --package waku --bin waku --bin waku_js_repl --package waku-daemon --bin waku-daemon --package waku-computer-use --bin waku_computer_use`;
+await $`cargo build --locked --release --package waku --bin waku --package waku-daemon --bin waku-daemon`;
 
 const staging = await mkdtemp(join(tmpdir(), "waku-bundle-"));
 try {
@@ -135,14 +134,15 @@ try {
   // itself, so the layout is what makes an extracted zip runnable in place.
   const packageDirectory = join(staging, packageDirectoryName);
   await mkdir(packageDirectory, { recursive: true });
-  await bundleComputerUse(
-    packageDirectory,
-    join(packageDirectory, "resources"),
-    "release",
-  );
   for (const file of ["waku.exe", "waku-daemon.exe"]) {
     await copyFile(join(releaseDirectory, file), join(packageDirectory, file));
   }
+  const resourcesDirectory = join(packageDirectory, "resources");
+  await mkdir(join(resourcesDirectory, "delegation"), { recursive: true });
+  await copyFile(
+    join(projectRoot, "resources", "delegation", "pi-extension.ts"),
+    join(resourcesDirectory, "delegation", "pi-extension.ts"),
+  );
   await copyFile(
     join(projectRoot, "LICENSE"),
     join(packageDirectory, "LICENSE"),
@@ -162,10 +162,6 @@ try {
     await sign(signtool, certificate, certificatePassword, [
       join(packageDirectory, "waku.exe"),
       join(packageDirectory, "waku-daemon.exe"),
-      join(packageDirectory, "waku_js_repl.exe"),
-      join(packageDirectory, "waku_computer_use.exe"),
-      join(packageDirectory, "cua_driver_sdk.dll"),
-      join(packageDirectory, "cua-driver-uia.exe"),
     ]);
   } else {
     console.log("No WINDOWS_CERTIFICATE set; packaging unsigned binaries.");

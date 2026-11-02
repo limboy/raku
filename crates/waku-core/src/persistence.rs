@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::blob_store::BlobStore;
-use crate::computer_use::ComputerAppGrant;
 use crate::i18n::AppLanguage;
 use crate::identity::DATA_DIRECTORY_NAME;
 use crate::model::{
@@ -56,10 +55,6 @@ fn default_sidebar_visibility() -> bool {
 }
 
 fn default_right_panel_visibility() -> bool {
-    false
-}
-
-fn default_computer_use_enabled() -> bool {
     false
 }
 
@@ -277,10 +272,6 @@ pub struct PersistedState {
     pub sidebar_width: f32,
     #[serde(default = "default_right_panel_width")]
     pub right_panel_width: f32,
-    #[serde(default = "default_computer_use_enabled")]
-    pub computer_use_enabled: bool,
-    #[serde(default)]
-    pub computer_use_allowed_apps: Vec<ComputerAppGrant>,
     /// Providers switched off for new sessions in the Providers settings.
     #[serde(default)]
     pub disabled_providers: Vec<ProviderKind>,
@@ -388,8 +379,6 @@ impl PersistedState {
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             right_panel_width: DEFAULT_RIGHT_PANEL_WIDTH,
-            computer_use_enabled: false,
-            computer_use_allowed_apps: Vec::new(),
             disabled_providers: Vec::new(),
             provider_binary_overrides: HashMap::new(),
             daemon_settings_extra: BTreeMap::new(),
@@ -485,8 +474,6 @@ impl PersistedState {
 
     pub fn daemon_settings(&self) -> crate::DaemonSettings {
         crate::DaemonSettings {
-            computer_use_enabled: self.computer_use_enabled,
-            computer_use_allowed_apps: self.computer_use_allowed_apps.clone(),
             disabled_providers: self.disabled_providers.clone(),
             provider_binary_overrides: self.provider_binary_overrides.clone(),
             extra: self.daemon_settings_extra.clone(),
@@ -520,8 +507,6 @@ impl PersistedState {
     }
 
     pub fn apply_daemon_settings(&mut self, settings: crate::DaemonSettings) {
-        self.computer_use_enabled = settings.computer_use_enabled;
-        self.computer_use_allowed_apps = settings.computer_use_allowed_apps;
         self.disabled_providers = settings.disabled_providers;
         self.provider_binary_overrides = settings.provider_binary_overrides;
         self.daemon_settings_extra = settings.extra;
@@ -605,7 +590,6 @@ impl PersistedState {
             }
         }
         self.version = STATE_VERSION;
-        normalize_computer_app_grants(&mut self.computer_use_allowed_apps);
         self.backfill_remembered_selection();
     }
 
@@ -1861,13 +1845,6 @@ fn session_params(session: &AgentSession) -> Vec<rusqlite::types::Value> {
     ]
 }
 
-fn normalize_computer_app_grants(grants: &mut Vec<ComputerAppGrant>) {
-    let mut seen_bundle_ids = HashSet::new();
-    grants.retain(|grant| {
-        !grant.bundle_id.trim().is_empty() && seen_bundle_ids.insert(grant.bundle_id.clone())
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2125,7 +2102,6 @@ mod tests {
         let legacy = r#"{
             "theme": "dark",
             "analytics_enabled": false,
-            "computer_use_enabled": true,
             "disabled_providers": ["claude"]
         }"#;
         fs::write(&legacy_path, legacy).unwrap();
@@ -2137,26 +2113,10 @@ mod tests {
         let app: serde_json::Value =
             serde_json::from_slice(&fs::read(directory.join("app.json")).unwrap()).unwrap();
         assert_eq!(app["theme"], "dark");
-        assert!(app.get("computer_use_enabled").is_none());
         assert!(app.get("disabled_providers").is_none());
         assert_eq!(fs::read_to_string(legacy_path).unwrap(), legacy);
 
         fs::remove_dir_all(directory).ok();
-    }
-
-    #[test]
-    fn computer_use_defaults_to_disabled() {
-        let state = PersistedState::empty();
-        assert!(!state.computer_use_enabled);
-
-        let mut settings = serde_json::to_value(state.daemon_settings()).unwrap();
-        settings
-            .as_object_mut()
-            .unwrap()
-            .remove("computer_use_enabled");
-        let restored: crate::DaemonSettings = serde_json::from_value(settings).unwrap();
-
-        assert!(!restored.computer_use_enabled);
     }
 
     #[test]
@@ -2831,11 +2791,6 @@ mod tests {
         state.right_panel_visible = false;
         state.sidebar_width = 318.0;
         state.right_panel_width = 612.0;
-        state.computer_use_enabled = false;
-        state.computer_use_allowed_apps.push(ComputerAppGrant {
-            bundle_id: "com.apple.Safari".into(),
-            app_name: "Safari".into(),
-        });
         state.sessions[0].begin_turn("Persist this session");
         state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
         state.sessions[0].transcript_blocks.push(TranscriptBlock {
@@ -2892,11 +2847,6 @@ mod tests {
         assert!(!restored.right_panel_visible);
         assert_eq!(restored.sidebar_width, 318.0);
         assert_eq!(restored.right_panel_width, 612.0);
-        assert!(!restored.computer_use_enabled);
-        assert_eq!(
-            restored.computer_use_allowed_apps,
-            state.computer_use_allowed_apps
-        );
         assert_eq!(restored.sessions[0].transcript_blocks.len(), 1);
         assert_eq!(
             restored.sessions[0].transcript_blocks[0].activities.len(),
@@ -3185,12 +3135,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["theme"], "light");
         assert_eq!(value["language"], "simplified-chinese");
-        for daemon_key in [
-            "computer_use_enabled",
-            "computer_use_allowed_apps",
-            "disabled_providers",
-            "provider_binary_overrides",
-        ] {
+        for daemon_key in ["disabled_providers", "provider_binary_overrides"] {
             assert!(
                 value.get(daemon_key).is_none(),
                 "{daemon_key} leaked into app.json"
@@ -3228,8 +3173,6 @@ mod tests {
             "favorite_models",
             "theme",
             "language",
-            "computer_use_enabled",
-            "computer_use_allowed_apps",
             "disabled_providers",
             "provider_binary_overrides",
         ] {
@@ -3840,39 +3783,6 @@ mod tests {
         assert_eq!(fs::read(path).unwrap(), payload);
 
         fs::remove_dir_all(directory).ok();
-    }
-
-    #[test]
-    fn legacy_signed_computer_grants_migrate_to_bundle_ids() {
-        let legacy = serde_json::json!({
-            "bundleId": "net.imput.helium",
-            "teamId": "S4Q33XPHB4",
-            "appName": "Helium"
-        });
-        let grant: ComputerAppGrant = serde_json::from_value(legacy).unwrap();
-        assert_eq!(grant.key(), "net.imput.helium");
-
-        let mut grants = vec![
-            grant,
-            ComputerAppGrant {
-                bundle_id: "net.imput.helium".into(),
-                app_name: "Helium Preview".into(),
-            },
-            ComputerAppGrant {
-                bundle_id: String::new(),
-                app_name: "Missing identity".into(),
-            },
-        ];
-        normalize_computer_app_grants(&mut grants);
-        assert_eq!(grants.len(), 1);
-        assert_eq!(grants[0].app_name, "Helium");
-
-        let saved = serde_json::to_value(&grants[0]).unwrap();
-        assert_eq!(
-            saved.get("bundleId").and_then(|value| value.as_str()),
-            Some("net.imput.helium")
-        );
-        assert!(saved.get("teamId").is_none());
     }
 
     #[test]

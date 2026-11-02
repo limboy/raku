@@ -758,7 +758,7 @@ mod tests {
             let backups = root.join("backups");
             fs::create_dir_all(database.parent().unwrap()).unwrap();
             fs::create_dir_all(settings.parent().unwrap()).unwrap();
-            fs::write(&settings, b"{\"computer_use_enabled\":false}").unwrap();
+            fs::write(&settings, b"{\"disabled_providers\":[]}").unwrap();
             let store = StateStore::daemon(database.clone());
             let mut state = PersistedState::fresh(PathBuf::from("/workspace/example"));
             state.sessions[0].begin_turn("Keep this conversation");

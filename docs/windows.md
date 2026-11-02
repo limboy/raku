@@ -17,10 +17,9 @@ want to script the download.
 `waku-<version>-<target>.zip` is the same build without an installer. Unpack it
 anywhere and run `waku.exe`.
 
-**Keep the installation folder intact.** Waku launches its daemon and
-Computer Use helpers from this directory and loads the bundled SDK DLL and
-`resources/` files. Moving `waku.exe` out on its own leaves those unavailable.
-A shortcut is fine.
+**Keep the installation folder intact.** Waku launches its daemon from this
+directory and loads the bundled `resources/` files. Moving `waku.exe` out on
+its own leaves those unavailable. A shortcut is fine.
 
 A portable copy still updates itself: the updater passes the running
 directory to the installer, so it replaces that copy in place rather than
@@ -113,13 +112,6 @@ Differences worth knowing:
   focus, and leaves `SendPointerInput` and the external drop target for later.
   Keyboard and IME are unaffected — those still reach the page directly once
   it holds focus.
-
-## Computer Use
-
-Debug builds expose Computer Use for supported providers through the bundled
-Cua Driver SDK. It operates within the current interactive Windows desktop;
-elevated apps and secure desktops retain Windows restrictions. See
-[Computer Use](computer-use.md) for the runtime, packaging, and validation.
 
 ## What is not available yet
 

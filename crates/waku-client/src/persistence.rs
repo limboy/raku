@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{Command, DaemonSettings, DaemonSupervisor, ResponsePayload};
-use waku_protocol::computer_use::ComputerAppGrant;
 use waku_protocol::i18n::AppLanguage;
 use waku_protocol::identity::DATA_DIRECTORY_NAME;
 use waku_protocol::model::{
@@ -59,10 +58,6 @@ fn default_sidebar_visibility() -> bool {
 }
 
 fn default_right_panel_visibility() -> bool {
-    false
-}
-
-fn default_computer_use_enabled() -> bool {
     false
 }
 
@@ -426,10 +421,6 @@ pub struct PersistedState {
     pub markdown_preview: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_state: Option<PersistedWindowState>,
-    #[serde(default = "default_computer_use_enabled")]
-    pub computer_use_enabled: bool,
-    #[serde(default)]
-    pub computer_use_allowed_apps: Vec<ComputerAppGrant>,
     #[serde(default)]
     pub disabled_providers: Vec<ProviderKind>,
     #[serde(default)]
@@ -491,8 +482,6 @@ impl PersistedState {
             right_panel_width: DEFAULT_RIGHT_PANEL_WIDTH,
             markdown_preview: false,
             window_state: None,
-            computer_use_enabled: false,
-            computer_use_allowed_apps: Vec::new(),
             disabled_providers: Vec::new(),
             provider_binary_overrides: HashMap::new(),
             daemon_settings_extra: BTreeMap::new(),
@@ -580,8 +569,6 @@ impl PersistedState {
 
     pub fn daemon_settings(&self) -> DaemonSettings {
         DaemonSettings {
-            computer_use_enabled: self.computer_use_enabled,
-            computer_use_allowed_apps: self.computer_use_allowed_apps.clone(),
             disabled_providers: self.disabled_providers.clone(),
             provider_binary_overrides: self.provider_binary_overrides.clone(),
             extra: self.daemon_settings_extra.clone(),
@@ -589,12 +576,6 @@ impl PersistedState {
     }
 
     pub fn apply_daemon_settings(&mut self, settings: DaemonSettings) {
-        // Computer Use is experimental, so a release build must not let a
-        // setting written by a development build leave this client believing
-        // it is on.
-        self.computer_use_enabled =
-            crate::computer_use::resolve_enabled(settings.computer_use_enabled);
-        self.computer_use_allowed_apps = settings.computer_use_allowed_apps;
         self.disabled_providers = settings.disabled_providers;
         self.provider_binary_overrides = settings.provider_binary_overrides;
         self.daemon_settings_extra = settings.extra;
@@ -762,7 +743,6 @@ impl PersistedState {
             }
         }
         self.version = STATE_VERSION;
-        normalize_computer_app_grants(&mut self.computer_use_allowed_apps);
         self.backfill_remembered_selection();
     }
 
@@ -1574,13 +1554,6 @@ pub fn read_remote_reference(
         return None;
     };
     Some(bytes)
-}
-
-fn normalize_computer_app_grants(grants: &mut Vec<ComputerAppGrant>) {
-    let mut seen_bundle_ids = HashSet::new();
-    grants.retain(|grant| {
-        !grant.bundle_id.trim().is_empty() && seen_bundle_ids.insert(grant.bundle_id.clone())
-    });
 }
 
 fn to_io_error(error: impl std::fmt::Display) -> io::Error {

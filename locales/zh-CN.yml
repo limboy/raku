@@ -91,13 +91,11 @@ language.description: 选择 Waku 的界面语言
 settings.general: 通用
 settings.appearance: 外观
 settings.providers: 服务商
-settings.computer_use: 电脑操作
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本 数学 公式 表达式 math latex
 settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
 settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex opencode pi ohmypi antigravity agy
 settings.skills: 技能
 settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex opencode pi antigravity agy 共享
-settings.computer_use_keywords: 电脑操作 屏幕录制 辅助功能 应用 控制 codex
 settings.back: 返回
 settings.close: 关闭设置
 settings.search: 搜索设置
@@ -155,23 +153,6 @@ providers.binary_path_description: Waku 用于启动 %{provider} 的可执行文
 providers.checked_just_now: 刚刚检查过
 providers.checked_minutes_ago: "%{count} 分钟前检查过"
 providers.checked_hours_ago: "%{count} 小时前检查过"
-computer_use.allow_apps: 允许 Waku 操作其他应用
-computer_use.availability: Codex、OpenCode 和 Pi 支持电脑操作功能
-computer_use.desktop_access: 桌面权限
-computer_use.windows_access_description: 在当前 Windows 桌面会话中操作应用。Windows 可能会限制访问以管理员身份运行的应用和安全桌面。
-computer_use.linux_access_description: 在当前 Linux 桌面会话中操作应用。截图和输入支持取决于你的合成器和辅助功能服务。
-computer_use.macos_access: macOS 权限
-computer_use.helper_access: 请向 Waku 的独立控制助手 %{helper} 授予权限
-computer_use.screen_recording: 屏幕录制
-computer_use.screen_recording_description: 仅截取已允许应用的窗口
-computer_use.accessibility: 辅助功能
-computer_use.accessibility_description: 获得批准后发送鼠标与键盘操作
-computer_use.always_allowed_apps: 始终允许的应用
-computer_use.always_allowed_apps_description: Waku 会将授权绑定到应用的 Bundle ID 和签名团队
-computer_use.no_always_allowed_apps: 尚未始终允许任何应用。仅限当前任务的授权只会保存在内存中
-computer_use.access_granted: 已授权
-computer_use.grant_access: 授予权限
-computer_use.permission_check_failed: 无法检查电脑操作权限
 common.settings: 设置
 common.copy: 复制
 common.export: 导出
@@ -398,17 +379,6 @@ mode.supervised_description: 执行命令或修改文件前先征求许可
 mode.auto_accept_edits_description: 自动批准文件修改，执行其他操作前先询问
 mode.auto_description: 由 AI 审核并批准常规操作；高风险操作仍会询问
 mode.full_access_description: 无需确认即可执行命令和修改文件
-computer_use.allow_for_task: 本次任务允许
-computer_use.always_allow_app: 始终允许此应用
-computer_use.allow_control: 允许 Waku 控制“%{app}”吗？
-computer_use.screenshot_shared: 此窗口的截图将发送给当前使用的 Codex 模型
-computer_use.sensitive_action: 此操作可以输入文字或按下按键
-computer_use.bundle_id: "Bundle ID：%{id}"
-computer_use.no_bundle_id: 此应用没有 Bundle ID，因此无法设为始终允许
-computer_use.stopped: 已停止
-computer_use.controlling: 正在控制
-computer_use.captured: 已截取
-computer_use.preparing_preview: 正在准备预览…
 common.deny: 拒绝
 permission.allow_once: 仅允许一次
 permission.allow_for_session: 本次任务允许
@@ -652,7 +622,6 @@ errors.read_provider_event_stream: "无法读取 %{provider} 事件流：%{error
 errors.answer_provider_permission: "无法响应 %{provider} 的权限请求：%{error}"
 errors.answer_provider_question: "无法回答 %{provider} 的问题：%{error}"
 errors.initialize_codex_app_server: 无法初始化 Codex app-server
-errors.register_computer_use_skill: 无法向 Codex 注册 Waku 电脑操作技能
 errors.codex_thread_open_incomplete: Codex 未能完成线程打开操作
 errors.codex_goals_unsupported: 此版本的 Codex 不支持线程目标
 errors.provider_receive_prompt: "%{provider} 未能接收消息"

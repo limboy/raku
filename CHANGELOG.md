@@ -16,6 +16,7 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Remove the experimental Computer Use integration and its bundled helper
 - Remove the DeepSeek Harness (`dsh`) provider; DeepSeek models remain available through other supported agents
 - Strip decorative leading icons from automatic session titles
 

@@ -216,7 +216,6 @@ impl ClaudeDriver {
             service_tier: _,
             context_window,
             agent_preset: _,
-            computer_use_enabled: _,
             provider_cursor,
             ..
         } = options;
@@ -2169,7 +2168,6 @@ mod tests {
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
-                computer_use_enabled: false,
                 provider_cursor: None,
                 delegation_session_path: None,
                 delegation_registry_dir: None,
@@ -2240,7 +2238,6 @@ mod tests {
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
-                computer_use_enabled: false,
                 provider_cursor: None,
                 delegation_session_path: None,
                 delegation_registry_dir: None,

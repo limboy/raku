@@ -2424,7 +2424,6 @@ impl Waku {
             runtime.stream_phase = None;
             runtime.pending_permission = None;
             runtime.pending_user_input = None;
-            runtime.pending_computer_approval = None;
         }
         self.invalidate_checkpoint_refs();
         if self
@@ -2518,10 +2517,10 @@ impl Waku {
     /// Releases provider processes for sessions nobody has touched in a while.
     ///
     /// Codex, Pi and Oh My Pi keep a process resident between turns, so an abandoned task
-    /// otherwise holds an agent — and, with Computer Use on, a whole process
-    /// tree — for as long as the app runs. Recreating a runtime is exactly the
-    /// work the next prompt already does after Stop, and the resume cursor is
-    /// persisted, so the conversation survives.
+    /// otherwise holds an agent — and a whole process tree — for as long as
+    /// the app runs. Recreating a runtime is exactly the work the next prompt
+    /// already does after Stop, and the resume cursor is persisted, so the
+    /// conversation survives.
     pub(super) fn reap_idle_sessions(&mut self) {
         if self.last_idle_session_sweep.elapsed() < IDLE_SESSION_SWEEP_INTERVAL {
             return;
@@ -2628,7 +2627,6 @@ impl Waku {
                 service_tier,
                 context_window,
                 agent_preset: session.agent_preset.clone(),
-                computer_use_enabled: self.state.computer_use_enabled,
                 provider_cursor: session.provider_cursor.clone(),
             },
             event_wake: self.event_wake_tx.clone(),
@@ -2821,9 +2819,6 @@ impl Waku {
                 stream_remeasure_pending: false,
                 pending_permission: None,
                 pending_user_input: None,
-                pending_computer_approval: None,
-                computer_use_previews: Vec::new(),
-                computer_session_grants: HashSet::new(),
                 last_driver_error: None,
                 last_active_at: Instant::now(),
                 last_background_refresh_at: Instant::now()
@@ -3376,7 +3371,6 @@ impl Waku {
             runtime.stream_phase = None;
             runtime.pending_permission = None;
             runtime.pending_user_input = None;
-            runtime.pending_computer_approval = None;
             runtime.last_active_at = Instant::now();
         }
         // The transcript already shows the turn — the prompt message, its
@@ -3479,7 +3473,6 @@ impl Waku {
             | probes_changed
             | self.drain_provider_version_events()
             | self.drain_provider_detection_events()
-            | self.drain_computer_permission_events()
             | self.drain_plan_usage_events()
             | self.drain_task_state_sync_events(cx)
         {
@@ -3530,19 +3523,6 @@ impl Waku {
         }
         if changed {
             self.assistant_footer_fingerprint.set(None);
-        }
-        changed
-    }
-
-    pub(super) fn drain_computer_permission_events(&mut self) -> bool {
-        let mut changed = false;
-        while let Ok(result) = self.computer_permission_events.try_recv() {
-            self.computer_permission_request_pending = false;
-            match result {
-                Ok(permissions) => self.computer_permissions = permissions,
-                Err(error) => self.show_toast(error),
-            }
-            changed = true;
         }
         changed
     }

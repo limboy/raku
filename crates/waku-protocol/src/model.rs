@@ -1825,7 +1825,6 @@ pub enum DriverEvent {
         request_id: String,
         questions: Vec<UserInputQuestion>,
     },
-    ComputerUseUpdated(crate::computer_use::ComputerUseState),
     /// The provider accepted a steering message into the running turn.
     SteerAccepted {
         message: String,
@@ -4419,10 +4418,10 @@ mod tests {
 
             // Existing stored titles and list projections also lose the icon
             // without rewriting provider history or the user's explicit name.
-            session.auto_title = Some("👩🏽‍💻 COMP: Assess computer use".into());
+            session.auto_title = Some("👩🏽‍💻 COMP: Assess the change".into());
             assert_eq!(
                 session.list_projection().display_title(),
-                "COMP: Assess computer use"
+                "COMP: Assess the change"
             );
             assert!(session.set_title("🧠 My title"));
             assert_eq!(session.display_title(), "🧠 My title");

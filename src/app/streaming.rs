@@ -474,11 +474,6 @@ impl Waku {
                     }
                 }
             }
-            DriverEvent::ComputerUseUpdated(state) => {
-                if self.accepts_turn_output(session_id) {
-                    Self::upsert_computer_use_preview(session_id, runtime, state, cx);
-                }
-            }
             DriverEvent::SteerAccepted { message } => {
                 let submission = runtime
                     .pending_steers
@@ -718,15 +713,12 @@ impl Waku {
                 }
                 runtime.pending_permission = None;
                 runtime.pending_user_input = None;
-                runtime.pending_computer_approval = None;
-                runtime.driver.cancel_computer_use();
                 // The agent may have edited files or switched branches, so the
                 // cached view of the workspace is no longer trustworthy. This
                 // handler has no `Context`, so the drain loop acts on the flag.
                 if self.state.selected_session == Some(session_id) {
                     self.workspace_queries_stale = true;
                 }
-                runtime.computer_use_previews.clear();
                 runtime.driver.refresh_background_work();
                 self.capture_latest_turn_checkpoint_for(session_id);
                 if allow_queue_drain && success {
@@ -792,9 +784,6 @@ impl Waku {
                 runtime.stream_phase = None;
                 runtime.pending_permission = None;
                 runtime.pending_user_input = None;
-                runtime.pending_computer_approval = None;
-                runtime.driver.cancel_computer_use();
-                runtime.computer_use_previews.clear();
                 let needs_fallback = !self.turn_has_assistant_message(session_id);
                 let failure_message = runtime
                     .last_driver_error
@@ -832,77 +821,6 @@ impl Waku {
         true
     }
 
-    fn upsert_computer_use_preview(
-        session_id: Uuid,
-        runtime: &mut SessionRuntime,
-        state: ComputerUseState,
-        cx: &mut Context<Self>,
-    ) {
-        if !state.visible {
-            return;
-        }
-        let Some(window_id) = state.target.as_ref().map(|target| target.window_id) else {
-            return;
-        };
-        let mut preview = if let Some(index) =
-            runtime.computer_use_previews.iter().position(|preview| {
-                preview
-                    .target
-                    .as_ref()
-                    .is_some_and(|target| target.window_id == window_id)
-            }) {
-            if !runtime.computer_use_previews[index].visible {
-                return;
-            }
-            runtime.computer_use_previews.remove(index)
-        } else {
-            ComputerUsePreview {
-                target: None,
-                phase: state.phase,
-                visible: state.visible,
-                frames: Default::default(),
-                decode_task: None,
-            }
-        };
-        preview.target = state.target;
-        preview.phase = state.phase;
-        preview.visible = state.visible;
-        if let Some(image_url) = state.image_url {
-            let generation = preview.frames.begin();
-            // Dropping the prior task also prevents a dismissed/recreated
-            // window or replaced runtime from receiving its stale completion.
-            preview.decode_task = None;
-            let renderer = cx.svg_renderer();
-            let current_source = preview.frames.current.as_ref().map(|frame| frame.source_id);
-            let decode = cx.background_executor().spawn(async move {
-                crate::computer_use::decode_preview_image_url(&image_url, renderer, current_source)
-                    .ok()
-                    .flatten()
-            });
-            preview.decode_task = Some(cx.spawn(async move |this, cx| {
-                let image = decode.await;
-                let _ = this.update(cx, |this, cx| {
-                    let Some(preview) = this.runtimes.get_mut(&session_id).and_then(|runtime| {
-                        runtime.computer_use_previews.iter_mut().find(|preview| {
-                            preview
-                                .target
-                                .as_ref()
-                                .is_some_and(|target| target.window_id == window_id)
-                        })
-                    }) else {
-                        return;
-                    };
-                    let image = image.map(|(source_id, image)| {
-                        crate::computer_use::PreviewImage::new(source_id, image, cx)
-                    });
-                    if preview.frames.complete(generation, image) {
-                        cx.notify();
-                    }
-                });
-            }));
-        }
-        runtime.computer_use_previews.push(preview);
-    }
 }
 
 /// Foreground output is stronger evidence of a started provider turn than a

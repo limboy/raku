@@ -753,7 +753,6 @@ impl DelegationScheduler {
             service_tier: target.service_tier.clone(),
             context_window: target.context_window.clone(),
             agent_preset: target.agent_preset.clone(),
-            computer_use_enabled: false,
             provider_cursor: None,
             delegation_session_path: None,
             delegation_registry_dir: None,

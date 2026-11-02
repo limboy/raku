@@ -2,8 +2,8 @@
 
 `waku-core` is Waku's daemon-only runtime. It contains the native session
 drivers, provider discovery and model metadata, task persistence, attachment
-storage, workspace filesystem and Git services, Computer Use process control,
-and daemon-owned settings. It depends on the serializable contract in
+storage, workspace filesystem and Git services, and daemon-owned settings. It
+depends on the serializable contract in
 [`waku-protocol`](../waku-protocol), but contains no desktop transport or UI.
 
 The transport is an authenticated WebSocket (loopback by default). Requests

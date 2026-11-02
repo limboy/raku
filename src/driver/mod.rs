@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::computer_use::ComputerToolRequest;
 use crate::model::{
     BackgroundWorkKey, DriverEvent, ProviderKind, ProviderResumeCursor, RuntimeEventCursor,
 };
@@ -35,7 +34,6 @@ pub(crate) fn start_remote(
             service_tier: options.service_tier,
             context_window: options.context_window,
             agent_preset: options.agent_preset,
-            computer_use_enabled: options.computer_use_enabled,
             provider_cursor: options
                 .provider_cursor
                 .map(serde_json::to_value)
@@ -268,10 +266,6 @@ impl DriverControl for RemoteDriverControl {
         self.notify(waku_client::Command::Cancel);
     }
 
-    fn cancel_computer_use(&self) {
-        self.notify(waku_client::Command::CancelComputerUse);
-    }
-
     fn refresh_background_work(&self) {
         self.notify(waku_client::Command::RefreshBackgroundWork);
     }
@@ -307,27 +301,6 @@ impl DriverControl for RemoteDriverControl {
 
     fn goal(&self, operation: waku_protocol::model::GoalOperation) {
         self.notify(waku_client::Command::Goal { operation });
-    }
-
-    fn run_computer_tool(&self, request: ComputerToolRequest) {
-        self.notify(waku_client::Command::RunComputerTool {
-            request: waku_client::WireComputerToolRequest {
-                call_id: request.call_id,
-                tool: request.tool,
-                arguments: request.arguments,
-            },
-        });
-    }
-
-    fn reject_computer_tool(&self, request: ComputerToolRequest, reason: String) {
-        self.notify(waku_client::Command::RejectComputerTool {
-            request: waku_client::WireComputerToolRequest {
-                call_id: request.call_id,
-                tool: request.tool,
-                arguments: request.arguments,
-            },
-            reason,
-        });
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {

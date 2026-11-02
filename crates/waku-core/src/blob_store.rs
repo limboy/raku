@@ -2,7 +2,7 @@
 //!
 //! Screenshots arrive from providers as `data:` URLs. Keeping them inline in
 //! the transcript is what made the old single-file state unusable: one
-//! computer-use session reached 8 MB, base64 inflates the payload by a third,
+//! session's images reached 8 MB, base64 inflates the payload by a third,
 //! and every render decoded the string again. Blobs live in files instead, and
 //! the transcript keeps only a `waku-blob:` reference.
 

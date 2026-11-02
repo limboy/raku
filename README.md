@@ -65,7 +65,7 @@ first load.
 
 Configuration ownership is separate too: the Release desktop writes
 `~/.waku/app.json`, while Debug stays isolated at `temp/app.json`. Daemon
-provider and Computer Use settings live in `~/.waku/settings.json`.
+provider settings live in `~/.waku/settings.json`.
 
 Release apps bundle and sign `waku-daemon`. Development keeps the daemon at
 `target/debug/waku-debug-daemon`, allowing provider-only edits to rebuild and

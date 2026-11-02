@@ -442,7 +442,6 @@ mod tests {
                     service_tier: None,
                     context_window: None,
                     agent_preset: None,
-                    computer_use_enabled: false,
                     provider_cursor: None,
                     delegation_session_path: None,
                     delegation_registry_dir: None,

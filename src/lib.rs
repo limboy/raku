@@ -32,7 +32,6 @@ mod analytics;
 mod app;
 mod assets;
 mod browser;
-mod computer_use;
 pub mod daemon;
 mod driver;
 mod input;

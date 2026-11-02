@@ -23,7 +23,7 @@ use crossbeam_channel::{Sender, bounded, unbounded};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
-use super::{activity, computer_use as computer_use_runtime};
+use super::activity;
 use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
@@ -134,12 +134,6 @@ impl PiFlavor {
     /// Only Oh My Pi chunks oversized frames, and only after it is asked to.
     fn negotiates_protocol_v2(self) -> bool {
         matches!(self, Self::OhMyPi)
-    }
-
-    /// Waku's computer-use bridge is a Pi extension written against Pi's
-    /// extension API. Oh My Pi ships its own `/computer` instead.
-    fn supports_waku_computer_use(self) -> bool {
-        matches!(self, Self::Pi)
     }
 
     fn cursor(self, session_id: String, session_file: Option<PathBuf>) -> ProviderResumeCursor {
@@ -395,7 +389,6 @@ fn interrupt_pending_compactions(pending: &PendingResponses, events: &impl Drive
 pub struct PiDriver {
     flavor: PiFlavor,
     commands: Sender<CommandMessage>,
-    computer_use: Option<computer_use_runtime::ComputerUseRuntime>,
 }
 
 /// Give the parent agent Waku's delegation tools.
@@ -432,25 +425,6 @@ fn configure_pi_delegation_command(
     }
 }
 
-fn configure_pi_computer_use_command(
-    command: &mut std::process::Command,
-    config: Option<(&computer_use_runtime::ComputerUseConfig, &Path)>,
-) {
-    if let Some((config, extension)) = config {
-        command
-            .arg("--extension")
-            .arg(extension)
-            .arg("--skill")
-            .arg(&config.skill_path)
-            .env("WAKU_JS_REPL_SERVER", &config.repl_path)
-            .env("WAKU_COMPUTER_USE_SERVER", &config.server_path)
-            .env(
-                "WAKU_COMPUTER_USE_PROCESS_DIRECTORY",
-                &config.process_directory,
-            );
-    }
-}
-
 impl PiDriver {
     pub fn start(
         flavor: PiFlavor,
@@ -467,7 +441,6 @@ impl PiDriver {
             service_tier: _,
             context_window: _,
             agent_preset: _,
-            computer_use_enabled,
             provider_cursor,
             delegation_session_path,
             delegation_registry_dir: _,
@@ -479,12 +452,6 @@ impl PiDriver {
         if !review_read_only && mode != RuntimeMode::FullAccess {
             return Err(anyhow!(
                 "{} currently supports Full access only",
-                flavor.display_name()
-            ));
-        }
-        if review_read_only && computer_use_enabled {
-            return Err(anyhow!(
-                "{} cannot run Computer Use in a review subtask",
                 flavor.display_name()
             ));
         }
@@ -511,13 +478,6 @@ impl PiDriver {
             parse_model_slug(model)?;
         }
 
-        let computer_use = (computer_use_enabled && flavor.supports_waku_computer_use())
-            .then(|| computer_use_runtime::ComputerUseRuntime::start(events.clone()))
-            .transpose()?;
-        let pi_extension = computer_use
-            .as_ref()
-            .map(|_| crate::computer_use::pi_extension_path())
-            .transpose()?;
         let mut command = crate::command_env::command(&binary);
         if review_read_only {
             // Only read-capable tools exist in this session. Shells, editors,
@@ -531,13 +491,6 @@ impl PiDriver {
         if flavor.skips_version_check_by_env() {
             command.env("PI_SKIP_VERSION_CHECK", "1");
         }
-        configure_pi_computer_use_command(
-            &mut command,
-            computer_use
-                .as_ref()
-                .zip(pi_extension.as_deref())
-                .map(|(runtime, extension)| (&runtime.config, extension)),
-        );
         configure_pi_delegation_command(
             &mut command,
             flavor,
@@ -1100,11 +1053,7 @@ impl PiDriver {
                 let _ = events.send(DriverEvent::ProcessExited);
             })?;
 
-        Ok(Self {
-            flavor,
-            commands,
-            computer_use,
-        })
+        Ok(Self { flavor, commands })
     }
 }
 
@@ -1127,12 +1076,6 @@ impl DriverControl for PiDriver {
 
     fn cancel(&self) {
         let _ = self.commands.send(CommandMessage::Cancel);
-    }
-
-    fn cancel_computer_use(&self) {
-        if let Some(computer_use) = self.computer_use.as_ref() {
-            computer_use.stop();
-        }
     }
 
     fn respond(&self, _request_id: String, _option_id: String) {}
@@ -1203,7 +1146,6 @@ impl DriverControl for PiDriver {
 
 impl Drop for PiDriver {
     fn drop(&mut self) {
-        self.cancel_computer_use();
         let _ = self.commands.send(CommandMessage::Shutdown);
     }
 }
@@ -2832,7 +2774,6 @@ mod tests {
                 context_window: None,
                 execution_policy: Default::default(),
                 agent_preset: None,
-                computer_use_enabled: false,
                 provider_cursor: None,
                 delegation_session_path: None,
                 delegation_registry_dir: None,
@@ -2888,7 +2829,6 @@ mod tests {
         let driver = PiDriver {
             flavor: PiFlavor::Pi,
             commands,
-            computer_use: None,
         };
         let options = |mode| SessionOptions {
             mode,
@@ -2907,58 +2847,6 @@ mod tests {
         // Pi has no permission setter and only runs with Full access.
         assert!(!driver.apply_options(options(RuntimeMode::Ask)));
         assert!(command_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn pi_computer_use_uses_only_session_scoped_extension_and_skill_arguments() {
-        let config = computer_use_runtime::ComputerUseConfig {
-            server_path: PathBuf::from("/tmp/Waku Computer Use"),
-            repl_path: PathBuf::from("/Applications/Waku.app/Resources/waku_js_repl"),
-            skill_path: PathBuf::from("/Applications/Waku.app/Resources/skills/SKILL.md"),
-            process_directory: PathBuf::from("/tmp/waku-computer-use/session"),
-        };
-        let mut command = std::process::Command::new("pi");
-
-        configure_pi_computer_use_command(
-            &mut command,
-            Some((
-                &config,
-                Path::new("/Applications/Waku.app/Resources/computer-use/pi-extension.ts"),
-            )),
-        );
-
-        let arguments = command
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            arguments,
-            [
-                "--extension",
-                "/Applications/Waku.app/Resources/computer-use/pi-extension.ts",
-                "--skill",
-                "/Applications/Waku.app/Resources/skills/SKILL.md",
-            ]
-        );
-        let environment = command
-            .get_envs()
-            .map(|(name, value)| {
-                (
-                    name.to_string_lossy().into_owned(),
-                    value.map(|value| value.to_string_lossy().into_owned()),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        assert_eq!(
-            environment.get("WAKU_JS_REPL_SERVER"),
-            Some(&Some(
-                "/Applications/Waku.app/Resources/waku_js_repl".into()
-            ))
-        );
-        assert_eq!(
-            environment.get("WAKU_COMPUTER_USE_PROCESS_DIRECTORY"),
-            Some(&Some("/tmp/waku-computer-use/session".into()))
-        );
     }
 
     #[test]
@@ -3209,7 +3097,6 @@ mod tests {
                 context_window: None,
                 agent_preset: None,
                 execution_policy: Default::default(),
-                computer_use_enabled: false,
                 provider_cursor: None,
                 delegation_session_path: None,
                 delegation_registry_dir: None,
@@ -3316,7 +3203,6 @@ mod tests {
                 context_window: None,
                 execution_policy: Default::default(),
                 agent_preset: None,
-                computer_use_enabled: false,
                 provider_cursor: Some(ProviderResumeCursor::OhMyPi {
                     session_id,
                     session_file: Some(native_file),
@@ -3397,7 +3283,6 @@ mod tests {
                 context_window: None,
                 agent_preset: None,
                 execution_policy: Default::default(),
-                computer_use_enabled: false,
                 provider_cursor: None,
                 delegation_session_path: None,
                 delegation_registry_dir: None,
@@ -3487,7 +3372,6 @@ mod tests {
                 context_window: None,
                 agent_preset: None,
                 execution_policy: Default::default(),
-                computer_use_enabled: false,
                 provider_cursor: Some(ProviderResumeCursor::OhMyPi {
                     session_id,
                     session_file: Some(session_file.clone()),
@@ -4643,18 +4527,6 @@ mod delegation_tests {
                 .count(),
             2,
             "both delegation tools must declare loadMode: \"essential\" so Oh My Pi keeps their schemas top-level"
-        );
-
-        let computer_use_source =
-            include_str!("../../../../resources/computer-use/pi-extension.ts");
-        assert!(computer_use_source.contains("name: \"js\""));
-        assert!(computer_use_source.contains("name: \"js_reset\""));
-        assert_eq!(
-            computer_use_source
-                .matches("loadMode: \"essential\",")
-                .count(),
-            2,
-            "both Computer Use tools must declare loadMode: \"essential\" so Oh My Pi keeps their schemas top-level"
         );
     }
 }

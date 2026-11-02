@@ -23,12 +23,12 @@ use crate::settings::DaemonSettingsStore;
 /// Pi cannot inherit an MCP server from Waku the way Codex can, so the tools
 /// arrive as an extension that spawns `waku-daemon mcp-agent-tools` itself.
 pub fn pi_extension_path() -> anyhow::Result<PathBuf> {
-    let path = crate::computer_use::resources_directory(
-        &crate::computer_use::host_executable_path()?,
+    let path = crate::resources::resources_directory(
+        &crate::resources::host_executable_path()?,
         std::env::consts::OS,
     )?
     .join("delegation/pi-extension.ts");
-    crate::computer_use::packaged_file(&path, "Waku Pi delegation extension")
+    crate::resources::packaged_file(&path, "Waku Pi delegation extension")
 }
 
 #[derive(Clone)]

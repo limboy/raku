@@ -2697,13 +2697,6 @@ impl Waku {
     /// the live page swaps for a frozen snapshot.
     fn any_overlay_open(&self, cx: &App) -> bool {
         self.menus.borrow().values().any(ContextMenuHandle::is_open)
-            || self.selected_runtime().is_some_and(|runtime| {
-                runtime.computer_use_previews.iter().any(|preview| {
-                    preview.visible
-                        && preview.target.is_some()
-                        && preview.phase != ComputerUsePhase::AwaitingApproval
-                })
-            })
             || self.settings_page.is_some()
             || self.command_palette.is_open()
             || self.task_switcher.is_open()

@@ -1974,27 +1974,24 @@ mod message_time_tests {
         let activity = ActivityItem::new(
             Some("tool-1".into()),
             crate::model::ActivityKind::Tool,
-            "List running apps via CUA",
+            "Query the index",
             None,
             true,
         )
-        .with_tool_name(Some("js"))
-        .with_mcp_server(Some("waku_js_repl"))
+        .with_tool_name(Some("search"))
+        .with_mcp_server(Some("waku_test"))
         .with_arguments(Some("{}".into()));
-        assert_eq!(
-            activity_display_title(&activity),
-            "List running apps via CUA"
-        );
+        assert_eq!(activity_display_title(&activity), "Query the index");
         assert_eq!(
             activity_disclosure_sections(&activity),
             vec![
                 ActivityDisclosureSection {
                     kind: ActivityDisclosureSectionKind::McpServer,
-                    content: "waku_js_repl".into()
+                    content: "waku_test".into()
                 },
                 ActivityDisclosureSection {
                     kind: ActivityDisclosureSectionKind::ToolName,
-                    content: "js".into()
+                    content: "search".into()
                 },
                 ActivityDisclosureSection {
                     kind: ActivityDisclosureSectionKind::Arguments,
@@ -2036,7 +2033,7 @@ mod message_time_tests {
             true,
         )
         .with_arguments(Some("{\n  \"actions\": []\n}".into()))
-        .with_output(Some("Computer Use helper closed its session".into()))
+        .with_output(Some("Helper closed its session".into()))
         .with_failed(true);
 
         assert_eq!(
@@ -2048,19 +2045,19 @@ mod message_time_tests {
                 },
                 ActivityDisclosureSection {
                     kind: ActivityDisclosureSectionKind::Output,
-                    content: "Computer Use helper closed its session".into(),
+                    content: "Helper closed its session".into(),
                 },
             ]
         );
         assert_eq!(
             activity_disclosure_text(&activity).as_deref(),
             Some(
-                "Arguments\n{\n  \"actions\": []\n}\n\nOutput\nComputer Use helper closed its session"
+                "Arguments\n{\n  \"actions\": []\n}\n\nOutput\nHelper closed its session"
             )
         );
         assert_eq!(
             activity_preview(&activity),
-            "Computer Use helper closed its session"
+            "Helper closed its session"
         );
 
         let image_only = ActivityItem::new(

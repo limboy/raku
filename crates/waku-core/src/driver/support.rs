@@ -221,7 +221,7 @@ mod tests {
     fn provider_stderr_keeps_cli_argument_errors_compact() {
         let message = provider_stderr_error(vec![
             "error: unexpected argument '---".into(),
-            "name: waku-computer-use".into(),
+            "name: waku-test-skill".into(),
             "description: a very long bundled skill".into(),
             "---' found".into(),
             "tip: to pass it as a value, use '-- ---'".into(),

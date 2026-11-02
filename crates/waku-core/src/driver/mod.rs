@@ -5,9 +5,7 @@ mod antigravity;
 mod claude;
 mod codex;
 mod compaction;
-mod computer_use;
 mod opencode;
-mod opencode_computer_use;
 mod pi;
 mod support;
 mod title_language;
@@ -20,7 +18,6 @@ use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 
-use crate::computer_use::ComputerToolRequest;
 use crate::model::{
     BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, ProviderKind,
     ProviderResumeCursor, RuntimeMode, UserInputAnswer,
@@ -110,10 +107,6 @@ impl DriverHandle {
         self.inner.cancel();
     }
 
-    pub fn cancel_computer_use(&self) {
-        self.inner.cancel_computer_use();
-    }
-
     pub fn refresh_background_work(&self) {
         self.inner.refresh_background_work();
     }
@@ -134,14 +127,6 @@ impl DriverHandle {
     /// asynchronously as `DriverEvent::GoalUpdated` or `DriverEvent::Error`.
     pub fn goal(&self, operation: GoalOperation) {
         self.inner.goal(operation);
-    }
-
-    pub fn run_computer_tool(&self, request: ComputerToolRequest) {
-        self.inner.run_computer_tool(request);
-    }
-
-    pub fn reject_computer_tool(&self, request: ComputerToolRequest, reason: String) {
-        self.inner.reject_computer_tool(request, reason);
     }
 
     pub fn apply_options(&self, options: SessionOptions) -> bool {
@@ -168,7 +153,6 @@ pub trait DriverControl: Send + Sync {
     /// `DriverEvent::SteerRejected`.
     fn steer(&self, _prompt: String) {}
     fn cancel(&self);
-    fn cancel_computer_use(&self) {}
     fn refresh_background_work(&self) {}
     fn stop_background_work(&self, _key: BackgroundWorkKey, _control_id: String) {}
     fn respond(&self, request_id: String, option_id: String);
@@ -176,8 +160,6 @@ pub trait DriverControl: Send + Sync {
     /// Providers without persisted goals ignore the request; the UI only
     /// offers goal controls where the provider reports one.
     fn goal(&self, _operation: GoalOperation) {}
-    fn run_computer_tool(&self, _request: ComputerToolRequest) {}
-    fn reject_computer_tool(&self, _request: ComputerToolRequest, _reason: String) {}
     /// Applies changed turn options to the live session, returning whether the
     /// transport could do it without being restarted. A `false` answer is the
     /// driver asking to be torn down and recreated with the new options.
@@ -200,7 +182,6 @@ pub struct DriverStartOptions {
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
     pub agent_preset: Option<String>,
-    pub computer_use_enabled: bool,
     pub provider_cursor: Option<ProviderResumeCursor>,
     pub delegation_session_path: Option<PathBuf>,
     pub delegation_registry_dir: Option<PathBuf>,
@@ -220,15 +201,9 @@ pub struct SessionOptions {
 
 pub(crate) fn start_local(
     provider: ProviderKind,
-    mut options: DriverStartOptions,
+    options: DriverStartOptions,
     events: DriverEventSender,
 ) -> anyhow::Result<DriverHandle> {
-    // Computer Use is experimental, so release builds never start its helper
-    // whatever a client, a migrated state file, or an environment variable
-    // asks for. Every driver reads the clamped flag, which also means only
-    // debug builds register the REPL server's Cua bridge or attach the skill.
-    options.computer_use_enabled =
-        crate::computer_use::resolve_enabled(options.computer_use_enabled);
     let title_language = Arc::new(title_language::TitleLanguageContext::new(
         provider,
         options.execution_policy,

@@ -132,7 +132,7 @@ mod tests {
 
         let store = DaemonSettingsStore::open(path.clone()).unwrap();
         let settings = store.get();
-        assert!(settings.computer_use_enabled);
+        assert!(!settings.extra.contains_key("computer_use_enabled"));
         assert_eq!(settings.disabled_providers, vec![ProviderKind::Claude]);
         assert_eq!(
             settings.provider_binary_overrides,
@@ -158,7 +158,7 @@ mod tests {
 
         let store = DaemonSettingsStore::open(path.clone()).unwrap();
         let settings = store.get();
-        assert!(settings.computer_use_enabled);
+        assert!(!settings.extra.contains_key("computer_use_enabled"));
         assert_eq!(settings.extra.get("future"), Some(&Value::from(42)));
         assert!(!settings.extra.contains_key("theme"));
         store.replace(settings).unwrap();

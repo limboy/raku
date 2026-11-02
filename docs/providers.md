@@ -34,14 +34,14 @@ Inputs ([driver/mod.rs:67](../crates/waku-core/src/driver/mod.rs#L79)):
 pub struct DriverStartOptions {
     binary, cwd, mode,
     model, reasoning_effort, service_tier,
-    computer_use_enabled, provider_cursor,
+    provider_cursor,
 }
 ```
 
 Outputs ([model.rs:973](../crates/waku-core/src/model.rs)): `Connected`,
 `AvailableCommands`, `TurnStarted`, `TextDelta`, `ReasoningDelta`, `Activity`,
-`RichActivity`, `Permission`, `ComputerUseUpdated`, `SteerAccepted`,
-`SteerRejected`, `TurnFinished`, `Error`, `ProcessExited`.
+`RichActivity`, `Permission`, `SteerAccepted`, `SteerRejected`,
+`TurnFinished`, `Error`, `ProcessExited`.
 
 A transport that can inject a user message into the *running* turn advertises
 it through `DriverControl::supports_steer` and delivers it with `steer`; the
@@ -121,7 +121,7 @@ A runtime — and with it that session's provider process — is dropped when:
 | Nobody has touched the session for 30 minutes | `reap_idle_sessions`, [src/app/runtime.rs](../src/app/runtime.rs) |
 | Waku quits | `cx.quit()` |
 
-Stop drops the runtime for Codex (whose app-server owns the Computer Use process
+Stop drops the runtime for Codex (whose app-server owns its provider process
 tree) and Antigravity CLI (whose `stream-json` loop flushes an `interrupted`
 result and exits on `SIGINT`); the next prompt resumes the native thread or
 conversation (`thread/resume` / `--conversation <id>`). Every other provider has
@@ -199,7 +199,6 @@ registration file.
 | Interactive approvals | yes | no | no (has them; Waku runs `--yolo`) | yes | yes | no (headless policy) |
 | Mid-turn steering | yes | yes | yes | yes | yes | no (follow-up queue) |
 | Model discovery | yes | yes | yes | yes | yes | yes |
-| Computer Use | yes | yes | no (ships its own) | no | yes | no |
 | Restricted to Full access | no | yes | yes | no | no | no |
 | Rewind and branch at a turn | yes | yes | yes | yes | yes | no |
 
@@ -214,8 +213,7 @@ turned out to already serve a session protocol; nobody had looked.
 ## Codex CLI
 
 **Launch** — `codex app-server --stdio`
-([driver/codex.rs:164](../crates/waku-core/src/driver/codex.rs#L164)), plus `-c` config
-overrides when Computer Use is on.
+([driver/codex.rs:164](../crates/waku-core/src/driver/codex.rs#L164)).
 
 **Protocol** — newline-delimited JSON-RPC over stdio, genuinely bidirectional:
 Codex can send Waku requests (approvals) and Waku answers them by id. Three
@@ -232,9 +230,7 @@ its stdin, never by a signal. See
 
 1. `initialize` (id `0`) with `clientInfo` and `capabilities.experimentalApi`.
 2. `initialized`.
-3. `skills/extraRoots/set` when Computer Use is on, so Waku's bundled skill is
-   discovered like Codex's own skills rather than injected as instructions.
-4. `thread/start` or `thread/resume` (id `1`) with `cwd`, `approvalPolicy`,
+3. `thread/start` or `thread/resume` (id `1`) with `cwd`, `approvalPolicy`,
    `sandbox`, `approvalsReviewer`, and optional `model` / `serviceTier`.
 
 The reply to id `1` carries `result.thread.id` (→ `Connected` with a
@@ -296,11 +292,6 @@ unknown markers are dropped. Private control markers never reach the transcript
 **Models** — a throwaway app-server, `model/list` paged via `nextCursor`, up to
 32 pages ([model_catalog.rs:367](../crates/waku-core/src/model_catalog.rs#L367)).
 
-**Computer Use** — `-c mcp_servers.waku_js_repl.command=…` registers Waku's
-QuickJS MCP server, with several `-c` flags disabling Codex's own external
-computer-use plugin/MCP/skill so only Waku's `js` / `js_reset` surface is
-visible.
-
 ---
 
 ## Pi and Oh My Pi
@@ -320,7 +311,6 @@ which is what keeps the two from drifting into near-copies:
 | Title event / field | `session_info_changed` / `name` | `session_info_update` / `title` |
 | Branch commands | `get_fork_messages`, `fork` | `get_branch_messages`, `branch` |
 | Whole-session copy | in place | only at launch, so Waku shells out (see below) |
-| Computer Use | Waku's Pi extension | none — Oh My Pi ships its own `/computer` |
 | Catalog probe's context-files flag | `--no-context-files` | `--no-rules` |
 
 Everything below is shared unless noted.
@@ -426,11 +416,6 @@ configured, scoped to the active model family (e.g. Antigravity's Gemini vs
 Claude/GPT pools, Codex's standard vs Spark lanes), and deduplicated across
 `sharedGroup` routing copies. Unmetered API-key upstreams return `None` and omit
 the plan section.
-
-**Computer Use** — Pi only: `--extension <waku pi extension>` and
-`--skill <SKILL.md>`, with the REPL and helper paths passed through the
-environment. Waku's bridge is written against Pi's extension API, and Oh My Pi
-ships its own `/computer` instead, so the flag is never passed to it.
 
 ---
 
@@ -661,9 +646,6 @@ empty session under its id.
 (`GET /api/experimental/session/{id}/export`), cold forks and the model and
 agent catalogs attach to a running service but never start one, so with no
 service running the model picker keeps its cached catalog.
-
-**Computer Use** — a runtime-only MCP registration per workspace and a session
-instruction entry; see [computer-use.md](computer-use.md).
 
 ---
 

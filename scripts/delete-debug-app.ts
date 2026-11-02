@@ -22,7 +22,7 @@ function addCandidate(path: string): void {
 }
 
 function isDebugDiagnostic(name: string): boolean {
-  return /^Waku Debug(?: Computer Use)?[-_.]/.test(name);
+  return /^Waku Debug[-_.]/.test(name);
 }
 
 async function addMatchingChildren(
@@ -64,7 +64,6 @@ async function existingTargets(): Promise<Target[]> {
 
 // Checkout-local state and build artifacts. Keep the release cache intact.
 addCandidate(join(projectRoot, "temp"));
-addCandidate(join(projectRoot, ".waku-cache", "computer-use", "debug"));
 addCandidate(join(projectRoot, "target", "debug", "Waku Debug.app"));
 
 if (process.env.CARGO_TARGET_DIR) {
@@ -83,15 +82,6 @@ addCandidate("/Applications/Waku Debug.app");
 
 // Debug-only app data. The release app uses Waku/sh.waku and is not included.
 addCandidate(join(library, "Application Support", "Waku Debug"));
-addCandidate(
-  join(
-    library,
-    "Application Support",
-    "Waku",
-    "Computer Use",
-    "Waku Debug Computer Use.app",
-  ),
-);
 addCandidate(join(library, "Caches", "Waku Debug"));
 addCandidate(join(library, "Logs", "Waku Debug"));
 
@@ -148,7 +138,7 @@ for (const target of targets) {
   console.log(`  [${target.kind}] ${target.path}`);
 }
 
-const runningProcesses = ["Waku Debug", "Waku Debug Computer Use"].filter(
+const runningProcesses = ["Waku Debug"].filter(
   (name) =>
     Bun.spawnSync(["/usr/bin/pgrep", "-x", name], {
       stdout: "ignore",

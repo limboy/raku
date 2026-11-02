@@ -2,10 +2,9 @@
 
 use super::compaction::CompactionTracker;
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -20,8 +19,6 @@ use serde_json::{Value, json};
 #[cfg(test)]
 use uuid::Uuid;
 
-use super::computer_use as computer_use_runtime;
-use crate::computer_use;
 use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
@@ -31,20 +28,6 @@ use crate::model::{
     PermissionOption, ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus,
     UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
 };
-
-const DISABLE_EXTERNAL_COMPUTER_USE_PLUGIN: &str =
-    "plugins.computer-use@openai-bundled.enabled=false";
-// Codex 0.146 only resolves plugin enablement from user/profile config layers, so a
-// process-local `-c` plugin override does not yet suppress its bundled capabilities.
-const DISABLE_EXTERNAL_COMPUTER_USE_MCP_COMMAND: &str =
-    "mcp_servers.computer-use.command=\"/usr/bin/true\"";
-const DISABLE_EXTERNAL_COMPUTER_USE_MCP: &str = "mcp_servers.computer-use.enabled=false";
-const DISABLE_EXTERNAL_COMPUTER_USE_SKILL: &str =
-    r#"skills.config=[{name="computer-use:computer-use",enabled=false}]"#;
-// Codex validates MCP transport fields even for disabled servers, so the
-// override needs a valid stdio command before disabling the bundled server.
-const DISABLE_CODEX_NODE_REPL_COMMAND: &str = "mcp_servers.node_repl.command=\"/usr/bin/true\"";
-const DISABLE_CODEX_NODE_REPL: &str = "mcp_servers.node_repl.enabled=false";
 
 enum CommandMessage {
     Compact(CompactionRequest),
@@ -148,78 +131,6 @@ pub struct CodexDriver {
     binary: PathBuf,
     cwd: PathBuf,
     mode: RuntimeMode,
-    computer_use_process_directory: Option<PathBuf>,
-    computer_use_server_path: Option<PathBuf>,
-    computer_use_preview_monitor: Option<computer_use_runtime::ComputerUsePreviewMonitor>,
-}
-
-struct CodexComputerUseConfig {
-    server_path: PathBuf,
-    server: String,
-    repl: String,
-    skill_root: PathBuf,
-    process_directory: PathBuf,
-    process_directory_config: String,
-}
-
-impl CodexComputerUseConfig {
-    fn load() -> anyhow::Result<Self> {
-        let server_path = computer_use::mcp_server_command()?;
-        let server = toml_string(&server_path.display().to_string());
-        let repl_path = computer_use::js_repl_server_path()?;
-        let repl = toml_string(&repl_path.display().to_string());
-        let skill_root = computer_use::skill_root_path()?;
-        let process_directory = computer_use_runtime::create_process_directory()?;
-        let process_directory_config = toml_string(&process_directory.display().to_string());
-        Ok(Self {
-            server_path,
-            server,
-            repl,
-            skill_root,
-            process_directory,
-            process_directory_config,
-        })
-    }
-}
-
-/// Register Waku's long-lived QuickJS MCP server and keep the raw native helper
-/// private behind its built-in `cua` object. Codex sees only the compact
-/// `js` / `js_reset` execution surface.
-fn configure_computer_use_command(command: &mut Command, config: Option<&CodexComputerUseConfig>) {
-    if let Some(config) = config {
-        command
-            .arg("-c")
-            .arg(DISABLE_EXTERNAL_COMPUTER_USE_PLUGIN)
-            .arg("-c")
-            .arg(DISABLE_EXTERNAL_COMPUTER_USE_MCP_COMMAND)
-            .arg("-c")
-            .arg(DISABLE_EXTERNAL_COMPUTER_USE_MCP)
-            .arg("-c")
-            .arg(DISABLE_EXTERNAL_COMPUTER_USE_SKILL)
-            .arg("-c")
-            .arg(DISABLE_CODEX_NODE_REPL_COMMAND)
-            .arg("-c")
-            .arg(DISABLE_CODEX_NODE_REPL)
-            .env("WAKU_COMPUTER_USE_SERVER", &config.server_path)
-            .env(
-                "WAKU_COMPUTER_USE_PROCESS_DIRECTORY",
-                &config.process_directory,
-            )
-            .arg("-c")
-            .arg(format!("mcp_servers.waku_js_repl.command={}", config.repl))
-            .arg("-c")
-            .arg("mcp_servers.waku_js_repl.args=[]")
-            .arg("-c")
-            .arg(format!(
-                "mcp_servers.waku_js_repl.env.WAKU_COMPUTER_USE_SERVER={}",
-                config.server
-            ))
-            .arg("-c")
-            .arg(format!(
-                "mcp_servers.waku_js_repl.env.WAKU_COMPUTER_USE_PROCESS_DIRECTORY={}",
-                config.process_directory_config
-            ));
-    }
 }
 
 impl CodexDriver {
@@ -234,7 +145,6 @@ impl CodexDriver {
             service_tier,
             context_window: _,
             agent_preset: _,
-            computer_use_enabled,
             provider_cursor,
             delegation_session_path,
             delegation_registry_dir: _,
@@ -249,24 +159,10 @@ impl CodexDriver {
             }
             None => None,
         };
-        let computer_use = (computer_use_enabled
-            && execution_policy != ExecutionPolicy::ReviewReadOnly)
-            .then(CodexComputerUseConfig::load)
-            .transpose()?;
-        let computer_use_skill_root = computer_use
-            .as_ref()
-            .map(|config| config.skill_root.clone());
-        let computer_use_process_directory = computer_use
-            .as_ref()
-            .map(|config| config.process_directory.clone());
-        let computer_use_server_path = computer_use
-            .as_ref()
-            .map(|config| config.server_path.clone());
         let title_binary = binary.clone();
         let title_cwd = cwd.clone();
         let mut command = crate::command_env::command(&binary);
         command.args(["app-server", "--stdio"]);
-        configure_computer_use_command(&mut command, computer_use.as_ref());
         if let Some(session_path) = delegation_session_path.as_ref() {
             let daemon_bin =
                 std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
@@ -302,15 +198,6 @@ impl CodexDriver {
             .stderr
             .take()
             .ok_or_else(|| anyhow!("Codex stderr unavailable"))?;
-        let computer_use_preview_monitor = computer_use_process_directory
-            .as_ref()
-            .map(|directory| {
-                computer_use_runtime::ComputerUsePreviewMonitor::start(
-                    directory.clone(),
-                    events.clone(),
-                )
-            })
-            .transpose()?;
         let (commands, command_rx) = unbounded();
         let thread_id = Arc::new(Mutex::new(None::<String>));
         let turn_id = Arc::new(Mutex::new(None::<String>));
@@ -370,29 +257,6 @@ impl CodexDriver {
                         "errors.initialize_codex_app_server"
                     )));
                     return;
-                }
-
-                if let Some(computer_use_skill_root) = computer_use_skill_root {
-                    // Register Waku's bundled skill through Codex's discoverable-skill
-                    // mechanism. Keep the skill out of developerInstructions so it is
-                    // loaded and displayed like Codex's own bundled skills.
-                    if write_json_line(
-                        &mut stdin,
-                        &json!({
-                            "method": "skills/extraRoots/set",
-                            "id": "waku-computer-use-skill",
-                            "params": {
-                                "extraRoots": [computer_use_skill_root.display().to_string()]
-                            }
-                        }),
-                    )
-                    .is_err()
-                    {
-                        let _ = writer_events.send(DriverEvent::Error(tr!(
-                            "errors.register_computer_use_skill"
-                        )));
-                        return;
-                    }
                 }
 
                 // Every turn carries its own model, effort and tier, so changing
@@ -928,9 +792,6 @@ impl CodexDriver {
             binary,
             cwd,
             mode,
-            computer_use_process_directory,
-            computer_use_server_path,
-            computer_use_preview_monitor,
         })
     }
 }
@@ -1077,15 +938,6 @@ impl DriverControl for CodexDriver {
         let _ = self.commands.send(CommandMessage::Cancel);
     }
 
-    fn cancel_computer_use(&self) {
-        if let (Some(directory), Some(server_path)) = (
-            self.computer_use_process_directory.as_deref(),
-            self.computer_use_server_path.as_deref(),
-        ) {
-            computer_use_runtime::stop_registered_processes(directory, server_path);
-        }
-    }
-
     fn refresh_background_work(&self) {
         let _ = self.commands.send(CommandMessage::RefreshBackgroundWork);
     }
@@ -1169,11 +1021,6 @@ impl DriverControl for CodexDriver {
 
 impl Drop for CodexDriver {
     fn drop(&mut self) {
-        self.cancel_computer_use();
-        drop(self.computer_use_preview_monitor.take());
-        if let Some(directory) = self.computer_use_process_directory.as_deref() {
-            let _ = fs::remove_dir_all(directory);
-        }
         let _ = self.commands.send(CommandMessage::Shutdown);
     }
 }
@@ -2762,6 +2609,7 @@ fn is_visible_stderr_notice(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn native_image_generation_notifications_preserve_item_identity_and_order() {
@@ -2952,7 +2800,6 @@ mod tests {
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
-                computer_use_enabled: false,
                 provider_cursor: Some(ProviderResumeCursor::Codex {
                     thread_id: "thread-original".into(),
                 }),
@@ -3022,7 +2869,6 @@ mod tests {
                     service_tier: None,
                     context_window: None,
                     agent_preset: None,
-                    computer_use_enabled: false,
                     provider_cursor: Some(cursor),
                     delegation_session_path: None,
                     delegation_registry_dir: None,
@@ -3110,7 +2956,6 @@ mod tests {
                     service_tier: None,
                     context_window: None,
                     agent_preset: None,
-                    computer_use_enabled: false,
                     provider_cursor: cursor,
                     delegation_session_path: None,
                     delegation_registry_dir: None,
@@ -3499,9 +3344,6 @@ mod tests {
             binary: PathBuf::from("codex"),
             cwd: std::env::temp_dir(),
             mode: RuntimeMode::FullAccess,
-            computer_use_process_directory: None,
-            computer_use_server_path: None,
-            computer_use_preview_monitor: None,
         };
 
         assert!(driver.apply_options(session_options(RuntimeMode::FullAccess, "gpt-5-codex")));
@@ -3527,112 +3369,6 @@ mod tests {
         assert!(is_visible_stderr_notice(
             "Error: error loading default config after config error: invalid transport"
         ));
-    }
-
-    #[test]
-    fn computer_use_command_configuration_follows_the_setting() {
-        let mut disabled = Command::new("/usr/bin/true");
-        configure_computer_use_command(&mut disabled, None);
-        let disabled_arguments = disabled
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert!(disabled_arguments.is_empty());
-        assert!(
-            disabled
-                .get_envs()
-                .all(|(name, _)| { !name.to_string_lossy().starts_with("WAKU_COMPUTER_USE_") })
-        );
-
-        let config = CodexComputerUseConfig {
-            server_path: PathBuf::from("/tmp/waku-computer-use-server"),
-            server: toml_string("/tmp/waku-computer-use-server"),
-            repl: toml_string("/tmp/waku"),
-            skill_root: PathBuf::from("/tmp/waku-computer-use-skill"),
-            process_directory: PathBuf::from("/tmp/waku-computer-use-processes"),
-            process_directory_config: toml_string("/tmp/waku-computer-use-processes"),
-        };
-        let mut enabled = Command::new("/usr/bin/true");
-        configure_computer_use_command(&mut enabled, Some(&config));
-        let enabled_arguments = enabled
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        // The raw helper must never be registered as a Codex MCP server: the
-        // Waku REPL owns it and exposes only `cua` inside JavaScript.
-        assert!(
-            !enabled_arguments
-                .iter()
-                .any(|argument| argument.contains("mcp_servers.waku_computer_use"))
-        );
-        assert!(
-            enabled_arguments
-                .iter()
-                .any(|argument| argument.contains("mcp_servers.waku_js_repl.command"))
-        );
-        assert!(
-            enabled_arguments
-                .iter()
-                .any(|argument| { argument == "mcp_servers.waku_js_repl.args=[]" })
-        );
-        assert!(
-            enabled_arguments
-                .iter()
-                .any(|argument| argument == DISABLE_EXTERNAL_COMPUTER_USE_PLUGIN)
-        );
-        assert!(
-            enabled_arguments
-                .iter()
-                .any(|argument| argument == DISABLE_EXTERNAL_COMPUTER_USE_MCP)
-        );
-        assert!(
-            enabled_arguments
-                .iter()
-                .any(|argument| argument == DISABLE_EXTERNAL_COMPUTER_USE_SKILL)
-        );
-        assert!(
-            enabled_arguments
-                .iter()
-                .any(|argument| argument == DISABLE_CODEX_NODE_REPL)
-        );
-        assert!(
-            enabled_arguments
-                .iter()
-                .any(|argument| argument == DISABLE_CODEX_NODE_REPL_COMMAND)
-        );
-        assert!(
-            enabled
-                .get_envs()
-                .any(|(name, _)| { name.to_string_lossy() == "WAKU_COMPUTER_USE_SERVER" })
-        );
-    }
-
-    #[test]
-    fn computer_use_process_registry_accepts_only_pid_files() {
-        let directory = std::env::temp_dir().join(format!(
-            "waku-computer-use-process-test-{}",
-            Uuid::new_v4().simple()
-        ));
-        fs::create_dir_all(directory.join("456")).unwrap();
-        fs::write(directory.join("123"), []).unwrap();
-        fs::write(directory.join("not-a-pid"), []).unwrap();
-
-        let processes = computer_use_runtime::registered_processes(&directory);
-        assert_eq!(processes.len(), 1);
-        assert_eq!(processes[0].0, 123);
-        assert_eq!(processes[0].1, directory.join("123"));
-
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn computer_use_cleanup_verifies_the_registered_executable() {
-        let current = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
-        assert_eq!(
-            computer_use_runtime::process_executable(std::process::id() as i32),
-            Some(current)
-        );
     }
 
     #[test]
@@ -4117,8 +3853,8 @@ mod tests {
                 json!({
                     "method": method, "params": {
                         "threadId": "thread-1", "turnId": "turn-9", "item": {
-                            "id": "cua-call", "type": "mcpToolCall", "server": "waku_js_repl", "tool": "js",
-                            "arguments": {"title": "List running apps via CUA", "code": "cua.list_apps()"}
+                            "id": "call-1", "type": "mcpToolCall", "server": "waku_test", "tool": "search",
+                            "arguments": {"title": "Query the index", "query": "hello"}
                         }
                     }
                 }),
@@ -4136,9 +3872,9 @@ mod tests {
             let DriverEvent::RichActivity(item) = event_rx.try_recv().unwrap() else {
                 panic!("expected a tool activity");
             };
-            assert_eq!(item.title, "List running apps via CUA");
-            assert_eq!(item.tool_name.as_deref(), Some("js"));
-            assert_eq!(item.mcp_server.as_deref(), Some("waku_js_repl"));
+            assert_eq!(item.title, "Query the index");
+            assert_eq!(item.tool_name.as_deref(), Some("search"));
+            assert_eq!(item.mcp_server.as_deref(), Some("waku_test"));
             assert_eq!(item.complete, method == "item/completed");
         }
     }
@@ -4147,22 +3883,22 @@ mod tests {
     fn mcp_tool_title_prefers_the_human_facing_argument() {
         let titled = json!({
             "type": "mcpToolCall",
-            "server": "waku_js_repl",
-            "tool": "js",
+            "server": "waku_test",
+            "tool": "search",
             "arguments": {
-                "title": "Inspect Helium browser",
-                "code": "cua.list_windows({})"
+                "title": "Inspect the index",
+                "query": "hello"
             }
         });
         let untitled = json!({
             "type": "mcpToolCall",
-            "server": "waku_js_repl",
-            "tool": "js",
-            "arguments": { "code": "cua.list_apps()" }
+            "server": "waku_test",
+            "tool": "search",
+            "arguments": { "query": "hello" }
         });
 
-        assert_eq!(codex_item_title(&titled), "Inspect Helium browser");
-        assert_eq!(codex_item_title(&untitled), "Js");
+        assert_eq!(codex_item_title(&titled), "Inspect the index");
+        assert_eq!(codex_item_title(&untitled), "Search");
     }
 
     #[test]

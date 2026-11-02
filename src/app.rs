@@ -21,10 +21,6 @@ use uuid::Uuid;
 
 use crate::checkpoint;
 use crate::composer_complete::{FileEntry, SlashCommand};
-use crate::computer_use::{
-    ComputerPermissions, ComputerTarget, ComputerUsePhase, ComputerUseState,
-    PendingComputerApproval,
-};
 use crate::driver::{self, DriverHandle, DriverStartOptions, SessionOptions};
 use crate::git_branch::BranchSnapshot;
 use crate::input::{
@@ -217,17 +213,7 @@ enum SettingsPage {
     Appearance,
     Providers,
     Skills,
-    ComputerUse,
     Backups,
-}
-
-impl SettingsPage {
-    /// Computer Use is still experimental, so only development builds expose
-    /// its navigation entry points. Keeping this decision on the page itself
-    /// makes the Settings sidebar and command palette use the same gate.
-    fn is_visible_in_navigation(self) -> bool {
-        self != Self::ComputerUse || crate::computer_use::is_available()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -907,10 +893,6 @@ struct SessionRuntime {
     stream_remeasure_pending: bool,
     pending_permission: Option<PendingPermission>,
     pending_user_input: Option<PendingUserInput>,
-    pending_computer_approval: Option<PendingComputerApproval>,
-    /// Back-to-front stack of window previews captured during the active turn.
-    computer_use_previews: Vec<ComputerUsePreview>,
-    computer_session_grants: HashSet<String>,
     last_driver_error: Option<String>,
     /// When this session last sent or received anything, for idle reaping.
     last_active_at: Instant,
@@ -967,14 +949,6 @@ impl PendingUserInput {
             })
             .collect()
     }
-}
-
-struct ComputerUsePreview {
-    target: Option<ComputerTarget>,
-    phase: ComputerUsePhase,
-    visible: bool,
-    frames: crate::computer_use::PreviewFrames<crate::computer_use::PreviewImage>,
-    decode_task: Option<gpui::Task<()>>,
 }
 
 #[derive(Debug, Default)]
@@ -1147,10 +1121,6 @@ pub struct Waku {
     /// override input below edits this provider's entry.
     expanded_provider_settings: Option<ProviderKind>,
     provider_path_input: Entity<TextInput>,
-    computer_permissions: ComputerPermissions,
-    computer_permission_tx: Sender<Result<ComputerPermissions, String>>,
-    computer_permission_events: Receiver<Result<ComputerPermissions, String>>,
-    computer_permission_request_pending: bool,
     /// Account rate-limit meters per provider or Oh My Pi upstream/model pool,
     /// fetched off-thread (Claude, Codex, and OpenCode Go over HTTPS; Grok and
     /// Oh My Pi through bounded CLI probes) and refreshed live by Codex's own
@@ -1177,8 +1147,6 @@ pub struct Waku {
     plan_usage_checked_at: HashMap<usage_meter::PlanUsageKey, Instant>,
     /// Meters whose turn settled since the last fetch, so their quotas moved.
     plan_usage_stale: HashSet<usage_meter::PlanUsageKey>,
-    computer_use_app_icons: RefCell<HashMap<String, Option<std::sync::Arc<gpui::Image>>>>,
-    computer_use_app_icon_loads: RefCell<HashSet<String>>,
     /// Installed folder-capable apps for the header's "open project in"
     /// control, icons included, resolved once at launch on the background
     /// executor. Render only reads this; empty means not resolved yet (or
@@ -1362,8 +1330,6 @@ pub struct Waku {
     right_panel_rendered_width: f32,
     fps_counter_visible: bool,
     panel_resize_drag: Option<PanelResizeDrag>,
-    /// Window-relative PiP position, independent of incoming preview frames.
-    computer_use_preview_position: Option<gpui::Point<Pixels>>,
     right_panel_session_states: HashMap<Uuid, RightPanelSessionState>,
     right_panel_surfaces: Vec<RightPanelSurface>,
     right_panel_active_surface: Option<usize>,
@@ -2137,35 +2103,9 @@ impl Waku {
         let (provider_probe_tx, provider_probe_events) = unbounded();
         let (provider_version_tx, provider_version_events) = unbounded();
         let (provider_detection_tx, provider_detection_events) = unbounded();
-        let (computer_permission_tx, computer_permission_events) = unbounded();
         let (plan_usage_tx, plan_usage_events) = unbounded();
         let (event_wake_tx, event_wake_events) = smol::channel::bounded(1);
         let (task_state_sync_tx, task_state_sync_events) = unbounded();
-        #[cfg(target_os = "macos")]
-        if start_background_work && crate::computer_use::is_available() {
-            let computer_permission_tx = computer_permission_tx.clone();
-            let event_wake = event_wake_tx.clone();
-            let daemon = daemon.client();
-            std::thread::Builder::new()
-                .name("waku-computer-permission-probe".into())
-                .spawn(move || {
-                    let result = match daemon.request(
-                        Uuid::nil(),
-                        Uuid::nil(),
-                        waku_client::Command::ProbeComputerPermissions { prompt: false },
-                    ) {
-                        Ok(waku_client::ResponsePayload::ComputerPermissions { permissions }) => {
-                            Ok(permissions)
-                        }
-                        Ok(_) => Err("the daemon returned an invalid permission response".into()),
-                        Err(error) => Err(error.to_string()),
-                    };
-                    if computer_permission_tx.send(result).is_ok() {
-                        signal_event_pump(&event_wake);
-                    }
-                })
-                .ok();
-        }
         let model_picker_tab = if state.model_picker_favorites_only {
             ModelPickerTab::Favorites
         } else {
@@ -2297,9 +2237,6 @@ impl Waku {
                     // app had focus — a checkout in a terminal, an edit in an
                     // editor. Coming back is the moment to re-check.
                     this.invalidate_workspace_queries(cx);
-                    if this.settings_page == Some(SettingsPage::ComputerUse) {
-                        this.request_computer_permissions(false, cx);
-                    }
                     // Skill files are routinely edited in another app; coming
                     // back to the window is the moment to re-read them.
                     if this.settings_page == Some(SettingsPage::Skills) {
@@ -2707,10 +2644,6 @@ impl Waku {
                 provider_detection_checked_at: None,
                 expanded_provider_settings: None,
                 provider_path_input,
-                computer_permissions: ComputerPermissions::default(),
-                computer_permission_tx,
-                computer_permission_events,
-                computer_permission_request_pending: false,
                 plan_usage: HashMap::new(),
                 plan_usage_error: HashMap::new(),
                 plan_usage_tx,
@@ -2719,8 +2652,6 @@ impl Waku {
                 plan_usage_unconfigured: HashSet::new(),
                 plan_usage_checked_at: HashMap::new(),
                 plan_usage_stale: HashSet::new(),
-                computer_use_app_icons: RefCell::new(HashMap::new()),
-                computer_use_app_icon_loads: RefCell::new(HashSet::new()),
                 open_in_apps: Rc::new(Vec::new()),
                 model_picker_tab,
                 model_picker_highlight: None,
@@ -2809,7 +2740,6 @@ impl Waku {
                 },
                 fps_counter_visible: false,
                 panel_resize_drag: None,
-                computer_use_preview_position: None,
                 right_panel_session_states: HashMap::new(),
                 right_panel_surfaces: Vec::new(),
                 right_panel_active_surface: None,

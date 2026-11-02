@@ -28,7 +28,6 @@ pub mod claude_session;
 pub mod codex_session;
 pub mod command_env;
 pub mod composer_complete;
-pub mod computer_use;
 pub mod daemon;
 pub mod delegation;
 pub mod driver;
@@ -47,6 +46,7 @@ pub mod opencode_session;
 pub mod persistence;
 pub mod pi_session;
 pub mod projectless;
+mod resources;
 pub mod settings;
 pub mod skills;
 mod slash_command_catalog;
@@ -55,15 +55,13 @@ pub mod usage;
 pub mod workspace;
 pub mod worktree;
 
-mod fs_ext;
 mod protocol;
 mod server;
 
 pub use protocol::{
     APP_EXECUTABLE_ENV, ClientMessage, Command, DAEMON_ADDRESS_ENV, DAEMON_TOKEN_ENV, DaemonReady,
     PROTOCOL_VERSION, ReplayCursor, Request, ResponseOutcome, ResponsePayload, RpcError,
-    SequencedEvent, ServerMessage, WireComputerToolRequest, WireDriverEvent,
-    WireDriverStartOptions, WireSessionOptions,
+    SequencedEvent, ServerMessage, WireDriverEvent, WireDriverStartOptions, WireSessionOptions,
 };
 pub use server::{Backend, EventSink, ServerOptions, serve};
 pub use settings::{DaemonSettings, DaemonSettingsStore};

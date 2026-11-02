@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use crate::attachments::{AttachmentUpload, StoredAttachment};
 use crate::backup::{BackupInfo, DesktopBackup};
-use crate::computer_use::ComputerPermissions;
 use crate::model::{
     AgentSession, GoalOperation, Project, ProviderKind, ProviderProbe, ProviderResumeCursor,
     ProviderSessionHistory, ProviderSessionSummary, UserInputAnswer,
@@ -18,7 +17,7 @@ use crate::skills::SkillsCatalog;
 use crate::usage::PlanUsage;
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "WAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "WAKU_DAEMON_ADDRESS";
@@ -93,7 +92,6 @@ pub enum Command {
         prompt: String,
     },
     Cancel,
-    CancelComputerUse,
     Compact {
         request: crate::compaction::CompactionRequest,
     },
@@ -115,13 +113,6 @@ pub enum Command {
     /// event, or an `error` event when the provider refuses.
     Goal {
         operation: GoalOperation,
-    },
-    RunComputerTool {
-        request: WireComputerToolRequest,
-    },
-    RejectComputerTool {
-        request: WireComputerToolRequest,
-        reason: String,
     },
     ApplyOptions {
         options: WireSessionOptions,
@@ -166,9 +157,6 @@ pub enum Command {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_file: Option<PathBuf>,
-    },
-    ProbeComputerPermissions {
-        prompt: bool,
     },
     LoadSkills {
         projects: Vec<(String, PathBuf)>,
@@ -291,7 +279,6 @@ pub struct WireDriverStartOptions {
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
     pub agent_preset: Option<String>,
-    pub computer_use_enabled: bool,
     pub provider_cursor: Option<Value>,
     #[serde(default)]
     pub execution_policy: crate::model::ExecutionPolicy,
@@ -305,14 +292,6 @@ pub struct WireSessionOptions {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WireComputerToolRequest {
-    pub call_id: String,
-    pub tool: String,
-    pub arguments: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -426,9 +405,6 @@ pub enum ResponsePayload {
     },
     PlanUsage {
         usage: Option<PlanUsage>,
-    },
-    ComputerPermissions {
-        permissions: ComputerPermissions,
     },
     SkillsCatalog {
         catalog: SkillsCatalog,

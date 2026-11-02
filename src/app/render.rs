@@ -226,7 +226,6 @@ impl Render for Waku {
         let theme = Theme::current(cx);
         let empty = should_render_empty_state(self.selected_session());
         let permission = self.render_permission(cx);
-        let computer_use = self.render_computer_use_overlay(window, cx);
         let command_palette = self.render_command_palette(window, cx);
         let commit_dialog = self.render_commit_dialog(cx);
         let goal_dialog = self.render_goal_dialog(window, cx);
@@ -364,7 +363,6 @@ impl Render for Waku {
             })
             .child(self.render_window_navigation(window, cx))
             .child(self.render_right_titlebar_controls(window, cx))
-            .children(computer_use)
             .when(self.settings_page.is_some(), |root| {
                 root.child(
                     self.settings_pane

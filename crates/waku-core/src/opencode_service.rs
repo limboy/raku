@@ -195,8 +195,8 @@ fn accept_info(registration: &ServiceRegistration, info: &ServerInfo) -> anyhow:
 ///
 /// `Adopted` covers both a service Waku found and one it started with
 /// `serve --service`; the two are indistinguishable by construction, and
-/// neither is ever signalled. `Private` is reserved for the future Computer
-/// Use path (`serve --stdio --port 0` with a Waku-generated password, which
+/// neither is ever signalled. `Private` is reserved for a future
+/// private use path (`serve --stdio --port 0` with a Waku-generated password, which
 /// prints one JSON line and exits when stdin closes) and is unreachable today.
 #[allow(dead_code)]
 pub(crate) enum Ownership {

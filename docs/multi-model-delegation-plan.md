@@ -116,7 +116,7 @@ ModelMention
 
 ### 5.1 接入方式与首批 provider
 
-增加独立的 Waku agent-tools MCP bridge。建议由已有 `waku-daemon` 二进制的专用子命令提供 stdio 服务，转发到 daemon 内部的委派服务；它不启动第二个 daemon，也不依赖 Computer Use 的 debug 开关。
+增加独立的 Waku agent-tools MCP bridge。建议由已有 `waku-daemon` 二进制的专用子命令提供 stdio 服务，转发到 daemon 内部的委派服务；它不启动第二个 daemon，也不依赖 debug 开关。
 
 父 agent 接入与子任务运行是两种独立能力，分别探测：
 
@@ -173,7 +173,7 @@ ModelMention
 第一版增加单独的 `ReviewSnapshot` 执行策略，独立于用户的普通 `RuntimeMode`：
 
 - 仅访问物化的评审快照，按需为每个子任务建立独立工作目录；不把原工作区作为 cwd。
-- 使用 provider 已验证的只读 sandbox 或受控工具集合，允许读取与搜索，关闭写入、任意命令、Computer Use 和继续委派。父会话的 Full Access 不自动继承给子任务。
+- 使用 provider 已验证的只读 sandbox 或受控工具集合，允许读取与搜索，关闭写入、任意命令和继续委派。父会话的 Full Access 不自动继承给子任务。
 - provider 不能保证这一策略时，只有经验证的无工具模式才可作为替代，并明确展示上下文范围；否则该渠道暂不支持评审委派。
 - 准确区分“隔离快照保护原仓库”和“操作权限被约束”。更换 cwd 或写一句“不要修改文件”均不能充当权限保证。
 
@@ -395,7 +395,7 @@ ModelMention
 ### 父 agent 矩阵与提示词契约（首版实测后补充）
 - 父 provider 新增 **Pi / Oh My Pi**：`resources/delegation/pi-extension.ts` 通过 `--extension`
   注入，扩展自行拉起 `waku-daemon mcp-agent-tools`，因此 Oh My Pi 与 Pi 也能委派。
-  `bundle.sh` / `cua-driver.ts` / `release.ts` 已把该资源打进 app bundle。
+  `bundle.sh` / `release.ts` 已把该资源打进 app bundle。
 - 委派轮次的 provider prompt 末尾追加**本轮目标清单**（`target_ref` ↔ 模型/渠道/思考强度）
   与调用约定；子任务不再依赖模型自行猜测 `target_ref`。
 - 父 provider 不具备委派通道时，`^` 不再列出候选，而是在弹窗内说明原因。
