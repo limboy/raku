@@ -26,7 +26,9 @@ const LOGIN_SHELL_ENV_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const INTERACTIVE_SHELL_ENV_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(unix)]
-const SHELL_ENV_COMMAND: &str = "/usr/bin/env -0 > \"$WAKU_SHELL_ENV_CAPTURE_FILE\"";
+// The capture file is created empty with private permissions. Append so a
+// profile's noclobber option cannot reject writing to the existing file.
+const SHELL_ENV_COMMAND: &str = "/usr/bin/env -0 >> \"$WAKU_SHELL_ENV_CAPTURE_FILE\"";
 
 type ShellEnvironment = Vec<(OsString, OsString)>;
 
@@ -1280,6 +1282,22 @@ mod tests {
                 ),
                 (OsString::from("EMPTY"), OsString::new()),
             ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn captures_environment_when_noclobber_is_enabled() {
+        let environment =
+            capture_shell_environment(Path::new("/bin/sh"), &["-C", "-c"], LOGIN_SHELL_ENV_TIMEOUT)
+                .expect("capture environment with noclobber enabled");
+
+        assert_eq!(
+            environment
+                .iter()
+                .find(|(name, _)| name == OsStr::new("PATH"))
+                .map(|(_, value)| value.clone()),
+            std::env::var_os("PATH"),
         );
     }
 
