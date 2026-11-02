@@ -3,8 +3,6 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderAppcast as renderWindowsAppcast } from "./appcast-windows.ts";
-import { renderAppcast as renderLinuxAppcast } from "./appcast-linux.ts";
 import { verifyUpdateFeeds } from "./verify-update-feeds.ts";
 
 const version = "1.2.3";
@@ -27,51 +25,24 @@ async function releaseFixture() {
     publicKey.export({ format: "jwk" }).x!,
     "base64url",
   ).toString("base64");
-  for (const platform of ["macos", "linux", "windows"] as const) {
-    for (const arch of platform === "macos"
-      ? (["x86_64"] as const)
-      : (["x86_64", "aarch64"] as const)) {
-      const archive =
-        platform === "macos"
-          ? `Waku-${version}.zip`
-          : platform === "linux"
-            ? `waku-${version}-${arch}-unknown-linux-gnu.tar.gz`
-            : `Waku-${version}-${arch}-Setup.exe`;
-      const feed =
-        platform === "macos"
-          ? "appcast.xml"
-          : `appcast-${platform}-${arch}.xml`;
-      const bytes = Buffer.from(`${platform} ${arch} release archive`);
-      const item = {
-        version,
-        url: `${prefix}${archive}`,
-        length: bytes.length,
-        signature: sign(null, bytes, privateKey).toString("base64"),
-        pubDate: "Sun, 01 Nov 2026 00:00:00 GMT",
-      };
-      // Sparkle uses an internal build number, distinct from the public
-      // version that all three clients compare.
-      const xml =
-        platform === "macos"
-          ? `<?xml version="1.0"?>
+  const archive = `Waku-${version}.zip`;
+  const bytes = Buffer.from("macOS release archive");
+  const signature = sign(null, bytes, privateKey).toString("base64");
+  // Sparkle uses an internal build number, distinct from the public version.
+  const xml = `<?xml version="1.0"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel><item>
     <sparkle:version>1002003</sparkle:version>
     <sparkle:shortVersionString>${version}</sparkle:shortVersionString>
-    <enclosure url="${item.url}" length="${item.length}" type="application/octet-stream" sparkle:edSignature="${item.signature}" />
+    <enclosure url="${prefix}${archive}" length="${bytes.length}" type="application/octet-stream" sparkle:edSignature="${signature}" />
   </item></channel>
-</rss>`
-          : platform === "linux"
-            ? renderLinuxAppcast(arch, [item])
-            : renderWindowsAppcast(arch, [item]);
-      await Bun.write(join(directory, archive), bytes);
-      await Bun.write(join(directory, feed), xml);
-    }
-  }
+</rss>`;
+  await Bun.write(join(directory, archive), bytes);
+  await Bun.write(join(directory, "appcast.xml"), xml);
   return { directory, publicKey: publicKeyBase64 };
 }
 
-test("all five signed GitHub update feeds verify", async () => {
+test("the signed macOS update feed verifies without other platform assets", async () => {
   const fixture = await releaseFixture();
   await verifyUpdateFeeds(
     fixture.directory,
@@ -81,17 +52,11 @@ test("all five signed GitHub update feeds verify", async () => {
   );
 });
 
-test.each([
-  `Waku-${version}.zip`,
-  `waku-${version}-x86_64-unknown-linux-gnu.tar.gz`,
-  `waku-${version}-aarch64-unknown-linux-gnu.tar.gz`,
-  `Waku-${version}-x86_64-Setup.exe`,
-  `Waku-${version}-aarch64-Setup.exe`,
-])(
-  "rejects tampering with %s even when the byte count is unchanged",
-  async (archive) => {
+test(
+  "rejects archive tampering even when the byte count is unchanged",
+  async () => {
     const fixture = await releaseFixture();
-    const path = join(fixture.directory, archive);
+    const path = join(fixture.directory, `Waku-${version}.zip`);
     const bytes = Buffer.from(await Bun.file(path).arrayBuffer());
     bytes[0] = bytes[0]! ^ 1;
     await Bun.write(path, bytes);
@@ -121,9 +86,9 @@ test("rejects a truncated download", async () => {
   ).rejects.toThrow("wrong length");
 });
 
-test("rejects a missing architecture's feed", async () => {
+test("rejects a missing macOS feed", async () => {
   const fixture = await releaseFixture();
-  await rm(join(fixture.directory, "appcast-windows-aarch64.xml"));
+  await rm(join(fixture.directory, "appcast.xml"));
   await expect(
     verifyUpdateFeeds(fixture.directory, version, prefix, fixture.publicKey),
   ).rejects.toThrow();

@@ -1,25 +1,13 @@
 #!/usr/bin/env bun
 
-// Fail before creating a release if a feed points at a missing asset, uses a
-// mutable download URL, or signs bytes the shipping public key cannot verify.
+// Fail before creating a release if the macOS feed points at a missing asset,
+// uses a mutable URL, or signs bytes the shipping public key cannot verify.
 import { createPublicKey, verify } from "node:crypto";
 import { join } from "node:path";
 import { appPublicKey, parseAppcast } from "./appcast-windows.ts";
 
 const updateAssets = (version: string) =>
-  [
-    ["appcast.xml", `Waku-${version}.zip`],
-    [
-      "appcast-linux-x86_64.xml",
-      `waku-${version}-x86_64-unknown-linux-gnu.tar.gz`,
-    ],
-    [
-      "appcast-linux-aarch64.xml",
-      `waku-${version}-aarch64-unknown-linux-gnu.tar.gz`,
-    ],
-    ["appcast-windows-x86_64.xml", `Waku-${version}-x86_64-Setup.exe`],
-    ["appcast-windows-aarch64.xml", `Waku-${version}-aarch64-Setup.exe`],
-  ] as const;
+  [["appcast.xml", `Waku-${version}.zip`]] as const;
 
 export async function verifyUpdateFeeds(
   assetsDir: string,

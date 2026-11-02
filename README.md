@@ -2,7 +2,7 @@
 
 > Forked from [waku.sh](https://waku.sh) ([egoist/waku](https://github.com/egoist/waku)).
 
-Waku is a fast, native desktop app for working with local coding agents. Built
+Waku is a fast, native macOS app for working with local coding agents. Built
 in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui),
 it keeps all projects, sessions, transcripts, and state on your machine.
 
@@ -11,8 +11,6 @@ it keeps all projects, sessions, transcripts, and state on your machine.
 Download the latest build from [GitHub Releases](https://github.com/limboy/waku/releases/latest):
 
 - **macOS (Apple Silicon):** Download and open `Waku-<version>.dmg`.
-- **Linux (`x86_64` / `aarch64`):** Download `waku-<version>-<target>.tar.gz` and unpack it into `~/.local/waku.app`. See [docs/linux.md](docs/linux.md) for requirements, desktop entry setup, and uninstalling.
-- **Windows (`x86_64` / `aarch64`):** Run `Waku-<version>-<arch>-Setup.exe` for a per-user install, or use the portable `waku-<version>-<target>.zip`. See [docs/windows.md](docs/windows.md) for requirements and platform notes.
 
 ## Updates
 
@@ -22,10 +20,7 @@ the sidebar. Click it—or focus it and press Enter or Space—to install and
 relaunch Waku. You can also run **Check for Updates…** from the app menu at any
 time.
 
-macOS uses Sparkle; Windows and managed user-local Linux installs verify
-updates with the same Ed25519 signing key. Package-manager-owned Linux builds
-are updated through their package manager. Development builds keep automatic
-updates disabled.
+Updates use Sparkle. Development builds keep automatic updates disabled.
 
 ## Supported agents
 
@@ -48,7 +43,7 @@ structured protocol and session continuity.
 - Manage projects and independent agent sessions in one native interface, with pinned sessions, unread completion indicators, and project or date grouping.
 - Switch models, reasoning effort, and access modes from a unified composer, and delegate subtasks across models and providers.
 - Queue or steer follow-up messages while an agent is streaming, and trigger native context compaction across providers.
-- Inspect token usage and subscription plan quotas (`⌘U` / `Ctrl+U`).
+- Inspect token usage and subscription plan quotas (`⌘U`).
 - Rewind Git-backed tasks with conversation-aware checkpoints and recover state from automatic daily backups.
 - Render rich transcripts with native Mermaid diagrams, LaTeX math, collapsible long-paste snippets, and full Markdown conversation export.
 - Keep all data locally on disk with no account or remote service required.
@@ -79,10 +74,9 @@ replace the daemon without relaunching Waku Debug.
 
 ## Development
 
-Development is supported on macOS, Linux, and Windows and requires
+Development is supported on macOS and requires
 [Rust 1.96 or newer](https://www.rust-lang.org/tools/install) and
-[Bun](https://bun.sh/). Linux supports both Wayland and X11, and Windows needs
-the MSVC toolchain; install the native build prerequisites listed in
+[Bun](https://bun.sh/). Install the native build prerequisites listed in
 [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 ```sh
@@ -90,23 +84,18 @@ bun install
 bun run dev
 ```
 
-The embedded browser and experimental computer-use integration currently
-remain macOS-only. Agent sessions, projects, transcripts, skills, usage,
-diffs, file editing, and the terminal run natively on Linux and Windows.
-
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and checks.
 
 ## Releases
 
-[GitHub Actions](.github/workflows/release.yml) builds macOS, Linux, and Windows
+[GitHub Actions](.github/workflows/release.yml) builds macOS
 releases when a `v<version>` tag is pushed, or when the Release workflow is run
-manually. The tag must match the version in `Cargo.toml`. After every platform
-build and update-feed check succeeds, the workflow automatically publishes the
+manually. The tag must match the version in `Cargo.toml`. After the macOS
+build and update-feed check succeed, the workflow automatically publishes the
 GitHub release and makes the update available to installed clients.
 
-Each release includes signed update archives, `appcast.xml` for macOS, and
-architecture-specific appcasts for Linux and Windows. Clients read these feeds
-directly from GitHub Releases, and CI verifies every feed's download URL,
+Each release includes a signed update archive and `appcast.xml`. Clients read
+the feed directly from GitHub Releases, and CI verifies its download URL,
 archive length, and signature before publishing.
 
 Release setup uses repository Actions secrets for the Developer ID
