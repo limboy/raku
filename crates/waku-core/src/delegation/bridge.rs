@@ -316,7 +316,7 @@ pub fn serve_mcp_stdio() -> anyhow::Result<()> {
                     .unwrap_or_default();
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-                let (session_config, socket_path) = match resolve_session_and_socket(&params) {
+                let (session_config, socket_path) = match resolve_session_and_socket() {
                     Ok(res) => res,
                     Err(e) => {
                         let content = json!([{
@@ -384,9 +384,7 @@ pub fn serve_mcp_stdio() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn resolve_session_and_socket(
-    params: &JsonValue,
-) -> anyhow::Result<(SessionBridgeConfig, PathBuf)> {
+fn resolve_session_and_socket() -> anyhow::Result<(SessionBridgeConfig, PathBuf)> {
     if let Ok(config_path_str) = std::env::var("WAKU_DELEGATION_SESSION_PATH") {
         let path = PathBuf::from(config_path_str);
         let bytes = fs::read(&path).with_context(|| {
@@ -400,18 +398,7 @@ fn resolve_session_and_socket(
         return Ok((config, socket_path));
     }
 
-    if let Ok(dir_str) = std::env::var("WAKU_AGENT_TOOLS_SESSIONS_DIRECTORY") {
-        let session_id = params
-            .pointer("/_meta/sessionID")
-            .and_then(JsonValue::as_str)
-            .ok_or_else(|| anyhow!("missing _meta.sessionID for OpenCode routing"))?;
-        let dir = PathBuf::from(dir_str);
-        let config = DelegationRegistry::load_session_config(&dir, session_id)?;
-        let socket_path = PathBuf::from(&config.endpoint);
-        return Ok((config, socket_path));
-    }
-
-    bail!("neither WAKU_DELEGATION_SESSION_PATH nor WAKU_AGENT_TOOLS_SESSIONS_DIRECTORY is set")
+    bail!("WAKU_DELEGATION_SESSION_PATH is not set")
 }
 
 #[cfg(unix)]

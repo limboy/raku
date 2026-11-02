@@ -600,7 +600,7 @@ mod tests {
 
         let mut target = ModelReference::new(
             "target-1",
-            ProviderKind::OpenCode,
+            ProviderKind::Codex,
             "github-copilot/gemini-3.8-flash",
             "Gemini 3.8 Flash · High",
         );

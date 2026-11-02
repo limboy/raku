@@ -40,9 +40,8 @@ const WALK_MAX_DEPTH: usize = 8;
 ///
 /// - Claude Code's SDK initialization control request reports built-ins,
 ///   plugins, commands, skills, descriptions, and argument hints.
-/// - Codex app-server's `experimentalFeature/list` and `skills/list`, OpenCode's
-///   HTTP command catalogues, and Pi's RPC registry report the commands
-///   their non-TUI transports can actually invoke.
+/// - Codex app-server's `experimentalFeature/list` and `skills/list`, and
+///   Pi's RPC registry report the commands their non-TUI transports can actually invoke.
 ///
 /// Filesystem discovery remains as graceful fallback metadata for configured
 /// commands and skills when a CLI is missing or an older version cannot report
@@ -51,8 +50,6 @@ const WALK_MAX_DEPTH: usize = 8;
 /// - Claude Code: `.claude/commands` and `.claude/skills` in the project and
 ///   the config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`).
 /// - Codex: `~/.codex/prompts`, expanded by Waku at submit.
-/// - OpenCode: `.opencode/command(s)` and `~/.config/opencode/command(s)`,
-///   resolved by the server's native command endpoint.
 /// - Pi: prompt templates in `.pi/prompts` and `~/.pi/agent/prompts`,
 ///   expanded by Waku, plus skills in `.pi/skills` and `~/.pi/agent/skills`.
 ///
@@ -140,44 +137,6 @@ fn assemble_slash_commands(
                 scan_skill_files(provider, &home.join(".codex/skills"), &mut commands);
             }
         }
-        ProviderKind::OpenCode => {
-            // OpenCode reads both spellings of its command directory.
-            for directory in [".opencode/command", ".opencode/commands"] {
-                scan_command_files(
-                    &project_root.join(directory),
-                    CommandScope::Project,
-                    false,
-                    &mut commands,
-                );
-            }
-            scan_skill_files(
-                provider,
-                &project_root.join(".opencode/skills"),
-                &mut commands,
-            );
-            // OpenCode also loads Claude-compatible skill trees.
-            scan_skill_files(
-                provider,
-                &project_root.join(".claude/skills"),
-                &mut commands,
-            );
-            if let Some(home) = home.as_deref() {
-                for directory in [".config/opencode/command", ".config/opencode/commands"] {
-                    scan_command_files(
-                        &home.join(directory),
-                        CommandScope::User,
-                        false,
-                        &mut commands,
-                    );
-                }
-                scan_skill_files(
-                    provider,
-                    &home.join(".config/opencode/skills"),
-                    &mut commands,
-                );
-                scan_skill_files(provider, &home.join(".claude/skills"), &mut commands);
-            }
-        }
         ProviderKind::Pi => {
             scan_command_files(
                 &project_root.join(".pi/prompts"),
@@ -197,7 +156,7 @@ fn assemble_slash_commands(
             }
         }
     }
-    // The cross-tool skill standard, read by OpenCode among others;
+    // The cross-tool skill standard;
     // Waku lists it for every provider.
     scan_skill_files(
         provider,
@@ -953,19 +912,19 @@ mod tests {
             },
         ];
         assert_eq!(
-            resolved_submission(ProviderKind::OpenCode, "/fix the tests", &commands).as_deref(),
+            resolved_submission(ProviderKind::Claude, "/fix the tests", &commands).as_deref(),
             Some("Fix the tests carefully.")
         );
         assert_eq!(
-            resolved_submission(ProviderKind::OpenCode, "/compact", &commands),
+            resolved_submission(ProviderKind::Claude, "/compact", &commands),
             None
         );
         assert_eq!(
-            resolved_submission(ProviderKind::OpenCode, "/unknown thing", &commands),
+            resolved_submission(ProviderKind::Claude, "/unknown thing", &commands),
             None
         );
         assert_eq!(
-            resolved_submission(ProviderKind::OpenCode, "plain prompt", &commands),
+            resolved_submission(ProviderKind::Claude, "plain prompt", &commands),
             None
         );
         assert_eq!(
@@ -1206,59 +1165,6 @@ mod tests {
     }
 
     #[test]
-    fn opencode_commands_use_native_dispatch_while_waku_templates_still_expand() {
-        let root =
-            std::env::temp_dir().join(format!("waku-native-commands-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join(".opencode/commands")).unwrap();
-        std::fs::create_dir_all(root.join(".waku/commands")).unwrap();
-        std::fs::write(
-            root.join(".opencode/commands/native-review.md"),
-            "Review $ARGUMENTS",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join(".waku/commands/waku-review.md"),
-            "Review $ARGUMENTS",
-        )
-        .unwrap();
-        let commands = assemble_slash_commands(
-            ProviderKind::OpenCode,
-            &root,
-            vec![SlashCommand {
-                name: "init".into(),
-                description: "Initialize".into(),
-                scope: CommandScope::Builtin,
-                argument_hint: None,
-                template: None,
-            }],
-        );
-        assert_eq!(
-            resolved_submission(ProviderKind::OpenCode, "/native-review changes", &commands),
-            None
-        );
-        assert_eq!(
-            resolved_submission(ProviderKind::OpenCode, "/init", &commands),
-            None
-        );
-        assert_eq!(
-            resolved_submission(ProviderKind::OpenCode, "/waku-review changes", &commands)
-                .as_deref(),
-            Some("Review changes")
-        );
-        assert!(
-            commands
-                .iter()
-                .position(|command| command.name == "init")
-                .unwrap()
-                < commands
-                    .iter()
-                    .position(|command| command.name == "native-review")
-                    .unwrap()
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn shared_skills_are_listed_raw_on_every_provider() {
         let root = std::env::temp_dir().join(format!("waku-skills-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -1281,9 +1187,9 @@ mod tests {
             );
         }
         // Raw passthrough end to end: no expansion applies at submit.
-        let commands = assemble_slash_commands(ProviderKind::OpenCode, &root, Vec::new());
+        let commands = assemble_slash_commands(ProviderKind::Claude, &root, Vec::new());
         assert_eq!(
-            resolved_submission(ProviderKind::OpenCode, "/deploy-runbook staging", &commands),
+            resolved_submission(ProviderKind::Claude, "/deploy-runbook staging", &commands),
             None
         );
         assert_eq!(
@@ -1293,7 +1199,6 @@ mod tests {
         // Each ecosystem's own project-level skill tree is read too.
         for (provider, dir) in [
             (ProviderKind::Codex, ".codex/skills"),
-            (ProviderKind::OpenCode, ".opencode/skills"),
             (ProviderKind::Pi, ".pi/skills"),
         ] {
             let skill_dir = root.join(dir).join("native-skill");

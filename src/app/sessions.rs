@@ -1574,7 +1574,7 @@ mod tests {
 
     #[test]
     fn new_task_carries_the_current_tasks_access_mode() {
-        let mut current = AgentSession::new(Uuid::new_v4(), ProviderKind::OpenCode);
+        let mut current = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
         current.runtime_mode = RuntimeMode::Ask;
 
         assert_eq!(

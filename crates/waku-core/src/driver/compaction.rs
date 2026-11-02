@@ -129,6 +129,7 @@ impl CompactionTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub fn delta(&mut self, text: &str, events: &impl DriverEventSink) {
         if self
             .current
@@ -145,6 +146,7 @@ impl CompactionTracker {
 
     /// Recover only an observed operation. Replaying an unrelated historical
     /// boundary would append it at the live transcript tail.
+    #[allow(dead_code)]
     pub fn reconcile(
         &mut self,
         history: impl Iterator<Item = ContextCompaction>,
@@ -203,6 +205,7 @@ impl CompactionTracker {
         let _ = events.send(DriverEvent::CompactionUpdated(item.clone()));
     }
 
+    #[allow(dead_code)]
     pub fn interrupt(&mut self, events: &impl DriverEventSink) {
         if self
             .current

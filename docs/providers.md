@@ -9,14 +9,13 @@ polled off disk, and the one Waku generates itself — is in
 [titles.md](titles.md).
 
 Every provider is reached through the same driver abstraction in
-[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are five
-transport implementations behind six providers, and **every one of them holds a
+[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are four
+transport implementations behind four providers, and **every one of them holds a
 session that spans the whole conversation**:
 
 | Transport | File | Providers |
 | --- | --- | --- |
 | Codex app-server (JSON-RPC over stdio) | [driver/codex.rs](../crates/waku-core/src/driver/codex.rs) | Codex CLI |
-| OpenCode background service (HTTP + server-sent events) | [driver/opencode.rs](../crates/waku-core/src/driver/opencode.rs) | OpenCode |
 | Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/waku-core/src/driver/pi.rs) | Pi |
 | Claude streaming-input session (NDJSON over stdio) | [driver/claude.rs](../crates/waku-core/src/driver/claude.rs) | Claude Code |
 | Antigravity streaming-input session (NDJSON over stdio) | [driver/antigravity.rs](../crates/waku-core/src/driver/antigravity.rs) | Antigravity CLI |
@@ -94,26 +93,23 @@ the source and forked tasks keep their selected interactive mode.
 
 Compaction belongs to the provider's native session. Waku offers a manual
 `/compact` command, a usage-panel action, and a command-palette action for
-Codex, Claude Code, Antigravity CLI, OpenCode, and Pi. Pi
-and Claude accept optional focus instructions; Codex, Antigravity CLI and
-OpenCode reject that argument instead of silently discarding it. Other
+Codex, Claude Code, Antigravity CLI, and Pi. Pi
+and Claude accept optional focus instructions; Codex and Antigravity CLI
+reject that argument instead of silently discarding it. Other
 providers keep their native command handling.
 
 The driver contract carries `CompactionRequest` and complete
 `CompactionUpdated` snapshots. Manual requests use Codex's
-`thread/compact/start`, OpenCode's `POST /api/session/{id}/compact`, Pi's
+`thread/compact/start`, Pi's
 `compact` RPC, or Claude's native `/compact` user message. An acknowledgement
-is not completion. Codex's `contextCompaction` items, OpenCode's
-`session.compaction.*`, Pi's compaction events/results (including older
+is not completion. Codex's `contextCompaction` items,
+Pi's compaction events/results (including older
 `auto_compaction_*` events), and Claude's status/compact-boundary messages
 supply the lifecycle. A failed or disconnected operation terminalizes too.
 
-Each operation has its own stable identity. OpenCode uses `inputID` or the
-opening event ID transformed from `evt_` to `msg_`, matching its stored history.
+Each operation has its own stable identity.
 Summary deltas accumulate in the driver before it emits a snapshot; tool-output
-snapshots keep their replacement semantics. Reconnection repairs only the
-observed, still-running OpenCode operation with the same native ID. It never
-replays an unrelated historical boundary as a live event. Cold import retains
+snapshots keep their replacement semantics. Cold import retains
 public compaction metadata at its original message boundary, while excluding
 provider-private checkpoints and control state.
 
@@ -163,18 +159,15 @@ a protocol interrupt and keeps its runtime (`retain_runtime_after_cancel`).
 Option changes go through `DriverControl::apply_options`, which returns whether
 the transport absorbed the change or wants to be restarted:
 
-| Change | Codex | Pi | OpenCode | Claude | Antigravity |
-| --- | --- | --- | --- | --- | --- |
-| Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — `POST /api/session/{id}/model`, with effort as the model's variant | in session — a `set_model` control request | restart (`--conversation <id>`) |
-| Access mode | restart | restart | in session — the mode only decides who answers a permission request, which is the driver's own state | restart | restart (`--conversation <id>`) |
-| Provider | restart | restart | restart | restart | restart |
+| Change | Codex | Pi | Claude | Antigravity |
+| --- | --- | --- | --- | --- |
+| Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — a `set_model` control request | restart (`--conversation <id>`) |
+| Access mode | restart | restart | restart | restart (`--conversation <id>`) |
+| Provider | restart | restart | restart | restart |
 
 The permission policy is deliberately excluded even for Codex, which does carry
 `approvalPolicy` and `sandboxPolicy` on every `turn/start`: loosening or
-tightening what an already-running agent may touch deserves a fresh thread.
-OpenCode is the exception because nothing about the mode reaches the provider:
-its agent's own rules still decide what to ask, and Waku only decides whether
-to ask the user or answer `once` itself. T3
+tightening what an already-running agent may touch deserves a fresh thread. T3
 Code draws the line in the same place — it restarts on `runtimeModeChanged` and
 keeps the session only for a model change the adapter declares it can switch.
 
@@ -212,28 +205,21 @@ when stderr has not already explained itself. Rust's `Child::drop` neither kills
 nor reaps, so a driver that skipped that thread would leave a zombie for the life
 of the app — which Pi did until it was given one.
 
-**OpenCode is different again**: Waku does not own the process at all. Its
-background service belongs to the user and outlives every Waku task, so
-dropping a runtime only unsubscribes that session from the shared event stream
-([opencode_service.rs](../crates/waku-core/src/opencode_service.rs)). Waku never
-signals the service, never calls its stop route, and never writes its
-registration file.
-
 ## At a glance
 
-| | Codex CLI | Pi | Claude Code | OpenCode | Antigravity CLI |
-| --- | --- | --- | --- | --- | --- |
-| Binary | `codex` | `pi` | `claude` | `opencode` | `agy` |
-| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | stream-json over stdio | HTTP + SSE | stream-json over stdio |
-| Process spans the whole session | yes | yes | yes | yes | yes |
-| Process spawned per turn | no | no | no | no | no |
-| Bidirectional | yes | yes | yes | yes | prompts only |
-| Reasoning stream | yes | yes | yes | yes | token count only |
-| Interactive approvals | yes | no | yes | yes | no (headless policy) |
-| Mid-turn steering | yes | yes | yes | yes | no (follow-up queue) |
-| Model discovery | yes | yes | yes | yes | yes |
-| Restricted to Full access | no | yes | no | no | no |
-| Rewind and branch at a turn | yes | yes | yes | yes | no |
+| | Codex CLI | Pi | Claude Code | Antigravity CLI |
+| --- | --- | --- | --- | --- |
+| Binary | `codex` | `pi` | `claude` | `agy` |
+| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | stream-json over stdio | stream-json over stdio |
+| Process spans the whole session | yes | yes | yes | yes |
+| Process spawned per turn | no | no | no | no |
+| Bidirectional | yes | yes | yes | prompts only |
+| Reasoning stream | yes | yes | yes | token count only |
+| Interactive approvals | yes | no | yes | no (headless policy) |
+| Mid-turn steering | yes | yes | yes | no (follow-up queue) |
+| Model discovery | yes | yes | yes | yes |
+| Restricted to Full access | no | yes | no | no |
+| Rewind and branch at a turn | yes | yes | yes | no |
 
 Every provider now holds a session across turns. That was not true when this
 document was first written: five of the seven spawned a process per prompt, and
@@ -508,134 +494,21 @@ turn import, and background title polling.
 
 ---
 
-## OpenCode background service
-
-OpenCode 2 is the `opencode` command. Its 2.0 release replaced the
-per-workspace `opencode serve` of OpenCode 1 with one background service per
-user that serves every workspace, and the CLI, TUI and desktop app all share
-it.
-
-**Launch** — usually none. Waku adopts the service the user's own `opencode`
-already started, found through its registration file
-(`${XDG_STATE_HOME:-~/.local/state}/opencode/service.json`, opened read-only)
-and confirmed with `GET /api/info`, whose `pid` and `version` must match the
-registration
-([opencode_service.rs](../crates/waku-core/src/opencode_service.rs)). Only
-when none is registered does a session start run `opencode serve --service`,
-which yields to a healthy incumbent, and poll the registration for up to 20 s.
-An OpenCode 1 binary is refused before that spawn: its `serve` has no service
-mode, would never register, and would be left running as an orphan.
-
-**Protocol** — OpenCode's HTTP API, authenticated with HTTP Basic (`opencode`
-and the registration's password), plus one server-sent event stream,
-`GET /api/event`, that carries every session the service runs — the user's own
-terminal sessions included
-([opencode_api.rs](../crates/waku-core/src/opencode_api.rs)). Routes and
-payloads were checked against the 2.0.22 OpenAPI document and schema sources.
-Waku demultiplexes the stream by `data.sessionID`: a frame reaches only the
-task that owns its session, and `tui.*` remote-control events are dropped.
-
-**Lifetime** — the service is never Waku's; see
-[How the long-lived processes actually die](#how-the-long-lived-processes-actually-die).
-A stream that breaks reconnects and repairs each session against the server
-rather than reporting the provider gone, and the reader keeps reconnecting —
-never starting the service itself — for as long as a task is watching.
-
-**Service restarts** — stopping the service mid-turn suspends the run rather
-than ending it: the service keeps the run's claim and resumes it as it boots
-again, with no `idle` marker in between, so OpenCode counts one turn. Waku
-does the same. The turn stays open with a "Waiting for the OpenCode service"
-row, the stream usually closes before any `shutdown` interruption reaches it,
-and after the reconnect a run that is neither active nor followed by a marker
-counts as suspended rather than finished; the resumed run then streams into
-the same turn. A turn the user stops while the service is down cannot be
-interrupted, so its run is interrupted once it resumes instead of appearing as
-a turn of its own.
-
-**Handshake** — subscribe first, then `POST /api/session` with a client-minted
-`ses_…` id, `location.directory` (the canonical workspace path), the agent
-(`build` unless a preset is chosen) and the model, so the session's first event
-cannot arrive before Waku listens for it. A resume reads
-`GET /api/session/{id}` instead.
-
-**Per turn** — `POST /api/session/{id}/prompt` with `{text}`, answered with the
-inbox entry it became. A registered `/command` goes to
-`POST /api/session/{id}/command` with `{name, text}` instead, so the service
-expands it itself.
-
-**Steer** — the same prompt with `delivery: "steer"`; an entry the service
-queued anyway is promoted with `PATCH /api/session/{id}/inbox/{inboxID}`. The
-steered message joins the running execution, so its one outcome still settles
-the turn, and a `session.inbox.cancelled` for it falls back to the app's own
-follow-up queue.
-
-**Inbound stream**:
-
-| Event | Becomes |
-| --- | --- |
-| `session.execution.started` | `TurnStarted` |
-| `session.text.delta`, `session.reasoning.delta` | `TextDelta`, `ReasoningDelta`; text and reasoning share one ordinal namespace per assistant message |
-| `session.tool.input.started` through `session.tool.success` / `session.tool.failed` | `RichActivity`, opened while the arguments stream and kept through `session.tool.progress` |
-| `session.step.ended` | `UsageUpdated` from that request's tokens, against `/api/model`'s context window |
-| `session.execution.succeeded` / `failed` / `interrupted` | `TurnFinished` — the only settle point, since the service never publishes `session.idle`; a `shutdown` interruption suspends the turn instead |
-| `permission.asked` | `Permission` |
-| `form.created` | `UserInputRequested`, one question per form field |
-| `session.shell.started` / `ended` | `BackgroundWork` |
-| `session.compaction.*` | `CompactionUpdated`, an independent transcript milestone |
-| `session.retry.scheduled`, a retrying `session.status` | one upserted activity row each |
-| `session.deleted` | `Error`, then `ProcessExited` |
-
-**Approvals** — `POST /api/session/{id}/permission/{requestID}/reply` with
-`{decision: "once" | "reject"}`. `always` never goes on the wire: it would
-write a rule into `/api/permission/saved`, a global store shared with the
-user's own OpenCode, so a durable choice stays in the driver and every reply is
-one-shot. The auto modes answer `once`.
-
-**Forms** — `POST /api/session/{id}/form/{formID}/reply` with an answer keyed
-by each field's own `key`.
-
-**Cancel** — `POST /api/session/{id}/interrupt`.
-
-**Rewind and branch** — `POST /api/session/{id}/fork` with `{before}` naming
-the user message that opens the first removed turn, or no `before` to copy the
-whole history. A user message is not a turn: a steer is stored as a `user`
-message of its own, so turns are delimited by the `idle` transcript messages
-the service writes whenever an execution settles, OpenCode's own rule in
-`session/diff.ts`. History imported from OpenCode 1 carries no markers; there
-a message joined the running turn when the step before it handed back to
-tools, or had not completed yet when the message was written. Live rewinds,
-cold task forks and transcript import all count turns this way
-([opencode_session.rs](../crates/waku-core/src/opencode_session.rs)).
-
-**OpenCode 1 history** — OpenCode 2's first start imports OpenCode 1 sessions
-into the same database under their original ids, in the background. A cursor
-written for OpenCode 1 therefore resumes as it is: when its session is still
-missing while `GET /api/experimental/migration/v1` reports `running`, the
-resume waits up to 60 s for the import to reach it rather than starting an
-empty session under its id.
-
-**Cold paths** — the Resume picker, transcript import
-(`GET /api/experimental/session/{id}/export`), cold forks and the model and
-agent catalogs attach to a running service but never start one, so with no
-service running the model picker keeps its cached catalog.
-
----
-
 ## Access modes across providers
 
 Waku's `RuntimeMode` (Supervised / Auto-accept edits / Auto / Full access)
 maps into each CLI's own vocabulary.
 
-| Waku | Codex (`approvalPolicy` / `sandbox` / reviewer) | Claude `--permission-mode` | OpenCode |
-| --- | --- | --- | --- |
-| Supervised | `untrusted` / `read-only` / `user` | `default` + `can_use_tool` reaches the user | permission requests reach the user |
-| Auto-accept edits | `on-request` / `workspace-write` / `user` | `acceptEdits` | edits auto-answered (`once`), the rest reach the user |
-| Auto | `on-request` / `workspace-write` / `auto_review` | `auto` | auto-answered (`once`) |
-| Full access | `never` / `danger-full-access` / `user` | `bypassPermissions` + `--dangerously-skip-permissions` | auto-answered (`once`) |
+| Waku | Codex (`approvalPolicy` / `sandbox` / reviewer) | Claude `--permission-mode` |
+| --- | --- | --- |
+| Supervised | `untrusted` / `read-only` / `user` | `default` + `can_use_tool` reaches the user |
+| Auto-accept edits | `on-request` / `workspace-write` / `user` | `acceptEdits` |
+| Auto | `on-request` / `workspace-write` / `auto_review` | `auto` |
+| Full access | `never` / `danger-full-access` / `user` | `bypassPermissions` + `--dangerously-skip-permissions` |
 
 Pi accepts Full access only and always runs wide open (`--approve`).
 
-Codex, Claude and OpenCode can route Supervised permission requests to Waku.
+Codex and Claude can route Supervised permission requests to Waku.
 Antigravity selects its mode through launch flags but cannot prompt through its
 headless stream-json transport; unapproved tools are soft-denied instead. Pi
 has no permission system.
@@ -650,7 +523,6 @@ persisted with the session and is what makes a Waku task outlive its process:
 | Codex | `thread_id` | `thread/resume` |
 | Pi | `session_id`, `session_file` | `switch_session` needs the path |
 | Claude | `session_id`, `resume_at` | `resume_at` is the transcript message uuid used for forking |
-| OpenCode | `session_id`, `directory` | `GET /api/session/{id}` / service fork; `directory` is the workspace string the service stored |
 
 A cursor from the wrong provider is rejected at driver start rather than
 silently ignored.
@@ -668,7 +540,6 @@ hold a long-lived session; the transport differs, the lifetime does not.
 | --- | --- | --- |
 | Codex | `codex app-server` JSON-RPC (`packages/effect-codex-app-server`) | same |
 | Claude | `@anthropic-ai/claude-agent-sdk` `query()` with an `AsyncIterable` prompt queue | same protocol, spoken directly — the SDK is a wrapper around these flags |
-| OpenCode | long-lived `opencode serve` + HTTP SDK | the user's shared OpenCode 2 background service, adopted rather than started per workspace |
 
 **They all hold a long-lived session**, and Claude reaches the same place
 without the SDK: there is no Rust Agent SDK, but the SDK is a wrapper around the
@@ -682,7 +553,7 @@ What the long-lived session buys, and what Waku pays for not having it:
 
 | Capability | T3 Code | Waku |
 | --- | --- | --- |
-| Interactive approvals | Claude via the SDK's `canUseTool` (including `AskUserQuestion` and `ExitPlanMode`), Codex via `*requestApproval*` | Codex, Claude and OpenCode route requests into Waku |
+| Interactive approvals | Claude via the SDK's `canUseTool` (including `AskUserQuestion` and `ExitPlanMode`), Codex via `*requestApproval*` | Codex and Claude route requests into Waku |
 | Interrupt | `session/cancel`, `query.interrupt()` (plus `stopTask()` for runaway subagents) | Protocol interrupt everywhere |
 | Change model mid-session | `capabilities.sessionModelSwitch: "in-session"` → `session/set_model`, `query.setModel()` | Every transport keeps the session |
 | Mid-turn prompt | Queued into the live agent loop as a **steer**, same turn | `⌘↩` steers where the runtime reports support; otherwise queues a follow-up. Plain `Enter` queues a visible, editable follow-up |
@@ -727,16 +598,14 @@ transcript uuid as a rewind checkpoint.
    and never leak private control markers into the transcript. If the transport
    accepts user messages mid-turn, probe *which* behavior it has before wiring
    `RuntimeCapabilities::steer`: inject an instruction while a slow tool runs
-   and count the turn completions. Claude folds a plain message into the running turn;
-   OpenCode joins it to the running execution when the prompt says
-   `delivery: "steer"`.
+   and count the turn completions. Claude folds a plain message into the running turn.
 5. Map the access modes. If the transport can ask the user, route
    Supervised to a real `Permission` event; if it cannot, pick the safe
    degradation and say so in a comment at the call site.
 6. Add an `#[ignore]`d integration test that drives the real provider through the
-   driver, as `opencode.rs` does. It is the only check that catches a
+   driver. It is the only check that catches a
    transport wired to nothing.
-7. Implement rewind and branch, or emulate them the way Claude and OpenCode do.
+7. Implement rewind and branch, or emulate them the way Claude does.
    Native truncation is preferable; seeding a fresh session with retained history
    is the fallback.
 8. **Do not trust a clean stop reason.** Probe what the provider does when the

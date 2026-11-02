@@ -68,7 +68,6 @@ argument**; `NO_COLOR=1` and `CI=1` are set for all of them.
 | --- | --- | --- | --- | --- |
 | Claude Code | `claude` | `--print --output-format text --permission-mode plan --tools "" --disable-slash-commands --no-session-persistence --no-chrome` | pinned `claude-haiku-4-5` | pinned `low` |
 | Codex CLI | `codex exec` | `--sandbox read-only --ephemeral --color never --skip-git-repo-check` | pinned `gpt-5.6-luna` | pinned `none`, via `-c` |
-| OpenCode | `opencode run` | `--standalone --agent plan` | `--model` | `#<variant>` suffix on the model |
 | Pi | `pi` | `--print --no-session --no-tools --no-context-files --no-extensions --no-skills --no-prompt-templates --no-approve` | `--model` | `--thinking` |
 
 Where a provider is not simply "flags plus prompt":
@@ -80,12 +79,6 @@ Where a provider is not simply "flags plus prompt":
 - **Codex** runs `exec` as an ephemeral read-only turn; `--skip-git-repo-check`
   lets a workspace that is not a repo root run. Effort rides on a `-c` config
   override because `codex exec` has no flag for it.
-- **OpenCode** runs `plan`, its read-only agent, on a private `--standalone`
-  server rather than on the user's background service, so a commit subject
-  neither starts that service nor queues behind it. The run is still an
-  ordinary session in OpenCode's history. Effort is the model's variant, sent
-  as `--model provider/model#low`; OpenCode rejects a variant without a model,
-  so effort is dropped when no model is chosen.
 - **Pi** needs the long list because each capability is its own switch.
   `--no-context-files` is its "disable `AGENTS.md` and `CLAUDE.md` discovery"
   flag, so repo instructions cannot contradict the fixed prompt.

@@ -122,13 +122,13 @@ ModelMention
 
 | 角色 | 第一版计划 |
 | --- | --- |
-| 父 agent | 优先接入 Codex、OpenCode；两者现有 driver 有运行时注入 Waku MCP 的代码先例，正式支持仍须通过协议与真实调用验证。 |
+| 父 agent | 优先接入 Codex；其现有 driver 有运行时注入 Waku MCP 的代码先例，正式支持仍须通过协议与真实调用验证。 |
 | 子任务 | 复用现有 driver；逐个验证准确选模、思考强度、流事件、结束、取消及评审执行约束。 |
 | 其他父 provider | 增加各自的 MCP 或原生工具 adapter，通过相同测试后开放；不假定所有 CLI 都能注入工具。 |
 
 父 provider 未通过能力验证时，`^` 候选说明当前会话不支持委派，并保留输入。不能把引用直接发成普通文本后显示为已执行。
 
-运行时只注册一次 bridge，本轮目标清单随 prompt 更新。bridge 使用绑定父 session、runtime generation 和轮次的凭证；工具参数不接受任意父 session ID，也不向模型暴露全局 daemon 凭证。OpenCode 的共享服务场景须用经过验证的会话路由元数据隔离调用，不能依赖模型填写来源。
+运行时只注册一次 bridge，本轮目标清单随 prompt 更新。bridge 使用绑定父 session、runtime generation 和轮次的凭证；工具参数不接受任意父 session ID，也不向模型暴露全局 daemon 凭证。
 
 ### 5.2 第一版工具
 
@@ -177,7 +177,7 @@ ModelMention
 - provider 不能保证这一策略时，只有经验证的无工具模式才可作为替代，并明确展示上下文范围；否则该渠道暂不支持评审委派。
 - 准确区分“隔离快照保护原仓库”和“操作权限被约束”。更换 cwd 或写一句“不要修改文件”均不能充当权限保证。
 
-本节是准确执行独立代码评审的前提。例子中的 DeepSeek 模型通过 Pi、Oh My Pi 或 OpenCode 等受支持渠道使用；Waku 不提供原生 Harness provider，也不能擅自切换用户指定的渠道。
+本节是准确执行独立代码评审的前提。例子中的 DeepSeek 模型通过 Pi 等受支持渠道使用；Waku 不提供原生 Harness provider，也不能擅自切换用户指定的渠道。
 
 ## 7. daemon 调度、事件与存储
 
@@ -359,10 +359,8 @@ ModelMention
     详情回放只展示当前 attempt。停止、关闭、删除或 rewind 父会话会撤销委派能力并取消子任务。
   - `auth.rs` + `bridge.rs`：`/tmp` 下 `0700` 注册目录 + Unix socket；
     每个父 session 一份 capability 文件；`waku-daemon mcp-agent-tools` 提供 stdio MCP。
-    OpenCode 的 `ses_…` 通过别名读取 canonical Waku 注册，后续轮次的 token 和目标更新不会失效。
 - `ExecutionPolicy::{Interactive, ReviewReadOnly}`。子任务一律 `ReviewReadOnly`：
-  Codex 用 `sandbox: read-only` + `approvalPolicy: never`；OpenCode 强制 `plan` preset 且
-  只读工具放行、其余一律 `reject`。
+  Codex 用 `sandbox: read-only` + `approvalPolicy: never`。
   Claude 子任务直接拒绝提问；任何仍请求人机交互的子 driver 都会明确失败并停止。
 
 ### 客户端
@@ -414,6 +412,6 @@ ModelMention
 1. 工具集收敛为 `delegate_batch` + `wait_delegates`；供父模型调用的分页读取与取消工具未实现
    （UI 的分页读取与取消走类型化 RPC）。
 2. 未实现「父轮次中断后后台自动续跑汇总」；子任务结论持久化，用户重新进入会话即可查看。
-3. 父 provider 支持矩阵：Codex、OpenCode（MCP 注入）、Pi、Oh My Pi（扩展注入）。
-   子任务可用的 provider：Codex、OpenCode、Claude、Pi、Oh My Pi。
+3. 父 provider 支持矩阵：Codex（MCP 注入）、Pi（扩展注入）。
+   子任务可用的 provider：Codex、Claude、Pi。
    Amp / Cursor / Fx / Grok / Kimi 因只有“询问用户”的审批模型而在候选列表中排除。

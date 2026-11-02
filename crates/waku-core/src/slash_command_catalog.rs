@@ -33,7 +33,6 @@ pub(crate) fn discover(
         ProviderKind::Claude => discover_claude(binary, project_root),
         ProviderKind::Antigravity => discover_antigravity(binary, project_root),
         ProviderKind::Codex => discover_codex(binary, project_root),
-        ProviderKind::OpenCode => discover_opencode(binary, project_root),
         ProviderKind::Pi => discover_pi(binary, project_root),
     }
 }
@@ -181,17 +180,6 @@ fn discover_codex(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand
     commands
 }
 
-fn discover_opencode(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> {
-    // The registry is directory-scoped, not session-scoped. Seed the new-task
-    // composer too, without creating a disposable provider session.
-    let directory = std::fs::canonicalize(project_root).ok()?;
-    let directory = directory.to_string_lossy();
-    let service = crate::opencode_service::shared(binary).ok()?;
-    let endpoint = service.endpoint();
-    let commands = crate::opencode_api::list_commands(&endpoint, Some(&directory)).ok()?;
-    Some(opencode_commands(commands))
-}
-
 fn discover_pi(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> {
     // Catalog reads neither run an agent turn nor need the runtime driver's
     // full-access flag.
@@ -299,25 +287,6 @@ fn parse_codex_skills(value: &Value, project_root: &Path) -> Vec<SlashCommand> {
                 skill.get("name")?.as_str()?,
                 description,
                 CommandScope::Skill,
-                None,
-                None,
-            )
-        })
-        .take(COMMAND_CATALOG_CAP)
-        .collect()
-}
-
-/// The service's command registry: built-ins, configured commands and MCP
-/// prompts, which the server expands itself. Skills are not commands here;
-/// OpenCode attaches them to a prompt as `@` mentions.
-fn opencode_commands(commands: Vec<crate::opencode_api::CommandInfo>) -> Vec<SlashCommand> {
-    commands
-        .into_iter()
-        .filter_map(|entry| {
-            command(
-                &entry.name,
-                entry.description.as_deref(),
-                CommandScope::Builtin,
                 None,
                 None,
             )
@@ -571,32 +540,6 @@ mod tests {
     }
 
     #[test]
-    fn opencode_registry_commands_are_server_expanded_builtins() {
-        let commands = opencode_commands(
-            serde_json::from_value(json!([
-                {"name": "init", "description": "guided AGENTS.md setup"},
-                {"name": "review", "description": "review changes [commit|branch|pr], defaults to uncommitted"},
-                {"name": "mcp:lookup"},
-                {"name": "invalid command"}
-            ]))
-            .unwrap(),
-        );
-        assert_eq!(
-            commands
-                .iter()
-                .map(|command| command.name.as_str())
-                .collect::<Vec<_>>(),
-            ["init", "review", "mcp:lookup"]
-        );
-        assert!(
-            commands
-                .iter()
-                .all(|command| command.scope == CommandScope::Builtin)
-        );
-        assert!(commands.iter().all(|command| command.template.is_none()));
-    }
-
-    #[test]
     fn parses_antigravity_skills_json_payload() {
         let commands = parse_antigravity_skills(&json!({
             "status": "SUCCESS",
@@ -615,45 +558,5 @@ mod tests {
         assert_eq!(commands[0].scope, CommandScope::Skill);
         assert!(commands[0].template.is_none());
         assert_eq!(commands[1].name, "add-word");
-    }
-
-    #[test]
-    #[ignore = "requires an installed opencode; reads a cold workspace catalogue without creating sessions"]
-    fn opencode_builtin_catalog_against_a_real_service() {
-        let binary =
-            crate::command_env::find_executable("opencode").expect("opencode is not installed");
-        let root =
-            std::env::temp_dir().join(format!("waku-command-catalog-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join(".opencode/commands")).unwrap();
-        std::fs::write(
-            root.join(".opencode/commands/waku-catalog-smoke.md"),
-            "---\ndescription: Catalog test\n---\nReply OK",
-        )
-        .unwrap();
-        let root = std::fs::canonicalize(root).unwrap();
-        let commands = discover(ProviderKind::OpenCode, &binary, &root).unwrap();
-        for name in ["init", "review", "waku-catalog-smoke"] {
-            assert!(
-                commands
-                    .iter()
-                    .any(|command| command.name == name && command.template.is_none()),
-                "missing {name}"
-            );
-        }
-        let service = crate::opencode_service::shared(&binary).unwrap();
-        let (sessions, _) = crate::opencode_api::list_sessions(
-            &service.endpoint(),
-            Some(&root.to_string_lossy()),
-            None,
-            crate::opencode_api::Order::Desc,
-            10,
-            None,
-        )
-        .unwrap();
-        assert!(
-            sessions.is_empty(),
-            "catalogue discovery must not create sessions"
-        );
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

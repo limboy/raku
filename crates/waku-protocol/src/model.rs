@@ -14,19 +14,13 @@ pub enum ProviderKind {
     Claude,
     #[default]
     Codex,
-    /// OpenCode 2 shipped as its own `opencode2` provider while it was in beta.
-    /// Its release took over the `opencode` command, so those sessions now
-    /// load as OpenCode.
-    #[serde(alias = "openCode2")]
-    OpenCode,
     Pi,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 4] = [
         Self::Claude,
         Self::Codex,
-        Self::OpenCode,
         Self::Pi,
         Self::Antigravity,
     ];
@@ -36,7 +30,6 @@ impl ProviderKind {
             Self::Antigravity => "antigravity",
             Self::Claude => "claude",
             Self::Codex => "codex",
-            Self::OpenCode => "opencode",
             Self::Pi => "pi",
         }
     }
@@ -46,7 +39,6 @@ impl ProviderKind {
             Self::Antigravity => "Antigravity CLI",
             Self::Claude => "Claude Code",
             Self::Codex => "Codex CLI",
-            Self::OpenCode => "OpenCode",
             Self::Pi => "Pi",
         }
     }
@@ -56,7 +48,6 @@ impl ProviderKind {
             Self::Antigravity => "Antigravity",
             Self::Claude => "Claude",
             Self::Codex => "Codex",
-            Self::OpenCode => "OpenCode",
             Self::Pi => "Pi",
         }
     }
@@ -66,7 +57,6 @@ impl ProviderKind {
             Self::Antigravity => "agy",
             Self::Claude => "claude",
             Self::Codex => "codex",
-            Self::OpenCode => "opencode",
             Self::Pi => "pi",
         }
     }
@@ -91,15 +81,6 @@ pub enum ProviderResumeCursor {
     Codex {
         thread_id: String,
     },
-    /// `directory` is the canonical workspace path the service stored for
-    /// the session. It is absent from cursors written before OpenCode 2, whose
-    /// sessions the service migrates under their original ids.
-    #[serde(alias = "openCode2")]
-    OpenCode {
-        session_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        directory: Option<String>,
-    },
     Pi {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,10 +97,6 @@ impl ProviderResumeCursor {
                 resume_at: None,
             },
             ProviderKind::Codex => Self::Codex { thread_id: id },
-            ProviderKind::OpenCode => Self::OpenCode {
-                session_id: id,
-                directory: None,
-            },
             ProviderKind::Pi => Self::Pi {
                 session_id: id,
                 session_file: None,
@@ -132,7 +109,6 @@ impl ProviderResumeCursor {
             Self::Antigravity { .. } => ProviderKind::Antigravity,
             Self::Claude { .. } => ProviderKind::Claude,
             Self::Codex { .. } => ProviderKind::Codex,
-            Self::OpenCode { .. } => ProviderKind::OpenCode,
             Self::Pi { .. } => ProviderKind::Pi,
         }
     }
@@ -141,7 +117,6 @@ impl ProviderResumeCursor {
         match self {
             Self::Antigravity { session_id }
             | Self::Claude { session_id, .. }
-            | Self::OpenCode { session_id, .. }
             | Self::Pi { session_id, .. } => session_id,
             Self::Codex { thread_id } => thread_id,
         }
@@ -4074,17 +4049,6 @@ mod tests {
                 1,
             ),
             (
-                ProviderKind::OpenCode,
-                serde_json::json!({
-                    "filePath": "src/opencode.rs",
-                    "oldString": "same\nold\nend",
-                    "newString": "same\nnew\nend"
-                }),
-                "src/opencode.rs",
-                1,
-                1,
-            ),
-            (
                 ProviderKind::Pi,
                 serde_json::json!({
                     "path": "src/pi.rs",
@@ -4328,7 +4292,7 @@ mod tests {
     #[test]
     fn provider_title_replaces_prompt_fallback_but_not_an_explicit_title() {
         let project = Project::from_path(PathBuf::from("/tmp/waku"));
-        let mut session = AgentSession::new(project.id, ProviderKind::OpenCode);
+        let mut session = AgentSession::new(project.id, ProviderKind::Codex);
         session.set_title_from_prompt("investigate the broken provider event");
 
         assert!(session.set_auto_title(Some("Fix provider title events".into())));
@@ -4405,8 +4369,6 @@ mod tests {
         assert_eq!(ProviderKind::Antigravity.command(), "agy");
         assert_eq!(ProviderKind::Claude.id(), "claude");
         assert_eq!(ProviderKind::Codex.command(), "codex");
-        assert_eq!(ProviderKind::OpenCode.id(), "opencode");
-        assert_eq!(ProviderKind::OpenCode.command(), "opencode");
         assert_eq!(ProviderKind::Pi.command(), "pi");
     }
 
@@ -4416,7 +4378,6 @@ mod tests {
             ProviderKind::Antigravity,
             ProviderKind::Claude,
             ProviderKind::Codex,
-            ProviderKind::OpenCode,
             ProviderKind::Pi,
         ] {
             assert!(provider.capabilities().conversation.fork);
@@ -4429,76 +4390,12 @@ mod tests {
         assert!(ProviderKind::Antigravity.capabilities().model_discovery);
         assert!(ProviderKind::Claude.capabilities().model_discovery);
         assert!(ProviderKind::Codex.capabilities().model_discovery);
-        assert!(ProviderKind::OpenCode.capabilities().model_discovery);
         assert!(ProviderKind::Pi.capabilities().model_discovery);
     }
 
     #[test]
-    fn opencode_cursor_round_trips_with_its_wire_tag() {
-        let cursor = ProviderResumeCursor::OpenCode {
-            session_id: "ses_abc".into(),
-            directory: Some("/work/waku".into()),
-        };
-        let json = serde_json::to_string(&cursor).unwrap();
-        assert!(json.contains("\"provider\":\"openCode\""), "{json}");
-        assert!(json.contains("\"sessionId\":\"ses_abc\""), "{json}");
-        assert!(json.contains("\"directory\":\"/work/waku\""), "{json}");
-        assert_eq!(cursor.provider(), ProviderKind::OpenCode);
-        assert_eq!(cursor.native_id(), "ses_abc");
-        assert_eq!(
-            serde_json::from_str::<ProviderResumeCursor>(&json).unwrap(),
-            cursor
-        );
-    }
-
-    /// Sessions saved while OpenCode 2 was a separate beta provider, and
-    /// OpenCode 1 cursors without a directory, both resume as OpenCode: the
-    /// released `opencode` command is OpenCode 2, and it migrates OpenCode 1
-    /// history under the original session ids.
-    #[test]
-    fn earlier_opencode_providers_and_cursors_load_as_opencode() {
-        assert_eq!(
-            serde_json::from_value::<ProviderKind>(serde_json::json!("openCode2")).unwrap(),
-            ProviderKind::OpenCode
-        );
-        assert_eq!(
-            serde_json::to_value(ProviderKind::OpenCode).unwrap(),
-            serde_json::json!("openCode")
-        );
-        let beta: ProviderResumeCursor = serde_json::from_value(serde_json::json!({
-            "provider": "openCode2",
-            "sessionId": "ses_beta",
-            "directory": "/work/waku",
-        }))
-        .unwrap();
-        assert_eq!(
-            beta,
-            ProviderResumeCursor::OpenCode {
-                session_id: "ses_beta".into(),
-                directory: Some("/work/waku".into()),
-            }
-        );
-        let v1: ProviderResumeCursor = serde_json::from_value(serde_json::json!({
-            "provider": "openCode",
-            "sessionId": "ses_v1",
-        }))
-        .unwrap();
-        assert_eq!(
-            v1,
-            ProviderResumeCursor::OpenCode {
-                session_id: "ses_v1".into(),
-                directory: None,
-            }
-        );
-        assert!(
-            !serde_json::to_string(&v1).unwrap().contains("directory"),
-            "an unknown directory is omitted rather than written as null"
-        );
-    }
-
-    #[test]
     fn all_contains_every_provider_kind() {
-        assert_eq!(ProviderKind::ALL.len(), 5);
+        assert_eq!(ProviderKind::ALL.len(), 4);
         let ids: std::collections::HashSet<_> =
             ProviderKind::ALL.iter().map(|kind| kind.id()).collect();
         assert_eq!(
@@ -4869,7 +4766,7 @@ mod tests {
     #[test]
     fn legacy_file_edit_details_are_promoted_to_arguments_and_metadata() {
         let project = Project::from_path(PathBuf::from("/tmp/waku"));
-        let mut session = AgentSession::new(project.id, ProviderKind::OpenCode);
+        let mut session = AgentSession::new(project.id, ProviderKind::Codex);
         session.transcript_blocks.push(TranscriptBlock {
             after_message: 0,
             turn_id: None,
@@ -4902,7 +4799,7 @@ mod tests {
     #[test]
     fn legacy_file_tools_are_reclassified_and_gain_cached_targets() {
         let project = Project::from_path(PathBuf::from("/tmp/waku"));
-        let mut session = AgentSession::new(project.id, ProviderKind::OpenCode);
+        let mut session = AgentSession::new(project.id, ProviderKind::Codex);
         let mut cached = ActivityItem::new(None, ActivityKind::FileRead, "read", None, true);
         cached.display_target = Some("/tmp/waku/src/persisted.rs".into());
         session.transcript_blocks.push(TranscriptBlock {
@@ -5187,7 +5084,6 @@ mod review_subtask_tests {
         for provider in [
             ProviderKind::Codex,
             ProviderKind::Claude,
-            ProviderKind::OpenCode,
             // Pi launches subtasks with a read-only tool allowlist.
             ProviderKind::Pi,
         ] {

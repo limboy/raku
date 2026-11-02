@@ -1490,7 +1490,7 @@ mod tests {
         let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
         state.last_runtime_mode = RuntimeMode::Ask;
 
-        let session = state.new_session(state.projects[0].id, ProviderKind::OpenCode);
+        let session = state.new_session(state.projects[0].id, ProviderKind::Codex);
 
         assert_eq!(session.runtime_mode, RuntimeMode::Ask);
         assert_eq!(state.app_state().last_runtime_mode, RuntimeMode::Ask);

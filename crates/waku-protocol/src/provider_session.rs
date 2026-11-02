@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -19,15 +18,6 @@ pub enum ProviderSessionForkRequest {
         resume_at: Option<String>,
         turn_count: usize,
         title: String,
-    },
-    /// OpenCode sessions carry their own `location`, so there is no server
-    /// working directory to fork against; `binary` only lets the cold path
-    /// reach the adopted background service.
-    #[serde(alias = "openCode2")]
-    OpenCode {
-        binary: PathBuf,
-        session_id: String,
-        turn_count: usize,
     },
 }
 

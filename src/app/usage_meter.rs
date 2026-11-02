@@ -3,8 +3,8 @@
 //! rate-limit lanes, mirroring Claude Code's `/usage` rows. Context numbers
 //! stream in from every provider transport that reports them; plan lanes come
 //! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`]),
-//! OpenCode Go's usage endpoint, Codex's own rate-limit notifications, and
-//! Antigravity's billing probe. Frames read only snapshots stored on the entity.
+//! Codex's own rate-limit notifications, and Antigravity's billing probe.
+//! Frames read only snapshots stored on the entity.
 
 use gpui::{PathBuilder, relative};
 
@@ -15,10 +15,9 @@ const USAGE_METER_MENU_ID: &str = "usage-meter";
 
 /// Top-level providers with a single account-wide plan fetcher. Codex
 /// additionally refreshes live from its own stream notifications.
-pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 3] = [
+pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 2] = [
     ProviderKind::Claude,
     ProviderKind::Codex,
-    ProviderKind::OpenCode,
 ];
 
 /// Cache key for an account-level plan snapshot. Top-level providers hold one
@@ -430,8 +429,8 @@ impl Waku {
     }
 }
 
-/// Fraction of the window in use, capped at 100%. A provider (notably
-/// OpenCode) can report a lifetime/cumulative token counter that exceeds the
+/// Fraction of the window in use, capped at 100%. A provider
+/// can report a lifetime/cumulative token counter that exceeds the
 /// model's window; the context can never be more than fully used, so anything
 /// past the window reads as full rather than an impossible percentage.
 fn context_percent(usage: ContextUsage) -> Option<f64> {
@@ -768,7 +767,7 @@ mod tests {
 
     #[test]
     fn context_percent_caps_at_full_when_provider_over_reports() {
-        // OpenCode reports lifetime/cumulative session counters that can run
+        // A provider might report lifetime/cumulative session counters that can run
         // far past the model's window; the meter must read "full", never an
         // impossible percentage like 472%.
         let usage = ContextUsage {

@@ -212,16 +212,13 @@ impl Waku {
                         session.provider,
                         ProviderKind::Codex
                             | ProviderKind::Claude
-                            | ProviderKind::OpenCode
                             | ProviderKind::Antigravity
                     ) {
                         // Some providers start turns on their own: Codex goal
                         // continuation pursues an active goal whenever the
                         // thread is idle, Claude Code re-enters the model
                         // once a backgrounded command, subagent or monitor
-                        // settles, and OpenCode's shared service resumes a
-                        // session after a restart or runs one the user's own
-                        // client prompted. Give the turn a transcript home —
+                        // settles. Give the turn a transcript home —
                         // there is no user message for it — so its work
                         // streams in instead of being dropped.
                         session.begin_provider_turn();

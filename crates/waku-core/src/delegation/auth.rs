@@ -238,7 +238,7 @@ impl DelegationRegistry {
         }
     }
 
-    /// OpenCode routes MCP calls by its own `ses_…` identity. Keep an alias to
+    /// Keep an alias to
     /// the canonical Waku registration so token/target updates remain live.
     pub fn register_alias(session_path: &Path, provider_session_id: &str) -> anyhow::Result<()> {
         let config: SessionBridgeConfig = serde_json::from_slice(&fs::read(session_path)?)?;

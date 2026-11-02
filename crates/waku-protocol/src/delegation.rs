@@ -24,8 +24,7 @@ pub struct ModelReference {
     pub context_window: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_preset: Option<String>,
-    /// The calling channel behind a provider, e.g. `GitHub Copilot` for an
-    /// OpenCode model, so two same-named models stay distinguishable.
+    /// The calling channel behind a provider, so two same-named models stay distinguishable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_provider: Option<String>,
     pub display_label: String,

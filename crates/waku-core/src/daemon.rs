@@ -311,9 +311,6 @@ impl Backend for WakuBackend {
                     crate::model::ProviderKind::Codex => {
                         Some(crate::usage::fetch_codex_plan_usage()?)
                     }
-                    crate::model::ProviderKind::OpenCode => {
-                        crate::usage::fetch_opencode_go_plan_usage()?
-                    }
                     _ => bail!("provider has no plan usage fetcher"),
                 };
                 Ok(ResponsePayload::PlanUsage { usage })
@@ -523,9 +520,6 @@ impl Backend for WakuBackend {
                     ProviderKind::Codex => {
                         crate::codex_session::list_provider_sessions(&binary, limit)?
                     }
-                    ProviderKind::OpenCode => {
-                        crate::opencode_session::list_provider_sessions(&binary, limit)?
-                    }
                     ProviderKind::Pi => {
                         crate::pi_session::list_provider_sessions(provider, limit)?
                     }
@@ -574,16 +568,6 @@ impl Backend for WakuBackend {
                         crate::codex_session::provider_session_history(
                             &binary,
                             thread_id,
-                            VISIBLE_TURN_LIMIT,
-                        )?
-                    }
-                    // OpenCode is not an ACP provider: its history comes from
-                    // the adopted background service's own export route.
-                    ProviderResumeCursor::OpenCode { session_id, .. } => {
-                        let binary = self.provider_binary(ProviderKind::OpenCode)?;
-                        crate::opencode_session::provider_session_history(
-                            &binary,
-                            session_id,
                             VISIBLE_TURN_LIMIT,
                         )?
                     }
@@ -1275,21 +1259,6 @@ impl WakuBackend {
                 self.fork_response_with_driver(source, cwd, turns_to_remove)?,
                 HashMap::new(),
             )),
-            ProviderKind::OpenCode => {
-                let Some(ProviderResumeCursor::OpenCode { session_id, .. }) =
-                    source.provider_cursor.as_ref()
-                else {
-                    bail!("OpenCode's native session is unavailable");
-                };
-                // No cwd: a session carries its own `location`, so there is no
-                // server working directory to fork against.
-                let fork = fork_provider_session(ProviderSessionForkRequest::OpenCode {
-                    binary: self.provider_binary(ProviderKind::OpenCode)?,
-                    session_id: session_id.clone(),
-                    turn_count: provider_turn_count,
-                })?;
-                Ok((fork.cursor, HashMap::new()))
-            }
         }
     }
 
@@ -1409,31 +1378,6 @@ impl WakuBackend {
                     title: format!("{} (rewind)", source.display_title()),
                 })?;
                 Ok((Some(fork.cursor), fork.message_ids, false))
-            }
-            ProviderKind::OpenCode => {
-                let cursor = if let Some(driver) = self
-                    .sessions
-                    .lock()
-                    .get(&source.id)
-                    .map(|(_, driver)| driver.clone())
-                {
-                    driver
-                        .rollback(rollback_turns)?
-                        .ok_or_else(|| anyhow!("OpenCode returned no rewound-session cursor"))?
-                } else {
-                    let Some(ProviderResumeCursor::OpenCode { session_id, .. }) =
-                        source.provider_cursor.as_ref()
-                    else {
-                        bail!("OpenCode's native session is unavailable");
-                    };
-                    fork_provider_session(ProviderSessionForkRequest::OpenCode {
-                        binary: binary.to_owned(),
-                        session_id: session_id.clone(),
-                        turn_count: provider_turn_count,
-                    })?
-                    .cursor
-                };
-                Ok((Some(cursor), HashMap::new(), false))
             }
             ProviderKind::Codex | ProviderKind::Pi => Ok((
                 self.rollback_response_with_driver(source, cwd, binary, rollback_turns)?,
@@ -1641,15 +1585,6 @@ fn fork_provider_session(
                 Some(source_resume_at),
             )
         }
-        ProviderSessionForkRequest::OpenCode {
-            binary,
-            session_id,
-            turn_count,
-        } => (
-            crate::opencode_session::fork_session_at_turn(&binary, &session_id, turn_count)?,
-            HashMap::new(),
-            None,
-        ),
     };
     Ok(ProviderSessionFork {
         cursor,

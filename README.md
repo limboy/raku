@@ -29,8 +29,6 @@ Waku works with:
 - Antigravity CLI
 - Claude Code
 - Codex CLI
-- Oh My Pi
-- OpenCode
 - Pi
 
 Install and authenticate at least one supported agent CLI before starting Waku.

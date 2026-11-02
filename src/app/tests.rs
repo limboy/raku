@@ -2042,12 +2042,12 @@ fn model_picker_subtitle_deduplicates_the_provider_name() {
     use super::composer::model_picker_subtitle;
 
     assert_eq!(
-        model_picker_subtitle(ProviderKind::OpenCode, Some("OpenCode")),
-        "OpenCode"
+        model_picker_subtitle(ProviderKind::Pi, Some("Pi")),
+        "Pi"
     );
     assert_eq!(
-        model_picker_subtitle(ProviderKind::OpenCode, Some("OpenAI")),
-        "OpenAI · OpenCode"
+        model_picker_subtitle(ProviderKind::Pi, Some("OpenAI")),
+        "OpenAI · Pi"
     );
 }
 
@@ -2067,7 +2067,7 @@ fn tab_cycle_walks_favorites_then_usable_providers_in_rail_order() {
     let probes = [
         probe(ProviderKind::Claude, true),
         probe(ProviderKind::Codex, true),
-        probe(ProviderKind::OpenCode, false),
+        probe(ProviderKind::Pi, false),
     ];
 
     // Uninstalled providers never join the cycle; favorites leads.
@@ -2162,7 +2162,7 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
     let probes = [
         probe(ProviderKind::Claude, true),
         probe(ProviderKind::Codex, true),
-        probe(ProviderKind::OpenCode, false),
+        probe(ProviderKind::Pi, false),
     ];
 
     // An undetected CLI and a switched-off provider both leave the rail
@@ -2171,7 +2171,7 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
         &probes,
         &[],
         None,
-        ProviderKind::OpenCode
+        ProviderKind::Pi
     ));
     assert!(!picker_rail_shows_provider(
         &probes,
@@ -2202,7 +2202,7 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
 #[test]
 fn compaction_milestones_survive_folding_roundtrip_and_later_activity() {
     use waku_protocol::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
-    let mut session = AgentSession::new(uuid::Uuid::new_v4(), ProviderKind::OpenCode);
+    let mut session = AgentSession::new(uuid::Uuid::new_v4(), ProviderKind::Codex);
     session.begin_turn("Keep the public API stable");
     push_transcript_activity(
         &mut session,

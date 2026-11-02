@@ -588,7 +588,7 @@ const PROFILES: Profile[] = [
     // Everything at once, and the biggest detail blob — the hydrate-cost test.
     key: "kitchen-sink",
     title: "Perf · everything at maximum",
-    provider: "openCode",
+    provider: "codex",
     model: "gpt-5.2",
     turns: 700,
     answerBytes: [800, 9000],

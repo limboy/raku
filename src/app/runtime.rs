@@ -242,7 +242,6 @@ struct MessageRewindRequest {
     rollback_turns: usize,
     provider_turn_count: usize,
     provider_resume_at: Option<String>,
-    binary: Option<PathBuf>,
     driver: Option<DriverHandle>,
     driver_start: Option<DriverStartRequest>,
 }
@@ -474,38 +473,6 @@ fn perform_provider_rewind(
             )?;
             Ok((None, Some(fork), None))
         }
-        ProviderKind::OpenCode => {
-            let cursor = if let Some(driver) = request.driver.as_ref() {
-                driver.rollback(request.rollback_turns)?.ok_or_else(|| {
-                    anyhow::anyhow!("OpenCode returned no cursor for the rewound session")
-                })?
-            } else {
-                let Some(ProviderResumeCursor::OpenCode {
-                    session_id: native_session_id,
-                    ..
-                }) = request.provider_cursor.as_ref()
-                else {
-                    anyhow::bail!(tr!(
-                        "errors.provider_native_cursor_unavailable",
-                        provider = "OpenCode"
-                    ));
-                };
-                let binary = request.binary.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(tr!("errors.provider_not_found", provider = "OpenCode"))
-                })?;
-                request
-                    .workspace_client
-                    .fork_provider_session(
-                        waku_client::provider_session::ProviderSessionForkRequest::OpenCode {
-                            binary: binary.to_owned(),
-                            session_id: native_session_id.clone(),
-                            turn_count: request.provider_turn_count,
-                        },
-                    )?
-                    .cursor
-            };
-            Ok((Some(cursor), None, None))
-        }
         ProviderKind::Codex | ProviderKind::Pi => {
             let mut prepared_driver = None;
             let driver = if let Some(driver) = request.driver.as_ref() {
@@ -543,7 +510,6 @@ struct ResponseForkRequest {
     turn_count: usize,
     provider_turn_count: usize,
     turns_to_remove: usize,
-    binary: Option<PathBuf>,
     driver: Option<DriverHandle>,
     driver_start: Option<DriverStartRequest>,
 }
@@ -659,34 +625,6 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                     ));
                 }
                 Ok((fork_response_with_driver(&mut request)?, None))
-            }
-            ProviderKind::OpenCode => {
-                let Some(ProviderResumeCursor::OpenCode {
-                    session_id: native_session_id,
-                    ..
-                }) = request.source.provider_cursor.as_ref()
-                else {
-                    anyhow::bail!(tr!(
-                        "errors.provider_native_session_unavailable",
-                        provider = "OpenCode"
-                    ));
-                };
-                let binary = request.binary.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(tr!("errors.provider_not_installed", provider = "OpenCode"))
-                })?;
-                Ok((
-                    request
-                        .workspace_client
-                        .fork_provider_session(
-                            waku_client::provider_session::ProviderSessionForkRequest::OpenCode {
-                                binary: binary.to_owned(),
-                                session_id: native_session_id.clone(),
-                                turn_count: request.provider_turn_count,
-                            },
-                        )?
-                        .cursor,
-                    None,
-                ))
             }
             ProviderKind::Pi => {
                 if !matches!(
@@ -1775,26 +1713,6 @@ impl Waku {
             .runtimes
             .get(&session_id)
             .map(|runtime| runtime.driver.clone());
-        let binary_provider = match provider {
-            ProviderKind::OpenCode => Some("OpenCode"),
-            _ => None,
-        };
-        let binary = binary_provider.and_then(|_| {
-            self.probes
-                .iter()
-                .find(|probe| probe.provider == provider)
-                .and_then(|probe| probe.path.clone())
-        });
-        if let Some(provider_name) = binary_provider
-            && binary.is_none()
-        {
-            self.show_toast(tr!(
-                "errors.provider_not_installed",
-                provider = provider_name
-            ));
-            cx.notify();
-            return;
-        }
         let driver_start = if matches!(
             provider,
             ProviderKind::Codex | ProviderKind::Pi
@@ -1819,7 +1737,6 @@ impl Waku {
             turn_count,
             provider_turn_count,
             turns_to_remove,
-            binary,
             driver,
             driver_start,
         };
@@ -2172,24 +2089,6 @@ impl Waku {
             .runtimes
             .get(&session_id)
             .map(|runtime| runtime.driver.clone());
-        let needs_binary =
-            rollback_turns > 0 && source.provider == ProviderKind::OpenCode && driver.is_none();
-        let binary = needs_binary
-            .then(|| {
-                self.probes
-                    .iter()
-                    .find(|probe| probe.provider == source.provider)
-                    .and_then(|probe| probe.path.clone())
-            })
-            .flatten();
-        if needs_binary && binary.is_none() {
-            self.show_toast(tr!(
-                "errors.provider_not_found",
-                provider = source.provider.display_name()
-            ));
-            cx.notify();
-            return;
-        }
         let driver_start = if rollback_turns > 0
             && matches!(
                 source.provider,
@@ -2243,7 +2142,6 @@ impl Waku {
             rollback_turns,
             provider_turn_count,
             provider_resume_at,
-            binary,
             driver,
             driver_start,
         };
@@ -2409,7 +2307,7 @@ impl Waku {
         }
         if claude_fork.is_some()
             || reset_native_session
-            || (matches!(provider, ProviderKind::Antigravity | ProviderKind::OpenCode)
+            || (provider == ProviderKind::Antigravity
                 && provider_rewind_cursor.is_some())
         {
             // Headless drivers retain their original native session ID. Recreate

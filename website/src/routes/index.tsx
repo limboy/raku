@@ -45,7 +45,6 @@ const WINDOWS_DOCS_URL =
 const PROVIDERS = [
   { slug: 'claude', label: 'Claude Code' },
   { slug: 'openai', label: 'Codex' },
-  { slug: 'opencode', label: 'OpenCode' },
   { slug: 'pi', label: 'Pi' },
 ]
 
@@ -89,7 +88,7 @@ const FAQ = [
   },
   {
     q: 'Do I need new API keys?',
-    a: 'No. Waku detects claude, codex, opencode, and pi on your machine and drives them directly — your existing logins, plans, and rate limits apply unchanged.',
+    a: 'No. Waku detects claude, codex, and pi on your machine and drives them directly — your existing logins, plans, and rate limits apply unchanged.',
   },
   {
     q: 'Where does my data live?',

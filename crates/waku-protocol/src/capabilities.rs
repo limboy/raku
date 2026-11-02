@@ -120,22 +120,6 @@ impl ProviderKind {
                 model_discovery: true,
                 goals: true,
             },
-            Self::OpenCode => ProviderCapabilities {
-                access_modes: &RuntimeMode::ACCESS_OPTIONS,
-                conversation: CONVERSATION,
-                compaction: CompactionCapabilities {
-                    manual: true,
-                    instructions: false,
-                    lifecycle: true,
-                    summary: true,
-                },
-                delegation: DelegationCapabilities {
-                    parent: true,
-                    review_subtask: true,
-                },
-                model_discovery: true,
-                goals: false,
-            },
             Self::Pi => ProviderCapabilities {
                 access_modes: &[RuntimeMode::FullAccess],
                 conversation: CONVERSATION,

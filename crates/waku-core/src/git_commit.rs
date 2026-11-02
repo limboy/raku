@@ -246,24 +246,6 @@ fn agent_arguments(
             push(&mut args, "-c");
             push(&mut args, CODEX_COMMIT_EFFORT);
         }
-        // `opencode run` takes the message positionally. `--standalone` runs
-        // the one-shot on a private server instead of starting, or occupying,
-        // the user's background service. Reasoning effort is the model's
-        // variant, which rides on the model as `provider/model#variant`; a
-        // variant without a model is an error rather than a default.
-        ProviderKind::OpenCode => {
-            push(&mut args, "run");
-            push(&mut args, "--standalone");
-            push(&mut args, "--agent");
-            push(&mut args, "plan");
-            if let Some(model) = model {
-                push(&mut args, "--model");
-                match reasoning_effort {
-                    Some(effort) => push(&mut args, &format!("{model}#{effort}")),
-                    None => push(&mut args, model),
-                }
-            }
-        }
         ProviderKind::Pi => {
             push(&mut args, "--print");
             push(&mut args, "--no-session");
@@ -631,12 +613,6 @@ mod tests {
                     assert!(has_pair(&args, "--sandbox", "read-only"));
                     assert!(has(&args, "--ephemeral"));
                     assert!(has(&args, "--skip-git-repo-check"));
-                }
-                ProviderKind::OpenCode => {
-                    assert_eq!(args.first().and_then(|arg| arg.to_str()), Some("run"));
-                    assert!(has(&args, "--standalone"));
-                    assert!(has_pair(&args, "--agent", "plan"));
-                    assert!(has_pair(&args, "--model", "model#low"));
                 }
                 ProviderKind::Claude => {
                     assert!(has(&args, "--print"));

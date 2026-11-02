@@ -5,7 +5,6 @@ mod antigravity;
 mod claude;
 mod codex;
 mod compaction;
-mod opencode;
 mod pi;
 mod support;
 mod title_language;
@@ -218,10 +217,6 @@ pub(crate) fn start_local(
         }
         ProviderKind::Codex => Arc::new(codex::CodexDriver::start(options, events)?),
         ProviderKind::Pi => Arc::new(pi::PiDriver::start(options, events)?),
-        // OpenCode is not a per-workspace server: one adopted background
-        // service carries every workspace, and every Waku task rides its one
-        // event stream.
-        ProviderKind::OpenCode => Arc::new(opencode::OpenCodeDriver::start(options, events)?),
         // Claude serves a realtime stream of user messages on stdin — the same
         // transport the Agent SDK drives — which is what lets its Supervised
         // mode ask rather than decide alone.

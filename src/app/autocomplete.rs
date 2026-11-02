@@ -138,8 +138,8 @@ impl Waku {
     }
 
     /// Whether this session can delegate at all: the parent agent needs the
-    /// Waku tools, which arrive as MCP servers on Codex and OpenCode and as a
-    /// Pi extension on Pi and Oh My Pi.
+    /// Waku tools, which arrive as MCP servers on Codex and as a
+    /// Pi extension on Pi.
     pub(super) fn supports_delegation(&self) -> bool {
         self.selected_session()
             .is_some_and(|session| session.provider.capabilities().delegation.parent)

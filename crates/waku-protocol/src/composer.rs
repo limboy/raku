@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn reasoning_levels_become_separate_candidates() {
         let models = vec![(
-            ProviderKind::OpenCode,
+            ProviderKind::Codex,
             model(
                 "github-copilot/gemini-3.8-flash",
                 "Gemini 3.8 Flash",
@@ -623,7 +623,7 @@ mod tests {
             model_candidates(&[(ProviderKind::Codex, model("new-model", "Model", &[]))]);
         let mut selected = crate::delegation::ModelReference::new(
             "chosen",
-            ProviderKind::OpenCode,
+            ProviderKind::Claude,
             "provider/old-model",
             "Model",
         );
@@ -670,7 +670,7 @@ mod tests {
     fn same_named_routes_survive_draft_restore_and_independent_deletion() {
         let candidates = model_candidates(&[
             (ProviderKind::Codex, model("a", "Shared", &[])),
-            (ProviderKind::OpenCode, model("channel/b", "Shared", &[])),
+            (ProviderKind::Claude, model("channel/b", "Shared", &[])),
         ]);
         let first = candidates[0].reference("first");
         let second = candidates[1].reference("second");

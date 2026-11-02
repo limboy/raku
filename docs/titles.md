@@ -17,7 +17,7 @@ English code, paths, technical identifiers, or background instructions;
 technical terms can retain their original form.
 
 Codex receives this policy in its title turn's system instructions. For
-Claude, OpenCode, Antigravity, Pi, and Oh My Pi, Waku appends the
+Claude, Antigravity, and Pi, Waku appends the
 same naming context to the first ordinary prompt whose language can be
 identified in each live driver. Language detection uses a bounded sample of
 the original prose, excluding code blocks, inline code, quoted background,
@@ -89,11 +89,9 @@ is the universal last-stage normalizer. `AutoTitleUpdated` is in the `force_save
 What differs is how the title reaches that event:
 
 1. **Pushed on the provider's own stream.** The agent sends a title event and
-   the driver forwards it. Nothing to poll, nothing to schedule. OpenCode
-   and Codex's native paths work this way. Oh My Pi uses
-   the same delivery shape after Waku explicitly requests native naming. Pi
-   also pushes name changes, but its built-in rename support does not generate
-   a name automatically.
+   the driver forwards it. Nothing to poll, nothing to schedule. Codex's native
+   paths work this way. Pi also pushes name changes, but its built-in rename
+   support does not generate a name automatically.
 2. **Polled from a native store.** The agent writes the title to disk (or to a
    store reachable by CLI) but never puts it on the wire. The driver polls with
    [`NativeTitleRefresh`](../crates/waku-core/src/driver/title_refresh.rs) on a
@@ -119,9 +117,7 @@ title near when the provider writes it, and long enough to survive a slow start.
 | Claude Code | Claude (Haiku 4.5) | transcript JSONL on disk | poll from each prompt, plus turn end | [title_refresh.rs:53](../crates/waku-core/src/driver/title_refresh.rs#L53), [claude.rs:1300](../crates/waku-core/src/driver/claude.rs#L1300) |
 | Codex CLI | **Waku** (`gpt-5.6-luna`, effort `low`) | second `codex app-server` process | first `turn/started`, new threads only | [codex.rs:636](../crates/waku-core/src/driver/codex.rs#L636) |
 | Codex CLI | Codex | JSON-RPC stream | thread start/resume, `thread/name/updated` | [codex.rs:1612](../crates/waku-core/src/driver/codex.rs#L1612), [codex.rs:1735](../crates/waku-core/src/driver/codex.rs#L1735) |
-| OpenCode | OpenCode | SSE stream | connect, `session.renamed` | [opencode.rs:515](../crates/waku-core/src/driver/opencode.rs#L515), [opencode.rs:1568](../crates/waku-core/src/driver/opencode.rs#L1568) |
 | Pi | user or extension; no built-in automatic generator in installed 1.4.0 | NDJSON stream | connect, explicit `session_info_changed` | [pi.rs](../crates/waku-core/src/driver/pi.rs) |
-| Oh My Pi | Oh My Pi's configured title model | NDJSON stream | first assistant message while unnamed → native `/rename` → `session_info_update`, or direct `/rename` on reattached history | [pi.rs](../crates/waku-core/src/driver/pi.rs) |
 | Antigravity CLI | Antigravity | SQLite (`conversation_summaries.db`) | poll from each prompt (`5s, 10s`), plus turn end | [antigravity.rs](../crates/waku-core/src/driver/antigravity.rs), [antigravity_session.rs](../crates/waku-core/src/antigravity_session.rs) |
 
 ### Claude Code
@@ -215,23 +211,14 @@ Output is cleaned by `normalize_codex_title` — it decodes JSON or `{title}`,
 drops code fences, strips a `Title:` prefix, trims quotes and markdown emphasis,
 collapses whitespace, and caps at 80 characters.
 
-### OpenCode, Pi, Oh My Pi
+### Pi
 
-These providers deliver titles on their own streams. Oh My Pi requires an
-explicit request before it generates one in RPC mode.
+Pi delivers titles on its own stream.
 
-- **OpenCode** — the session's `title` at connect and after every reconnect,
-  then `session.renamed` → `data.title`. Titles beginning with
-  `"New session - "` are dropped ([opencode.rs:801](../crates/waku-core/src/driver/opencode.rs#L801)):
-  that is OpenCode's own placeholder, and letting it through would replace
-  Waku's prompt fallback with something strictly less useful.
-- **Pi and Oh My Pi** — `/data/sessionName` at connect, then the stream event.
-  The connect read is shared, but the event is not: Pi sends
-  `session_info_changed` with the title under `name`, Oh My Pi sends
-  `session_info_update` with it under `title`, and `PiFlavor` resolves both
-  ([pi.rs:69](../crates/waku-core/src/driver/pi.rs#L69)). Either may send an
-  empty value, which becomes `AutoTitleUpdated(None)` and clears the title back
-  to the fallback. This event alone does not establish automatic generation.
+- **Pi** — `/data/sessionName` at connect, then the `session_info_changed` stream
+  event with the title under `name` ([pi.rs:69](../crates/waku-core/src/driver/pi.rs#L69)).
+  An empty value becomes `AutoTitleUpdated(None)` and clears the title back to
+  the fallback. This event alone does not establish automatic generation.
 
 **Pi naming gap.** The installed upstream Pi 1.4.0 has `setSessionName`, the
 `set_session_name` RPC, and the explicit `/name <name>` command. Its built-in
@@ -250,8 +237,7 @@ In order of preference:
    generation; a title field or rename event is not sufficient evidence.
    Find where it surfaces before writing any model call.
 2. **Does it push that title on the stream?** Then forward it and stop. Prefer
-   trimming and dropping the provider's own placeholder strings, as OpenCode
-   does.
+   trimming and dropping the provider's own placeholder strings.
 3. **Does it only write the title to a native store?** Use `NativeTitleRefresh`.
    Measure when the title actually lands and pick a schedule that brackets it —
    do not guess. Arm it from the earliest point the title could exist: prompt

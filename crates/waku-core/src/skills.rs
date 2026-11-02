@@ -72,10 +72,6 @@ pub fn user_skill_locations() -> Vec<SkillLocation> {
         home_join(".codex/skills"),
     );
     push(
-        SkillSource::Provider(ProviderKind::OpenCode),
-        home_join(".config/opencode/skills"),
-    );
-    push(
         SkillSource::Provider(ProviderKind::Pi),
         home_join(".pi/agent/skills"),
     );
@@ -99,10 +95,6 @@ pub fn project_skill_locations(project_root: &Path, project_name: &str) -> Vec<S
             ".claude/skills",
         ),
         (SkillSource::Provider(ProviderKind::Codex), ".codex/skills"),
-        (
-            SkillSource::Provider(ProviderKind::OpenCode),
-            ".opencode/skills",
-        ),
         (SkillSource::Provider(ProviderKind::Pi), ".pi/skills"),
         (
             SkillSource::Provider(ProviderKind::Antigravity),
@@ -480,9 +472,9 @@ mod tests {
     fn copies_across_roots_group_into_one_entry() {
         let codex_root = temp_root("group-codex");
         let pi_root = temp_root("group-pi");
-        let opencode_root = temp_root("group-opencode");
+        let claude_root = temp_root("group-claude");
         // The installer-drops-it-everywhere layout: same skill, three roots.
-        for root in [&codex_root, &pi_root, &opencode_root] {
+        for root in [&codex_root, &pi_root, &claude_root] {
             write_skill(
                 root,
                 "agents-sdk",
@@ -493,8 +485,8 @@ mod tests {
             user_location(SkillSource::Provider(ProviderKind::Codex), &codex_root),
             user_location(SkillSource::Provider(ProviderKind::Pi), &pi_root),
             user_location(
-                SkillSource::Provider(ProviderKind::OpenCode),
-                &opencode_root,
+                SkillSource::Provider(ProviderKind::Claude),
+                &claude_root,
             ),
         ];
         let catalog = scan_skills(&locations);
@@ -506,7 +498,7 @@ mod tests {
             skill.primary().source,
             SkillSource::Provider(ProviderKind::Codex)
         );
-        assert_eq!(skill.sources_label(), "Codex · Pi · OpenCode");
+        assert_eq!(skill.sources_label(), "Codex · Pi · Claude");
         assert_eq!(skill.duplicates, 0, "grouped copies are not duplicates");
 
         // A disabled copy next to live ones keeps the skill enabled.
@@ -515,7 +507,7 @@ mod tests {
         assert!(catalog.skills[0].enabled);
         assert_eq!(catalog.skills[0].installs.len(), 3);
 
-        for root in [&codex_root, &pi_root, &opencode_root] {
+        for root in [&codex_root, &pi_root, &claude_root] {
             let _ = std::fs::remove_dir_all(root);
         }
     }
@@ -597,7 +589,6 @@ mod tests {
             ".agents/skills",
             ".claude/skills",
             ".codex/skills",
-            ".config/opencode/skills",
             ".pi/agent/skills",
         ] {
             assert!(
@@ -611,7 +602,6 @@ mod tests {
             ".agents/skills",
             ".claude/skills",
             ".codex/skills",
-            ".opencode/skills",
             ".pi/skills",
         ] {
             let expected = project_root.join(expected);

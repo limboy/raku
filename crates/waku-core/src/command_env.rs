@@ -133,6 +133,7 @@ pub fn output(command: &mut Command) -> io::Result<Output> {
 /// Normalize a Waku-owned provider thread before a dependency spawns the child
 /// internally. The ACP SDK owns its `async_process::Command`, so its dedicated
 /// connection thread uses this once at startup instead of [`spawn`].
+#[allow(dead_code)]
 pub(crate) fn unblock_sigchld_for_current_thread() -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {

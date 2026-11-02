@@ -172,7 +172,6 @@ const ICONS: &[(&str, &[u8])] = icons![
     "provider-antigravity",
     "provider-claude",
     "provider-openai",
-    "provider-opencode",
     "provider-pi",
     "queue",
     "regex",

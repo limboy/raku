@@ -542,7 +542,6 @@ impl Waku {
             SkillSource::Shared,
             SkillSource::Provider(ProviderKind::Claude),
             SkillSource::Provider(ProviderKind::Codex),
-            SkillSource::Provider(ProviderKind::OpenCode),
             SkillSource::Provider(ProviderKind::Pi),
             SkillSource::Provider(ProviderKind::Antigravity),
         ];

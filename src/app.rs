@@ -1121,10 +1121,9 @@ pub struct Waku {
     /// override input below edits this provider's entry.
     expanded_provider_settings: Option<ProviderKind>,
     provider_path_input: Entity<TextInput>,
-    /// Account rate-limit meters per provider or Oh My Pi upstream/model pool,
-    /// fetched off-thread (Claude, Codex, and OpenCode Go over HTTPS; Grok and
-    /// Oh My Pi through bounded CLI probes) and refreshed live by Codex's own
-    /// stream. Frames read only this snapshot.
+    /// Account rate-limit meters per provider, fetched off-thread (Claude and
+    /// Codex over HTTPS) and refreshed live by Codex's own stream.
+    /// Frames read only this snapshot.
     plan_usage: HashMap<usage_meter::PlanUsageKey, crate::usage::PlanUsage>,
     /// Why a meter's last fetch failed, kept alongside stale data for the
     /// meter's tooltip. Cleared by that meter's next success.

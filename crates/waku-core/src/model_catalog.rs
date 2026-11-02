@@ -57,9 +57,6 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         // Antigravity models depend on the signed-in Google or enterprise
         // account, and headless runs exit non-zero on ineligible slugs.
         ProviderKind::Antigravity => Vec::new(),
-        // Discovery through the adopted background service is authoritative;
-        // a fabricated catalog would offer models the server rejects.
-        ProviderKind::OpenCode => Vec::new(),
         // Pi takes its catalog from the user's configured LLM providers.
         // A fabricated fallback would make unavailable models look selectable.
         ProviderKind::Pi => Vec::new(),
@@ -75,7 +72,6 @@ pub fn discover_catalog(
         ProviderKind::Codex => (discover_codex_models(binary), None),
         ProviderKind::Antigravity => (discover_antigravity_models(binary), None),
         ProviderKind::Claude => (discover_claude_models(binary), None),
-        ProviderKind::OpenCode => crate::opencode_session::discover_catalog(binary),
         ProviderKind::Pi => (discover_pi_models(binary), None),
     };
     let models = if discovered.is_empty() {
@@ -854,52 +850,6 @@ fn reasoning_effort_label(effort: &str) -> String {
     }
 }
 
-/// Attaches a model's OpenCode "variants" as its reasoning-effort ladder.
-///
-/// OpenCode expresses reasoning effort as a per-model variant whose id is drawn
-/// from the same vocabulary Waku already labels
-/// (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`, plus provider-specific
-/// ones such as `thinking`), and the chosen id is sent verbatim as
-/// `ModelRef::variant`. Models with no variants keep an empty ladder, which is
-/// what hides the control.
-///
-/// The default is the strongest offered rather than the weakest: a variant
-/// list is opt-in per model, so a model that publishes one is a reasoning
-/// model and the ladder's top is the reason to pick it.
-pub(crate) fn with_variant_efforts<'a>(
-    model: ProviderModel,
-    variants: impl IntoIterator<Item = &'a str>,
-) -> ProviderModel {
-    const STRENGTH: [&str; 8] = [
-        "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-    ];
-    let ids: Vec<String> = variants
-        .into_iter()
-        .map(str::trim)
-        .filter(|variant| !variant.is_empty())
-        .map(str::to_owned)
-        .collect();
-    if ids.is_empty() {
-        return model;
-    }
-    let rank = |id: &str| STRENGTH.iter().position(|known| *known == id);
-    // Preserve the provider's own ordering; only the default is ranked, and a
-    // ladder of entirely unknown ids falls back to the last one offered.
-    let default = ids
-        .iter()
-        .filter(|id| rank(id).is_some())
-        .max_by_key(|id| rank(id))
-        .or_else(|| ids.last())
-        .cloned();
-    let options = ids
-        .iter()
-        .map(|id| ProviderModelOption::new(id.clone(), reasoning_effort_label(id)));
-    match default {
-        Some(default) => model.reasoning(options, default),
-        None => model,
-    }
-}
-
 fn reasoning_options<const N: usize>(efforts: [&str; N]) -> Vec<ProviderModelOption> {
     efforts
         .into_iter()
@@ -1220,22 +1170,6 @@ printf '%s\n' '{"type":"control_response","response":{"request_id":"waku-initial
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "cc-switch-model");
         assert_eq!(models[0].name, "CC Switch Model");
-    }
-
-    #[test]
-    fn variant_efforts_default_to_the_strongest_offered() {
-        let model = with_variant_efforts(ProviderModel::new("a/b", "B"), ["none", "thinking"]);
-        assert_eq!(
-            model
-                .reasoning_efforts
-                .iter()
-                .map(|effort| effort.id.as_str())
-                .collect::<Vec<_>>(),
-            ["none", "thinking"]
-        );
-        // `thinking` is not on the known strength ladder, so the only ranked
-        // id wins; an unranked id never becomes the default while one ranks.
-        assert_eq!(model.default_reasoning_effort.as_deref(), Some("none"));
     }
 
     #[test]
