@@ -148,6 +148,16 @@ pub(super) struct TitleLanguageContext {
     pending: AtomicBool,
 }
 
+pub(super) fn is_ordinary_prompt(prompt: &str) -> bool {
+    let text = prompt.trim_start();
+    let command = text
+        .split_whitespace()
+        .next()
+        .and_then(|word| word.strip_prefix('/'))
+        .is_some_and(|word| !word.contains('/'));
+    !text.is_empty() && !command
+}
+
 impl TitleLanguageContext {
     pub(super) fn new(provider: ProviderKind, execution_policy: ExecutionPolicy) -> Self {
         Self {
@@ -164,13 +174,7 @@ impl TitleLanguageContext {
         if !self.pending.load(Ordering::Acquire) {
             return prompt;
         }
-        let text = prompt.trim_start();
-        let command = text
-            .split_whitespace()
-            .next()
-            .and_then(|word| word.strip_prefix('/'))
-            .is_some_and(|word| !word.contains('/'));
-        if text.is_empty() || command {
+        if !is_ordinary_prompt(&prompt) {
             return prompt;
         }
         if let Some(original) = strip_context(&prompt) {

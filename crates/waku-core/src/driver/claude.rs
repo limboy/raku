@@ -82,6 +82,23 @@ fn user_message_payload(text: &str) -> Value {
     })
 }
 
+const TITLE_REQUEST_ID: &str = "waku-session-title";
+
+/// Direct print-mode sessions no longer title themselves automatically. Ask
+/// Claude's native generator to persist an AI title, without adding a turn or
+/// choosing a model on its behalf. Older CLIs may reject this cosmetic request.
+fn session_title_request(text: &str) -> Value {
+    json!({
+        "type": "control_request",
+        "request_id": TITLE_REQUEST_ID,
+        "request": {
+            "subtype": "generate_session_title",
+            "description": text,
+            "persist": true
+        }
+    })
+}
+
 fn stop_task_request(request_id: u64, task_id: &str) -> Value {
     json!({
         "type": "control_request",
@@ -153,15 +170,10 @@ fn wire_model(model: Option<&str>, context_window: Option<&str>) -> Option<Strin
     }
 }
 
-/// Claude Code titles the session itself, on Haiku, in a request it fires
-/// alongside the first turn's own first model call, so the title reaches the
-/// native transcript about three seconds in — long before the turn it belongs
-/// to settles. Reading it only when `result` arrives, as the turn-end pass
-/// does, leaves an agentic first turn showing the truncated prompt for its
-/// whole run and an interrupted one showing it forever. One look after five
-/// seconds catches it, with a second as insurance; a schedule that runs dry
-/// re-arms on the next prompt, and the turn-end pass still owns later
-/// retitles and the rewind cursor.
+/// Older Claude versions generate titles automatically but only expose them
+/// in the native transcript. Keep polling for those versions alongside the
+/// explicit native request used by newer print-mode sessions. The turn-end
+/// pass still owns later retitles and the rewind cursor.
 fn start_claude_title_refresh(
     title_refresh: &super::title_refresh::NativeTitleRefresh,
     session_id: &str,
@@ -238,6 +250,8 @@ impl ClaudeDriver {
         let session_id = resume_session_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let request_title =
+            resume_session_id.is_none() && execution_policy == ExecutionPolicy::Interactive;
 
         let mut command = crate::command_env::command(&binary);
         command.current_dir(&cwd);
@@ -340,6 +354,7 @@ impl ClaudeDriver {
                 let mut stdin = stdin;
                 let mut next_request_id = 0_u64;
                 let mut current_model = launch_model;
+                let mut title_pending = request_title;
                 while let Ok(message) = command_rx.recv() {
                     let written = match message {
                         CommandMessage::Compact(request) => {
@@ -360,7 +375,18 @@ impl ClaudeDriver {
                                 &writer_events,
                             );
                             let _ = writer_events.send(DriverEvent::TurnStarted);
-                            write_line(&mut stdin, &user_message_payload(&text))
+                            let written = write_line(&mut stdin, &user_message_payload(&text));
+                            if written.is_ok()
+                                && title_pending
+                                && super::title_language::is_ordinary_prompt(&text)
+                            {
+                                title_pending = false;
+                                // A native control request runs alongside the
+                                // turn. Never wait for its response here, and
+                                // never fail the user's turn over naming.
+                                let _ = write_line(&mut stdin, &session_title_request(&text));
+                            }
+                            written
                         }
                         CommandMessage::Steer(text) => {
                             // A mid-turn user message is held by the CLI and
@@ -705,7 +731,7 @@ struct ClaudeStreamState {
     /// turn's `modelUsage` map can be read for that model's context window
     /// rather than a subagent's.
     last_assistant_model: Option<String>,
-    /// Last title copied from Claude's native transcript metadata.
+    /// Last title received from Claude's control response or native metadata.
     last_auto_title: Option<String>,
 }
 
@@ -1463,6 +1489,20 @@ fn handle_message(
             else {
                 return;
             };
+            if request_id == TITLE_REQUEST_ID {
+                if value.pointer("/response/subtype").and_then(Value::as_str) == Some("success")
+                    && let Some(title) = value
+                        .pointer("/response/response/title")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|title| !title.is_empty())
+                    && state.last_auto_title.as_deref() != Some(title)
+                {
+                    state.last_auto_title = Some(title.to_owned());
+                    let _ = events.send(DriverEvent::AutoTitleUpdated(Some(title.to_owned())));
+                }
+                return;
+            }
             let Some(key) = state.pending_task_stops.lock().remove(request_id) else {
                 return;
             };
@@ -1995,6 +2035,139 @@ mod tests {
             Mutex::new(true),
             ClaudeStreamState::default(),
         )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_title_is_requested_once_for_new_interactive_sessions() {
+        use crate::model::ProviderKind;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        for (resume, execution_policy, expected_requests) in [
+            (false, ExecutionPolicy::Interactive, 1),
+            (true, ExecutionPolicy::Interactive, 0),
+            (false, ExecutionPolicy::ReviewReadOnly, 0),
+        ] {
+            let directory =
+                std::env::temp_dir().join(format!("waku-claude-title-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let binary = directory.join("claude");
+            std::fs::write(&binary, include_str!("fixtures/claude_title.sh")).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let (events, received) = crate::driver::test_event_channel();
+            let driver = crate::driver::start_local(
+                ProviderKind::Claude,
+                DriverStartOptions {
+                    binary,
+                    cwd: directory.clone(),
+                    mode: RuntimeMode::FullAccess,
+                    execution_policy,
+                    model: None,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    context_window: None,
+                    agent_preset: None,
+                    provider_cursor: resume.then(|| ProviderResumeCursor::Claude {
+                        session_id: Uuid::new_v4().to_string(),
+                        resume_at: None,
+                    }),
+                    delegation_session_path: None,
+                    delegation_registry_dir: None,
+                },
+                events,
+            )
+            .unwrap();
+            let mut titles = Vec::new();
+            for prompt in ["/help", "请修复 Claude Code 的会话标题", "继续修复"] {
+                driver.prompt(prompt.into());
+                loop {
+                    match received.recv_timeout(Duration::from_secs(5)).unwrap() {
+                        DriverEvent::AutoTitleUpdated(Some(title)) => titles.push(title),
+                        DriverEvent::TurnFinished { success, .. } => {
+                            assert!(success);
+                            break;
+                        }
+                        DriverEvent::Error(error) => panic!("unexpected driver error: {error}"),
+                        _ => {}
+                    }
+                }
+            }
+            drop(driver);
+            loop {
+                match received.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    DriverEvent::AutoTitleUpdated(Some(title)) => titles.push(title),
+                    DriverEvent::ProcessExited => break,
+                    _ => {}
+                }
+            }
+            let requests = std::fs::read_to_string(directory.join("requests.jsonl")).unwrap();
+            let requests = requests
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            let title_requests = requests
+                .iter()
+                .filter(|request| {
+                    request.pointer("/request/subtype").and_then(Value::as_str)
+                        == Some("generate_session_title")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(title_requests.len(), expected_requests);
+            assert_eq!(titles.len(), expected_requests);
+            if let Some(request) = title_requests.first() {
+                assert_eq!(request.pointer("/request/persist"), Some(&json!(true)));
+                assert_eq!(
+                    request.pointer("/request/description"),
+                    requests[1].pointer("/message/content/0/text")
+                );
+                assert!(
+                    request
+                        .pointer("/request/description")
+                        .and_then(Value::as_str)
+                        .unwrap()
+                        .contains("Automatic session titles MUST use Chinese")
+                );
+                assert_eq!(titles, ["修复会话标题"]);
+            }
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_title_responses_are_metadata_and_failures_are_silent() {
+        let (events, received, commands, _command_rx, turn, mut state) = harness();
+        for (request_id, response) in [
+            ("unrelated", json!({"title":"Other title"})),
+            (TITLE_REQUEST_ID, json!({"title":null})),
+            (TITLE_REQUEST_ID, json!({"title":"  "})),
+            (TITLE_REQUEST_ID, json!({"title":"  修复会话标题  "})),
+            (TITLE_REQUEST_ID, json!({"title":"修复会话标题"})),
+        ] {
+            handle_message(
+                &json!({"type":"control_response","response":{"subtype":"success","request_id":request_id,"response":response}}),
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
+        }
+        handle_message(
+            &json!({"type":"control_response","response":{"subtype":"error","request_id":TITLE_REQUEST_ID,"error":"Unknown control request"}}),
+            "s",
+            &events,
+            &commands,
+            &turn,
+            PermissionPolicy::AutoApprove,
+            &mut state,
+        );
+        let records = received.try_iter().collect::<Vec<_>>();
+        assert!(
+            matches!(records.as_slice(), [DriverEvent::AutoTitleUpdated(Some(title))] if title == "修复会话标题")
+        );
+        assert!(*turn.lock(), "naming must not settle the user's turn");
+        assert_eq!(state.last_auto_title.as_deref(), Some("修复会话标题"));
     }
 
     #[test]
