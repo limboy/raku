@@ -1425,6 +1425,85 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retired_provider_favorites_do_not_block_launch_settings() {
+        for provider in ["deepSeek", "ohMyPi", "openCode", "openCode2"] {
+            let document = serde_json::to_vec(&serde_json::json!({
+                "theme": "dark",
+                "language": "simplified-chinese",
+                "ui_font_size": 17.0,
+                "model_picker_favorites_only": true,
+                "favorite_models": [
+                    {"provider": provider, "model": "retired"},
+                    {"provider": "codex", "model": "gpt-5.4"},
+                    {"provider": "pi", "model": "deepseek/deepseek-flash"}
+                ]
+            }))
+            .unwrap();
+
+            let settings: AppSettings = from_persisted_json(&document).unwrap();
+            assert_eq!(settings.theme, ThemePreference::Dark);
+            assert_eq!(settings.language, AppLanguage::SimplifiedChinese);
+            assert_eq!(settings.ui_font_size, 17.0);
+            assert!(settings.model_picker_favorites_only);
+            assert_eq!(
+                settings.favorite_models,
+                vec![
+                    FavoriteModel {
+                        provider: ProviderKind::Codex,
+                        model: "gpt-5.4".into(),
+                    },
+                    FavoriteModel {
+                        provider: ProviderKind::Pi,
+                        model: "deepseek/deepseek-flash".into(),
+                    },
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn retired_project_model_selections_preserve_other_desktop_state() {
+        let retired_project = Uuid::new_v4();
+        let active_project = Uuid::new_v4();
+        for provider in ["deepSeek", "ohMyPi", "openCode", "openCode2"] {
+            let document = serde_json::to_vec(&serde_json::json!({
+                "app_state_version": 1,
+                "selected_project": active_project,
+                "last_provider": "claude",
+                "last_model": "claude-sonnet-4-6",
+                "sidebar_width": 318.0,
+                "project_model_selections": {
+                    retired_project.to_string(): {"provider": provider, "model": "retired"},
+                    active_project.to_string(): {"provider": "pi", "model": "active"}
+                }
+            }))
+            .unwrap();
+
+            let state: AppState = from_persisted_json(&document).unwrap();
+            assert_eq!(state.selected_project, Some(active_project));
+            assert_eq!(state.last_provider, ProviderKind::Claude);
+            assert_eq!(state.last_model.as_deref(), Some("claude-sonnet-4-6"));
+            assert_eq!(state.sidebar_width, 318.0);
+            assert_eq!(state.project_model_selections.len(), 1);
+            assert!(
+                !state
+                    .project_model_selections
+                    .contains_key(&retired_project)
+            );
+            assert_eq!(
+                state.project_model_selections[&active_project].provider,
+                ProviderKind::Pi
+            );
+            assert_eq!(
+                state.project_model_selections[&active_project]
+                    .model
+                    .as_deref(),
+                Some("active")
+            );
+        }
+    }
+
+    #[test]
     fn retired_provider_selections_do_not_reset_desktop_state() {
         let directory = std::env::temp_dir().join(format!("waku-state-{}", Uuid::new_v4()));
         fs::create_dir_all(&directory).unwrap();
@@ -1435,7 +1514,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "app_state_version": 1,
                 "selected_project": project_id,
-                "last_provider": "deepSeek",
+                "last_provider": "ohMyPi",
                 "last_model": "deepseek-official/deepseek-chat",
                 "last_reasoning_effort": "high",
                 "last_service_tier": "fast",
@@ -1443,6 +1522,9 @@ mod tests {
                 "sidebar_width": 318.0,
                 "remembered_model_traits": [
                     {"provider": "deepSeek", "model": "retired"},
+                    {"provider": "ohMyPi", "model": "retired"},
+                    {"provider": "openCode", "model": "retired"},
+                    {"provider": "openCode2", "model": "retired"},
                     {"provider": "pi", "model": "deepseek/deepseek-flash",
                      "reasoning_effort": "low"}
                 ]

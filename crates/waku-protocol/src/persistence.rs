@@ -6,7 +6,17 @@ use uuid::Uuid;
 
 use crate::model::{AgentSession, MessageRole};
 
-/// Read persisted data, removing references to the retired Harness provider
+// Persisted provider tags (including OpenCode's old beta alias) must stay
+// recognizable after their variants are removed from ProviderKind.
+const RETIRED_PROVIDERS: &[&str] = &["deepSeek", "ohMyPi", "openCode", "openCode2"];
+
+fn is_retired_provider(value: &serde_json::Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|provider| RETIRED_PROVIDERS.contains(&provider))
+}
+
+/// Read persisted data, removing references to retired providers
 /// only when the ordinary typed decode fails. Active data keeps the direct
 /// deserialization path; malformed or otherwise unsupported data still fails.
 pub fn from_persisted_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<T> {
@@ -25,15 +35,10 @@ pub fn from_persisted_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> serd
 /// Drop retired provider selections without changing another provider's
 /// settings or reassigning its sessions. Raw session rows remain untouched.
 pub fn migrate_retired_provider_references(value: &mut serde_json::Value) -> bool {
-    const RETIRED_PROVIDER: &str = "deepSeek";
     let mut changed = false;
     match value {
         serde_json::Value::Object(fields) => {
-            if fields
-                .get("last_provider")
-                .and_then(serde_json::Value::as_str)
-                == Some(RETIRED_PROVIDER)
-            {
+            if fields.get("last_provider").is_some_and(is_retired_provider) {
                 for key in [
                     "last_provider",
                     "last_model",
@@ -50,14 +55,24 @@ pub fn migrate_retired_provider_references(value: &mut serde_json::Value) -> boo
                     "disabled_providers" => {
                         if let Some(providers) = value.as_array_mut() {
                             let previous = providers.len();
-                            providers
-                                .retain(|provider| provider.as_str() != Some(RETIRED_PROVIDER));
+                            providers.retain(|provider| !is_retired_provider(provider));
                             changed |= providers.len() != previous;
                         }
                     }
                     "provider_binary_overrides" => {
                         if let Some(overrides) = value.as_object_mut() {
-                            changed |= overrides.remove(RETIRED_PROVIDER).is_some();
+                            for provider in RETIRED_PROVIDERS {
+                                changed |= overrides.remove(*provider).is_some();
+                            }
+                        }
+                    }
+                    "project_model_selections" => {
+                        if let Some(selections) = value.as_object_mut() {
+                            let previous = selections.len();
+                            selections.retain(|_, selection| {
+                                !selection.get("provider").is_some_and(is_retired_provider)
+                            });
+                            changed |= selections.len() != previous;
                         }
                     }
                     "favorite_models"
@@ -67,8 +82,7 @@ pub fn migrate_retired_provider_references(value: &mut serde_json::Value) -> boo
                         if let Some(entries) = value.as_array_mut() {
                             let previous = entries.len();
                             entries.retain(|entry| {
-                                entry.get("provider").and_then(serde_json::Value::as_str)
-                                    != Some(RETIRED_PROVIDER)
+                                !entry.get("provider").is_some_and(is_retired_provider)
                             });
                             changed |= entries.len() != previous;
                         }
@@ -269,6 +283,12 @@ mod tests {
                     "model_references": [
                         {"referenceId": "retired", "provider": "deepSeek",
                          "modelId": "deepseek-chat", "displayLabel": "Harness"},
+                        {"referenceId": "omp", "provider": "ohMyPi",
+                         "modelId": "retired", "displayLabel": "Oh My Pi"},
+                        {"referenceId": "opencode", "provider": "openCode",
+                         "modelId": "retired", "displayLabel": "OpenCode"},
+                        {"referenceId": "opencode2", "provider": "openCode2",
+                         "modelId": "retired", "displayLabel": "OpenCode 2"},
                         {"referenceId": "active", "provider": "pi",
                          "modelId": "deepseek/deepseek-flash", "displayLabel": "DeepSeek"}
                     ]

@@ -16,6 +16,8 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Fix startup after updating when saved preferences still reference Oh My Pi or OpenCode
+
 ## [2.0.3] - 2026-11-02
 
 - Support native image generation and transcript previews, including Antigravity image generation subagents
