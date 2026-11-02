@@ -1184,7 +1184,14 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()
     writer.flush()
 }
 
-const CODEX_TITLE_INSTRUCTIONS: &str = "Generate a concise title for the user's coding task. Return only a plain title of at most six words. Do not use tools, quotes, markdown, labels, or ending punctuation.";
+const CODEX_TITLE_INSTRUCTIONS: &str = concat!(
+    "Generate a concise title for the user's coding task. ",
+    "Write the title in the predominant language of the user's request, preserving its script. ",
+    "For mixed-language requests, follow the user's prose rather than code, paths, or technical identifiers. ",
+    "A mostly Chinese request must receive a Chinese title; keep technical terms in their original form where appropriate. ",
+    "Return only a plain title of at most six words, or a similarly short phrase in languages without spaces. ",
+    "Do not use tools, quotes, markdown, labels, or ending punctuation."
+);
 const CODEX_TITLE_MODEL: &str = "gpt-5.6-luna";
 const CODEX_TITLE_TIMEOUT: Duration = Duration::from_secs(60);
 

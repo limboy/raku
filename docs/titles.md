@@ -162,6 +162,10 @@ read-only turn.
   fixed classification.
 - `CODEX_TITLE_INSTRUCTIONS` is passed as both `baseInstructions` and
   `developerInstructions`; the turn's only input is the raw user prompt.
+  Titles follow the predominant language and script of the user's prose,
+  including Chinese in mixed Chinese/English requests. Code, paths, and
+  technical identifiers do not determine the language; technical terms may
+  retain their original form.
 - An `outputSchema` pins `{title: string}`, max 80 chars.
 - `ephemeral: true`, so it leaves no thread behind. 60s timeout.
 - Gated to sessions Codex did not already name (`enabled: provider_session_id
