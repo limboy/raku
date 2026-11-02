@@ -16,9 +16,14 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
-- Remove the experimental Computer Use integration and its bundled helper
-- Remove the DeepSeek Harness (`dsh`) provider; DeepSeek models remain available through other supported agents
-- Strip decorative leading icons from automatic session titles
+## [2.0.3] - 2026-11-02
+
+- Support native image generation and transcript previews, including Antigravity image generation subagents
+- Make workspace file mentions clickable in transcripts
+- Remember provider and model selections per project
+- Generate session titles matching the prompt language and strip decorative leading icons
+- Remove Oh My Pi, OpenCode, DeepSeek Harness, and Computer Use integrations to focus on core providers
+- Fix shell environment capture when `noclobber` is enabled
 
 ## [2.0.2] - 2026-11-02
 
