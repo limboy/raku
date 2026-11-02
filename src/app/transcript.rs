@@ -890,7 +890,7 @@ pub(super) fn transcript_rows_fingerprint(
             block
                 .activities
                 .first()
-                .is_some_and(|item| item.compaction.is_some()) as u64,
+                .is_some_and(ActivityItem::is_standalone) as u64,
         );
     }
 
@@ -976,7 +976,7 @@ pub(super) fn folded_transcript_rows(
             response_footers.insert(turn.id, message_index);
         }
         let hidden = turn_rows[..answer_start].iter().copied().filter(|row| !matches!(row,
-            TranscriptRowKind::TurnBlock(index) if session.transcript_blocks[*index].activities.first().is_some_and(|item| item.compaction.is_some())
+            TranscriptRowKind::TurnBlock(index) if session.transcript_blocks[*index].activities.first().is_some_and(ActivityItem::is_standalone)
         )).collect::<Vec<_>>();
         let Some(anchor) = hidden.first().copied() else {
             continue;

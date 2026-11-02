@@ -1228,7 +1228,7 @@ impl AgentSession {
                     .activities
                     .iter()
                     .chain(&block.activities)
-                    .any(|item| item.compaction.is_some())
+                    .any(ActivityItem::is_standalone)
             {
                 previous.activities.append(&mut block.activities);
             } else {
@@ -1699,6 +1699,7 @@ pub enum ActivityKind {
     Plan,
     Tool,
     Compaction,
+    ImageGeneration,
 }
 
 impl ActivityKind {
@@ -1716,6 +1717,11 @@ impl ActivityKind {
         let compact = leaf.replace('_', "");
 
         if matches!(
+            compact.as_str(),
+            "imagegen" | "imagegeneration" | "generateimage" | "generateimages"
+        ) {
+            Self::ImageGeneration
+        } else if matches!(
             compact.as_str(),
             "todo" | "todowrite" | "updateplan" | "plan" | "managetask"
         ) {
@@ -2377,6 +2383,11 @@ pub struct ActivityItem {
 }
 
 impl ActivityItem {
+    /// Content that keeps its own ordered row, including after ordinary work folds.
+    pub fn is_standalone(&self) -> bool {
+        self.compaction.is_some() || self.kind == ActivityKind::ImageGeneration
+    }
+
     pub fn from_compaction(compaction: crate::compaction::ContextCompaction) -> Self {
         use crate::compaction::CompactionStatus;
         let complete = compaction.status != CompactionStatus::Running;

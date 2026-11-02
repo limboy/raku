@@ -1,6 +1,5 @@
 use super::right_panel::{DiffRowStyle, render_diff_code_row};
 use super::*;
-use base64::Engine as _;
 
 const CHANGED_FILES_PREVIEW_LIMIT: usize = 3;
 /// Keep one virtualized transcript row bounded even when a generator touches
@@ -2244,6 +2243,13 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let [activity] = activities
+            && activity.kind == ActivityKind::ImageGeneration
+            && (!activity.image_urls.is_empty()
+                || activity.tool_name.as_deref() == Some("image_generation"))
+        {
+            return self.render_image_generation_row(activity, &surface, theme, cx);
+        }
+        if let [activity] = activities
             && activity.compaction.is_some()
         {
             return self.render_compaction_row(activity, &surface, theme, cx);
@@ -2470,7 +2476,8 @@ impl Waku {
             let has_detail = reasoning
                 .is_some_and(|reasoning| !reasoning.content.trim().is_empty())
                 || !sections.is_empty()
-                || shows_diff;
+                || shows_diff
+                || !activity.image_urls.is_empty();
             let item_expanded = has_detail
                 && surface
                     .expanded_items
@@ -2938,13 +2945,12 @@ impl Waku {
                     detail_card = detail_card.child(section_view);
                 }
                 for (image_index, image_url) in activity.image_urls.iter().enumerate() {
-                    let image = self.image_for_reference(image_url, None, None, cx);
-                    detail_card = detail_card.child(render_activity_image(
+                    detail_card = detail_card.child(self.render_activity_image(
                         image_url,
-                        image,
                         id,
                         image_index,
                         theme,
+                        cx,
                     ));
                 }
                 detail = detail.child(detail_card);
@@ -3260,70 +3266,6 @@ fn activity_scroll_guard(viewport: ActivityScrollViewport, live: bool) -> impl I
     .absolute()
     .w(px(0.0))
     .h(px(0.0))
-}
-
-fn render_activity_image(
-    image_url: &str,
-    image: Option<Arc<gpui::Image>>,
-    activity_id: Uuid,
-    image_index: usize,
-    theme: &Theme,
-) -> AnyElement {
-    // Daemon blobs arrive only when a visible row requests them and GPUI keeps
-    // their decoded form in memory. Only legacy inline data URLs still pay a
-    // per-render base64 decode.
-    let id = SharedString::from(format!("activity-image-{activity_id}-{image_index}"));
-    if let Some(image) = image {
-        return img(image)
-            .id(id)
-            .w(px(ACTIVITY_IMAGE_WIDTH))
-            .max_w(gpui::relative(1.0))
-            .max_h(px(ACTIVITY_IMAGE_HEIGHT))
-            .mt(px(8.0))
-            .rounded(px(4.0))
-            .object_fit(ObjectFit::Contain)
-            .into_any_element();
-    }
-    if waku_protocol::blob::is_reference(image_url)
-        || image_url.starts_with(waku_protocol::attachments::ATTACHMENT_SCHEME)
-    {
-        return div()
-            .id(id)
-            .w(px(ACTIVITY_IMAGE_WIDTH))
-            .max_w(gpui::relative(1.0))
-            .h(px(80.0))
-            .mt(px(8.0))
-            .rounded(px(4.0))
-            .bg(theme.inset)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(icon("icons/file-types/image.svg", 18.0, theme.text_ghost))
-            .into_any_element();
-    };
-
-    match decode_activity_image(image_url) {
-        Some(image) => img(image),
-        None => img(image_url.to_owned()),
-    }
-    .id(id)
-    .w(px(ACTIVITY_IMAGE_WIDTH))
-    .max_w(gpui::relative(1.0))
-    .max_h(px(ACTIVITY_IMAGE_HEIGHT))
-    .mt(px(8.0))
-    .rounded(px(4.0))
-    .object_fit(ObjectFit::Contain)
-    .into_any_element()
-}
-
-fn decode_activity_image(image_url: &str) -> Option<std::sync::Arc<gpui::Image>> {
-    let (header, encoded) = image_url.split_once(",")?;
-    let mime_type = header.strip_prefix("data:")?.split(';').next()?;
-    let format = gpui::ImageFormat::from_mime_type(mime_type)?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .ok()?;
-    (!bytes.is_empty()).then(|| std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)))
 }
 
 #[cfg(test)]

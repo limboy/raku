@@ -2064,6 +2064,12 @@ fn handle_codex_message(
                 if stream_state.maintenance_turn {
                     return;
                 }
+                if item.get("type").and_then(Value::as_str) == Some("imageGeneration") {
+                    let _ = events.send(DriverEvent::RichActivity(
+                        crate::image_generation::codex_activity(item, method == "item/completed"),
+                    ));
+                    return;
+                }
                 stream_state.capture_citations(item);
                 let complete = method == "item/completed";
                 if item.get("type").and_then(Value::as_str) == Some("reasoning")
@@ -2756,6 +2762,50 @@ fn is_visible_stderr_notice(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_image_generation_notifications_preserve_item_identity_and_order() {
+        let harness = GoalHarness::new();
+        let mut stream = CodexStreamState::default();
+        for frame in [
+            json!({"method":"item/started", "params":{"item":{
+                "id":"image-1", "type":"imageGeneration", "status":"in_progress", "result":""
+            }}}),
+            json!({"method":"item/completed", "params":{"item":{
+                "id":"image-1", "type":"imageGeneration", "status":"completed", "result":"iVBORw0KGgo=",
+                "revisedPrompt":"A blue circle", "savedPath":null
+            }}}),
+        ] {
+            handle_codex_message(
+                frame,
+                &harness.thread_id,
+                &harness.turn_id,
+                &harness.turn_ids,
+                &harness.rollbacks,
+                &harness.steers,
+                &harness.background,
+                &harness.goals,
+                &harness.commands,
+                &harness.events,
+                &mut stream,
+            );
+        }
+        let records = harness.received.try_iter().collect::<Vec<_>>();
+        let [
+            DriverEvent::RichActivity(start),
+            DriverEvent::RichActivity(end),
+        ] = records.as_slice()
+        else {
+            panic!("expected ordered image lifecycle: {records:?}");
+        };
+        assert_eq!(start.kind, ActivityKind::ImageGeneration);
+        assert_eq!(start.source_id, end.source_id);
+        assert!(!start.complete);
+        assert!(start.image_urls.is_empty());
+        assert!(end.complete);
+        assert_eq!(end.image_urls, ["data:image/png;base64,iVBORw0KGgo="]);
+        assert!(end.output.is_none());
+    }
 
     #[test]
     fn native_compaction_lifecycle_and_failed_turn_both_terminalize() {

@@ -836,6 +836,7 @@ impl DelegationScheduler {
         }
 
         // Consume child event stream
+        let image_blobs = StateStore::daemon(self.db_path.clone()).blobs();
         let mut full_text = String::new();
         let mut sequence = 0u64;
         let mut final_status = DelegatedTaskStatus::Completed;
@@ -858,7 +859,7 @@ impl DelegationScheduler {
                     break;
                 }
             };
-            let event = match event_receiver.recv_timeout(remaining.min(Duration::from_millis(200)))
+            let mut event = match event_receiver.recv_timeout(remaining.min(Duration::from_millis(200)))
             {
                 Ok(event) => event,
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
@@ -871,6 +872,9 @@ impl DelegationScheduler {
                     break;
                 }
             };
+            if let DriverEvent::RichActivity(activity) = &mut event {
+                crate::image_generation::externalize(activity, &image_blobs);
+            }
             sequence += 1;
             let wire = event_to_wire(event.clone())
                 .unwrap_or_else(|_| WireDriverEvent::new("event", serde_json::Value::Null));

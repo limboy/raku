@@ -291,6 +291,11 @@ activity.tool_name: 工具
 activity.mcp_server: MCP 服务器
 activity.output: 输出
 activity.image_output: 图片输出
+activity.generating_image: 正在生成图片
+activity.generated_image: 生成的图片
+activity.generated_images: 生成的图片
+activity.image_generation_failed: 图片生成失败
+activity.image_generation_limit: 已达到图片生成额度
 activity.open_file: 打开文件
 activity.search_for: 搜索：%{query}
 activity.searched_web: 已搜索网页

@@ -53,7 +53,8 @@ impl Waku {
     ) -> Option<Arc<gpui::Image>> {
         let attachment_reference =
             reference.starts_with(waku_protocol::attachments::ATTACHMENT_SCHEME);
-        if !waku_protocol::blob::is_reference(reference) && !attachment_reference {
+        let inline_image = reference.starts_with("data:image/");
+        if !waku_protocol::blob::is_reference(reference) && !attachment_reference && !inline_image {
             return None;
         }
         if let Some(state) = self.remote_images.borrow().get(reference) {
@@ -63,10 +64,10 @@ impl Waku {
             };
         }
 
-        let Some(format) = name
+        let format = name
             .and_then(image_format_for_name)
-            .or_else(|| image_format_for_name(reference))
-        else {
+            .or_else(|| image_format_for_name(reference));
+        if !inline_image && format.is_none() {
             self.remote_images
                 .borrow_mut()
                 .insert(reference.to_owned(), RemoteImageState::Unavailable);
@@ -84,12 +85,15 @@ impl Waku {
             let image = cx
                 .background_executor()
                 .spawn(async move {
+                    if inline_image {
+                        return md::render::decode_data_url(&fetch_reference);
+                    }
                     waku_client::persistence::read_remote_reference(
                         &fetch_reference,
                         daemon_path.as_deref(),
                         &daemon,
                     )
-                    .map(|bytes| Arc::new(gpui::Image::from_bytes(format, bytes)))
+                    .map(|bytes| Arc::new(gpui::Image::from_bytes(format.unwrap(), bytes)))
                 })
                 .await;
             let _ = waku.update(cx, |waku, cx| {
@@ -102,6 +106,146 @@ impl Waku {
         })
         .detach();
         None
+    }
+
+    pub(super) fn render_image_generation_row(
+        &self,
+        activity: &ActivityItem,
+        surface: &transcript_view::ActivityRenderContext<'_>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if surface.part == transcript_view::ActivityClusterPart::Item {
+            return div().into_any_element();
+        }
+        let color = if activity.failed {
+            theme.danger
+        } else {
+            theme.text_secondary
+        };
+        let mut card = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .min_h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .text_size(sp(12.5))
+                    .text_color(color)
+                    .child(icon(
+                        if activity.failed {
+                            "icons/alert.svg"
+                        } else {
+                            "icons/file-types/image.svg"
+                        },
+                        14.0,
+                        color,
+                    ))
+                    .child(activity_display_title(activity))
+                    .when(!activity.complete, |row| {
+                        row.child(pulse_dot(5.0, theme.accent))
+                    }),
+            );
+        if let Some(detail) = activity.detail.as_ref() {
+            card = card.child(
+                div()
+                    .text_size(sp(12.5))
+                    .text_color(color)
+                    .child(detail.clone()),
+            );
+        }
+        for (index, reference) in activity.image_urls.iter().enumerate() {
+            card = card.child(self.render_activity_image(reference, activity.id, index, theme, cx));
+        }
+        card.into_any_element()
+    }
+
+    /// Both generated outputs and tool screenshots share the in-memory cache
+    /// and the keyboard-operable window preview used by user attachments.
+    pub(super) fn render_activity_image(
+        &self,
+        reference: &str,
+        activity_id: Uuid,
+        index: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = format!("activity-image-{activity_id}-{index}");
+        let image = self.image_for_reference(reference, None, None, cx);
+        let mut tile = div()
+            .id(SharedString::from(id.clone()))
+            .w(px(ACTIVITY_IMAGE_WIDTH))
+            .max_w(gpui::relative(1.0))
+            .h(px(ACTIVITY_IMAGE_HEIGHT))
+            .rounded(px(6.0))
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .justify_center();
+        if let Some(image) = image {
+            let focus = self.transcript_control_focus(id, cx);
+            let name = SharedString::from(tr!("activity.image_output"));
+            let key_image = image.clone();
+            let key_name = name.clone();
+            let click_image = image.clone();
+            let label = tr!("attachments.open_preview", name = name.as_ref());
+            tile = tile
+                .track_focus(&focus)
+                .tab_index(0)
+                .cursor_default()
+                .border_1()
+                .border_color(theme.border)
+                .focus_visible(|style| style.border_color(theme.accent))
+                .hover(|style| style.border_color(theme.border_strong))
+                .tooltip(Tooltip::text(label))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_image_preview(click_image.clone(), name.clone(), window, cx);
+                    cx.stop_propagation();
+                }))
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        this.open_image_preview(key_image.clone(), key_name.clone(), window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .child(
+                    img(image)
+                        .size_full()
+                        .rounded(px(5.0))
+                        .object_fit(ObjectFit::Contain),
+                );
+        } else if !waku_protocol::blob::is_reference(reference)
+            && !reference.starts_with(waku_protocol::attachments::ATTACHMENT_SCHEME)
+            && !reference.starts_with("data:")
+        {
+            // GPUI's resource loader fetches URL/path tool outputs asynchronously.
+            tile = tile.child(
+                img(reference.to_owned())
+                    .size_full()
+                    .rounded(px(6.0))
+                    .object_fit(ObjectFit::Contain),
+            );
+        } else {
+            let unavailable = matches!(
+                self.remote_images.borrow().get(reference),
+                Some(RemoteImageState::Unavailable)
+            );
+            tile = tile
+                .bg(theme.inset)
+                .gap(px(8.0))
+                .text_size(sp(12.0))
+                .text_color(theme.text_ghost)
+                .child(icon("icons/file-types/image.svg", 18.0, theme.text_ghost))
+                .when(unavailable, |tile| {
+                    tile.child(tr!("attachments.preview_unavailable"))
+                });
+        }
+        tile.into_any_element()
     }
 
     pub(super) fn open_image_preview(

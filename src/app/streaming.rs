@@ -52,14 +52,33 @@ impl Waku {
         runtime: &mut SessionRuntime,
         item: ActivityItem,
     ) {
+        let mut image_block = None;
         if let Some(session) = self.state.session_mut(session_id) {
             let replaced = !item.file_changes.is_empty();
+            let image_changed = item.kind == ActivityKind::ImageGeneration;
             let (id, inserted) = update_session_activity(session, runtime.stream_phase, item);
+            if image_changed {
+                image_block = session.transcript_blocks.iter().position(|block| {
+                    block.activities.iter().any(|activity| activity.id == id)
+                });
+            }
             if inserted {
                 runtime.stream_phase = Some(StreamPhase::Activity);
             }
             if replaced {
                 self.activity_diffs.borrow_mut().remove(&id);
+            }
+        }
+        // An image can finish after later parallel work has already advanced
+        // beyond the small streaming tail. Invalidate its original row only.
+        if self.state.selected_session == Some(session_id)
+            && let Some(block) = image_block
+        {
+            self.sync_transcript_rows();
+            if let Some(row) = self.transcript_row_kinds.borrow().iter()
+                .position(|row| *row == TranscriptRowKind::TurnBlock(block))
+            {
+                self.remeasure_transcript_rows(row..row + 1);
             }
         }
     }
@@ -923,14 +942,14 @@ pub(super) fn push_transcript_activity(
     let after_message = session.messages.len();
     let turn_id = session.active_turn_id();
     if continuing_work
-        && item.compaction.is_none()
+        && !item.is_standalone()
         && let Some(block) = session.transcript_blocks.last_mut()
         && block.after_message == after_message
         && block.turn_id == turn_id
         && block
             .activities
             .iter()
-            .all(|activity| activity.compaction.is_none())
+            .all(|activity| !activity.is_standalone())
     {
         block.activities.push(item);
     } else {

@@ -270,6 +270,17 @@ requests ([driver/codex.rs:779](../crates/waku-core/src/driver/codex.rs#L809)).
 
 **Cancel** — `turn/interrupt {threadId, turnId}`.
 
+**Image generation** — native `imageGeneration` items become ordered,
+standalone image rows. The provider keeps control of model/account capability
+and feature enablement. Waku handles both base64 `result` and the newer saved
+file output (`fileId` / `savedPath`), copies the bytes into its blob store on
+the daemon worker, and sends short references to the desktop. Generation
+failures and image quota exhaustion remain visible. Completed images stay
+outside folded work and open the attachment preview by click or Enter/Space.
+Native history import retains their original message boundaries too. Other
+providers can use their own image-generation tools; recognized image tools
+share the same image row and output handling.
+
 **Steer** — `turn/steer {threadId, expectedTurnId, input}`. The RPC response
 resolves the pending steer to `SteerAccepted`, or to `SteerRejected` with the
 CLI's reason when the expected turn no longer matches — the server-side check

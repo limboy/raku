@@ -675,12 +675,14 @@ fn live_references(connection: &Connection, scheme: &str) -> io::Result<HashSet<
         .prepare(
             "SELECT data FROM session_details
              UNION ALL
-             SELECT attachments FROM messages WHERE attachments != '[]'",
+             SELECT attachments FROM messages WHERE attachments != '[]'
+             UNION ALL
+             SELECT event FROM delegation_events WHERE instr(event, ?1) > 0",
         )
         .map_err(to_io_error)?;
     let mut references = HashSet::new();
     let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([scheme], |row| row.get::<_, String>(0))
         .map_err(to_io_error)?;
     for data in rows.filter_map(Result::ok) {
         collect_references(&data, scheme, &mut references);
@@ -2583,6 +2585,25 @@ mod tests {
         );
 
         fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn image_generation_event_references_survive_until_the_event_is_removed() {
+        let connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&connection).unwrap();
+        connection.execute(
+                "INSERT INTO delegation_events (task_id, sequence, event, created_at) VALUES (?1, 1, ?2, 1)",
+                rusqlite::params![Uuid::new_v4().to_string(), r#"{"kind":"richActivity","payload":{"image_urls":["waku-blob:1234567890abcdef.png"]}}"#],
+            ).unwrap();
+        assert!(
+            live_blob_references(&connection)
+                .unwrap()
+                .contains("waku-blob:1234567890abcdef.png")
+        );
+        connection
+            .execute("DELETE FROM delegation_events", [])
+            .unwrap();
+        assert!(live_blob_references(&connection).unwrap().is_empty());
     }
 
     #[test]

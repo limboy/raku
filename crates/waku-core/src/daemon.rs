@@ -574,7 +574,7 @@ impl Backend for WakuBackend {
                 // Preserve every native turn shell for exact provider turn
                 // numbering, but bound imported display text to recent turns.
                 const VISIBLE_TURN_LIMIT: usize = 100;
-                let history = match &cursor {
+                let mut history = match &cursor {
                     ProviderResumeCursor::Antigravity { session_id } => {
                         self.provider_binary(ProviderKind::Antigravity)?;
                         crate::antigravity_session::provider_session_history(
@@ -638,6 +638,14 @@ impl Backend for WakuBackend {
                         )?
                     }
                 };
+                let blobs = self.task_store.blobs();
+                for activity in history
+                    .transcript_blocks
+                    .iter_mut()
+                    .flat_map(|block| &mut block.activities)
+                {
+                    crate::image_generation::externalize(activity, &blobs);
+                }
                 Ok(ResponsePayload::ProviderSessionHistory { history })
             }
             Command::LoadComposerDrafts => Ok(ResponsePayload::ComposerDrafts {
@@ -770,10 +778,14 @@ impl Backend for WakuBackend {
                 let (event_sender, event_receiver) = driver::event_channel(wake);
                 let handle = driver::start_local(provider, options, event_sender)?;
                 let supports_steer = handle.supports_steer();
+                let blobs = self.task_store.blobs();
                 std::thread::Builder::new()
                     .name(format!("waku-daemon-events-{session_id}"))
                     .spawn(move || {
-                        while let Ok(event) = event_receiver.recv() {
+                        while let Ok(mut event) = event_receiver.recv() {
+                            if let DriverEvent::RichActivity(activity) = &mut event {
+                                crate::image_generation::externalize(activity, &blobs);
+                            }
                             let wire = event_to_wire(event).unwrap_or_else(|error| {
                                 WireDriverEvent::new(
                                     "error",

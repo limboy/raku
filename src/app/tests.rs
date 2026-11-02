@@ -2278,6 +2278,77 @@ fn compaction_milestones_survive_folding_roundtrip_and_later_activity() {
 }
 
 #[test]
+fn image_generation_preserves_order_and_stays_visible_after_work_folds() {
+    use super::StreamPhase;
+    use super::streaming::update_session_activity;
+    let mut session = AgentSession::new(uuid::Uuid::new_v4(), ProviderKind::Codex);
+    session.begin_turn("Generate an image");
+    push_transcript_activity(
+        &mut session,
+        ActivityItem::new(
+            Some("read".into()),
+            ActivityKind::FileRead,
+            "Read",
+            None,
+            true,
+        ),
+        false,
+    );
+    update_session_activity(
+        &mut session,
+        Some(StreamPhase::Activity),
+        ActivityItem::new(
+            Some("image".into()),
+            ActivityKind::ImageGeneration,
+            "Generating image",
+            None,
+            false,
+        ),
+    );
+    push_transcript_activity(
+        &mut session,
+        ActivityItem::new(
+            Some("test".into()),
+            ActivityKind::Command,
+            "Test",
+            None,
+            true,
+        ),
+        true,
+    );
+    let (_, inserted) = update_session_activity(
+        &mut session,
+        Some(StreamPhase::Activity),
+        ActivityItem::new(
+            Some("image".into()),
+            ActivityKind::ImageGeneration,
+            "Generated image",
+            None,
+            true,
+        )
+        .with_image_urls(vec!["waku-blob:12345678.png".into()]),
+    );
+    assert!(
+        !inserted,
+        "completion updates the original ordered image row"
+    );
+    session.push_message(MessageRole::Assistant, "Here is your image");
+    session.finish_active_turn(TurnStatus::Completed);
+    let mut restored: AgentSession =
+        serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+    restored.migrate_legacy_state();
+    assert_eq!(restored.transcript_blocks.len(), 3);
+    let image = &restored.transcript_blocks[1].activities[0];
+    assert!(image.complete);
+    assert_eq!(image.image_urls, ["waku-blob:12345678.png"]);
+    let (rows, work) = folded_transcript_rows(&restored, &std::collections::HashSet::new());
+    assert!(rows.contains(&TurnBlock(1)));
+    assert!(!rows.contains(&TurnBlock(0)));
+    assert!(!rows.contains(&TurnBlock(2)));
+    assert!(!work.contains(&TurnBlock(1)));
+}
+
+#[test]
 fn compact_command_only_matches_exact_command_and_keeps_focus_instructions() {
     use super::compaction::compact_invocation;
     assert_eq!(compact_invocation("/compact"), Some(None));

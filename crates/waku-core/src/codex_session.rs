@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::model::{
     AgentTurn, Message, MessageRole, ProviderResumeCursor, ProviderSessionHistory,
-    ProviderSessionSummary, TurnStatus,
+    ProviderSessionSummary, TranscriptBlock, TurnStatus,
 };
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
@@ -294,16 +294,21 @@ pub(crate) fn is_compaction_turn(turn: &Value) -> bool {
         })
 }
 
-fn parse_session_history(response: &Value) -> ProviderSessionHistory {
+fn parse_session_history(response: &Value, visible_turn_limit: usize) -> ProviderSessionHistory {
     let native_turns = response
         .pointer("/result/thread/turns")
         .and_then(Value::as_array)
-        .cloned()
+        .map(Vec::as_slice)
         .unwrap_or_default();
+    let first_visible_turn = native_turns
+        .iter()
+        .filter(|turn| !is_compaction_turn(turn))
+        .count()
+        .saturating_sub(visible_turn_limit);
     let mut history = ProviderSessionHistory::default();
 
     for native_turn in native_turns {
-        if is_compaction_turn(&native_turn) {
+        if is_compaction_turn(native_turn) {
             continue;
         }
         let turn_id = native_turn
@@ -337,6 +342,9 @@ fn parse_session_history(response: &Value) -> ProviderSessionHistory {
             checkpoint: None,
         });
 
+        if history.turns.len() <= first_visible_turn {
+            continue;
+        }
         for item in native_turn
             .get("items")
             .and_then(Value::as_array)
@@ -364,6 +372,14 @@ fn parse_session_history(response: &Value) -> ProviderSessionHistory {
                         completed_at.unwrap_or(started_at),
                     )
                 }
+                Some("imageGeneration") => {
+                    history.transcript_blocks.push(TranscriptBlock {
+                        after_message: history.messages.len(),
+                        turn_id: Some(turn_id),
+                        activities: vec![crate::image_generation::codex_activity(item, true)],
+                    });
+                    continue;
+                }
                 _ => continue,
             };
             let mut message = Message::new_for_turn(role, content, turn_id);
@@ -382,6 +398,21 @@ fn retain_recent_messages(history: &mut ProviderSessionHistory, visible_turn_lim
         .take(visible_turn_limit)
         .map(|turn| turn.id)
         .collect::<std::collections::HashSet<_>>();
+    // Re-anchor image blocks after pruning old messages, retaining only the
+    // requested turns. Counting once here keeps a long import linear.
+    let mut retained_before = Vec::with_capacity(history.messages.len() + 1);
+    retained_before.push(0);
+    for message in &history.messages {
+        let keep = message.turn_id.is_some_and(|id| retained.contains(&id));
+        retained_before.push(retained_before.last().copied().unwrap() + usize::from(keep));
+    }
+    history.transcript_blocks.retain_mut(|block| {
+        let keep = block.turn_id.is_some_and(|id| retained.contains(&id));
+        if keep {
+            block.after_message = retained_before[block.after_message.min(history.messages.len())];
+        }
+        keep
+    });
     history
         .messages
         .retain(|message| message.turn_id.is_some_and(|id| retained.contains(&id)));
@@ -409,7 +440,7 @@ pub fn provider_session_history(
             }
         }),
     )?;
-    let mut history = parse_session_history(&response);
+    let mut history = parse_session_history(&response, visible_turn_limit);
     retain_recent_messages(&mut history, visible_turn_limit);
     Ok(history)
 }
@@ -419,13 +450,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_generation_history_keeps_order_and_reanchors_after_trimming() {
+        let first = Uuid::new_v4();
+        let last = Uuid::new_v4();
+        let response = json!({"result":{"thread":{"turns":[
+            {"id":first, "status":"completed", "items":[
+                {"type":"userMessage", "content":[{"type":"text", "text":"Old prompt"}]},
+                {"type":"imageGeneration", "id":"old", "status":"completed", "result":"iVBORw0KGgo="},
+                {"type":"agentMessage", "text":"Old image"}
+            ]},
+            {"id":last, "status":"completed", "items":[
+                {"type":"userMessage", "content":[{"type":"text", "text":"New prompt"}]},
+                {"type":"agentMessage", "text":"Before image"},
+                {"type":"imageGeneration", "id":"new", "status":"completed", "result":"iVBORw0KGgo="},
+                {"type":"agentMessage", "text":"After image"}
+            ]}
+        ]}}});
+        let bounded = parse_session_history(&response, 1);
+        assert_eq!(bounded.turns.len(), 2);
+        assert_eq!(bounded.messages.len(), 3);
+        assert_eq!(bounded.transcript_blocks.len(), 1);
+        assert_eq!(bounded.transcript_blocks[0].after_message, 2);
+        let mut history = parse_session_history(&response, usize::MAX);
+        assert_eq!(history.transcript_blocks[0].after_message, 1);
+        assert_eq!(history.transcript_blocks[1].after_message, 4);
+        retain_recent_messages(&mut history, 1);
+        assert_eq!(history.turns.len(), 2);
+        assert_eq!(history.messages.len(), 3);
+        assert_eq!(history.transcript_blocks.len(), 1);
+        assert_eq!(history.transcript_blocks[0].after_message, 2);
+        assert_eq!(history.transcript_blocks[0].turn_id, Some(last));
+        assert_eq!(
+            history.transcript_blocks[0].activities[0]
+                .source_id
+                .as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
     fn imported_compaction_turns_do_not_shift_conversation_turn_counts() {
         let response = json!({"result":{"thread":{"turns":[
             {"id":"first", "items":[{"type":"userMessage","content":[{"type":"text","text":"first"}]}]},
             {"id":"maintenance", "items":[{"type":"reasoning"},{"type":"contextCompaction"}]},
             {"id":"second", "items":[{"type":"userMessage","content":[{"type":"text","text":"second"}]},{"type":"contextCompaction"},{"type":"agentMessage","text":"done"}]}
         ]}}});
-        let history = parse_session_history(&response);
+        let history = parse_session_history(&response, usize::MAX);
         assert_eq!(history.turns.len(), 2);
         assert_eq!(history.turns[1].turn_count, 2);
         assert_eq!(
@@ -496,7 +566,7 @@ mod tests {
             }
         ]}}});
 
-        let mut history = parse_session_history(&response);
+        let mut history = parse_session_history(&response, usize::MAX);
         retain_recent_messages(&mut history, 1);
         assert_eq!(history.turns.len(), 2);
         assert_eq!(history.messages.len(), 2);

@@ -601,6 +601,16 @@ activity.output:
   en: Output
 activity.image_output:
   en: Image output
+activity.generating_image:
+  en: Generating image
+activity.generated_image:
+  en: Generated image
+activity.generated_images:
+  en: Generated images
+activity.image_generation_failed:
+  en: Image generation failed
+activity.image_generation_limit:
+  en: Image generation limit reached
 activity.open_file:
   en: Open file
 activity.search_for:

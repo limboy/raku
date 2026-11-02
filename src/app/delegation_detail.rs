@@ -442,6 +442,10 @@ impl DelegationDetailState {
         for row in self.output.row_plan() {
             rows.push(row);
             if let DetailRow::Activities(block) = row
+                && !self.output.session.transcript_blocks[block]
+                    .activities
+                    .iter()
+                    .any(ActivityItem::is_standalone)
                 && self
                     .groups_expanded
                     .get(&block)
