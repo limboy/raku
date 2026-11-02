@@ -16,6 +16,15 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.1.1] - 2026-11-03
+
+- Restore automatic titles for new Claude Code sessions using Claude's native title generator
+- Improve generated image sizing and previews, with context-menu actions to add images to chat, copy them, or reveal them in Finder
+- Fold completed image-generation activity when its images already appear in the response
+- Add transcript selections to chat from the context menu as text snippets
+- Skip whitespace-only text between tool calls in streaming transcripts
+- Fix startup after updating when saved preferences still reference Oh My Pi or OpenCode
+
 ## [2.1.0] - 2026-11-02
 
 - Add transcript selections to chat from the context menu as text snippets
