@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.1.0] - 2026-11-02
+
+- Add transcript selections to chat from the context menu as text snippets
+- Skip whitespace-only text between tool calls in streaming transcripts
 - Fix startup after updating when saved preferences still reference Oh My Pi or OpenCode
 
 ## [2.0.3] - 2026-11-02
