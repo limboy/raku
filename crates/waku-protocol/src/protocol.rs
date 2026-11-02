@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::attachments::{AttachmentUpload, StoredAttachment};
 use crate::backup::{BackupInfo, DesktopBackup};
+use crate::capabilities::RuntimeCapabilities;
 use crate::model::{
     AgentSession, GoalOperation, Project, ProviderKind, ProviderProbe, ProviderResumeCursor,
     ProviderSessionHistory, ProviderSessionSummary, UserInputAnswer,
@@ -17,7 +18,7 @@ use crate::skills::SkillsCatalog;
 use crate::usage::PlanUsage;
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "WAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "WAKU_DAEMON_ADDRESS";
@@ -372,10 +373,10 @@ pub enum ResponsePayload {
     Ack,
     SessionRuntime {
         runtime_id: Option<Uuid>,
-        supports_steer: bool,
+        capabilities: RuntimeCapabilities,
     },
     Started {
-        supports_steer: bool,
+        capabilities: RuntimeCapabilities,
     },
     OptionsApplied {
         applied: bool,

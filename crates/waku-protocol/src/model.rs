@@ -76,55 +76,6 @@ impl ProviderKind {
             Self::Pi => "pi",
         }
     }
-
-    pub fn supports_conversation_rollback(self) -> bool {
-        matches!(
-            self,
-            Self::Antigravity
-                | Self::Claude
-                | Self::Codex
-                | Self::OpenCode
-                | Self::OhMyPi
-                | Self::Pi
-        )
-    }
-
-    pub fn supports_conversation_fork(self) -> bool {
-        matches!(
-            self,
-            Self::Antigravity
-                | Self::Claude
-                | Self::Codex
-                | Self::OpenCode
-                | Self::OhMyPi
-                | Self::Pi
-        )
-    }
-
-    /// Whether this provider can run a delegated, read-only review subtask.
-    ///
-    /// False means the driver cannot guarantee "read and search allowed,
-    /// writes and commands denied" without a human answering approvals — a
-    /// subtask launched there would either hang on an unanswerable permission
-    /// request or run unconstrained.
-    pub fn supports_review_subtask(self) -> bool {
-        matches!(
-            self,
-            Self::Codex | Self::Claude | Self::OpenCode | Self::Pi | Self::OhMyPi
-        )
-    }
-
-    pub fn supports_model_discovery(self) -> bool {
-        matches!(
-            self,
-            Self::Antigravity
-                | Self::Claude
-                | Self::Codex
-                | Self::OpenCode
-                | Self::OhMyPi
-                | Self::Pi
-        )
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -4486,18 +4437,18 @@ mod tests {
             ProviderKind::OhMyPi,
             ProviderKind::Pi,
         ] {
-            assert!(provider.supports_conversation_fork());
-            assert!(provider.supports_conversation_rollback());
+            assert!(provider.capabilities().conversation.fork);
+            assert!(provider.capabilities().conversation.rollback);
         }
     }
 
     #[test]
     fn only_dynamic_provider_catalogs_are_discovered() {
-        assert!(ProviderKind::Antigravity.supports_model_discovery());
-        assert!(ProviderKind::Claude.supports_model_discovery());
-        assert!(ProviderKind::Codex.supports_model_discovery());
-        assert!(ProviderKind::OpenCode.supports_model_discovery());
-        assert!(ProviderKind::Pi.supports_model_discovery());
+        assert!(ProviderKind::Antigravity.capabilities().model_discovery);
+        assert!(ProviderKind::Claude.capabilities().model_discovery);
+        assert!(ProviderKind::Codex.capabilities().model_discovery);
+        assert!(ProviderKind::OpenCode.capabilities().model_discovery);
+        assert!(ProviderKind::Pi.capabilities().model_discovery);
     }
 
     #[test]
@@ -5260,13 +5211,23 @@ mod review_subtask_tests {
             ProviderKind::OhMyPi,
         ] {
             assert!(
-                provider.supports_review_subtask(),
+                provider.capabilities().delegation.review_subtask,
                 "{} has a verified read-only path",
                 provider.display_name()
             );
         }
-        assert!(!ProviderKind::Antigravity.supports_review_subtask());
-        assert!(ProviderKind::Antigravity.supports_conversation_fork());
-        assert!(ProviderKind::Antigravity.supports_conversation_rollback());
+        assert!(
+            !ProviderKind::Antigravity
+                .capabilities()
+                .delegation
+                .review_subtask
+        );
+        assert!(ProviderKind::Antigravity.capabilities().conversation.fork);
+        assert!(
+            ProviderKind::Antigravity
+                .capabilities()
+                .conversation
+                .rollback
+        );
     }
 }

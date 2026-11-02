@@ -111,7 +111,7 @@ pub fn parse_goal_submission(
     prompt: &str,
     commands: &[SlashCommand],
 ) -> Option<GoalCommand> {
-    if provider != ProviderKind::Codex {
+    if !provider.capabilities().goals {
         return None;
     }
     let invocation = prompt.trim().strip_prefix('/')?;

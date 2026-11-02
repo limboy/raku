@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
+use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::model::{
     BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, ProviderResumeCursor,
     RuntimeMode, UserInputAnswer,
@@ -56,8 +57,8 @@ impl DriverHandle {
         self.inner.prompt_with_context(prompt, delegation);
     }
 
-    pub fn supports_steer(&self) -> bool {
-        self.inner.supports_steer()
+    pub fn capabilities(&self) -> RuntimeCapabilities {
+        self.inner.capabilities()
     }
 
     pub fn steer(&self, prompt: String) {
@@ -119,9 +120,7 @@ pub trait DriverControl: Send + Sync {
     ) {
         self.prompt(prompt);
     }
-    fn supports_steer(&self) -> bool {
-        false
-    }
+    fn capabilities(&self) -> RuntimeCapabilities;
     fn steer(&self, _prompt: String) {}
     fn cancel(&self);
     fn refresh_background_work(&self) {}

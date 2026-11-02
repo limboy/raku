@@ -1009,7 +1009,7 @@ impl Waku {
         }
         let turn_id = message.turn_id?;
         let turn = session.turns.iter().find(|turn| turn.id == turn_id)?;
-        if !session.provider.supports_conversation_rollback() {
+        if !session.provider.capabilities().conversation.rollback {
             return None;
         }
         // A steer joins the running turn as another user message. Provider
@@ -1114,7 +1114,7 @@ impl Waku {
         if message.role != MessageRole::Assistant
             || assistant_response_footer_index(session, message_index) != Some(message_index)
             || !matches!(session.status, SessionStatus::Idle | SessionStatus::Failed)
-            || !session.provider.supports_conversation_fork()
+            || !session.provider.capabilities().conversation.fork
             || session
                 .provider_cursor
                 .as_ref()

@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
+use waku_protocol::capabilities::RuntimeCapabilities;
 
 use crate::model::{
     BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, ProviderKind,
@@ -85,6 +86,10 @@ impl DriverHandle {
         }
     }
 
+    pub fn provider(&self) -> ProviderKind {
+        self.inner.provider()
+    }
+
     pub fn compact(&self, request: waku_protocol::compaction::CompactionRequest) {
         self.inner.compact(request);
     }
@@ -93,10 +98,9 @@ impl DriverHandle {
         self.inner.prompt(self.title_language.prepare(prompt));
     }
 
-    /// Whether this transport can inject a user message into the currently
-    /// running turn (steering) instead of starting a new one.
-    pub fn supports_steer(&self) -> bool {
-        self.inner.supports_steer()
+    /// Support reported by this live transport, without I/O or locking.
+    pub fn capabilities(&self) -> RuntimeCapabilities {
+        self.inner.capabilities()
     }
 
     pub fn steer(&self, prompt: String) {
@@ -143,11 +147,10 @@ impl DriverHandle {
 }
 
 pub trait DriverControl: Send + Sync {
+    fn provider(&self) -> ProviderKind;
     fn compact(&self, _request: waku_protocol::compaction::CompactionRequest) {}
     fn prompt(&self, prompt: String);
-    fn supports_steer(&self) -> bool {
-        false
-    }
+    fn capabilities(&self) -> RuntimeCapabilities;
     /// Deliver a steering message to the running turn. Implementations report
     /// the outcome asynchronously through `DriverEvent::SteerAccepted` or
     /// `DriverEvent::SteerRejected`.
@@ -204,6 +207,7 @@ pub(crate) fn start_local(
     options: DriverStartOptions,
     events: DriverEventSender,
 ) -> anyhow::Result<DriverHandle> {
+    validate_start(provider, options.mode, options.execution_policy)?;
     let title_language = Arc::new(title_language::TitleLanguageContext::new(
         provider,
         options.execution_policy,
@@ -232,9 +236,85 @@ pub(crate) fn start_local(
     })
 }
 
+/// Validate before starting a transport or replacing a running session.
+pub(crate) fn validate_start(
+    provider: ProviderKind,
+    mode: RuntimeMode,
+    policy: ExecutionPolicy,
+) -> anyhow::Result<()> {
+    match policy {
+        ExecutionPolicy::Interactive => provider.validate_access_mode(mode)?,
+        ExecutionPolicy::ReviewReadOnly => anyhow::ensure!(
+            provider.capabilities().delegation.review_subtask,
+            "{} does not support read-only review subtasks",
+            provider.display_name()
+        ),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incompatible_execution_policies_fail_before_opening_a_transport() {
+        for (provider, mode, execution_policy) in [
+            (
+                ProviderKind::Pi,
+                RuntimeMode::Ask,
+                ExecutionPolicy::Interactive,
+            ),
+            (
+                ProviderKind::OhMyPi,
+                RuntimeMode::Auto,
+                ExecutionPolicy::Interactive,
+            ),
+            (
+                ProviderKind::Antigravity,
+                RuntimeMode::FullAccess,
+                ExecutionPolicy::ReviewReadOnly,
+            ),
+        ] {
+            let (wake, _) = smol::channel::bounded(1);
+            let (events, _) = event_channel(wake);
+            let result = start_local(
+                provider,
+                DriverStartOptions {
+                    binary: "/missing/waku-capability-test-provider".into(),
+                    cwd: "/missing/waku-capability-test-workspace".into(),
+                    mode,
+                    execution_policy,
+                    model: None,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    context_window: None,
+                    agent_preset: None,
+                    provider_cursor: None,
+                    delegation_session_path: None,
+                    delegation_registry_dir: None,
+                },
+                events,
+            );
+            let error = result.err().expect("unsupported start must fail");
+            if execution_policy == ExecutionPolicy::Interactive {
+                let error = error
+                    .downcast::<waku_protocol::capabilities::UnsupportedAccessMode>()
+                    .unwrap();
+                assert_eq!(error.provider, provider);
+                assert_eq!(error.mode, mode);
+            } else {
+                assert!(error.to_string().contains("read-only"), "{error}");
+            }
+        }
+        // Pi's restricted tool allowlist is independent of the permission
+        // modes offered to interactive sessions.
+        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+            assert!(
+                validate_start(provider, RuntimeMode::Ask, ExecutionPolicy::ReviewReadOnly).is_ok()
+            );
+        }
+    }
 
     #[test]
     fn provider_events_coalesce_wakes_without_dropping_payloads() {

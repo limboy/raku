@@ -9,6 +9,33 @@ pub(super) fn compact_invocation(prompt: &str) -> Option<Option<&str>> {
     (name == "compact").then(|| (!focus.trim().is_empty()).then(|| focus.trim()))
 }
 
+fn validate_compaction_request(
+    session: &AgentSession,
+    has_runtime: bool,
+    has_instructions: bool,
+) -> Result<(), String> {
+    let capabilities = session.provider.capabilities().compaction;
+    if !capabilities.manual {
+        return Err(tr!("compaction.unsupported"));
+    }
+    if session.is_busy() || session.active_compaction.is_some() {
+        return Err(tr!("compaction.busy"));
+    }
+    if has_instructions && !capabilities.instructions {
+        return Err(tr!("compaction.focus_unsupported"));
+    }
+    if session.provider_cursor.is_none() {
+        return Err(tr!("compaction.no_history"));
+    }
+    if !has_runtime {
+        session
+            .provider
+            .validate_access_mode(session.runtime_mode)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 impl Waku {
     pub(super) fn request_session_compaction(
         &mut self,
@@ -24,21 +51,12 @@ impl Waku {
         else {
             return;
         };
-        let capabilities = session.provider.compaction_capabilities();
-        if !capabilities.manual {
-            self.show_toast(tr!("compaction.unsupported"));
-            return;
-        }
-        if session.is_busy() || session.active_compaction.is_some() {
-            self.show_toast(tr!("compaction.busy"));
-            return;
-        }
-        if instructions.is_some() && !capabilities.instructions {
-            self.show_toast(tr!("compaction.focus_unsupported"));
-            return;
-        }
-        if session.provider_cursor.is_none() {
-            self.show_toast(tr!("compaction.no_history"));
+        if let Err(error) = validate_compaction_request(
+            session,
+            self.runtimes.contains_key(&session_id),
+            instructions.is_some(),
+        ) {
+            self.show_toast(error);
             return;
         }
         let request = CompactionRequest {
@@ -78,5 +96,26 @@ impl Waku {
             session.interrupt_compactions(unix_time_millis());
         }
         self.state.mark_session_dirty(session_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cold_compaction_requires_a_startable_mode_but_a_live_runtime_can_be_reused() {
+        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+            let mut session = AgentSession::new(Uuid::new_v4(), provider);
+            session.provider_cursor = Some(ProviderResumeCursor::from_session_id(
+                provider,
+                "native".into(),
+            ));
+            session.runtime_mode = RuntimeMode::Ask;
+            assert!(validate_compaction_request(&session, false, false).is_err());
+            assert!(validate_compaction_request(&session, true, false).is_ok());
+            session.runtime_mode = RuntimeMode::FullAccess;
+            assert!(validate_compaction_request(&session, false, false).is_ok());
+        }
     }
 }

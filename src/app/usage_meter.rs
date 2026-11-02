@@ -265,11 +265,11 @@ impl Waku {
         let waiting_for_context = session.context_usage_pending;
         let context = session.context_usage.filter(|_| !waiting_for_context);
         let session_id = session.id;
-        let compact_enabled = session.provider.compaction_capabilities().manual
+        let compact_enabled = session.provider.capabilities().compaction.manual
             && !session.is_busy()
             && session.active_compaction.is_none()
             && session.provider_cursor.is_some();
-        let compact_visible = session.provider.compaction_capabilities().manual;
+        let compact_visible = session.provider.capabilities().compaction.manual;
         let compact_running = session.active_compaction.is_some();
         let compact_disabled_reason = if session.is_busy() {
             tr!("compaction.busy")

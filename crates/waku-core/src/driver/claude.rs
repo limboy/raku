@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
@@ -590,6 +591,10 @@ impl ClaudeDriver {
 }
 
 impl DriverControl for ClaudeDriver {
+    fn provider(&self) -> crate::model::ProviderKind {
+        crate::model::ProviderKind::Claude
+    }
+
     fn compact(&self, request: CompactionRequest) {
         let _ = self.commands.send(CommandMessage::Compact(request));
     }
@@ -598,8 +603,8 @@ impl DriverControl for ClaudeDriver {
         let _ = self.commands.send(CommandMessage::Prompt(prompt));
     }
 
-    fn supports_steer(&self) -> bool {
-        true
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities { steer: true }
     }
 
     fn steer(&self, prompt: String) {
@@ -2313,7 +2318,7 @@ mod tests {
             mode: RuntimeMode::FullAccess,
         };
 
-        assert!(driver.supports_steer());
+        assert!(driver.capabilities().steer);
         driver.steer("Focus on the failing tests first".into());
         match command_rx.try_recv() {
             Ok(CommandMessage::Steer(text)) => {

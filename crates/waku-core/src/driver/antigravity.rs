@@ -30,6 +30,7 @@ use anyhow::{Context as _, anyhow};
 use crossbeam_channel::{Sender, unbounded};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
+use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
@@ -483,6 +484,14 @@ impl Drop for AntigravityDriver {
 }
 
 impl DriverControl for AntigravityDriver {
+    fn provider(&self) -> crate::model::ProviderKind {
+        crate::model::ProviderKind::Antigravity
+    }
+
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities::default()
+    }
+
     fn compact(&self, request: CompactionRequest) {
         let _ = self.commands.send(CommandMessage::Compact(request));
     }

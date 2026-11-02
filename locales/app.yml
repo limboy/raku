@@ -769,6 +769,10 @@ mode.auto:
   en: Auto
 mode.full_access:
   en: Full access
+mode.unavailable:
+  en: "%{mode} (unavailable)"
+errors.provider_access_mode_unsupported:
+  en: "%{provider} does not support %{mode}. Choose %{modes}."
 mode.supervised_description:
   en: Ask before commands and file changes
 mode.auto_accept_edits_description:

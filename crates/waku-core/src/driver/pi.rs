@@ -14,6 +14,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
@@ -28,7 +29,7 @@ use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
 use crate::model::{
-    ActivityKind, DriverEvent, ExecutionPolicy, ProviderResumeCursor, ReportedCommand, RuntimeMode,
+    ActivityKind, DriverEvent, ExecutionPolicy, ProviderResumeCursor, ReportedCommand,
     unix_time_millis,
 };
 
@@ -73,6 +74,13 @@ pub enum PiFlavor {
 }
 
 impl PiFlavor {
+    fn provider(self) -> crate::model::ProviderKind {
+        match self {
+            Self::Pi => crate::model::ProviderKind::Pi,
+            Self::OhMyPi => crate::model::ProviderKind::OhMyPi,
+        }
+    }
+
     fn display_name(self) -> &'static str {
         match self {
             Self::Pi => "Pi",
@@ -449,11 +457,8 @@ impl PiDriver {
         // launch: the tool allowlist below is what makes it read-only, and it
         // is enforced by the CLI refusing to expose anything else.
         let review_read_only = execution_policy == ExecutionPolicy::ReviewReadOnly;
-        if !review_read_only && mode != RuntimeMode::FullAccess {
-            return Err(anyhow!(
-                "{} currently supports Full access only",
-                flavor.display_name()
-            ));
+        if !review_read_only {
+            flavor.provider().validate_access_mode(mode)?;
         }
         let resume_session_file = match provider_cursor {
             Some(cursor) if flavor.owns_cursor(&cursor) => {
@@ -1058,6 +1063,10 @@ impl PiDriver {
 }
 
 impl DriverControl for PiDriver {
+    fn provider(&self) -> crate::model::ProviderKind {
+        self.flavor.provider()
+    }
+
     fn compact(&self, request: CompactionRequest) {
         let _ = self.commands.send(CommandMessage::Compact(request));
     }
@@ -1066,8 +1075,8 @@ impl DriverControl for PiDriver {
         let _ = self.commands.send(CommandMessage::Prompt(prompt));
     }
 
-    fn supports_steer(&self) -> bool {
-        true
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities { steer: true }
     }
 
     fn steer(&self, prompt: String) {
@@ -1085,7 +1094,12 @@ impl DriverControl for PiDriver {
         // apply to the live session. Neither exposes one for permissions — and
         // Waku only runs them with Full access anyway, so a mode change asks
         // for a fresh start, which is where that is reported.
-        if options.mode != RuntimeMode::FullAccess {
+        if !self
+            .flavor
+            .provider()
+            .capabilities()
+            .supports_access_mode(options.mode)
+        {
             return false;
         }
         self.commands.send(CommandMessage::Options(options)).is_ok()
@@ -2469,6 +2483,7 @@ fn tool_title(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::RuntimeMode;
     use crossbeam_channel::TryRecvError;
 
     #[test]

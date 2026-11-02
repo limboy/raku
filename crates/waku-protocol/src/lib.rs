@@ -29,6 +29,7 @@ macro_rules! tr {
 pub mod attachments;
 pub mod backup;
 pub mod blob;
+pub mod capabilities;
 pub mod checkpoint;
 pub mod compaction;
 pub mod composer;

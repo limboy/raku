@@ -65,6 +65,7 @@ use crate::opencode_api::{
     ToolContent, ToolState,
 };
 use crate::opencode_service::{self, HubFrame, OpenCodeService, Subscription};
+use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::compaction::{
     CompactionRequest, CompactionStatus as ContextCompactionStatus, CompactionTrigger,
 };
@@ -433,7 +434,7 @@ pub(super) struct OpenCodeDriver {
     #[allow(dead_code)]
     mode: RuntimeMode,
     commands: Sender<DriverCommand>,
-    supports_steer: bool,
+    capabilities: RuntimeCapabilities,
 }
 
 impl OpenCodeDriver {
@@ -697,12 +698,16 @@ impl OpenCodeDriver {
             // Decided by the transport, snapshotted at `Command::Start` and
             // shipped in `ResponsePayload::Started`, so it cannot change
             // mid-session.
-            supports_steer: true,
+            capabilities: RuntimeCapabilities { steer: true },
         })
     }
 }
 
 impl DriverControl for OpenCodeDriver {
+    fn provider(&self) -> crate::model::ProviderKind {
+        crate::model::ProviderKind::OpenCode
+    }
+
     fn compact(&self, request: CompactionRequest) {
         let _ = self.commands.send(DriverCommand::Compact(request));
     }
@@ -711,8 +716,8 @@ impl DriverControl for OpenCodeDriver {
         let _ = self.commands.send(DriverCommand::Prompt(prompt));
     }
 
-    fn supports_steer(&self) -> bool {
-        self.supports_steer
+    fn capabilities(&self) -> RuntimeCapabilities {
+        self.capabilities
     }
 
     fn steer(&self, prompt: String) {
@@ -3976,5 +3981,4 @@ mod tests {
         let _ = opencode_api::delete_session(&endpoint, &session_id);
         let _ = std::fs::remove_dir_all(workspace);
     }
-
 }

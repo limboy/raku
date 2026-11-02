@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
@@ -918,6 +919,10 @@ fn handle_goal_response(
 }
 
 impl DriverControl for CodexDriver {
+    fn provider(&self) -> crate::model::ProviderKind {
+        crate::model::ProviderKind::Codex
+    }
+
     fn compact(&self, request: CompactionRequest) {
         let _ = self.commands.send(CommandMessage::Compact(request));
     }
@@ -926,8 +931,8 @@ impl DriverControl for CodexDriver {
         let _ = self.commands.send(CommandMessage::Prompt(prompt));
     }
 
-    fn supports_steer(&self) -> bool {
-        true
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities { steer: true }
     }
 
     fn steer(&self, prompt: String) {

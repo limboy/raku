@@ -49,7 +49,7 @@ fn attach_driver(
     let response = client.request(session_id, Uuid::nil(), waku_client::Command::AttachSession)?;
     let waku_client::ResponsePayload::SessionRuntime {
         runtime_id,
-        supports_steer,
+        capabilities,
     } = response
     else {
         anyhow::bail!("Waku daemon returned an invalid runtime attachment response");
@@ -65,7 +65,7 @@ fn attach_driver(
         client,
         session_id,
         runtime_id,
-        supports_steer,
+        capabilities,
         session.runtime_event_cursor,
         event_tx,
     )?;
@@ -158,6 +158,18 @@ fn prepare_submission(
     prompt: &str,
     turn_count: usize,
 ) -> anyhow::Result<PreparedSubmission> {
+    let driver_start = match driver_start {
+        Some(Err(error)) => {
+            // A rejected request needs no worktree or checkpoint. Preserve the
+            // ordinary start-error result without performing preparation I/O.
+            return Ok(PreparedSubmission {
+                workspace,
+                checkpoint_warning: None,
+                driver: Some(Err(error)),
+            });
+        }
+        request => request,
+    };
     let workspace = match workspace {
         SessionWorkspace::NewWorktree { base_branch } => {
             if project.is_projectless() {
@@ -568,36 +580,37 @@ fn next_response_fork_title<'a>(
 
 struct PreparedResponseFork {
     forked: AgentSession,
-    prepared_driver: Option<PreparedDriver>,
     checkpoint_warning: Option<String>,
 }
 
-type ProviderForkResult = (
-    ProviderResumeCursor,
-    Option<HashMap<String, String>>,
-    Option<PreparedDriver>,
-);
+type ProviderForkResult = (ProviderResumeCursor, Option<HashMap<String, String>>);
+
+fn fork_with_temporary_driver(
+    driver: DriverHandle,
+    turns_to_remove: usize,
+) -> anyhow::Result<ProviderResumeCursor> {
+    let result = driver.fork(turns_to_remove);
+    driver.close();
+    result
+}
 
 fn fork_response_with_driver(
     request: &mut ResponseForkRequest,
-) -> anyhow::Result<(ProviderResumeCursor, Option<PreparedDriver>)> {
+) -> anyhow::Result<ProviderResumeCursor> {
     let provider = request.source.provider;
-    let mut prepared_driver = None;
-    let driver = if let Some(driver) = request.driver.as_ref() {
-        driver.clone()
-    } else {
-        let start = request.driver_start.take().ok_or_else(|| {
-            anyhow::anyhow!(tr!(
-                "errors.provider_not_found",
-                provider = provider.display_name()
-            ))
-        })?;
-        let prepared = start_driver(start, request.source_workspace_path.clone())?;
-        let driver = prepared.handle.clone();
-        prepared_driver = Some(prepared);
-        driver
-    };
-    Ok((driver.fork(request.turns_to_remove)?, prepared_driver))
+    if let Some(driver) = request.driver.as_ref() {
+        return driver.fork(request.turns_to_remove);
+    }
+    let start = request.driver_start.take().ok_or_else(|| {
+        anyhow::anyhow!(tr!(
+            "errors.provider_not_found",
+            provider = provider.display_name()
+        ))
+    })?;
+    let prepared = start_driver(start, request.source_workspace_path.clone())?;
+    // A cold fork only borrows a transport for native history. Close it on
+    // success and failure rather than installing its launch mode on the source.
+    fork_with_temporary_driver(prepared.handle, request.turns_to_remove)
 }
 
 fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedResponseFork, String> {
@@ -633,7 +646,7 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                         title: request.fork_title.clone(),
                     },
                 )?;
-                Ok((fork.cursor, Some(fork.message_ids), None))
+                Ok((fork.cursor, Some(fork.message_ids)))
             }
             ProviderKind::Codex => {
                 if !matches!(
@@ -645,8 +658,7 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                         provider = "Codex"
                     ));
                 }
-                let (cursor, prepared_driver) = fork_response_with_driver(&mut request)?;
-                Ok((cursor, None, prepared_driver))
+                Ok((fork_response_with_driver(&mut request)?, None))
             }
             ProviderKind::OpenCode => {
                 let Some(ProviderResumeCursor::OpenCode {
@@ -674,7 +686,6 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                         )?
                         .cursor,
                     None,
-                    None,
                 ))
             }
             ProviderKind::Pi => {
@@ -690,8 +701,7 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                         provider = "Pi"
                     ));
                 }
-                let (cursor, prepared_driver) = fork_response_with_driver(&mut request)?;
-                Ok((cursor, None, prepared_driver))
+                Ok((fork_response_with_driver(&mut request)?, None))
             }
             ProviderKind::OhMyPi => {
                 if !matches!(
@@ -706,8 +716,7 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                         provider = "Oh My Pi"
                     ));
                 }
-                let (cursor, prepared_driver) = fork_response_with_driver(&mut request)?;
-                Ok((cursor, None, prepared_driver))
+                Ok((fork_response_with_driver(&mut request)?, None))
             }
             ProviderKind::Antigravity => {
                 let Some(ProviderResumeCursor::Antigravity {
@@ -732,13 +741,12 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                         )?
                         .cursor,
                     None,
-                    None,
                 ))
             }
         }
     })();
 
-    let (provider_cursor, claude_message_ids, prepared_driver) =
+    let (provider_cursor, claude_message_ids) =
         native_fork.map_err(|error| tr!("errors.fork_task", error = error))?;
     let Some(mut forked) =
         request
@@ -777,7 +785,6 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
 
     Ok(PreparedResponseFork {
         forked,
-        prepared_driver,
         checkpoint_warning,
     })
 }
@@ -1234,7 +1241,7 @@ impl Waku {
     }
 
     pub(super) fn request_provider_model_discovery(&mut self, provider: ProviderKind) {
-        if !provider.supports_model_discovery()
+        if !provider.capabilities().model_discovery
             || self.provider_model_discoveries.contains(&provider)
         {
             return;
@@ -1743,7 +1750,7 @@ impl Waku {
         };
         if self.state.selected_session != Some(session_id)
             || !matches!(source.status, SessionStatus::Idle | SessionStatus::Failed)
-            || !source.provider.supports_conversation_fork()
+            || !source.provider.capabilities().conversation.fork
             || source
                 .turns
                 .get(turn_count.saturating_sub(1))
@@ -1808,7 +1815,7 @@ impl Waku {
             ProviderKind::Codex | ProviderKind::OhMyPi | ProviderKind::Pi
         ) && driver.is_none()
         {
-            match self.driver_start_request_for_session(&source, source_workspace_path.clone()) {
+            match self.driver_start_request_for_history(&source, source_workspace_path.clone()) {
                 Ok(request) => Some(request),
                 Err(error) => {
                     self.show_toast(tr!("errors.fork_task", error = error));
@@ -1864,7 +1871,6 @@ impl Waku {
 
         let PreparedResponseFork {
             forked,
-            prepared_driver,
             checkpoint_warning,
         } = match result {
             Ok(prepared) => prepared,
@@ -1884,11 +1890,6 @@ impl Waku {
             }
         };
 
-        if let Some(prepared) = prepared_driver
-            && !self.runtimes.contains_key(&session_id)
-        {
-            self.install_prepared_driver(session_id, prepared);
-        }
         self.invalidate_checkpoint_refs();
 
         let fork_id = forked.id;
@@ -1954,7 +1955,7 @@ impl Waku {
             .iter()
             .find(|session| {
                 session.id == session_id
-                    && session.provider.supports_conversation_rollback()
+                    && session.provider.capabilities().conversation.rollback
                     && matches!(session.status, SessionStatus::Idle | SessionStatus::Failed)
             })
             .and_then(|session| {
@@ -2137,8 +2138,24 @@ impl Waku {
             cx.notify();
             return;
         }
+        if let Err(error) = source.provider.validate_access_mode(source.runtime_mode) {
+            // Keyboard submit clears this field before delivering the event.
+            // Keep the edit available for retry once its mode is corrected.
+            if edit.input.read(cx).content(cx).is_empty() {
+                let draft = submission
+                    .display_content
+                    .as_ref()
+                    .unwrap_or(&submission.prompt)
+                    .clone();
+                edit.input
+                    .update(cx, |input, cx| input.set_content(draft, cx));
+            }
+            self.show_toast(error.to_string());
+            cx.notify();
+            return;
+        }
         let rollback_turns = source.provider_turns_after(retained_turn_count);
-        if !source.provider.supports_conversation_rollback()
+        if !source.provider.capabilities().conversation.rollback
             || (rollback_turns > 0 && source.provider_cursor.is_none())
         {
             self.show_toast(tr!(
@@ -2596,6 +2613,33 @@ impl Waku {
         session: &AgentSession,
         cwd: PathBuf,
     ) -> anyhow::Result<DriverStartRequest> {
+        self.driver_start_request_with_options(session, cwd, self.session_options(session))
+    }
+
+    fn driver_start_request_for_history(
+        &self,
+        session: &AgentSession,
+        cwd: PathBuf,
+    ) -> anyhow::Result<DriverStartRequest> {
+        let mut options = self.session_options(session);
+        options.mode = session
+            .provider
+            .capabilities()
+            .access_mode_for_history(session.runtime_mode)
+            .ok_or(waku_protocol::capabilities::UnsupportedAccessMode {
+                provider: session.provider,
+                mode: session.runtime_mode,
+            })?;
+        self.driver_start_request_with_options(session, cwd, options)
+    }
+
+    fn driver_start_request_with_options(
+        &self,
+        session: &AgentSession,
+        cwd: PathBuf,
+        options: SessionOptions,
+    ) -> anyhow::Result<DriverStartRequest> {
+        session.provider.validate_access_mode(options.mode)?;
         let binary = self
             .probes
             .iter()
@@ -2613,7 +2657,7 @@ impl Waku {
             reasoning_effort,
             service_tier,
             context_window,
-        } = self.session_options(&session);
+        } = options;
         Ok(DriverStartRequest {
             session_id: session.id,
             provider: session.provider,
@@ -2665,7 +2709,13 @@ impl Waku {
             .workspace_path_for_session(session)
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        let driver_start = self.driver_start_request_for_session(session, provisional_cwd);
+        let driver_start = match self.driver_start_request_for_session(session, provisional_cwd) {
+            Ok(request) => request,
+            Err(error) => {
+                self.fail_goal_runtime_start(session_id, error, cx);
+                return;
+            }
+        };
         let Some(project) = self
             .state
             .projects
@@ -2706,7 +2756,7 @@ impl Waku {
                         workspace_client,
                         project,
                         workspace,
-                        Some(driver_start),
+                        Some(Ok(driver_start)),
                         session_id,
                         &naming_prompt,
                         next_turn_count,
@@ -2735,12 +2785,7 @@ impl Waku {
                 // The goal is lost but nothing else is: messages queued
                 // behind this start resubmit through the ordinary path,
                 // which starts its own runtime.
-                self.pending_goal_operations.remove(&session_id);
-                self.interrupt_session_compactions(session_id);
-                self.unwind_unconfirmed_pursuit_turn(session_id);
-                self.show_toast(error.to_string());
-                self.drain_queued_message(session_id, cx);
-                cx.notify();
+                self.fail_goal_runtime_start(session_id, error, cx);
                 return;
             }
         };
@@ -2786,16 +2831,25 @@ impl Waku {
             }
             None => self.drain_pending_goal_operations(session_id),
             Some(Err(error)) => {
-                self.pending_goal_operations.remove(&session_id);
-                self.interrupt_session_compactions(session_id);
-                self.unwind_unconfirmed_pursuit_turn(session_id);
-                self.show_toast(error.to_string());
-                self.drain_queued_message(session_id, cx);
-                cx.notify();
+                self.fail_goal_runtime_start(session_id, error, cx);
                 return;
             }
         }
         self.save();
+        self.drain_queued_message(session_id, cx);
+        cx.notify();
+    }
+
+    fn fail_goal_runtime_start(
+        &mut self,
+        session_id: Uuid,
+        error: anyhow::Error,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_goal_operations.remove(&session_id);
+        self.interrupt_session_compactions(session_id);
+        self.unwind_unconfirmed_pursuit_turn(session_id);
+        self.show_toast(error.to_string());
         self.drain_queued_message(session_id, cx);
         cx.notify();
     }
@@ -2848,7 +2902,7 @@ impl Waku {
         if self.response_fork_preparations.contains_key(&session.id) {
             return;
         }
-        if session.provider.compaction_capabilities().manual
+        if session.provider.capabilities().compaction.manual
             && let Some(focus) = compaction::compact_invocation(&submission.prompt)
         {
             let id = session.id;
@@ -2923,7 +2977,7 @@ impl Waku {
             && self
                 .runtimes
                 .get(&session.id)
-                .is_some_and(|runtime| runtime.driver.supports_steer())
+                .is_some_and(|runtime| runtime.driver.capabilities().steer)
     }
 
     /// Resolve presentation-preserving composer syntax immediately before a
@@ -3097,7 +3151,7 @@ impl Waku {
         else {
             return;
         };
-        if session.provider.compaction_capabilities().manual
+        if session.provider.capabilities().compaction.manual
             && let Some(focus) = compaction::compact_invocation(&submission.prompt)
         {
             self.request_session_compaction(session_id, focus.map(str::to_owned), cx);
@@ -3636,6 +3690,60 @@ impl Waku {
             self.save();
         }
         changed || selected_changed
+    }
+}
+
+#[cfg(test)]
+mod history_runtime_tests {
+    use super::fork_with_temporary_driver;
+    use crate::driver::{DriverControl, DriverHandle};
+    use crate::model::ProviderResumeCursor;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use waku_protocol::capabilities::RuntimeCapabilities;
+
+    struct HistoryDriver {
+        fail: bool,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl DriverControl for HistoryDriver {
+        fn capabilities(&self) -> RuntimeCapabilities {
+            RuntimeCapabilities::default()
+        }
+        fn prompt(&self, _: String) {
+            panic!("history forks must not prompt the model")
+        }
+        fn cancel(&self) {}
+        fn respond(&self, _: String, _: String) {}
+        fn rollback(&self, _: usize) -> anyhow::Result<Option<ProviderResumeCursor>> {
+            Ok(None)
+        }
+        fn fork(&self, turns_to_remove: usize) -> anyhow::Result<ProviderResumeCursor> {
+            assert_eq!(turns_to_remove, 1);
+            self.calls.lock().push("fork");
+            anyhow::ensure!(!self.fail, "history unavailable");
+            Ok(ProviderResumeCursor::Codex {
+                thread_id: "forked".into(),
+            })
+        }
+        fn close(&self) {
+            self.calls.lock().push("close");
+        }
+    }
+
+    #[test]
+    fn temporary_history_runtime_is_closed_on_success_and_error() {
+        for fail in [false, true] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let driver = DriverHandle::from_control(Arc::new(HistoryDriver {
+                fail,
+                calls: calls.clone(),
+            }));
+            let result = fork_with_temporary_driver(driver, 1);
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(*calls.lock(), ["fork", "close"]);
+        }
     }
 }
 

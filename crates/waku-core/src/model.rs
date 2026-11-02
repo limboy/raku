@@ -36,7 +36,7 @@ fn apply_cached_models(
     mut probe: ProviderProbe,
     cached_models: Option<Vec<ProviderModel>>,
 ) -> ProviderProbe {
-    if probe.provider.supports_model_discovery()
+    if probe.provider.capabilities().model_discovery
         && let Some(models) = cached_models
     {
         probe.models = models;
@@ -45,7 +45,7 @@ fn apply_cached_models(
 }
 
 pub fn discover_provider_models(mut probe: ProviderProbe) -> ProviderProbe {
-    if probe.provider.supports_model_discovery()
+    if probe.provider.capabilities().model_discovery
         && let Some(path) = probe.path.as_deref()
     {
         let (models, agent_presets) = crate::model_catalog::discover_catalog(probe.provider, path);

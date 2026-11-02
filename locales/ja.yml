@@ -393,6 +393,8 @@ mode.supervised: 監督モード
 mode.auto_accept_edits: 編集を自動承認
 mode.auto: 自動
 mode.full_access: フルアクセス
+mode.unavailable: "%{mode}（利用不可）"
+errors.provider_access_mode_unsupported: "%{provider} は %{mode} に対応していません。%{modes} を選択してください。"
 mode.supervised_description: コマンドの実行とファイル変更の前に確認します
 mode.auto_accept_edits_description: 編集は自動承認し、その他の操作は事前に確認します
 mode.auto_description: 通常の操作は AI レビュアーが承認し、リスクのある操作は事前に確認します

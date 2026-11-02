@@ -375,6 +375,8 @@ mode.supervised: 监督
 mode.auto_accept_edits: 自动接受修改
 mode.auto: 自动
 mode.full_access: 完全访问
+mode.unavailable: "%{mode}（不可用）"
+errors.provider_access_mode_unsupported: "%{provider} 不支持“%{mode}”模式，请选择：%{modes}。"
 mode.supervised_description: 执行命令或修改文件前先征求许可
 mode.auto_accept_edits_description: 自动批准文件修改，执行其他操作前先询问
 mode.auto_description: 由 AI 审核并批准常规操作；高风险操作仍会询问

@@ -1101,6 +1101,7 @@ impl Waku {
     pub(super) fn set_runtime_mode(&mut self, mode: RuntimeMode, cx: &mut Context<Self>) {
         let Some((session_id, session_changed)) = self
             .selected_session()
+            .filter(|session| session.provider.capabilities().supports_access_mode(mode))
             .map(|session| (session.id, session.runtime_mode != mode))
         else {
             return;

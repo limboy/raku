@@ -1228,20 +1228,30 @@ impl Waku {
             .selected_session()
             .map(|session| session.runtime_mode)
             .unwrap_or_default();
+        let access_modes = self
+            .selected_session()
+            .map(|session| session.provider.capabilities().access_modes)
+            .unwrap_or(&RuntimeMode::ACCESS_OPTIONS);
+        let label = if access_modes.contains(&selected_mode) {
+            selected_mode.label()
+        } else {
+            tr!("mode.unavailable", mode = selected_mode.label())
+        };
         let weak = cx.entity().downgrade();
         let handle = self.menu_handle("runtime-mode", cx);
         dropdown_menu(
             MenuChip::new("runtime-mode")
                 .icon(selected_mode.icon(), theme.text_tertiary)
-                .label(selected_mode.label())
+                .label(label)
                 .caret(false)
                 .selected(handle.is_open()),
             "runtime-mode-menu",
             &handle,
             MenuAlign::AboveLeft,
             move |_| {
-                RuntimeMode::ACCESS_OPTIONS
-                    .into_iter()
+                access_modes
+                    .iter()
+                    .copied()
                     .map(|option| {
                         let weak = weak.clone();
                         let selected = option == selected_mode;
@@ -1660,6 +1670,15 @@ impl Waku {
         // provider is available — every send route lands here, so `enter`,
         // the button, and steering are all covered by this one check.
         if self.model_picker_has_no_providers() {
+            return None;
+        }
+        if let Some(error) = self.selected_session().and_then(|session| {
+            session
+                .provider
+                .validate_access_mode(session.runtime_mode)
+                .err()
+        }) {
+            self.show_toast(error.to_string());
             return None;
         }
         for attachment in &self.composer_attachments {

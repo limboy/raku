@@ -125,7 +125,7 @@ impl Waku {
             .filter(|probe| !self.state.disabled_providers.contains(&probe.provider))
             // A model the provider cannot run read-only would be offered and
             // then fail; only list real destinations.
-            .filter(|probe| probe.provider.supports_review_subtask())
+            .filter(|probe| probe.provider.capabilities().delegation.review_subtask)
             .flat_map(|probe| {
                 probe
                     .models
@@ -141,15 +141,8 @@ impl Waku {
     /// Waku tools, which arrive as MCP servers on Codex and OpenCode and as a
     /// Pi extension on Pi and Oh My Pi.
     pub(super) fn supports_delegation(&self) -> bool {
-        matches!(
-            self.selected_session().map(|session| session.provider),
-            Some(
-                ProviderKind::Codex
-                    | ProviderKind::OpenCode
-                    | ProviderKind::Pi
-                    | ProviderKind::OhMyPi
-            )
-        )
+        self.selected_session()
+            .is_some_and(|session| session.provider.capabilities().delegation.parent)
     }
 
     /// Record a chosen candidate as this draft's target, reusing an identical

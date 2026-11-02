@@ -8,6 +8,7 @@ use crate::model::{
 };
 use crossbeam_channel::{Sender, bounded, select};
 use parking_lot::Mutex;
+use waku_protocol::capabilities::RuntimeCapabilities;
 
 pub use waku_client::driver::{
     DriverControl, DriverEventSender, DriverHandle, DriverStartOptions, SessionOptions,
@@ -41,8 +42,8 @@ pub(crate) fn start_remote(
             execution_policy: options.execution_policy,
         },
     };
-    let supports_steer = match client.request(session_id, runtime_id, command) {
-        Ok(waku_client::ResponsePayload::Started { supports_steer }) => supports_steer,
+    let capabilities = match client.request(session_id, runtime_id, command) {
+        Ok(waku_client::ResponsePayload::Started { capabilities }) => capabilities,
         Ok(_) => anyhow::bail!("Waku daemon returned an invalid start response"),
         Err(error) => return Err(error),
     };
@@ -51,7 +52,7 @@ pub(crate) fn start_remote(
         client,
         session_id,
         runtime_id,
-        supports_steer,
+        capabilities,
         None,
         events,
     )
@@ -62,7 +63,7 @@ pub(crate) fn attach_remote(
     client: waku_client::DaemonClient,
     session_id: uuid::Uuid,
     runtime_id: uuid::Uuid,
-    supports_steer: bool,
+    capabilities: RuntimeCapabilities,
     replay_cursor: Option<RuntimeEventCursor>,
     events: DriverEventSender,
 ) -> anyhow::Result<DriverHandle> {
@@ -71,7 +72,7 @@ pub(crate) fn attach_remote(
         client,
         session_id,
         runtime_id,
-        supports_steer,
+        capabilities,
         replay_cursor,
         events,
     )
@@ -82,7 +83,7 @@ fn connect_remote(
     initial_client: waku_client::DaemonClient,
     session_id: uuid::Uuid,
     runtime_id: uuid::Uuid,
-    supports_steer: bool,
+    capabilities: RuntimeCapabilities,
     replay_cursor: Option<RuntimeEventCursor>,
     events: DriverEventSender,
 ) -> anyhow::Result<DriverHandle> {
@@ -203,7 +204,7 @@ fn connect_remote(
         client: active_client,
         session_id,
         runtime_id,
-        supports_steer,
+        capabilities,
         events,
         closed,
         shutdown,
@@ -214,7 +215,7 @@ struct RemoteDriverControl {
     client: Arc<Mutex<waku_client::DaemonClient>>,
     session_id: uuid::Uuid,
     runtime_id: uuid::Uuid,
-    supports_steer: bool,
+    capabilities: RuntimeCapabilities,
     events: DriverEventSender,
     closed: Arc<AtomicBool>,
     shutdown: Sender<()>,
@@ -254,8 +255,8 @@ impl DriverControl for RemoteDriverControl {
         });
     }
 
-    fn supports_steer(&self) -> bool {
-        self.supports_steer
+    fn capabilities(&self) -> RuntimeCapabilities {
+        self.capabilities
     }
 
     fn steer(&self, prompt: String) {

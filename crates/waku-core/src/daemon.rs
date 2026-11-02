@@ -210,12 +210,12 @@ impl Backend for WakuBackend {
                 let Some((runtime_id, driver)) = sessions.get(&session_id) else {
                     return Ok(ResponsePayload::SessionRuntime {
                         runtime_id: None,
-                        supports_steer: false,
+                        capabilities: waku_protocol::capabilities::RuntimeCapabilities::default(),
                     });
                 };
                 Ok(ResponsePayload::SessionRuntime {
                     runtime_id: Some(*runtime_id),
-                    supports_steer: driver.supports_steer(),
+                    capabilities: driver.capabilities(),
                 })
             }
             Command::GetSettings => Ok(ResponsePayload::Settings {
@@ -715,6 +715,9 @@ impl Backend for WakuBackend {
                 result: crate::workspace::execute(operation)?,
             }),
             Command::Start { options } => {
+                let provider = decode_enum(&options.provider)?;
+                let mode = decode_enum(&options.mode)?;
+                driver::validate_start(provider, mode, options.execution_policy)?;
                 let previous = self.sessions.lock().remove(&session_id);
                 if previous.is_some() {
                     self.delegation
@@ -722,12 +725,11 @@ impl Backend for WakuBackend {
                         .cancel_parent(session_id, false)?;
                 }
                 drop(previous);
-                let provider = decode_enum(&options.provider)?;
                 let start_cwd = options.cwd.clone();
                 let options = DriverStartOptions {
                     binary: options.binary,
                     cwd: options.cwd,
-                    mode: decode_enum(&options.mode)?,
+                    mode,
                     execution_policy: options.execution_policy,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
@@ -760,7 +762,7 @@ impl Backend for WakuBackend {
                 let (wake, _wake_events) = smol::channel::bounded(1);
                 let (event_sender, event_receiver) = driver::event_channel(wake);
                 let handle = driver::start_local(provider, options, event_sender)?;
-                let supports_steer = handle.supports_steer();
+                let capabilities = handle.capabilities();
                 let blobs = self.task_store.blobs();
                 std::thread::Builder::new()
                     .name(format!("waku-daemon-events-{session_id}"))
@@ -786,7 +788,7 @@ impl Backend for WakuBackend {
                 self.sessions
                     .lock()
                     .insert(session_id, (runtime_id, handle));
-                Ok(ResponsePayload::Started { supports_steer })
+                Ok(ResponsePayload::Started { capabilities })
             }
             Command::CloseSession => {
                 let removed = {
@@ -849,6 +851,11 @@ impl Backend for WakuBackend {
                     }
                     driver.clone()
                 };
+                anyhow::ensure!(
+                    targets.is_empty() || driver.provider().capabilities().delegation.parent,
+                    "{} does not support delegation from a parent session",
+                    driver.provider().display_name()
+                );
                 self.delegation.register_parent_session_with_context(
                     &session_id.to_string(),
                     session_id,
@@ -1357,7 +1364,14 @@ impl WakuBackend {
             DriverStartOptions {
                 binary: self.provider_binary(source.provider)?,
                 cwd: cwd.to_owned(),
-                mode: source.runtime_mode,
+                mode: source
+                    .provider
+                    .capabilities()
+                    .access_mode_for_history(source.runtime_mode)
+                    .ok_or(waku_protocol::capabilities::UnsupportedAccessMode {
+                        provider: source.provider,
+                        mode: source.runtime_mode,
+                    })?,
                 execution_policy: Default::default(),
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
@@ -1508,6 +1522,11 @@ impl WakuBackend {
 }
 
 fn validate_message_rewind(source: &AgentSession, turn_count: usize) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        source.provider.capabilities().conversation.rollback,
+        "this provider does not support conversation rollback"
+    );
+    source.provider.validate_access_mode(source.runtime_mode)?;
     if !matches!(source.status, SessionStatus::Idle | SessionStatus::Failed) {
         bail!("stop the task before editing a prior message");
     }
@@ -1548,6 +1567,10 @@ fn restore_rewind_safety(
 }
 
 fn validate_response_fork(source: &AgentSession, turn_count: usize) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        source.provider.capabilities().conversation.fork,
+        "this provider does not support conversation forks"
+    );
     if !matches!(source.status, SessionStatus::Idle | SessionStatus::Failed) {
         bail!("stop the task before forking a response");
     }
@@ -1674,9 +1697,26 @@ fn handle_driver_command(
         | Command::RetryDelegatedTask { .. } => {
             bail!("daemon received a command in the wrong dispatch path")
         }
-        Command::Steer { prompt } => driver.steer(prompt),
+        Command::Steer { prompt } => {
+            anyhow::ensure!(
+                driver.capabilities().steer,
+                "this runtime does not support steering"
+            );
+            driver.steer(prompt);
+        }
         Command::Cancel => driver.cancel(),
-        Command::Compact { request } => driver.compact(request),
+        Command::Compact { request } => {
+            let capabilities = driver.provider().capabilities().compaction;
+            anyhow::ensure!(
+                capabilities.manual,
+                "this provider does not support manual compaction"
+            );
+            anyhow::ensure!(
+                request.instructions.is_none() || capabilities.instructions,
+                "this provider does not support compaction instructions"
+            );
+            driver.compact(request);
+        }
         Command::RefreshBackgroundWork => driver.refresh_background_work(),
         Command::StopBackgroundWork { key, control_id } => {
             driver.stop_background_work(
@@ -1692,11 +1732,19 @@ fn handle_driver_command(
             request_id,
             answers,
         } => driver.respond_user_input(request_id, answers),
-        Command::Goal { operation } => driver.goal(operation),
+        Command::Goal { operation } => {
+            anyhow::ensure!(
+                driver.provider().capabilities().goals,
+                "this provider does not support goals"
+            );
+            driver.goal(operation);
+        }
         Command::ApplyOptions { options } => {
+            let mode = decode_enum(&options.mode)?;
+            driver.provider().validate_access_mode(mode)?;
             return Ok(ResponsePayload::OptionsApplied {
                 applied: driver.apply_options(SessionOptions {
-                    mode: decode_enum(&options.mode)?,
+                    mode,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
                     service_tier: options.service_tier,
@@ -1763,6 +1811,139 @@ fn ensure_shell_environment() {
     });
 }
 
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use waku_protocol::capabilities::RuntimeCapabilities;
+    use waku_protocol::compaction::CompactionRequest;
+    use waku_protocol::model::{GoalOperation, RuntimeMode};
+
+    struct RecordingDriver {
+        provider: ProviderKind,
+        capabilities: RuntimeCapabilities,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl crate::driver::DriverControl for RecordingDriver {
+        fn provider(&self) -> ProviderKind {
+            self.provider
+        }
+        fn capabilities(&self) -> RuntimeCapabilities {
+            self.capabilities
+        }
+        fn prompt(&self, _: String) {}
+        fn cancel(&self) {}
+        fn respond(&self, _: String, _: String) {}
+        fn rollback(&self, _: usize) -> anyhow::Result<Option<ProviderResumeCursor>> {
+            Ok(None)
+        }
+        fn compact(&self, _: CompactionRequest) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+        }
+        fn steer(&self, _: String) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+        }
+        fn goal(&self, _: GoalOperation) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+        }
+        fn apply_options(&self, _: SessionOptions) -> bool {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+    }
+
+    fn compact_with_instructions() -> Command {
+        Command::Compact {
+            request: CompactionRequest {
+                id: "compact".into(),
+                instructions: Some("Keep the plan".into()),
+            },
+        }
+    }
+
+    fn apply_mode(mode: RuntimeMode) -> Command {
+        Command::ApplyOptions {
+            options: waku_protocol::WireSessionOptions {
+                mode: waku_protocol::encode_enum(mode).unwrap(),
+                model: None,
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+            },
+        }
+    }
+
+    #[test]
+    fn command_dispatch_checks_provider_and_live_runtime_support_before_delivery() {
+        for (provider, steer, command, accepted) in [
+            // Even a normally capable provider must respect this transport's
+            // actual report rather than infer steering from the provider id.
+            (
+                ProviderKind::Codex,
+                false,
+                Command::Steer {
+                    prompt: "update".into(),
+                },
+                false,
+            ),
+            (
+                ProviderKind::Codex,
+                true,
+                Command::Steer {
+                    prompt: "update".into(),
+                },
+                true,
+            ),
+            (
+                ProviderKind::Claude,
+                true,
+                Command::Goal {
+                    operation: GoalOperation::Refresh,
+                },
+                false,
+            ),
+            (
+                ProviderKind::Codex,
+                true,
+                Command::Goal {
+                    operation: GoalOperation::Refresh,
+                },
+                true,
+            ),
+            (
+                ProviderKind::Codex,
+                true,
+                compact_with_instructions(),
+                false,
+            ),
+            (
+                ProviderKind::Claude,
+                true,
+                compact_with_instructions(),
+                true,
+            ),
+            (ProviderKind::Pi, true, apply_mode(RuntimeMode::Ask), false),
+            (
+                ProviderKind::Pi,
+                true,
+                apply_mode(RuntimeMode::FullAccess),
+                true,
+            ),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let driver = DriverHandle::from_control(Arc::new(RecordingDriver {
+                provider,
+                capabilities: RuntimeCapabilities { steer },
+                calls: calls.clone(),
+            }));
+            let result = handle_driver_command(&driver, command);
+            assert_eq!(result.is_ok(), accepted, "{provider:?}: {result:?}");
+            assert_eq!(calls.load(Ordering::Relaxed), usize::from(accepted));
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod delegation_lifecycle_tests {
     use super::*;
@@ -1777,6 +1958,12 @@ mod delegation_lifecycle_tests {
 
     struct Parent(Arc<AtomicBool>);
     impl crate::driver::DriverControl for Parent {
+        fn provider(&self) -> ProviderKind {
+            ProviderKind::Codex
+        }
+        fn capabilities(&self) -> waku_protocol::capabilities::RuntimeCapabilities {
+            waku_protocol::capabilities::RuntimeCapabilities::default()
+        }
         fn prompt(&self, _: String) {}
         fn cancel(&self) {
             self.0.store(true, Ordering::Release);
@@ -1785,6 +1972,68 @@ mod delegation_lifecycle_tests {
         fn rollback(&self, _: usize) -> anyhow::Result<Option<crate::model::ProviderResumeCursor>> {
             Ok(None)
         }
+    }
+
+    #[test]
+    fn invalid_start_preserves_the_attached_runtime_and_its_registration() {
+        let directory = std::env::temp_dir().join(format!("waku-invalid-start-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let settings = DaemonSettingsStore::open(directory.join("settings.json")).unwrap();
+        let backend =
+            WakuBackend::new(settings, StateStore::daemon(directory.join("app.db"))).unwrap();
+        let session = Uuid::new_v4();
+        let runtime = Uuid::new_v4();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        backend.sessions.lock().insert(
+            session,
+            (
+                runtime,
+                DriverHandle::from_control(Arc::new(Parent(cancelled.clone()))),
+            ),
+        );
+        let registration = backend
+            .delegation
+            .register_parent_session(
+                &session.to_string(),
+                session,
+                None,
+                Some(runtime),
+                Vec::new(),
+            )
+            .unwrap();
+
+        let error = backend
+            .handle(
+                Request {
+                    request_id: Uuid::new_v4(),
+                    session_id: session,
+                    runtime_id: Uuid::new_v4(),
+                    command: Command::Start {
+                        options: waku_protocol::WireDriverStartOptions {
+                            provider: "pi".into(),
+                            mode: "ask".into(),
+                            binary: directory.join("missing-provider"),
+                            cwd: directory.clone(),
+                            model: None,
+                            reasoning_effort: None,
+                            service_tier: None,
+                            context_window: None,
+                            agent_preset: None,
+                            provider_cursor: None,
+                            execution_policy: crate::model::ExecutionPolicy::Interactive,
+                        },
+                    },
+                },
+                backend.hub.event_sink(session, runtime),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Pi"));
+        assert_eq!(backend.sessions.lock().get(&session).unwrap().0, runtime);
+        assert!(registration.exists());
+        assert!(!cancelled.load(Ordering::Acquire));
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]
@@ -2204,6 +2453,196 @@ struct TurnFinishedWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_rewind_mode_preserves_files_refs_and_transcript() {
+        use crate::model::{RuntimeMode, TurnStatus};
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+            for provider_started in [false, true] {
+                let directory =
+                    std::env::temp_dir().join(format!("waku-rewind-mode-{}", Uuid::new_v4()));
+                let cwd = directory.join("repo");
+                std::fs::create_dir_all(&cwd).unwrap();
+                git(&cwd, &["init", "-q"]);
+                git(&cwd, &["config", "user.name", "Waku test"]);
+                git(&cwd, &["config", "user.email", "waku@example.test"]);
+                std::fs::write(cwd.join("note.txt"), "before the turn").unwrap();
+                git(&cwd, &["add", "note.txt"]);
+                git(&cwd, &["commit", "-qm", "baseline"]);
+                let project = Project::from_path(cwd.clone());
+                let mut source = AgentSession::new(project.id, provider);
+                source.runtime_mode = RuntimeMode::Ask;
+                crate::checkpoint::capture_turn_start(&cwd, source.id, 1).unwrap();
+                source.begin_turn("replace the file");
+                if provider_started {
+                    source.mark_active_turn_provider_started();
+                    source.provider_cursor = Some(ProviderResumeCursor::from_session_id(
+                        provider,
+                        "native".into(),
+                    ));
+                }
+                source.finish_active_turn(TurnStatus::Failed);
+                std::fs::write(cwd.join("note.txt"), "keep current work").unwrap();
+                let refs = git(
+                    &cwd,
+                    &[
+                        "for-each-ref",
+                        "--format=%(refname) %(objectname)",
+                        "refs/waku/",
+                    ],
+                );
+                let settings = DaemonSettingsStore::open(directory.join("settings.json")).unwrap();
+                settings
+                    .replace(waku_protocol::DaemonSettings {
+                        provider_binary_overrides: HashMap::from([(
+                            provider,
+                            std::env::current_exe()
+                                .unwrap()
+                                .to_string_lossy()
+                                .into_owned(),
+                        )]),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let backend =
+                    WakuBackend::new(settings, StateStore::daemon(directory.join("app.db")))
+                        .unwrap();
+                {
+                    let mut state = backend.task_state.lock();
+                    state.projects.push(project);
+                    state.push_session(source.clone());
+                    backend.task_store.save(&mut state).unwrap();
+                }
+                let registration = backend
+                    .delegation
+                    .register_parent_session(
+                        &source.id.to_string(),
+                        source.id,
+                        None,
+                        None,
+                        Vec::new(),
+                    )
+                    .unwrap();
+                let error = backend.rewind_session_to_message(source.id, 1).unwrap_err();
+                assert!(
+                    error
+                        .downcast_ref::<waku_protocol::capabilities::UnsupportedAccessMode>()
+                        .is_some()
+                );
+                assert_eq!(
+                    std::fs::read_to_string(cwd.join("note.txt")).unwrap(),
+                    "keep current work"
+                );
+                assert_eq!(
+                    git(
+                        &cwd,
+                        &[
+                            "for-each-ref",
+                            "--format=%(refname) %(objectname)",
+                            "refs/waku/"
+                        ]
+                    ),
+                    refs
+                );
+                assert!(registration.exists());
+                let state = backend.task_state.lock();
+                let retained = state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == source.id)
+                    .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&retained.messages).unwrap(),
+                    serde_json::to_value(&source.messages).unwrap()
+                );
+                assert_eq!(
+                    serde_json::to_value(&retained.turns).unwrap(),
+                    serde_json::to_value(&source.turns).unwrap()
+                );
+                drop(state);
+                drop(backend);
+                let _ = std::fs::remove_dir_all(directory);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cold_pi_history_fork_does_not_require_or_change_the_interactive_mode() {
+        use crate::model::RuntimeMode;
+        use std::os::unix::fs::PermissionsExt as _;
+        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+            let directory =
+                std::env::temp_dir().join(format!("waku-history-mode-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let binary = directory.join("history-provider");
+            std::fs::write(&binary, include_str!("driver/fixtures/pi_history.py")).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let settings = DaemonSettingsStore::open(directory.join("settings.json")).unwrap();
+            settings
+                .replace(waku_protocol::DaemonSettings {
+                    provider_binary_overrides: HashMap::from([(
+                        provider,
+                        binary.to_string_lossy().into_owned(),
+                    )]),
+                    ..Default::default()
+                })
+                .unwrap();
+            let backend =
+                WakuBackend::new(settings, StateStore::daemon(directory.join("app.db"))).unwrap();
+            let mut source = AgentSession::new(Uuid::new_v4(), provider);
+            source.runtime_mode = RuntimeMode::Ask;
+            let native_file = directory.join("source.jsonl");
+            source.provider_cursor = Some(match provider {
+                ProviderKind::Pi => ProviderResumeCursor::Pi {
+                    session_id: "source".into(),
+                    session_file: Some(native_file),
+                },
+                ProviderKind::OhMyPi => ProviderResumeCursor::OhMyPi {
+                    session_id: "source".into(),
+                    session_file: Some(native_file),
+                },
+                _ => unreachable!(),
+            });
+            let cursor = backend
+                .fork_response_with_driver(&source, &directory, 1)
+                .unwrap();
+            assert_eq!(cursor.native_id(), "forked");
+            assert_eq!(source.runtime_mode, RuntimeMode::Ask);
+            assert!(backend.sessions.lock().is_empty());
+            let log = std::fs::read_to_string(directory.join("history-rpc.log")).unwrap();
+            let requests = log
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert!(
+                requests
+                    .iter()
+                    .any(|request| matches!(request["type"].as_str(), Some("fork" | "branch")))
+            );
+            assert!(
+                !requests
+                    .iter()
+                    .any(|request| matches!(request["type"].as_str(), Some("prompt" | "steer")))
+            );
+            drop(backend);
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
 
     #[test]
     fn stale_runtime_projection_keeps_newer_transcript_cursor() {

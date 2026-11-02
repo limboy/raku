@@ -993,7 +993,7 @@ impl DelegationScheduler {
 pub fn catalog_model_candidates() -> Vec<waku_protocol::composer::ModelCandidate> {
     let mut models = Vec::new();
     for provider in ProviderKind::ALL {
-        if !provider.supports_review_subtask() {
+        if !provider.capabilities().delegation.review_subtask {
             continue;
         }
         let list = crate::model_catalog::cached_models(provider)

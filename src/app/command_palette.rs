@@ -895,7 +895,7 @@ impl Waku {
             &self.command_palette.message_matches,
         );
         if let Some(session) = self.selected_session()
-            && session.provider.compaction_capabilities().manual
+            && session.provider.capabilities().compaction.manual
             && session.provider_cursor.is_some()
             && !session.is_busy()
             && session.active_compaction.is_none()

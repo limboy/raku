@@ -1123,12 +1123,14 @@ mod tests {
                     self.runtimes.lock().insert(session_id, runtime_id);
                     events.send(WireDriverEvent::new("connected", json!({})))?;
                     Ok(ResponsePayload::Started {
-                        supports_steer: true,
+                        capabilities: waku_protocol::capabilities::RuntimeCapabilities {
+                            steer: true,
+                        },
                     })
                 }
                 Command::AttachSession => Ok(ResponsePayload::SessionRuntime {
                     runtime_id: self.runtimes.lock().get(&session_id).copied(),
-                    supports_steer: true,
+                    capabilities: waku_protocol::capabilities::RuntimeCapabilities { steer: true },
                 }),
                 Command::GetSettings => Ok(ResponsePayload::Settings {
                     settings: DaemonSettings::default(),
@@ -1439,7 +1441,7 @@ mod tests {
         assert!(matches!(
             response,
             ResponsePayload::Started {
-                supports_steer: true
+                capabilities: waku_protocol::capabilities::RuntimeCapabilities { steer: true }
             }
         ));
         // Start can emit before a refreshed app discovers and subscribes to
@@ -1518,7 +1520,7 @@ mod tests {
                 .unwrap(),
             ResponsePayload::SessionRuntime {
                 runtime_id: Some(attached),
-                supports_steer: true,
+                capabilities: waku_protocol::capabilities::RuntimeCapabilities { steer: true },
             } if attached == runtime_id
         ));
         let late_events = late.subscribe(session_id, runtime_id);
@@ -1553,7 +1555,7 @@ mod tests {
                 .unwrap(),
             ResponsePayload::SessionRuntime {
                 runtime_id: None,
-                supports_steer: true,
+                capabilities: waku_protocol::capabilities::RuntimeCapabilities { steer: true },
             }
         ));
         let stale_events = after_close.subscribe(session_id, runtime_id);
@@ -1874,7 +1876,9 @@ mod tests {
                         self.release_start.recv().unwrap();
                     }
                     return Ok(ResponsePayload::Started {
-                        supports_steer: true,
+                        capabilities: waku_protocol::capabilities::RuntimeCapabilities {
+                            steer: true,
+                        },
                     });
                 }
                 Command::Prompt { .. } => "prompt",

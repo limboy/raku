@@ -44,7 +44,7 @@ Outputs ([model.rs:973](../crates/waku-core/src/model.rs)): `Connected`,
 `TurnFinished`, `Error`, `ProcessExited`.
 
 A transport that can inject a user message into the *running* turn advertises
-it through `DriverControl::supports_steer` and delivers it with `steer`; the
+it through `DriverControl::capabilities().steer` and delivers it with `steer`; the
 outcome comes back asynchronously as `SteerAccepted` or `SteerRejected`. When
 steering is unsupported, refused, or the session is still connecting, the app
 falls back to its own follow-up queue — the message stays visible above the
@@ -56,6 +56,39 @@ Every driver normalizes its tool events into one `ActivityItem`
 provider-agnostic rows. Tool titles prefer a `title` argument when the tool
 supplies one, then fall back to the command, the query, or a de-camel-cased
 tool name.
+
+### Capability ownership
+
+[capabilities.rs](../crates/waku-protocol/src/capabilities.rs) separates three
+sources of truth:
+
+- `ProviderKind::capabilities()` is the exhaustive declaration of Waku's
+  provider-level support: interactive access modes, conversation actions,
+  compaction, delegation parent/child roles, model discovery and goals.
+  UI visibility, command discovery and daemon validation read this declaration.
+- `ProviderModel` describes model-specific reasoning efforts, service tiers and
+  context windows discovered from the provider. An empty option list hides its
+  control; provider capabilities do not duplicate these model options.
+- `DriverControl::capabilities()` returns `RuntimeCapabilities` for the live
+  transport. Start and attach responses carry this snapshot as `capabilities`,
+  including `steer`; clients never infer runtime support from a provider id.
+  This wire shape is protocol version 15.
+
+All lookups read in-memory data. Declaring conversation rollback/fork means
+Waku offers the action, including native session helpers; it does not promise
+the transport itself can perform it.
+
+The access menu lists only the provider's supported modes. A mode inherited
+from another provider or restored from disk is preserved: if incompatible, the
+chip marks it unavailable and sending explains the supported choices before
+consuming the draft. The daemon also validates starts before replacing a live
+runtime and rejects unsupported options/commands before delivery. Review
+subtasks use their own execution policy, so Pi/Oh My Pi's read-only tool
+allowlist remains available independently of their interactive access modes.
+Rewind-and-resend validates the selected interactive mode before changing
+history or Git. Pure history forks may borrow a supported launch mode in a
+temporary transport; that transport is closed when the operation ends, and
+the source and forked tasks keep their selected interactive mode.
 
 ### Context compaction
 
@@ -664,12 +697,11 @@ maps into each CLI's own vocabulary.
 Pi and Oh My Pi accept Full access only and always run wide open
 (`--approve`, `--yolo`).
 
-Every provider except those two distinguishes Supervised from the auto modes
-in a way the user can actually answer. They decide by launch flag, so
-"Supervised" degrades there to whatever the CLI does without a human at the
-terminal — for Pi because it has no permission system to ask with, and for Oh My Pi
-because `--yolo` bypasses the one it has. Only the last of those is Waku's own
-limitation rather than the CLI's.
+Codex, Claude and OpenCode can route Supervised permission requests to Waku.
+Antigravity selects its mode through launch flags but cannot prompt through its
+headless stream-json transport; unapproved tools are soft-denied instead. Pi
+has no permission system, and Oh My Pi's interactive integration currently
+bypasses its permission system with `--yolo`.
 
 ## Resume cursors
 
@@ -714,10 +746,10 @@ What the long-lived session buys, and what Waku pays for not having it:
 
 | Capability | T3 Code | Waku |
 | --- | --- | --- |
-| Interactive approvals | Claude via the SDK's `canUseTool` (including `AskUserQuestion` and `ExitPlanMode`), Codex via `*requestApproval*` | Every provider except Pi, which does not expose a request to answer |
+| Interactive approvals | Claude via the SDK's `canUseTool` (including `AskUserQuestion` and `ExitPlanMode`), Codex via `*requestApproval*` | Codex, Claude and OpenCode route requests into Waku |
 | Interrupt | `session/cancel`, `query.interrupt()` (plus `stopTask()` for runaway subagents) | Protocol interrupt everywhere |
 | Change model mid-session | `capabilities.sessionModelSwitch: "in-session"` → `session/set_model`, `query.setModel()` | Every transport keeps the session |
-| Mid-turn prompt | Queued into the live agent loop as a **steer**, same turn | Steered into the live turn on every provider (`⌘↩`); plain `Enter` queues a visible, editable follow-up instead |
+| Mid-turn prompt | Queued into the live agent loop as a **steer**, same turn | `⌘↩` steers where the runtime reports support; otherwise queues a follow-up. Plain `Enter` queues a visible, editable follow-up |
 | Native rollback | `rollbackThread` on the adapter contract | Codex/Pi natively; the rest emulated out-of-band by the `*_session.rs` helpers |
 | Idle cleanup | `ProviderSessionReaper` stops sessions idle 30 min, swept every 5 min, skipping threads with an active turn | same, on the same thresholds |
 
@@ -727,8 +759,9 @@ The adapter contract itself is wider than `DriverControl`:
 `readThread` / `rollbackThread` / `stopAll` / `streamEvents`, plus a declared
 `capabilities` record. Waku's equivalent surface is split between
 `DriverControl` and the out-of-band `*_session.rs` helpers, which is why
-capabilities like "can this provider fork?" live on `ProviderKind` rather than on
-the driver that would have to implement them.
+capabilities like "can Waku fork this provider's history?" live in
+`ProviderKind::capabilities().conversation`, while transport support lives in
+`RuntimeCapabilities`.
 
 Note the parts that are *not* a gap. Waku's Codex path is the same app-server
 protocol against the same methods. Both projects normalize provider events into
@@ -740,7 +773,9 @@ transcript uuid as a rewind checkpoint.
 
 1. Add the variant to `ProviderKind`
    ([model.rs](../crates/waku-protocol/src/model.rs)) with `id`,
-   `display_name`, `short_name`, `command`, and the capability predicates. The
+   `display_name`, `short_name` and `command`. Add its explicit declaration to
+   `ProviderKind::capabilities()` in
+   [capabilities.rs](../crates/waku-protocol/src/capabilities.rs). The
    compiler's non-exhaustive-match errors are the reliable to-do list for
    everything that follows.
 2. Add a `ProviderResumeCursor` variant carrying whatever resume actually needs
@@ -755,8 +790,8 @@ transcript uuid as a rewind checkpoint.
    caught by running a real turn rather than by unit tests. Preserve ordering,
    and never leak private control markers into the transcript. If the transport
    accepts user messages mid-turn, probe *which* behavior it has before wiring
-   `supports_steer`: inject an instruction while a slow tool runs and count the
-   turn completions. Claude folds a plain message into the running turn;
+   `RuntimeCapabilities::steer`: inject an instruction while a slow tool runs
+   and count the turn completions. Claude folds a plain message into the running turn;
    OpenCode joins it to the running execution when the prompt says
    `delivery: "steer"`.
 5. Map the access modes. If the transport can ask the user, route

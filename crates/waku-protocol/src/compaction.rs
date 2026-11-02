@@ -1,6 +1,5 @@
 //! Provider-owned compaction lifecycle. Summaries and token counts are optional.
 
-use crate::model::ProviderKind;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -90,31 +89,12 @@ pub struct CompactionRequest {
     pub instructions: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CompactionCapabilities {
     pub manual: bool,
     pub instructions: bool,
     pub lifecycle: bool,
     pub summary: bool,
-}
-
-impl ProviderKind {
-    pub fn compaction_capabilities(self) -> CompactionCapabilities {
-        match self {
-            Self::Antigravity | Self::Codex | Self::OpenCode => CompactionCapabilities {
-                manual: true,
-                instructions: false,
-                lifecycle: true,
-                summary: self == Self::OpenCode,
-            },
-            Self::Pi | Self::OhMyPi | Self::Claude => CompactionCapabilities {
-                manual: true,
-                instructions: true,
-                lifecycle: true,
-                summary: self != Self::Claude,
-            },
-        }
-    }
 }
 
 #[cfg(test)]
