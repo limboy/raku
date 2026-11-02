@@ -443,6 +443,10 @@ common.copy_code:
   en: Copy Code
 common.add_to_chat:
   en: Add to chat
+common.copy_image:
+  en: Copy image
+attachments.reveal_in_finder:
+  en: Reveal in Finder
 mermaid.preview:
   en: Preview
 mermaid.title:

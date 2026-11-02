@@ -1161,6 +1161,7 @@ impl Waku {
         MarkdownCtx::new(row, palette, metrics, self.transcript_selection.clone())
             .with_math_enabled(self.state.render_math)
             .with_link_handler(self.markdown_link_handler.clone())
+            .with_image_renderer(self.markdown_image_renderer.clone())
             .with_file_links(self.markdown_file_links.clone())
             .with_streaming_animation(animate_streaming)
     }
@@ -2024,6 +2025,7 @@ impl Waku {
         MarkdownCtx::new(row, palette, metrics, surface.selection.clone())
             .with_math_enabled(self.state.render_math)
             .with_link_handler(super::delegation_detail::safe_detail_link_handler())
+            .with_image_renderer(self.markdown_image_renderer.clone())
             .with_streaming_animation(animate)
     }
     pub(super) fn render_activities_row(
@@ -2950,13 +2952,19 @@ impl Waku {
                     detail_card = detail_card.child(section_view);
                 }
                 for (image_index, image_url) in activity.image_urls.iter().enumerate() {
-                    detail_card = detail_card.child(self.render_activity_image(
-                        image_url,
-                        id,
-                        image_index,
-                        theme,
-                        cx,
-                    ));
+                    detail_card = detail_card.child(
+                        self.render_activity_image(
+                            image_url,
+                            id,
+                            image_index,
+                            activity
+                                .output
+                                .as_deref()
+                                .and_then(image_preview::image_path_for_reference),
+                            theme,
+                            cx,
+                        ),
+                    );
                 }
                 detail = detail.child(detail_card);
             }

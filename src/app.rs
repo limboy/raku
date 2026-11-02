@@ -1560,6 +1560,7 @@ pub struct Waku {
     /// callback knows about the active workspace; the renderer deliberately
     /// does not.
     markdown_link_handler: md::render::LinkHandler,
+    markdown_image_renderer: md::render::ImageRenderer,
     /// Transcript-wide text selection, spanning messages and tool output.
     transcript_selection: TranscriptSelection,
     /// Programmatic focus for the transcript canvas. Clicking the transcript
@@ -2596,6 +2597,8 @@ impl Waku {
                     }
                 })
             };
+            let markdown_image_renderer =
+                image_preview::markdown_image_renderer(cx.entity().downgrade());
 
             Self {
                 daemon,
@@ -2860,6 +2863,7 @@ impl Waku {
                 activity_diffs: RefCell::new(HashMap::new()),
                 activity_diff_viewports: RefCell::new(HashMap::new()),
                 markdown_link_handler,
+                markdown_image_renderer,
                 transcript_selection: TranscriptSelection::default(),
                 transcript_focus: cx.focus_handle(),
                 transcript_search: None,

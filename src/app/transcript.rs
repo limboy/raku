@@ -892,6 +892,22 @@ pub(super) fn transcript_rows_fingerprint(
                 .first()
                 .is_some_and(ActivityItem::is_standalone) as u64,
         );
+        // Generated-image identity decides whether its standalone preview is
+        // already present in the settled answer. The daemon externalizes image
+        // bytes, so these are small paths/blob references, never image decoding.
+        if let Some(activity) = block.activities.first()
+            && activity.kind == ActivityKind::ImageGeneration
+        {
+            hash = mix(hash, activity.complete as u64);
+            hash = mix(hash, activity.failed as u64);
+            hash = mix(hash, activity.image_urls.len() as u64);
+            for reference in activity.output.iter().chain(activity.image_urls.iter()) {
+                hash = mix(hash, reference.len() as u64);
+                hash = reference
+                    .bytes()
+                    .fold(hash, |hash, byte| mix(hash, byte as u64));
+            }
+        }
     }
 
     hash = mix(hash, session.turns.len() as u64);
@@ -972,12 +988,36 @@ pub(super) fn folded_transcript_rows(
         }
         let turn_rows = turn_rows(session, turn.id);
         let answer_start = turn_answer_start(session, &turn_rows);
+        // Like response footers, this reads immutable settled answer text.
+        // A turn's status change invalidates the row cache once at settlement;
+        // no Markdown parsing is added to the per-frame fingerprint or rows.
+        let answer_images = if turn_rows[..answer_start].iter().any(|row| {
+            matches!(row, TranscriptRowKind::TurnBlock(index)
+                if session.transcript_blocks[*index].activities.iter().any(|activity|
+                    activity.kind == ActivityKind::ImageGeneration
+                        && activity.complete && !activity.failed && !activity.image_urls.is_empty()))
+        }) {
+            answer_image_references(session, &turn_rows[answer_start..])
+        } else {
+            HashSet::new()
+        };
         if let Some(message_index) = response_footer_message_index_from_rows(session, &turn_rows) {
             response_footers.insert(turn.id, message_index);
         }
-        let hidden = turn_rows[..answer_start].iter().copied().filter(|row| !matches!(row,
-            TranscriptRowKind::TurnBlock(index) if session.transcript_blocks[*index].activities.first().is_some_and(ActivityItem::is_standalone)
-        )).collect::<Vec<_>>();
+        let hidden = turn_rows[..answer_start]
+            .iter()
+            .copied()
+            .filter(|row| match row {
+                TranscriptRowKind::TurnBlock(index) => {
+                    let activities = &session.transcript_blocks[*index].activities;
+                    !activities.first().is_some_and(ActivityItem::is_standalone)
+                        || activities.iter().all(|activity| {
+                            generated_image_repeated_in_answer(activity, &answer_images)
+                        })
+                }
+                _ => true,
+            })
+            .collect::<Vec<_>>();
         let Some(anchor) = hidden.first().copied() else {
             continue;
         };
@@ -1079,6 +1119,78 @@ pub(super) fn folded_transcript_rows(
         }
     }
     (with_footers, work_rows)
+}
+
+fn image_reference_identity(reference: &str) -> String {
+    url::Url::parse(reference)
+        .ok()
+        .and_then(|url| url.to_file_path().ok())
+        .map_or_else(
+            || reference.to_owned(),
+            |path| path.to_string_lossy().into_owned(),
+        )
+}
+
+fn answer_image_references(
+    session: &AgentSession,
+    answer_rows: &[TranscriptRowKind],
+) -> HashSet<String> {
+    use md::parser::Block;
+
+    fn collect(block: &Block, references: &mut HashSet<String>) {
+        match block {
+            Block::Image { url, .. }
+                if !url.starts_with(waku_protocol::attachments::ATTACHMENT_SCHEME) =>
+            {
+                references.insert(image_reference_identity(url));
+            }
+            Block::BlockQuote { children } => {
+                for child in children {
+                    collect(child, references);
+                }
+            }
+            Block::List { items, .. } => {
+                for item in items {
+                    for child in &item.blocks {
+                        collect(child, references);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut references = HashSet::new();
+    for row in answer_rows {
+        if let TranscriptRowKind::Message(index) = row
+            && let Some(message) = session.messages.get(*index)
+        {
+            // Read the same blocks the renderer displays: images inside table
+            // cells/headings become alt text, and math/code never becomes an image.
+            for top in md::parser::parse(message.visible_content()).blocks {
+                collect(&top.block, &mut references);
+            }
+        }
+    }
+    references
+}
+
+fn generated_image_repeated_in_answer(
+    activity: &ActivityItem,
+    answer_images: &HashSet<String>,
+) -> bool {
+    activity.kind == ActivityKind::ImageGeneration
+        && activity.complete
+        && !activity.failed
+        && !activity.image_urls.is_empty()
+        && (activity
+            .image_urls
+            .iter()
+            .all(|reference| answer_images.contains(&image_reference_identity(reference)))
+            || (activity.image_urls.len() == 1
+                && activity.output.as_deref().is_some_and(|output| {
+                    answer_images.contains(&image_reference_identity(output))
+                })))
 }
 
 #[cfg(test)]

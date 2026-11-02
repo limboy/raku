@@ -5,6 +5,7 @@ use gpui::{
     svg,
 };
 
+pub mod image;
 pub mod menu;
 pub mod motion;
 pub mod scrollbar;

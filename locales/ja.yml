@@ -228,6 +228,8 @@ common.copy_selection: 選択範囲をコピー
 common.copy_to_composer: 入力欄にコピー
 common.copy_code: コードをコピー
 common.add_to_chat: チャットに追加
+common.copy_image: 画像をコピー
+attachments.reveal_in_finder: Finder で表示
 mermaid.preview: プレビュー
 mermaid.title: Mermaid プレビュー
 mermaid.zoom_in: 拡大

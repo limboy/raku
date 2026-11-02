@@ -2359,6 +2359,112 @@ fn image_generation_preserves_order_and_stays_visible_after_work_folds() {
 }
 
 #[test]
+fn image_generation_repeated_in_the_answer_folds_without_losing_history() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Antigravity);
+    let turn_id = session.begin_turn("生成一张在空中飞的猫的图片");
+    push_transcript_activity(
+        &mut session,
+        ActivityItem::new(
+            Some("agy-image".into()),
+            ActivityKind::ImageGeneration,
+            "Generated image",
+            None,
+            true,
+        )
+        .with_output(Some("/tmp/waku images/flying cat.jpg".into()))
+        .with_image_urls(vec!["waku-blob:20396cfb694f8312.jpg".into()]),
+        false,
+    );
+    session.push_message(
+        MessageRole::Assistant,
+        "已为您生成图片：\n\n![在空中飞翔的猫](file:///tmp/waku%20images/flying%20cat.jpg)\n\n图片已保存。",
+    );
+
+    let (running, _) = folded_transcript_rows(&session, &HashSet::new());
+    assert!(running.contains(&TurnBlock(0)), "live output stays visible");
+    session.finish_active_turn(TurnStatus::Completed);
+    let (collapsed, _) = folded_transcript_rows(&session, &HashSet::new());
+    assert!(!collapsed.contains(&TurnBlock(0)));
+    assert!(collapsed.contains(&TurnFold(turn_id)));
+    assert!(collapsed.contains(&Message(1)));
+
+    let (expanded, work) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
+    assert!(work.contains(&TurnBlock(0)));
+    assert!(
+        expanded.iter().position(|row| *row == TurnBlock(0))
+            < expanded.iter().position(|row| *row == Message(1)),
+        "expanding work restores the original provider order"
+    );
+    assert_eq!(
+        session.transcript_blocks[0].activities[0].image_urls.len(),
+        1
+    );
+}
+
+#[test]
+fn image_generation_only_folds_when_every_output_is_actually_displayed() {
+    for (answer, images, failed, folds) in [
+        ("![cat](/tmp/cat.jpg)", 1, false, true),
+        ("![cat](waku-blob:12345678.jpg)", 1, false, true),
+        ("[Download](/tmp/cat.jpg)", 1, false, false),
+        ("`![cat](/tmp/cat.jpg)`", 1, false, false),
+        ("```md\n![cat](/tmp/cat.jpg)\n```", 1, false, false),
+        ("$![cat](/tmp/cat.jpg)$", 1, false, false),
+        ("# ![cat](/tmp/cat.jpg)", 1, false, false),
+        ("| Image |\n| --- |\n| ![cat](/tmp/cat.jpg) |", 1, false, false),
+        ("> ![cat](/tmp/cat.jpg)", 1, false, true),
+        ("![other](/tmp/other.jpg)", 1, false, false),
+        ("![cat](/tmp/cat.jpg)", 2, false, false),
+        ("![cat](/tmp/cat.jpg)", 1, true, false),
+    ] {
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
+        session.begin_turn("Generate images");
+        let mut urls = vec!["waku-blob:12345678.jpg".into()];
+        if images == 2 {
+            urls.push("waku-blob:abcdef12.jpg".into());
+        }
+        push_transcript_activity(
+            &mut session,
+            ActivityItem::new(None, ActivityKind::ImageGeneration, "Image", None, true)
+                .with_output(Some("/tmp/cat.jpg".into()))
+                .with_image_urls(urls)
+                .with_failed(failed),
+            false,
+        );
+        session.push_message(MessageRole::Assistant, answer);
+        session.finish_active_turn(TurnStatus::Completed);
+        let (rows, _) = folded_transcript_rows(&session, &HashSet::new());
+        assert_eq!(
+            !rows.contains(&TurnBlock(0)),
+            folds,
+            "answer={answer:?}, images={images}, failed={failed}"
+        );
+    }
+}
+
+#[test]
+fn image_generation_identity_changes_invalidate_the_row_cache() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
+    session.begin_turn("Generate an image");
+    push_transcript_activity(
+        &mut session,
+        ActivityItem::new(None, ActivityKind::ImageGeneration, "Image", None, true)
+            .with_image_urls(vec!["waku-blob:12345678.jpg".into()]),
+        false,
+    );
+    session.push_message(MessageRole::Assistant, "![cat](/tmp/cat.jpg)");
+    session.finish_active_turn(TurnStatus::Completed);
+    let before = transcript_rows_fingerprint(&session, &HashSet::new());
+    assert!(folded_transcript_row_kinds(&session, &HashSet::new()).contains(&TurnBlock(0)));
+    session.transcript_blocks[0].activities[0].output = Some("/tmp/cat.jpg".into());
+    assert_ne!(
+        before,
+        transcript_rows_fingerprint(&session, &HashSet::new())
+    );
+    assert!(!folded_transcript_row_kinds(&session, &HashSet::new()).contains(&TurnBlock(0)));
+}
+
+#[test]
 fn compact_command_only_matches_exact_command_and_keeps_focus_instructions() {
     use super::compaction::compact_invocation;
     assert_eq!(compact_invocation("/compact"), Some(None));

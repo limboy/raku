@@ -1069,7 +1069,8 @@ impl Waku {
                     self.menu_handle(format!("detail-message-math-{}", message.id), cx),
                 )
                 .with_context_menu(menu.clone())
-                .with_link_handler(safe_detail_link_handler());
+                .with_link_handler(safe_detail_link_handler())
+                .with_image_renderer(self.markdown_image_renderer.clone());
                 let mut markdown = state.message_markdown.borrow_mut();
                 let view = markdown.entry(message.id).or_default();
                 view.set_text(message.visible_content(), message.streaming);

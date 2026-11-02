@@ -896,6 +896,20 @@ pub fn context_menu<E>(
 where
     E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
 {
+    context_menu_with_priority(element, id, handle, 1, items)
+}
+
+/// Place a context menu above a deferred surface such as an image preview.
+pub fn context_menu_with_priority<E>(
+    element: E,
+    id: impl Into<ElementId>,
+    handle: &ContextMenuHandle,
+    priority: usize,
+    items: impl Fn(&mut App) -> Vec<MenuItem> + 'static,
+) -> AnyElement
+where
+    E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
+{
     let id: ElementId = id.into();
     let open_at = handle.state.borrow().open;
     let handle_for_down = handle.clone();
@@ -946,7 +960,7 @@ where
                         items,
                     }),
             )
-            .with_priority(1),
+            .with_priority(priority),
         )
         .into_any_element()
 }
@@ -1451,6 +1465,7 @@ mod tests {
         Popover,
         Dropdown,
         Context,
+        DeferredContext,
     }
 
     struct Harness {
@@ -1553,6 +1568,17 @@ mod tests {
                     Surface::Context => context_menu(trigger, "context", &self.handle, |_| {
                         vec![MenuItem::new("Entry", |_, _| {})]
                     }),
+                    Surface::DeferredContext => deferred(context_menu_with_priority(
+                        trigger
+                            .track_focus(self.handle.trigger_focus_handle())
+                            .tab_index(0),
+                        "preview-context",
+                        &self.handle,
+                        6,
+                        |_| vec![MenuItem::new("Entry", |_, _| {})],
+                    ))
+                    .with_priority(5)
+                    .into_any_element(),
                 })
         }
     }
@@ -1667,6 +1693,40 @@ mod tests {
     #[gpui::test]
     fn popover_trigger_is_keyboard_operable(cx: &mut TestAppContext) {
         assert_trigger_opens_from_keyboard(Surface::Popover, cx);
+    }
+
+    #[gpui::test]
+    fn context_menu_above_a_deferred_preview_accepts_pointer_and_keyboard_input(
+        cx: &mut TestAppContext,
+    ) {
+        let handle = cx.update(ContextMenuHandle::new);
+        let restore_focus = handle.trigger_focus_handle().clone();
+        let handle = handle.on_toggle(move |open, window, cx| {
+            if !open {
+                window.focus(&restore_focus, cx);
+            }
+        });
+        let (_, window) = cx.add_window_view(|_, _| Harness {
+            handle: handle.clone(),
+            surface: Surface::DeferredContext,
+        });
+        window.simulate_mouse_down(
+            point(px(10.0), px(10.0)),
+            MouseButton::Right,
+            Modifiers::none(),
+        );
+        assert!(handle.is_open());
+        window.run_until_parked();
+        window.update(|window, cx| window.focus(handle.focus_handle(), cx));
+        window.simulate_keystrokes("down enter");
+        assert!(
+            !handle.is_open(),
+            "the menu should receive and activate the selected action"
+        );
+        assert!(
+            window.update(|window, _| handle.trigger_focus_handle().is_focused(window)),
+            "closing the image menu restores keyboard focus to the preview"
+        );
     }
 
     #[gpui::test]

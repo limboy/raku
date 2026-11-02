@@ -30,8 +30,8 @@ use gpui::{
     AnyElement, BorderStyle, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Font, FontStyle,
     FontWeight, Hsla, InteractiveText, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, SharedString, StrikethroughStyle,
-    StyledText, TextLayout, TextRun, UnderlineStyle, Window, canvas, div, font, img, point,
-    prelude::*, px, quad, relative, size,
+    StyledText, TextLayout, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*,
+    px, quad, relative, size,
 };
 use regex::Regex;
 
@@ -671,6 +671,7 @@ pub struct Ctx<'a> {
     selection: TranscriptSelection,
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
+    image_renderer: Option<ImageRenderer>,
     file_links: Option<Arc<FileLinks>>,
     /// Cross-frame flatten cache, when this render has one to consult.
     cache: Option<&'a MarkdownView>,
@@ -698,6 +699,7 @@ impl<'a> Ctx<'a> {
             selection,
             search: None,
             link_handler: None,
+            image_renderer: None,
             file_links: None,
             cache: None,
             next_ordinal: Cell::new(0),
@@ -716,6 +718,11 @@ impl<'a> Ctx<'a> {
 
     pub fn with_link_handler(mut self, handler: LinkHandler) -> Self {
         self.link_handler = Some(handler);
+        self
+    }
+
+    pub fn with_image_renderer(mut self, renderer: ImageRenderer) -> Self {
+        self.image_renderer = Some(renderer);
         self
     }
 
@@ -761,6 +768,7 @@ impl<'a> Ctx<'a> {
             selection: self.selection.clone(),
             search: self.search.clone(),
             link_handler: self.link_handler.clone(),
+            image_renderer: self.image_renderer.clone(),
             file_links: self.file_links.clone(),
             cache: Some(view),
             next_ordinal: Cell::new(self.next_ordinal.get()),
@@ -1722,43 +1730,58 @@ fn checkbox(checked: bool, ctx: &Ctx) -> AnyElement {
         .into_any_element()
 }
 
-/// An inline image. Data URLs decode in place; anything else is handed to GPUI
-/// to load. The alt text renders beneath as a caption when there is one, so a
-/// failed or slow load still says what it was.
+/// Let the owning app supply image preview and context-menu interactions.
+pub type ImageRenderer = Rc<dyn Fn(SharedString, &str, &str) -> AnyElement>;
+
+/// The owning surface can supply an interactive image. Other surfaces use
+/// GPUI's image loader; alt text remains beneath either form as a caption.
 fn render_image(url: &str, alt: &str, ctx: &Ctx) -> AnyElement {
-    const MAX_HEIGHT: f32 = 320.0;
+    use crate::ui::image::{TRANSCRIPT_IMAGE_MAX_HEIGHT, TRANSCRIPT_IMAGE_MAX_WIDTH, fitted_image};
 
     let key = ctx.next_key();
     let id = SharedString::from(format!("image-{}-{}", key.row, key.index));
-    let image = match decode_data_url(url) {
-        Some(decoded) => img(decoded).id(id),
-        None => {
-            if let Some(path_str) = url.strip_prefix("file://") {
-                img(std::path::PathBuf::from(path_str)).id(id)
-            } else if url.starts_with('/')
-                || (url.len() >= 3
-                    && url.as_bytes()[1] == b':'
-                    && (url.as_bytes()[2] == b'/' || url.as_bytes()[2] == b'\\'))
-            {
-                img(std::path::PathBuf::from(url)).id(id)
-            } else {
-                img(url.to_owned()).id(id)
+    let image = if let Some(renderer) = &ctx.image_renderer {
+        renderer(id.clone(), url, alt)
+    } else {
+        let source: gpui::ImageSource = match decode_data_url(url) {
+            Some(decoded) => decoded.into(),
+            None => {
+                if let Some(path_str) = url.strip_prefix("file://") {
+                    url::Url::parse(url)
+                        .ok()
+                        .and_then(|url| url.to_file_path().ok())
+                        .unwrap_or_else(|| std::path::PathBuf::from(path_str))
+                        .into()
+                } else if url.starts_with('/')
+                    || (url.len() >= 3
+                        && url.as_bytes()[1] == b':'
+                        && (url.as_bytes()[2] == b'/' || url.as_bytes()[2] == b'\\'))
+                {
+                    std::path::PathBuf::from(url).into()
+                } else {
+                    url.to_owned().into()
+                }
             }
-        }
+        };
+        fitted_image(
+            source,
+            gpui::size(
+                px(TRANSCRIPT_IMAGE_MAX_WIDTH),
+                px(TRANSCRIPT_IMAGE_MAX_HEIGHT),
+            ),
+            px(6.0),
+        )
+        .into_any_element()
     };
     div()
+        .id(id)
         .w_full()
         .min_w_0()
         .flex()
         .flex_col()
+        .items_start()
         .gap(px(4.0))
-        .child(
-            image
-                .max_w(relative(1.0))
-                .max_h(px(MAX_HEIGHT))
-                .rounded(px(6.0))
-                .object_fit(gpui::ObjectFit::ScaleDown),
-        )
+        .child(image)
         .when(!alt.trim().is_empty(), |element| {
             element.child(
                 div()
@@ -2231,6 +2254,39 @@ mod tests {
 
     fn palette() -> Palette {
         Palette::from_theme(&Theme::dark())
+    }
+
+    #[test]
+    fn image_interactions_survive_markdown_caching_and_streaming_updates() {
+        let palette = palette();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let rendered = calls.clone();
+        let ctx = Ctx::new(
+            "image-row",
+            &palette,
+            Metrics::BODY,
+            TranscriptSelection::default(),
+        )
+        .with_image_renderer(Rc::new(move |id, url, alt| {
+            rendered
+                .borrow_mut()
+                .push((id, url.to_owned(), alt.to_owned()));
+            div().w(px(120.0)).h(px(80.0)).into_any_element()
+        }));
+        let mut view = MarkdownView::new();
+        let source = "![Flying cat](file:///tmp/flying%20cat.png)";
+        view.set_text(source, true);
+        assert!(markdown(&view, &ctx).is_some());
+        view.set_text(&format!("{source}\n\nThe image is ready."), false);
+        assert!(markdown(&view, &ctx).is_some());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0], calls[1],
+            "settling preserves the image's identity and handlers"
+        );
+        assert_eq!(calls[0].1, "file:///tmp/flying%20cat.png");
+        assert_eq!(calls[0].2, "Flying cat");
     }
 
     #[test]
