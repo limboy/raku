@@ -441,6 +441,8 @@ common.copy_to_composer:
   en: Copy to Composer
 common.copy_code:
   en: Copy Code
+common.add_to_chat:
+  en: Add to chat
 mermaid.preview:
   en: Preview
 mermaid.title:

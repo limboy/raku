@@ -1213,7 +1213,6 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::current(cx);
-        let composer = self.composer.clone();
         let waku = cx.entity().downgrade();
         // Both from the cache `sync_transcript_rows` refreshed at the top of
         // this frame. Recomputing the row list here would rebuild the whole
@@ -1370,7 +1369,6 @@ impl Waku {
                             ctx: &ctx,
                             menu,
                             waku,
-                            composer,
                         },
                         window,
                         cx,

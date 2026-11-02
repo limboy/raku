@@ -463,7 +463,6 @@ pub(super) struct MessageRender<'a> {
     pub(super) ctx: &'a MarkdownCtx<'a>,
     pub(super) menu: ContextMenuHandle,
     pub(super) waku: gpui::WeakEntity<Waku>,
-    pub(super) composer: Entity<ComposerInput>,
 }
 
 /// The one-line chip a pasted text attachment renders as: a document icon and
@@ -784,20 +783,12 @@ pub(super) fn render_message(
         ctx,
         menu,
         waku,
-        composer,
     } = params;
 
     let content = message.visible_content().to_owned();
-    // "Copy Message" must match what the row presents. The terminal part of a
-    // settled response stands in for the whole visible answer, so its menu
-    // shares the footer's copy content — parts hidden behind "Worked for X"
-    // stay out — rather than copying the final part alone.
-    let menu_copy_content = assistant_footer_copy_content
-        .clone()
-        .unwrap_or_else(|| SharedString::from(content.clone()));
+    let selection = ctx.selection().clone();
     let message_id = message.id;
     let role = message.role;
-    let user_message_action = user_message_control.as_ref().map(|control| control.action);
     let user_footer_focused = menu.trigger_focus_handle().is_focused(window)
         || attachment_menus
             .iter()
@@ -1016,6 +1007,7 @@ pub(super) fn render_message(
                             .when_some(user_message_viewport, |bubble, viewport| {
                                 let key_scroll = viewport.scroll_handle.clone();
                                 let key_menu = menu.clone();
+                                let key_selection = selection.clone();
                                 let key_owner = waku.entity_id();
                                 bubble
                                     .track_focus(menu.trigger_focus_handle())
@@ -1026,7 +1018,18 @@ pub(super) fn render_message(
                                         if event.keystroke.key == "f10"
                                             && event.keystroke.modifiers.shift
                                         {
-                                            key_menu.open_context_menu(window, cx);
+                                            // The menu only offers adding the
+                                            // selection, so opening it with
+                                            // nothing selected would show an
+                                            // empty card.
+                                            if key_selection
+                                                .selection
+                                                .borrow()
+                                                .selected_text()
+                                                .is_some()
+                                            {
+                                                key_menu.open_context_menu(window, cx);
+                                            }
                                             cx.stop_propagation();
                                             return;
                                         }
@@ -1145,133 +1148,38 @@ pub(super) fn render_message(
         ),
     };
 
-    let selection = ctx.selection().clone();
+    let menu_waku = waku.clone();
     context_menu(
         element.id(message_id),
         SharedString::from(format!("message-menu-{message_id}")),
         &menu,
-        move |cx| {
-            message_menu_items(
-                &menu_copy_content,
-                role,
-                user_message_action,
-                assistant_message_action,
-                &selection,
-                &composer,
-                &waku,
-                cx,
-            )
-        },
+        move |_cx| message_menu_items(&selection, &menu_waku),
     )
 }
 
-/// The message row's context menu. Rebuilt on each open, so availability checks
-/// here always reflect the current session state.
-#[allow(clippy::too_many_arguments)]
+/// The message row's context menu. It offers one action — adding the current
+/// transcript selection to the composer — and stages each selection as its own
+/// pasted-text snippet, so repeated adds accumulate like repeated pastes. An
+/// empty selection yields no menu at all.
 fn message_menu_items(
-    content: &str,
-    role: MessageRole,
-    user_message_action: Option<UserMessageAction>,
-    assistant_message_action: Option<AssistantMessageAction>,
     selection: &TranscriptSelection,
-    composer: &Entity<ComposerInput>,
     waku: &gpui::WeakEntity<Waku>,
-    _cx: &mut App,
 ) -> Vec<MenuItem> {
-    let mut items = Vec::new();
-
-    if let Some(selected) = selection.selection.borrow().selected_text() {
-        items.push(MenuItem::new(tr!("common.copy_selection"), move |_, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(selected.clone()));
-        }));
-    }
-
-    let copy_content = content.to_owned();
-    items.push(MenuItem::new(
-        tr!("common.copy_message_title"),
-        move |_, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(copy_content.clone()));
-        },
-    ));
-
-    if role == MessageRole::User && user_message_action.is_none() {
-        let composer = composer.clone();
-        let edit_content = content.to_owned();
-        items.push(MenuItem::new(
-            tr!("common.copy_to_composer"),
-            move |window, cx| {
-                composer.update(cx, |composer, cx| {
-                    composer.set_content(edit_content.clone(), cx);
-                });
-                let focus_handle = composer.read(cx).focus();
-                window.focus(&focus_handle, cx);
-            },
-        ));
-    }
-
-    if let Some(code) = fenced_code(content) {
-        items.push(MenuItem::new(tr!("common.copy_code"), move |_, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
-        }));
-    }
-
-    if let Some(action) = user_message_action {
-        let waku = waku.clone();
-        items.push(MenuItem::Separator);
-        items.push(
-            MenuItem::new(tr!("session.edit_prompt"), move |window, cx| {
-                let _ = waku.update(cx, |this, cx| {
-                    this.begin_message_edit(action, window, cx);
-                });
-            })
-            .icon("icons/pencil.svg"),
-        );
-    }
-
-    if let Some(action) = assistant_message_action {
-        let waku = waku.clone();
-        items.push(MenuItem::Separator);
-        items.push(
-            MenuItem::new(
-                if action.enabled {
-                    tr!("session.fork_task_title")
-                } else {
-                    tr!("session.forking_task_title")
-                },
-                move |_, cx| {
-                    let _ = waku.update(cx, |this, cx| {
-                        this.fork_session_from_response(action.session_id, action.turn_count, cx);
-                    });
-                },
-            )
-            .icon("icons/fork.svg")
-            .disabled(!action.enabled),
-        );
-    }
-
-    items
-}
-
-pub(super) fn fenced_code(content: &str) -> Option<String> {
-    let mut code_blocks = Vec::new();
-    let mut segments = content.split("```");
-    let _ = segments.next();
-    while let Some(fenced) = segments.next() {
-        let (language, code) = fenced
-            .split_once('\n')
-            .map(|(language, code)| (language.trim(), code))
-            .unwrap_or(("", fenced));
-        let code = if language.is_empty() && !fenced.contains('\n') {
-            fenced
-        } else {
-            code
-        };
-        if !code.trim().is_empty() {
-            code_blocks.push(code.trim_end().to_owned());
-        }
-        let _ = segments.next();
-    }
-    (!code_blocks.is_empty()).then(|| code_blocks.join("\n\n"))
+    let Some(selected) = selection.selection.borrow().selected_text() else {
+        return Vec::new();
+    };
+    let waku = waku.clone();
+    vec![
+        MenuItem::new(tr!("common.add_to_chat"), move |window, cx| {
+            let text = selected.clone();
+            let _ = waku.update(cx, |this, cx| {
+                this.stage_pasted_text_snippet(text, cx);
+                let focus = this.composer.read(cx).focus();
+                window.focus(&focus, cx);
+            });
+        })
+        .icon("icons/plus.svg"),
+    ]
 }
 
 pub(super) fn activity_summary(activities: &[ActivityItem]) -> String {

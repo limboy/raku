@@ -1085,7 +1085,6 @@ impl Waku {
                         ctx: &ctx,
                         menu,
                         waku: cx.entity().downgrade(),
-                        composer: self.composer.clone(),
                     },
                     window,
                     cx,

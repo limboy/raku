@@ -9,7 +9,7 @@ use super::{
     NAVIGATION_RAIL_TICK_HEIGHT, NAVIGATION_RAIL_TURN_HEIGHT, PendingUserInput, SessionNavigation,
     StreamDeltaKind, TranscriptRowKind::*, active_navigation_turn_index,
     append_text_delta_to_session, assistant_response_footer, assistant_response_footer_index,
-    assistant_response_footer_time, compact_driver_error, disclosure_leading_space, fenced_code,
+    assistant_response_footer_time, compact_driver_error, disclosure_leading_space,
     fitted_file_tree_width, fitted_panel_widths, folded_transcript_row_kinds,
     folded_transcript_rows, format_worked_duration, format_working_elapsed,
     maintain_transcript_anchor, message_opens_turn, message_starts_followup_turn,
@@ -819,16 +819,6 @@ fn message_edit_does_not_bypass_a_missing_or_failed_git_checkpoint() {
             Some(super::MessageEditWorkspace::RestoreCheckpoint),
         );
     }
-}
-
-#[test]
-fn fenced_code_collects_all_blocks_without_languages() {
-    let markdown = "Before\n```rust\nfn main() {}\n```\nAfter\n```\ncargo test\n```";
-    assert_eq!(
-        fenced_code(markdown).as_deref(),
-        Some("fn main() {}\n\ncargo test")
-    );
-    assert_eq!(fenced_code("No code here"), None);
 }
 
 #[test]
