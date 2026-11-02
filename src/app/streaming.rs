@@ -210,7 +210,10 @@ impl Waku {
                         session.status = SessionStatus::Working;
                     } else if matches!(
                         session.provider,
-                        ProviderKind::Codex | ProviderKind::Claude | ProviderKind::OpenCode
+                        ProviderKind::Codex
+                            | ProviderKind::Claude
+                            | ProviderKind::OpenCode
+                            | ProviderKind::Antigravity
                     ) {
                         // Some providers start turns on their own: Codex goal
                         // continuation pursues an active goal whenever the

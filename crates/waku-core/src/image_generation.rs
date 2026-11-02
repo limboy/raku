@@ -20,6 +20,18 @@ pub(crate) fn externalize(activity: &mut ActivityItem, blobs: &crate::blob_store
     }
 }
 
+pub(crate) fn data_url_for_path(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    if file.take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes).is_ok()
+        && !bytes.is_empty()
+        && bytes.len() as u64 <= MAX_IMAGE_BYTES
+    {
+        return data_url(&bytes);
+    }
+    None
+}
+
 pub(crate) fn codex_activity(item: &Value, complete: bool) -> ActivityItem {
     let status = item
         .get("status")

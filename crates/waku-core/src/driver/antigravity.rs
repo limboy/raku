@@ -17,6 +17,7 @@
 //!   flushes the trajectory to SQLite, and exits; Waku drops the runtime on
 //!   Stop and resumes `--conversation <id>` on the next prompt.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -38,7 +39,7 @@ use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
 use crate::model::{
-    ActivityKind, DriverEvent, ExecutionPolicy, ProviderResumeCursor, RuntimeMode,
+    ActivityItem, ActivityKind, DriverEvent, ExecutionPolicy, ProviderResumeCursor, RuntimeMode,
     unix_time_millis,
 };
 
@@ -131,9 +132,11 @@ struct StreamState {
     cwd: PathBuf,
     session_id: Arc<Mutex<Option<String>>>,
     context_window: Option<u64>,
-    streamed_text_this_turn: bool,
+    streamed_text_this_turn: String,
     last_auto_title: Option<String>,
     reported_error: Arc<AtomicBool>,
+    active_image_subagents: HashMap<String, crate::model::ActivityItem>,
+    active_image_activity: Option<crate::model::ActivityItem>,
 }
 
 impl StreamState {
@@ -147,9 +150,11 @@ impl StreamState {
             cwd,
             session_id,
             context_window: infer_context_window(initial_model),
-            streamed_text_this_turn: false,
+            streamed_text_this_turn: String::new(),
             last_auto_title: None,
             reported_error,
+            active_image_subagents: HashMap::new(),
+            active_image_activity: None,
         }
     }
 }
@@ -574,8 +579,24 @@ fn handle_stream_event(
                     if let Some(delta) = step.get("text_delta").and_then(Value::as_str)
                         && !delta.is_empty()
                     {
-                        state.streamed_text_this_turn = true;
+                        state.streamed_text_this_turn.push_str(delta);
                         let _ = events.send(DriverEvent::TextDelta(delta.to_owned()));
+
+                        if state.active_image_activity.is_some()
+                            || !state.active_image_subagents.is_empty()
+                        {
+                            if let Some(path) = extract_image_path(delta)
+                                .or_else(|| extract_image_path(&state.streamed_text_this_turn))
+                            {
+                                if let Some(mut activity) = state.active_image_activity.take() {
+                                    complete_image_activity(&mut activity, &path, events);
+                                } else if let Some((_, mut activity)) =
+                                    state.active_image_subagents.drain().next()
+                                {
+                                    complete_image_activity(&mut activity, &path, events);
+                                }
+                            }
+                        }
                     }
                     if let Some(usage) = step.get("usage")
                         && let Some(tokens) = step_context_tokens(usage)
@@ -587,15 +608,189 @@ fn handle_stream_event(
                     }
                 }
                 "tool" => {
-                    let item = build_tool_activity(step, &state.cwd);
-                    let _ = events.send(DriverEvent::RichActivity(item));
+                    let tool_info = step.get("tool_info");
+                    let tool_name = step
+                        .get("tool_name")
+                        .and_then(Value::as_str)
+                        .or_else(|| {
+                            tool_info
+                                .and_then(|info| info.get("name"))
+                                .and_then(Value::as_str)
+                        })
+                        .unwrap_or_default();
+                    let parameters = tool_info
+                        .and_then(|info| info.get("parameters"))
+                        .filter(|val| !val.is_null());
+                    let state_str = step
+                        .get("state")
+                        .and_then(Value::as_str)
+                        .unwrap_or("ACTIVE");
+                    let step_complete = state_str == "DONE";
+
+                    if tool_name == "generate_image" {
+                        let step_index = step.get("step_index").and_then(Value::as_u64);
+                        let source_id = step_index.map(|idx| format!("agy-step-{idx}"));
+                        let prompt = parameters
+                            .and_then(|p| p.get("Prompt"))
+                            .and_then(Value::as_str)
+                            .map(|p| p.trim_matches('"').to_owned());
+
+                        let mut item = ActivityItem::new(
+                            source_id,
+                            ActivityKind::ImageGeneration,
+                            tr!(if step_complete {
+                                "activity.generated_image"
+                            } else {
+                                "activity.generating_image"
+                            }),
+                            None,
+                            step_complete,
+                        )
+                        .with_tool_name(Some("image_generation"))
+                        .with_arguments(prompt);
+
+                        if step_complete {
+                            let output_str = tool_info
+                                .and_then(|info| info.get("output"))
+                                .and_then(Value::as_str);
+                            if let Some(path) = output_str.and_then(extract_image_path) {
+                                if let Some(url) =
+                                    crate::image_generation::data_url_for_path(&path)
+                                {
+                                    item.image_urls = vec![url];
+                                }
+                                item.output = Some(path.to_string_lossy().into_owned());
+                            }
+                        } else {
+                            state.active_image_activity = Some(item.clone());
+                        }
+                        let _ = events.send(DriverEvent::RichActivity(item));
+                    } else if tool_name == "invoke_subagent" {
+                        let is_image = parameters.is_some_and(|p| {
+                            p.get("TypeName")
+                                .and_then(Value::as_str)
+                                .is_some_and(|t| t.trim_matches('"') == "image-generator")
+                                || p.get("Role").and_then(Value::as_str).is_some_and(|r| {
+                                    r.trim_matches('"').eq_ignore_ascii_case("Image Generator")
+                                })
+                        });
+                        if is_image {
+                            let step_index = step.get("step_index").and_then(Value::as_u64);
+                            let source_id = step_index.map(|idx| format!("agy-step-{idx}"));
+                            let prompt = parameters
+                                .and_then(|p| p.get("Prompt"))
+                                .and_then(Value::as_str)
+                                .map(|p| p.trim_matches('"').to_owned());
+                            let item = ActivityItem::new(
+                                source_id,
+                                ActivityKind::ImageGeneration,
+                                tr!("activity.generating_image"),
+                                None,
+                                false,
+                            )
+                            .with_tool_name(Some("image_generation"))
+                            .with_arguments(prompt);
+                            state.active_image_activity = Some(item.clone());
+                            let _ = events.send(DriverEvent::RichActivity(item));
+                        } else {
+                            let item = build_tool_activity(step, &state.cwd);
+                            let _ = events.send(DriverEvent::RichActivity(item));
+                        }
+                    } else {
+                        let item = build_tool_activity(step, &state.cwd);
+                        let _ = events.send(DriverEvent::RichActivity(item));
+                    }
                 }
                 _ => {
-                    if let Some(subagent_info) =
+                    if step_type == "system_message" {
+                        if let Some(content) = step.get("content").and_then(Value::as_str) {
+                            if let Some(path) = extract_image_path(content) {
+                                if let Some(mut activity) = state.active_image_activity.take() {
+                                    complete_image_activity(&mut activity, &path, events);
+                                } else if let Some((_, mut activity)) =
+                                    state.active_image_subagents.drain().next()
+                                {
+                                    complete_image_activity(&mut activity, &path, events);
+                                }
+                            } else if content.contains("RESOURCE_EXHAUSTED")
+                                || content.contains("error")
+                                || content.contains("failed")
+                            {
+                                if let Some(mut activity) = state.active_image_activity.take() {
+                                    fail_image_activity(
+                                        &mut activity,
+                                        Some(tr!("activity.image_generation_failed")),
+                                        events,
+                                    );
+                                } else if let Some((_, mut activity)) =
+                                    state.active_image_subagents.drain().next()
+                                {
+                                    fail_image_activity(
+                                        &mut activity,
+                                        Some(tr!("activity.image_generation_failed")),
+                                        events,
+                                    );
+                                }
+                            }
+                        }
+                    } else if let Some(subagent_info) =
                         step.get("subagent_info").filter(|val| !val.is_null())
                     {
-                        let item = build_subagent_activity(step, subagent_info);
-                        let _ = events.send(DriverEvent::RichActivity(item));
+                        let subagents = subagent_info
+                            .get("subagents")
+                            .and_then(Value::as_array)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]);
+                        let is_image = subagents.iter().any(|sub| {
+                            sub.get("type_name")
+                                .and_then(Value::as_str)
+                                .is_some_and(|t| t.trim_matches('"') == "image-generator")
+                                || sub.get("role").and_then(Value::as_str).is_some_and(|r| {
+                                    r.trim_matches('"').eq_ignore_ascii_case("Image Generator")
+                                })
+                        });
+                        if is_image {
+                            let conv_id = subagents
+                                .first()
+                                .and_then(|sub| sub.get("conversation_id"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            let prompt = subagents
+                                .first()
+                                .and_then(|sub| sub.get("initial_prompt"))
+                                .and_then(Value::as_str)
+                                .map(|p| p.trim_matches('"').to_owned());
+                            let source_id = if !conv_id.is_empty() {
+                                format!("agy-subagent-{conv_id}")
+                            } else {
+                                let step_index = step.get("step_index").and_then(Value::as_u64);
+                                step_index
+                                    .map(|idx| format!("agy-step-{idx}"))
+                                    .unwrap_or_else(|| "agy-subagent".into())
+                            };
+                            let item = state.active_image_activity.take().unwrap_or_else(|| {
+                                ActivityItem::new(
+                                    Some(source_id),
+                                    ActivityKind::ImageGeneration,
+                                    tr!("activity.generating_image"),
+                                    None,
+                                    false,
+                                )
+                                .with_tool_name(Some("image_generation"))
+                                .with_arguments(prompt)
+                            });
+                            if !conv_id.is_empty() {
+                                state
+                                    .active_image_subagents
+                                    .insert(conv_id.to_owned(), item.clone());
+                            } else {
+                                state.active_image_activity = Some(item.clone());
+                            }
+                            let _ = events.send(DriverEvent::RichActivity(item));
+                        } else {
+                            let item = build_subagent_activity(step, subagent_info);
+                            let _ = events.send(DriverEvent::RichActivity(item));
+                        }
                     }
                 }
             }
@@ -647,7 +842,7 @@ fn handle_stream_event(
                     compaction.finish(CompactionStatus::Failed, unix_time_millis());
                 }
                 let _ = events.send(DriverEvent::CompactionUpdated(compaction));
-                state.streamed_text_this_turn = false;
+                state.streamed_text_this_turn.clear();
                 return;
             }
 
@@ -662,15 +857,55 @@ fn handle_stream_event(
                 return;
             }
 
-            if !state.streamed_text_this_turn
-                && let Some(response) = result
-                    .get("response")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.is_empty())
-            {
-                let _ = events.send(DriverEvent::TextDelta(response.to_owned()));
+            if let Some(response) = result.get("response").and_then(Value::as_str) {
+                if let Some(path) = extract_image_path(response) {
+                    if let Some(mut activity) = state.active_image_activity.take() {
+                        complete_image_activity(&mut activity, &path, events);
+                    } else if let Some((_, mut activity)) =
+                        state.active_image_subagents.drain().next()
+                    {
+                        complete_image_activity(&mut activity, &path, events);
+                    }
+                }
             }
-            state.streamed_text_this_turn = false;
+            if let Some(mut activity) = state.active_image_activity.take() {
+                activity.complete = true;
+                if !success {
+                    activity.failed = true;
+                }
+                let _ = events.send(DriverEvent::RichActivity(activity));
+            }
+            for (_, mut activity) in state.active_image_subagents.drain() {
+                activity.complete = true;
+                if !success {
+                    activity.failed = true;
+                }
+                let _ = events.send(DriverEvent::RichActivity(activity));
+            }
+
+            if let Some(response) = result
+                .get("response")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                if state.streamed_text_this_turn.is_empty() {
+                    let _ = events.send(DriverEvent::TextDelta(response.to_owned()));
+                } else if let Some(remaining) =
+                    response.strip_prefix(&state.streamed_text_this_turn)
+                {
+                    if !remaining.is_empty() {
+                        let _ = events.send(DriverEvent::TextDelta(remaining.to_owned()));
+                    }
+                } else if !state.streamed_text_this_turn.ends_with(response) {
+                    if let Some(pos) = response.find(&state.streamed_text_this_turn) {
+                        let after = &response[pos + state.streamed_text_this_turn.len()..];
+                        if !after.is_empty() {
+                            let _ = events.send(DriverEvent::TextDelta(after.to_owned()));
+                        }
+                    }
+                }
+            }
+            state.streamed_text_this_turn.clear();
 
             if let Some(session_id) = state.session_id.lock().clone()
                 && let Some(title) = crate::antigravity_session::session_title(&session_id)
@@ -696,6 +931,96 @@ fn handle_stream_event(
         }
         _ => {}
     }
+}
+
+fn extract_image_path(text: &str) -> Option<PathBuf> {
+    if let Some(start) = text.find("![")
+        && let Some(open_paren) = text[start..].find('(')
+    {
+        let paren_start = start + open_paren + 1;
+        if let Some(close_paren) = text[paren_start..].find(')') {
+            let raw = text[paren_start..paren_start + close_paren].trim();
+            let clean = raw.strip_prefix("file://").unwrap_or(raw).trim_matches('`');
+            let path = PathBuf::from(clean);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let target = if let Some(rest) = trimmed.strip_prefix("- Path:") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("Path:") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("Generated image is saved at") {
+            rest
+        } else {
+            continue;
+        };
+        let clean = target.trim().trim_matches(|c| c == '`' || c == '"' || c == '\'' || c == '.');
+        let clean = clean.strip_prefix("file://").unwrap_or(clean);
+        let path = PathBuf::from(clean);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    for word in text.split_whitespace() {
+        let clean = word.trim_matches(|c| {
+            c == '`'
+                || c == '"'
+                || c == '\''
+                || c == '('
+                || c == ')'
+                || c == '['
+                || c == ']'
+                || c == '.'
+        });
+        let clean = clean.strip_prefix("file://").unwrap_or(clean);
+        if (clean.starts_with('/')
+            || (clean.len() >= 3
+                && clean.as_bytes()[1] == b':'
+                && (clean.as_bytes()[2] == b'/' || clean.as_bytes()[2] == b'\\')))
+            && (clean.ends_with(".jpg")
+                || clean.ends_with(".jpeg")
+                || clean.ends_with(".png")
+                || clean.ends_with(".webp")
+                || clean.ends_with(".gif"))
+        {
+            let path = PathBuf::from(clean);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn complete_image_activity(
+    activity: &mut crate::model::ActivityItem,
+    image_path: &Path,
+    events: &impl DriverEventSink,
+) {
+    activity.title = tr!("activity.generated_image");
+    activity.complete = true;
+    activity.failed = false;
+    activity.output = Some(image_path.to_string_lossy().into_owned());
+    if let Some(url) = crate::image_generation::data_url_for_path(image_path) {
+        activity.image_urls = vec![url];
+    }
+    let _ = events.send(DriverEvent::RichActivity(activity.clone()));
+}
+
+fn fail_image_activity(
+    activity: &mut crate::model::ActivityItem,
+    detail: Option<String>,
+    events: &impl DriverEventSink,
+) {
+    activity.title = tr!("activity.image_generation_failed");
+    activity.detail = detail.or_else(|| Some(tr!("activity.image_generation_failed")));
+    activity.complete = true;
+    activity.failed = true;
+    let _ = events.send(DriverEvent::RichActivity(activity.clone()));
 }
 
 fn build_tool_activity(step: &Value, cwd: &Path) -> crate::model::ActivityItem {
@@ -1136,6 +1461,224 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_subagent_image_generation_lifecycle() {
+        let (tx, rx) = test_event_channel();
+        let turn_active = Mutex::new(true);
+        let active_compaction = Mutex::new(None);
+        let cancelled = AtomicBool::new(false);
+        let reported_error = Arc::new(AtomicBool::new(false));
+        let session_id_slot = Arc::new(Mutex::new(None));
+        let mut state = StreamState::new(
+            PathBuf::from("/tmp"),
+            session_id_slot,
+            Some("gemini-3.8-flash"),
+            reported_error,
+        );
+
+        // 1. Init
+        handle_stream_event(
+            &json!({
+                "event": "init",
+                "conversation_id": "test-conv-1",
+                "init": { "model": "gemini-3.8-flash" }
+            }),
+            &mut state,
+            &turn_active,
+            &active_compaction,
+            &cancelled,
+            None,
+            None,
+            &tx,
+        );
+
+        // 2. Step 1: tool call invoke_subagent for image-generator
+        handle_stream_event(
+            &json!({
+                "event": "step_update",
+                "step_update": {
+                    "step_index": 1,
+                    "state": "ACTIVE",
+                    "step_type": "tool",
+                    "tool_name": "invoke_subagent",
+                    "tool_info": {
+                        "name": "invoke_subagent",
+                        "parameters": {
+                            "Prompt": "\"Generate a cute cat\"",
+                            "Role": "\"Image Generator\"",
+                            "TypeName": "\"image-generator\""
+                        }
+                    }
+                }
+            }),
+            &mut state,
+            &turn_active,
+            &active_compaction,
+            &cancelled,
+            None,
+            None,
+            &tx,
+        );
+
+        let initial_events: Vec<DriverEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let img_activity = initial_events
+            .iter()
+            .find_map(|e| match e {
+                DriverEvent::RichActivity(item) if item.kind == ActivityKind::ImageGeneration => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("expected ImageGeneration activity");
+        assert_eq!(img_activity.title, tr!("activity.generating_image"));
+        assert!(!img_activity.complete);
+
+        // 3. Step 2: subagent created
+        handle_stream_event(
+            &json!({
+                "event": "step_update",
+                "step_update": {
+                    "step_index": 2,
+                    "state": "DONE",
+                    "step_type": "subagent",
+                    "subagent_info": {
+                        "subagents": [{
+                            "conversation_id": "subagent-conv-123",
+                            "initial_prompt": "\"Generate a cute cat\"",
+                            "role": "Image Generator",
+                            "type_name": "image-generator"
+                        }]
+                    }
+                }
+            }),
+            &mut state,
+            &turn_active,
+            &active_compaction,
+            &cancelled,
+            None,
+            None,
+            &tx,
+        );
+
+        let step2_events: Vec<DriverEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(step2_events.iter().any(|e| matches!(
+            e,
+            DriverEvent::RichActivity(item)
+                if item.kind == ActivityKind::ImageGeneration && !item.complete
+        )));
+
+        // 4. Step 3: Interim agent response
+        handle_stream_event(
+            &json!({
+                "event": "step_update",
+                "step_update": {
+                    "step_index": 3,
+                    "state": "DONE",
+                    "step_type": "agent_response",
+                    "text_delta": "正在为您生成猫咪在天空中飞翔的照片，请稍候...\n"
+                }
+            }),
+            &mut state,
+            &turn_active,
+            &active_compaction,
+            &cancelled,
+            None,
+            None,
+            &tx,
+        );
+
+        // 5. Create a fake image file to simulate subagent output
+        let fake_image =
+            std::env::temp_dir().join(format!("test-cat-{}.jpg", uuid::Uuid::new_v4()));
+        let fake_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00C\x00";
+        std::fs::write(&fake_image, fake_bytes).unwrap();
+
+        // 6. Step 4: System message with image path
+        handle_stream_event(
+            &json!({
+                "event": "step_update",
+                "step_update": {
+                    "step_index": 4,
+                    "state": "DONE",
+                    "step_type": "system_message",
+                    "content": format!(
+                        "<SYSTEM_MESSAGE>\n[Message] sender=subagent-conv-123 content=I have generated the requested image:\n\n- Path: `{}`\n</SYSTEM_MESSAGE>",
+                        fake_image.display()
+                    )
+                }
+            }),
+            &mut state,
+            &turn_active,
+            &active_compaction,
+            &cancelled,
+            None,
+            None,
+            &tx,
+        );
+
+        let system_events: Vec<DriverEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let completed_activity = system_events
+            .iter()
+            .find_map(|e| match e {
+                DriverEvent::RichActivity(item) if item.kind == ActivityKind::ImageGeneration => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("expected completed ImageGeneration activity");
+        assert_eq!(completed_activity.title, tr!("activity.generated_image"));
+        assert!(completed_activity.complete);
+        assert!(!completed_activity.failed);
+        assert_eq!(completed_activity.image_urls.len(), 1);
+        assert!(completed_activity.image_urls[0].starts_with("data:image/jpeg;base64,"));
+
+        // 7. Step 5: Final agent response and result
+        handle_stream_event(
+            &json!({
+                "event": "step_update",
+                "step_update": {
+                    "step_index": 5,
+                    "state": "DONE",
+                    "step_type": "agent_response",
+                    "text_delta": format!("已为您生成：\n\n![cat]({})\n", fake_image.display())
+                }
+            }),
+            &mut state,
+            &turn_active,
+            &active_compaction,
+            &cancelled,
+            None,
+            None,
+            &tx,
+        );
+
+        handle_stream_event(
+            &json!({
+                "event": "result",
+                "result": {
+                    "conversation_id": "test-conv-1",
+                    "status": "SUCCESS",
+                    "response": format!(
+                        "正在为您生成猫咪在天空中飞翔的照片，请稍候...\n已为您生成：\n\n![cat]({})\n",
+                        fake_image.display()
+                    )
+                }
+            }),
+            &mut state,
+            &turn_active,
+            &active_compaction,
+            &cancelled,
+            None,
+            None,
+            &tx,
+        );
+
+        let final_events: Vec<DriverEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(final_events.iter().any(|e| matches!(e, DriverEvent::TurnFinished { success: true, .. })));
+
+        let _ = std::fs::remove_file(fake_image);
+    }
+
+    #[test]
     #[ignore = "requires an installed, authenticated agy"]
     fn antigravity_live_smoke_against_real_cli() {
         let binary = crate::command_env::find_executable("agy").expect("agy is not installed");
@@ -1277,6 +1820,54 @@ mod tests {
             "imported history should contain turn messages"
         );
 
+        let _ = std::fs::remove_dir_all(workdir);
+    }
+
+    #[test]
+    #[ignore = "requires an installed, authenticated agy"]
+    fn test_antigravity_image_generation_stream() {
+        let binary = crate::command_env::find_executable("agy").expect("agy is not installed");
+        let workdir = std::env::temp_dir().join(format!("waku-agy-image-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workdir).unwrap();
+
+        let (tx, rx) = test_event_channel();
+        let driver = AntigravityDriver::start(
+            DriverStartOptions {
+                binary,
+                cwd: workdir.clone(),
+                mode: RuntimeMode::FullAccess,
+                execution_policy: ExecutionPolicy::Interactive,
+                model: Some("gemini-3.8-flash".to_owned()),
+                reasoning_effort: Some("low".to_owned()),
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                provider_cursor: None,
+                delegation_session_path: None,
+                delegation_registry_dir: None,
+            },
+            tx,
+        )
+        .expect("start AntigravityDriver");
+
+        driver.prompt("生成一张猫在天上飞的照片".to_owned());
+
+        let start = std::time::Instant::now();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(event) => {
+                    let elapsed = start.elapsed().as_secs_f32();
+                    println!("[{elapsed:.2}s] EVENT: {event:?}");
+                    if matches!(event, DriverEvent::TurnFinished { .. } | DriverEvent::ProcessExited) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    println!("Recv timeout / error: {e:?}");
+                    break;
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(workdir);
     }
 }

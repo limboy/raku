@@ -1690,7 +1690,19 @@ fn render_image(url: &str, alt: &str, ctx: &Ctx) -> AnyElement {
     let id = SharedString::from(format!("image-{}-{}", key.row, key.index));
     let image = match decode_data_url(url) {
         Some(decoded) => img(decoded).id(id),
-        None => img(url.to_owned()).id(id),
+        None => {
+            if let Some(path_str) = url.strip_prefix("file://") {
+                img(std::path::PathBuf::from(path_str)).id(id)
+            } else if url.starts_with('/')
+                || (url.len() >= 3
+                    && url.as_bytes()[1] == b':'
+                    && (url.as_bytes()[2] == b'/' || url.as_bytes()[2] == b'\\'))
+            {
+                img(std::path::PathBuf::from(url)).id(id)
+            } else {
+                img(url.to_owned()).id(id)
+            }
+        }
     };
     div()
         .w_full()
