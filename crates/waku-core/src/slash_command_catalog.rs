@@ -34,7 +34,6 @@ pub(crate) fn discover(
         ProviderKind::Antigravity => discover_antigravity(binary, project_root),
         ProviderKind::Codex => discover_codex(binary, project_root),
         ProviderKind::OpenCode => discover_opencode(binary, project_root),
-        ProviderKind::OhMyPi => discover_oh_my_pi(binary, project_root),
         ProviderKind::Pi => discover_pi(binary, project_root),
     }
 }
@@ -213,21 +212,6 @@ fn discover_pi(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> 
     Some(parse_pi_commands(&value))
 }
 
-fn discover_oh_my_pi(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> {
-    // OMP publishes its full registry at RPC startup; no request or provider
-    // session is needed. A blank frame lets stdin close cleanly on older builds.
-    let value = probe_json_lines(
-        binary,
-        &["--mode", "rpc", "--no-session"],
-        project_root,
-        b"\n",
-        CLI_PROBE_TIMEOUT,
-        |value| value.get("type").and_then(Value::as_str) == Some("available_commands_update"),
-        &[],
-    )?;
-    Some(parse_oh_my_pi_commands(&value))
-}
-
 fn parse_claude_commands(value: &Value) -> Vec<SlashCommand> {
     value
         .pointer("/response/response/commands")
@@ -369,35 +353,6 @@ pub(crate) fn parse_pi_commands(value: &Value) -> Vec<SlashCommand> {
                 name,
                 entry.get("description").and_then(Value::as_str),
                 scope,
-                entry.pointer("/input/hint").and_then(Value::as_str),
-                None,
-            )
-        })
-        .take(COMMAND_CATALOG_CAP)
-        .collect()
-}
-
-pub(crate) fn parse_oh_my_pi_commands(value: &Value) -> Vec<SlashCommand> {
-    value
-        .get("commands")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let source = entry.get("source").and_then(Value::as_str);
-            let raw_name = entry.get("name")?.as_str()?;
-            let name = source
-                .filter(|source| *source == "skill")
-                .and_then(|_| raw_name.strip_prefix("skill:"))
-                .unwrap_or(raw_name);
-            command(
-                name,
-                entry.get("description").and_then(Value::as_str),
-                if source == Some("skill") {
-                    CommandScope::Skill
-                } else {
-                    CommandScope::Builtin
-                },
                 entry.pointer("/input/hint").and_then(Value::as_str),
                 None,
             )
@@ -603,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_pi_and_oh_my_pi_native_shapes() {
+    fn parses_pi_native_shapes() {
         let pi = parse_pi_commands(&json!({"data": {"commands": [
             {"name": "deploy", "description": "Deploy", "source": "prompt", "sourceInfo": {"scope": "project"}},
             {"name": "skill:verify", "description": "Verify", "source": "skill"},
@@ -613,17 +568,6 @@ mod tests {
         assert_eq!(pi[1].name, "verify");
         assert_eq!(pi[1].scope, CommandScope::Skill);
         assert_eq!(pi[2].scope, CommandScope::Builtin);
-
-        let omp = parse_oh_my_pi_commands(&json!({
-            "type": "available_commands_update",
-            "commands": [
-                {"name": "compact", "description": "Compact", "source": "builtin", "input": {"hint": "[focus]"}},
-                {"name": "skill:verify", "description": "Verify", "source": "skill"}
-            ]
-        }));
-        assert_eq!(omp[0].argument_hint.as_deref(), Some("[focus]"));
-        assert_eq!(omp[1].name, "verify");
-        assert_eq!(omp[1].scope, CommandScope::Skill);
     }
 
     #[test]

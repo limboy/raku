@@ -236,7 +236,7 @@ fn escape_stop_requires_a_matching_second_press_and_expires() {
 
 #[test]
 fn standalone_compaction_offers_stop_and_escape_confirmation_is_scoped_to_the_operation() {
-    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::OhMyPi);
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Pi);
     session.active_compaction = Some("first".into());
     assert_eq!(session.status, SessionStatus::Idle);
     assert_eq!(

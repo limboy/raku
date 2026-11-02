@@ -136,7 +136,7 @@ impl ProviderKind {
                 model_discovery: true,
                 goals: false,
             },
-            Self::OhMyPi | Self::Pi => ProviderCapabilities {
+            Self::Pi => ProviderCapabilities {
                 access_modes: &[RuntimeMode::FullAccess],
                 conversation: CONVERSATION,
                 compaction: CompactionCapabilities {
@@ -210,7 +210,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(ordered, capabilities.access_modes);
         }
-        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+        for provider in [ProviderKind::Pi] {
             assert_eq!(
                 provider.capabilities().access_modes,
                 &[RuntimeMode::FullAccess]

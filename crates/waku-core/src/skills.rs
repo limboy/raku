@@ -80,10 +80,6 @@ pub fn user_skill_locations() -> Vec<SkillLocation> {
         home_join(".pi/agent/skills"),
     );
     push(
-        SkillSource::Provider(ProviderKind::OhMyPi),
-        home_join(".omp/agent/skills"),
-    );
-    push(
         SkillSource::Provider(ProviderKind::Antigravity),
         home_join(".gemini/antigravity-cli/skills"),
     );
@@ -108,7 +104,6 @@ pub fn project_skill_locations(project_root: &Path, project_name: &str) -> Vec<S
             ".opencode/skills",
         ),
         (SkillSource::Provider(ProviderKind::Pi), ".pi/skills"),
-        (SkillSource::Provider(ProviderKind::OhMyPi), ".omp/skills"),
         (
             SkillSource::Provider(ProviderKind::Antigravity),
             ".agent/skills",

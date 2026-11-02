@@ -1,10 +1,4 @@
-//! Pi RPC transport, shared by Pi and Oh My Pi.
-//!
-//! Oh My Pi is a fork of Pi that kept the newline-delimited RPC transport but
-//! renamed part of the surface: forking is `branch`, a run settles on
-//! `agent_end` instead of `agent_settled`, and oversized frames are chunked
-//! once protocol v2 is negotiated. [`PiFlavor`] carries those differences so
-//! both providers share one transport instead of two near-copies.
+//! Pi RPC transport.
 
 use super::compaction::CompactionTracker;
 use std::collections::HashMap;
@@ -13,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
@@ -34,14 +28,10 @@ use crate::model::{
 };
 
 /// The tool allowlist a review subtask is launched with.
-///
-/// Both Pi and Oh My Pi take the same read-tool names, and an allowlist that
-/// omits every mutating tool is stronger than an approval prompt nobody can
-/// answer: the capability is not there to be requested.
 const REVIEW_READ_ONLY_TOOLS: &str = "read,grep,glob,lsp,web_search";
 
-/// The arguments a review subtask is launched with. No `--approve` / `--yolo`:
-/// those would auto-approve exactly the writes the allowlist removes.
+/// The arguments a review subtask is launched with. No `--approve`:
+/// that would auto-approve exactly the writes the allowlist removes.
 fn review_read_only_args() -> [&'static str; 4] {
     ["--mode", "rpc", "--tools", REVIEW_READ_ONLY_TOOLS]
 }
@@ -55,134 +45,79 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// timed-out `get_state` there fails the whole session.
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Oh My Pi has to start a whole second agent to clone a session, so it needs
-/// more headroom than a request against the already-running process.
-const CLONE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Oh My Pi refuses to reassemble beyond this, so neither should Waku.
-const MAX_REASSEMBLED_FRAME_BYTES: usize = 64 * 1024 * 1024;
-
 /// Only a possible standalone period waits for the completed message. Prose
 /// streams immediately, and even malformed whitespace streams stay bounded.
 const MAX_PENDING_PLACEHOLDER_BYTES: usize = 256;
 
 /// Which dialect of the Pi RPC protocol a session speaks.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PiFlavor {
+    #[default]
     Pi,
-    OhMyPi,
 }
 
 impl PiFlavor {
     fn provider(self) -> crate::model::ProviderKind {
-        match self {
-            Self::Pi => crate::model::ProviderKind::Pi,
-            Self::OhMyPi => crate::model::ProviderKind::OhMyPi,
-        }
+        crate::model::ProviderKind::Pi
     }
 
     fn display_name(self) -> &'static str {
-        match self {
-            Self::Pi => "Pi",
-            Self::OhMyPi => "Oh My Pi",
-        }
+        "Pi"
     }
 
     /// Pi has no permission system and only needs project-local files trusted;
-    /// Oh My Pi does have one, and Waku only ever runs these in Full access.
+    /// Waku runs these in Full access via `--approve`.
     fn full_access_arg(self) -> &'static str {
-        match self {
-            Self::Pi => "--approve",
-            Self::OhMyPi => "--yolo",
-        }
+        "--approve"
     }
 
     /// The event that means the run is over and no more work is scheduled.
     fn settled_event(self) -> &'static str {
-        match self {
-            Self::Pi => "agent_settled",
-            Self::OhMyPi => "agent_end",
-        }
+        "agent_settled"
     }
 
     fn session_info_event(self) -> &'static str {
-        match self {
-            Self::Pi => "session_info_changed",
-            Self::OhMyPi => "session_info_update",
-        }
+        "session_info_changed"
     }
 
     fn session_info_title_field(self) -> &'static str {
-        match self {
-            Self::Pi => "name",
-            Self::OhMyPi => "title",
-        }
+        "name"
     }
 
     fn branch_messages_command(self) -> &'static str {
-        match self {
-            Self::Pi => "get_fork_messages",
-            Self::OhMyPi => "get_branch_messages",
-        }
+        "get_fork_messages"
     }
 
     fn branch_command(self) -> &'static str {
-        match self {
-            Self::Pi => "fork",
-            Self::OhMyPi => "branch",
-        }
+        "fork"
     }
 
-    /// Oh My Pi dropped Pi's opt-out env var; it gates its update check on a
-    /// setting instead, and does it off the startup path either way.
     fn skips_version_check_by_env(self) -> bool {
-        matches!(self, Self::Pi)
-    }
-
-    /// Only Oh My Pi chunks oversized frames, and only after it is asked to.
-    fn negotiates_protocol_v2(self) -> bool {
-        matches!(self, Self::OhMyPi)
+        true
     }
 
     fn cursor(self, session_id: String, session_file: Option<PathBuf>) -> ProviderResumeCursor {
-        match self {
-            Self::Pi => ProviderResumeCursor::Pi {
-                session_id,
-                session_file,
-            },
-            Self::OhMyPi => ProviderResumeCursor::OhMyPi {
-                session_id,
-                session_file,
-            },
+        ProviderResumeCursor::Pi {
+            session_id,
+            session_file,
         }
     }
 
     fn session_file_from_cursor(self, cursor: &ProviderResumeCursor) -> Option<&PathBuf> {
-        match (self, cursor) {
-            (Self::Pi, ProviderResumeCursor::Pi { session_file, .. })
-            | (Self::OhMyPi, ProviderResumeCursor::OhMyPi { session_file, .. }) => {
-                session_file.as_ref()
-            }
+        match cursor {
+            ProviderResumeCursor::Pi { session_file, .. } => session_file.as_ref(),
             _ => None,
         }
     }
 
     fn owns_cursor(self, cursor: &ProviderResumeCursor) -> bool {
-        matches!(
-            (self, cursor),
-            (Self::Pi, ProviderResumeCursor::Pi { .. })
-                | (Self::OhMyPi, ProviderResumeCursor::OhMyPi { .. })
-        )
+        matches!(cursor, ProviderResumeCursor::Pi { .. })
     }
 }
 
 enum CommandMessage {
     Compact(CompactionRequest),
     RefreshContextUsage,
-    AutoTitle {
-        request: AutoTitleRequest,
-        phase: AutoTitlePhase,
-    },
     Prompt(String),
     Steer(String),
     Cancel,
@@ -201,187 +136,11 @@ enum CommandMessage {
 
 enum PendingResponse {
     Compact(ContextCompaction),
-    AutoTitle {
-        request: AutoTitleRequest,
-        phase: AutoTitlePhase,
-    },
     Request(Sender<Result<Value, String>>),
     Prompt,
 }
 
 type PendingResponses = Arc<Mutex<HashMap<String, PendingResponse>>>;
-
-#[derive(Clone, Copy)]
-enum AutoTitlePhase {
-    CheckName,
-    Generate,
-}
-
-#[derive(Clone)]
-struct AutoTitleRequest {
-    session_id: String,
-    started: Instant,
-}
-
-/// OMP enables automatic naming only in its TUI. RPC hosts have to ask its
-/// native `/rename` command to use the configured title model themselves.
-/// This state belongs to the native session, not to an individual agent turn:
-/// the background rename can finish after `agent_end`.
-#[derive(Clone, Default)]
-struct PiAutoTitle {
-    state: Arc<Mutex<PiAutoTitleState>>,
-    disabled: bool,
-}
-
-#[derive(Default)]
-struct PiAutoTitleState {
-    session_id: Option<String>,
-    named: bool,
-    attempted: bool,
-    in_flight: Option<Instant>,
-    suppress_rename_output: bool,
-}
-
-impl PiAutoTitle {
-    fn mark_generating(&self) {
-        let mut state = self.state.lock();
-        state.suppress_rename_output = true;
-    }
-
-    fn observe_state(&self, flavor: PiFlavor, response: &Value) {
-        if flavor != PiFlavor::OhMyPi || self.disabled {
-            return;
-        }
-        let Some(session_id) = response.pointer("/data/sessionId").and_then(Value::as_str) else {
-            return;
-        };
-        let mut state = self.state.lock();
-        if state.session_id.as_deref() != Some(session_id) {
-            *state = PiAutoTitleState {
-                session_id: Some(session_id.to_owned()),
-                ..Default::default()
-            };
-        }
-        state.named = response
-            .pointer("/data/sessionName")
-            .and_then(Value::as_str)
-            .is_some_and(|title| !title.trim().is_empty());
-    }
-
-    fn prepare_prompt(&self, prompt: &str) {
-        let mut state = self.state.lock();
-        if prompt.split_whitespace().next() == Some("/rename") {
-            // The explicit command owns both the title and its output. OMP's
-            // title revision also invalidates an older background rename.
-            state.in_flight = None;
-            state.suppress_rename_output = false;
-            state.attempted = true;
-        } else {
-            state.attempted = false;
-            if state
-                .in_flight
-                .is_some_and(|started| started.elapsed() >= Duration::from_secs(60))
-            {
-                state.in_flight = None;
-                state.suppress_rename_output = false;
-            }
-        }
-    }
-
-    fn cancel(&self) {
-        let mut state = self.state.lock();
-        state.in_flight = None;
-        state.attempted = true;
-    }
-
-    fn start_restored(&self, response: &Value) -> Option<AutoTitleRequest> {
-        response
-            .pointer("/data/messageCount")
-            .and_then(Value::as_u64)
-            .filter(|count| *count > 0)?;
-        self.start()
-    }
-
-    fn start(&self) -> Option<AutoTitleRequest> {
-        if self.disabled {
-            return None;
-        }
-        let mut state = self.state.lock();
-        if state.named || state.attempted || state.in_flight.is_some() {
-            return None;
-        }
-        let session_id = state.session_id.clone()?;
-        let started = Instant::now();
-        state.attempted = true;
-        state.in_flight = Some(started);
-        Some(AutoTitleRequest {
-            session_id,
-            started,
-        })
-    }
-
-    fn is_current(&self, request: &AutoTitleRequest) -> bool {
-        let state = self.state.lock();
-        state.session_id.as_deref() == Some(&request.session_id)
-            && state.in_flight == Some(request.started)
-    }
-
-    fn finish(&self, request: &AutoTitleRequest) {
-        let mut state = self.state.lock();
-        if state.session_id.as_deref() == Some(&request.session_id)
-            && state.in_flight == Some(request.started)
-        {
-            state.in_flight = None;
-            state.suppress_rename_output = false;
-        }
-    }
-
-    fn observe_title(&self, session_id: Option<&str>, title: Option<&str>) -> bool {
-        let mut state = self.state.lock();
-        if let (Some(received), Some(current)) = (session_id, state.session_id.as_deref())
-            && received != current
-        {
-            return false;
-        }
-        state.named = title.is_some();
-        if title.is_some() {
-            state.in_flight = None;
-        }
-        true
-    }
-
-    fn consume_output(&self, text: &str) -> bool {
-        let mut state = self.state.lock();
-        // RPC command_output has no request id. Match only OMP's native
-        // rename reports so unrelated user commands continue to render.
-        let renamed = text.starts_with("Session renamed to ");
-        if !renamed
-            && text != "Could not generate a session title. Use /rename <title> to set one."
-            && text != "Session name not changed (a user-set name takes precedence)."
-            && !text.starts_with("Rename failed: ")
-        {
-            return false;
-        }
-        if !state.suppress_rename_output && state.in_flight.is_none() {
-            return false;
-        }
-        state.suppress_rename_output = false;
-        state.in_flight = None;
-        if !renamed {
-            eprintln!("Oh My Pi automatic title: {text}");
-        }
-        true
-    }
-}
-
-fn sanitize_ohmypi_title(title: &str) -> Option<String> {
-    let sanitized: String = title
-        .chars()
-        .filter(|c| !matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{10ffff}'))
-        .collect();
-    let trimmed = waku_protocol::title::without_leading_icons(&sanitized);
-    (!trimmed.is_empty()).then(|| trimmed.to_owned())
-}
 
 fn interrupt_pending_compactions(pending: &PendingResponses, events: &impl DriverEventSink) {
     for entry in pending.lock().values_mut() {
@@ -435,10 +194,10 @@ fn configure_pi_delegation_command(
 
 impl PiDriver {
     pub fn start(
-        flavor: PiFlavor,
         options: DriverStartOptions,
         events: DriverEventSender,
     ) -> anyhow::Result<Self> {
+        let flavor = PiFlavor::Pi;
         let DriverStartOptions {
             binary,
             cwd,
@@ -524,11 +283,6 @@ impl PiDriver {
 
         let (commands, command_rx) = unbounded();
         let pending = Arc::new(Mutex::new(HashMap::new()));
-        let auto_title = PiAutoTitle {
-            disabled: review_read_only,
-            ..Default::default()
-        };
-        let reader_auto_title = auto_title.clone();
         let reader_pending = pending.clone();
         let reader_commands = commands.clone();
         let reader_events = events.clone();
@@ -536,40 +290,19 @@ impl PiDriver {
             thread::Builder::new()
                 .name("waku-pi-reader".into())
                 .spawn(move || {
-                    let mut stream_state = PiStreamState {
-                        auto_title: reader_auto_title,
-                        ..Default::default()
-                    };
-                    let mut chunks = ChunkAssembly::default();
+                    let mut stream_state = PiStreamState::default();
                     for line in BufReader::new(stdout).lines() {
                         match line {
                             Ok(line) if !line.trim().is_empty() => {
                                 match serde_json::from_str::<Value>(&line) {
-                                    Ok(value) => {
-                                        // A chunked frame arrives as an
-                                        // uninterrupted run of `rpc_chunk`
-                                        // envelopes that reassemble into one
-                                        // logical message.
-                                        match chunks.accept(value) {
-                                            Ok(Some(value)) => handle_pi_message(
-                                                flavor,
-                                                value,
-                                                &reader_pending,
-                                                &reader_commands,
-                                                &reader_events,
-                                                &mut stream_state,
-                                            ),
-                                            Ok(None) => {}
-                                            Err(error) => {
-                                                let _ =
-                                                    reader_events.send(DriverEvent::Error(tr!(
-                                                        "errors.provider_transport_read",
-                                                        provider = flavor.display_name(),
-                                                        error = error
-                                                    )));
-                                            }
-                                        }
-                                    }
+                                    Ok(value) => handle_pi_message(
+                                        flavor,
+                                        value,
+                                        &reader_pending,
+                                        &reader_commands,
+                                        &reader_events,
+                                        &mut stream_state,
+                                    ),
                                     Err(error) => {
                                         let _ = reader_events.send(DriverEvent::Error(tr!(
                                             "errors.provider_invalid_json",
@@ -608,19 +341,6 @@ impl PiDriver {
                 let mut stdin = stdin;
                 let mut next_request_id = 0_u64;
                 let initialize = (|| -> Result<Value, String> {
-                    // The agent does not answer until it has finished loading,
-                    // so every handshake request gets the startup timeout.
-                    // Negotiate before anything else so a large first response
-                    // arrives chunked rather than shrunk to an error frame.
-                    if flavor.negotiates_protocol_v2() {
-                        send_request_with_timeout(
-                            &mut stdin,
-                            &writer_pending,
-                            &mut next_request_id,
-                            json!({"type": "negotiate_protocol", "protocolVersion": 2}),
-                            INITIALIZE_TIMEOUT,
-                        )?;
-                    }
                     let _ = send_request_with_timeout(
                         &mut stdin,
                         &writer_pending,
@@ -713,7 +433,6 @@ impl PiDriver {
                     });
                     return;
                 };
-                auto_title.observe_state(flavor, &state);
                 let initial_usage = send_request(
                     &mut stdin,
                     &writer_pending,
@@ -737,36 +456,13 @@ impl PiDriver {
                     .and_then(Value::as_str)
                     .filter(|title| !title.trim().is_empty())
                 {
-                    let title = if flavor == PiFlavor::OhMyPi {
-                        sanitize_ohmypi_title(title)
-                    } else {
-                        Some(title.to_owned())
-                    };
+                    let title = Some(title.to_owned());
                     let _ =
                         writer_events.send(DriverEvent::AutoTitleUpdated(title));
                 }
 
-                // Repair older unnamed conversations when their native
-                // history is reattached, without waiting for another reply.
-                // The session state was already verified to be unnamed above.
-                if let Some(request) = auto_title.start_restored(&state)
-                    && let Err(error) = send_auto_title_request(
-                        &mut stdin,
-                        &writer_pending,
-                        &mut next_request_id,
-                        &auto_title,
-                        request.clone(),
-                        AutoTitlePhase::Generate,
-                    )
-                {
-                    auto_title.finish(&request);
-                    eprintln!("Oh My Pi automatic title: {error}");
-                }
-
-                // Pi reports extension commands, prompts and skills on request;
-                // Oh My Pi pushes its registry at startup and after reloads.
-                if flavor == PiFlavor::Pi
-                    && let Ok(catalog) = send_request(
+                // Pi reports extension commands, prompts and skills on request.
+                if let Ok(catalog) = send_request(
                         &mut stdin,
                         &writer_pending,
                         &mut next_request_id,
@@ -786,7 +482,7 @@ impl PiDriver {
                 while let Ok(message) = command_rx.recv() {
                     match message {
                         CommandMessage::RefreshContextUsage => {
-                            // Compaction can finish without a model call. OMP
+                            // Compaction can finish without a model call. Pi
                             // persists tokensAfter but omits it from the RPC
                             // result; fetch its rebased occupancy on this worker.
                             if let Ok(stats) = send_request(
@@ -801,26 +497,6 @@ impl PiDriver {
                                     context_tokens,
                                     context_window,
                                 });
-                            }
-                        }
-                        CommandMessage::AutoTitle { request, phase } => {
-                            if !auto_title.is_current(&request) {
-                                continue;
-                            }
-                            if matches!(phase, AutoTitlePhase::Generate) && auto_title.state.lock().named {
-                                auto_title.finish(&request);
-                                continue;
-                            }
-                            if let Err(error) = send_auto_title_request(
-                                &mut stdin,
-                                &writer_pending,
-                                &mut next_request_id,
-                                &auto_title,
-                                request.clone(),
-                                phase,
-                            ) {
-                                auto_title.finish(&request);
-                                eprintln!("Oh My Pi automatic title: {error}");
                             }
                         }
                         CommandMessage::Compact(request) => {
@@ -838,7 +514,6 @@ impl PiDriver {
                             }
                         }
                         CommandMessage::Prompt(prompt) => {
-                            auto_title.prepare_prompt(&prompt);
                             let result = send_prompt(
                                 &mut stdin,
                                 &writer_pending,
@@ -881,7 +556,6 @@ impl PiDriver {
                             }
                         }
                         CommandMessage::Cancel => {
-                            auto_title.cancel();
                             interrupt_pending_compactions(&writer_pending, &writer_events);
                             if let Err(error) = send_request(
                                 &mut stdin,
@@ -980,8 +654,6 @@ impl PiDriver {
                                 &mut stdin,
                                 &writer_pending,
                                 &mut next_request_id,
-                                &binary,
-                                &cwd,
                                 &cursor,
                                 turns,
                                 false,
@@ -1000,8 +672,6 @@ impl PiDriver {
                                 &mut stdin,
                                 &writer_pending,
                                 &mut next_request_id,
-                                &binary,
-                                &cwd,
                                 &cursor,
                                 turns_to_remove,
                                 true,
@@ -1204,36 +874,6 @@ fn send_request_with_timeout(
     }
 }
 
-fn send_auto_title_request(
-    stdin: &mut impl Write,
-    pending: &PendingResponses,
-    next_request_id: &mut u64,
-    auto_title: &PiAutoTitle,
-    request: AutoTitleRequest,
-    phase: AutoTitlePhase,
-) -> Result<(), String> {
-    if matches!(phase, AutoTitlePhase::Generate) {
-        auto_title.mark_generating();
-    }
-    *next_request_id += 1;
-    let id = format!("waku-{}", next_request_id);
-    pending
-        .lock()
-        .insert(id.clone(), PendingResponse::AutoTitle { request, phase });
-    let mut request = match phase {
-        AutoTitlePhase::CheckName => json!({"type": "get_state"}),
-        AutoTitlePhase::Generate => json!({"type": "prompt", "message": "/rename"}),
-    };
-    request["id"] = json!(id);
-    // Both the name check and /rename admission are asynchronous. Waiting for
-    // the title model here would keep the writer from sending Stop or steer.
-    if let Err(error) = write_json_line(stdin, &request) {
-        pending.lock().remove(&id);
-        return Err(format!("transport write failed: {error}"));
-    }
-    Ok(())
-}
-
 fn send_prompt(
     stdin: &mut impl Write,
     pending: &PendingResponses,
@@ -1248,14 +888,12 @@ fn send_prompt(
         pending.retain(|_, response| {
             matches!(
                 response,
-                PendingResponse::Request(_)
-                    | PendingResponse::Compact(_)
-                    | PendingResponse::AutoTitle { .. }
+                PendingResponse::Request(_) | PendingResponse::Compact(_)
             )
         });
         pending.insert(id.clone(), PendingResponse::Prompt);
     }
-    // OMP built-ins can hold the prompt response until compaction or another
+    // Built-ins can hold the prompt response until compaction or another
     // command finishes. Do not apply the short control-RPC timeout or block
     // the writer from sending abort while waiting for that response.
     if let Err(error) = write_json_line(
@@ -1307,99 +945,6 @@ fn cursor_from_state(flavor: PiFlavor, response: &Value) -> Option<ProviderResum
     Some(flavor.cursor(session_id.to_owned(), session_file))
 }
 
-/// Reassembles the `rpc_chunk` runs Oh My Pi emits for frames over its 1 MiB
-/// stdout ceiling. Without this a large tool result degrades to an error frame
-/// and the activity row renders empty.
-#[derive(Default)]
-struct ChunkAssembly {
-    active: Option<PendingChunks>,
-}
-
-struct PendingChunks {
-    chunk_id: String,
-    count: u64,
-    next_index: u64,
-    byte_length: usize,
-    data: Vec<u8>,
-}
-
-impl ChunkAssembly {
-    /// Returns the logical message to dispatch, or `None` while a chunked
-    /// frame is still arriving.
-    fn accept(&mut self, value: Value) -> Result<Option<Value>, String> {
-        if value.get("type").and_then(Value::as_str) != Some("rpc_chunk") {
-            // The run must be uninterrupted, so anything else invalidates a
-            // partial frame rather than silently splicing around it.
-            if self.active.take().is_some() {
-                return Err("chunked frame was interrupted".to_owned());
-            }
-            return Ok(Some(value));
-        }
-        let (chunk_id, index, count, byte_length, data) = (|| {
-            Some((
-                value.get("chunkId").and_then(Value::as_str)?,
-                value.get("index").and_then(Value::as_u64)?,
-                value.get("count").and_then(Value::as_u64)?,
-                value.get("byteLength").and_then(Value::as_u64)?,
-                value.get("data").and_then(Value::as_str)?,
-            ))
-        })()
-        .ok_or_else(|| "chunk frame was malformed".to_owned())?;
-        let byte_length = usize::try_from(byte_length)
-            .map_err(|_| "chunked frame exceeds the reassembly limit".to_owned())?;
-        if count == 0 || index >= count {
-            self.active = None;
-            return Err("chunk frame was malformed".to_owned());
-        }
-        if byte_length > MAX_REASSEMBLED_FRAME_BYTES {
-            self.active = None;
-            return Err("chunked frame exceeds the reassembly limit".to_owned());
-        }
-        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
-            .map_err(|error| format!("chunk payload was not valid base64: {error}"))?;
-
-        let pending = match self.active.take() {
-            Some(pending)
-                if pending.chunk_id == chunk_id
-                    && pending.count == count
-                    && pending.byte_length == byte_length
-                    && pending.next_index == index =>
-            {
-                pending
-            }
-            Some(_) => {
-                return Err("chunked frame was interrupted".to_owned());
-            }
-            None if index == 0 => PendingChunks {
-                chunk_id: chunk_id.to_owned(),
-                count,
-                next_index: 0,
-                byte_length,
-                data: Vec::with_capacity(byte_length),
-            },
-            None => return Err("chunked frame started mid-sequence".to_owned()),
-        };
-        let mut pending = pending;
-        pending.data.extend_from_slice(&decoded);
-        pending.next_index += 1;
-        if pending.data.len() > pending.byte_length {
-            return Err("chunked frame overran its declared length".to_owned());
-        }
-        if pending.next_index < pending.count {
-            self.active = Some(pending);
-            return Ok(None);
-        }
-        if pending.data.len() != pending.byte_length {
-            return Err("chunked frame did not match its declared length".to_owned());
-        }
-        let text = String::from_utf8(pending.data)
-            .map_err(|_| "chunked frame was not valid UTF-8".to_owned())?;
-        serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|error| format!("chunked frame was not valid JSON: {error}"))
-    }
-}
-
 /// Pi already computes context occupancy for its own footer. Prefer that
 /// native value when session stats are available, and use the active model in
 /// `get_state` for the window before the first assistant message arrives.
@@ -1438,14 +983,11 @@ fn pi_message_context_tokens(message: &Value) -> Option<u64> {
         })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn fork_pi_session(
     flavor: PiFlavor,
     stdin: &mut impl Write,
     pending: &PendingResponses,
     next_request_id: &mut u64,
-    binary: &Path,
-    cwd: &Path,
     original_cursor: &ProviderResumeCursor,
     turns_to_remove: usize,
     restore_original: bool,
@@ -1461,16 +1003,6 @@ fn fork_pi_session(
         .pointer("/data/messages")
         .and_then(Value::as_array)
         .ok_or_else(|| format!("{name} returned an invalid fork-message list"))?;
-
-    // Keeping every turn is a whole-session copy, which Pi does in place and
-    // Oh My Pi only does at launch. The out-of-process copy leaves this
-    // session untouched, so it never needs restoring afterwards.
-    if turns_to_remove == 0 && flavor == PiFlavor::OhMyPi {
-        let session_file = flavor
-            .session_file_from_cursor(original_cursor)
-            .ok_or_else(|| format!("{name}'s original session file is unavailable"))?;
-        return clone_ohmypi_session(binary, cwd, session_file);
-    }
 
     let request = pi_fork_request(flavor, messages, turns_to_remove)?;
     let fork = send_request(stdin, pending, next_request_id, request)?;
@@ -1548,77 +1080,6 @@ fn pi_fork_request(
     }
 }
 
-/// Copies a whole Oh My Pi session by launching a throwaway agent with
-/// `--fork`, which is the only place it exposes a full-session copy, then
-/// reading back the session the copy landed in.
-fn clone_ohmypi_session(
-    binary: &Path,
-    cwd: &Path,
-    session_file: &Path,
-) -> Result<ProviderResumeCursor, String> {
-    let mut command = crate::command_env::command(binary);
-    let command = command
-        .args(["--mode", "rpc"])
-        .arg(PiFlavor::OhMyPi.full_access_arg())
-        .arg("--fork")
-        .arg(session_file)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = crate::command_env::spawn(command)
-        .map_err(|error| format!("could not start Oh My Pi to copy the session: {error}"))?;
-    let result = (|| {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Oh My Pi stdin unavailable".to_owned())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "Oh My Pi stdout unavailable".to_owned())?;
-        let (tx, rx) = bounded(1);
-        thread::Builder::new()
-            .name("waku-ohmypi-clone".into())
-            .spawn(move || {
-                let mut chunks = ChunkAssembly::default();
-                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                    let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                        continue;
-                    };
-                    let Ok(Some(value)) = chunks.accept(value) else {
-                        continue;
-                    };
-                    if value.get("id").and_then(Value::as_str) == Some("waku-clone") {
-                        let _ = tx.send(value);
-                        break;
-                    }
-                }
-            })
-            .map_err(|error| format!("could not read the Oh My Pi session copy: {error}"))?;
-        write_json_line(
-            &mut stdin,
-            &json!({"id": "waku-clone", "type": "get_state"}),
-        )
-        .map_err(|error| format!("could not ask Oh My Pi for the copied session: {error}"))?;
-        let state = rx
-            .recv_timeout(CLONE_TIMEOUT)
-            .map_err(|_| "timed out waiting for Oh My Pi to copy the session".to_owned())?;
-        if state.get("success").and_then(Value::as_bool) != Some(true) {
-            return Err(state
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("Oh My Pi could not copy the session")
-                .to_owned());
-        }
-        cursor_from_state(PiFlavor::OhMyPi, &state)
-            .ok_or_else(|| "Oh My Pi did not report the copied session cursor".to_owned())
-    })();
-    let _ = child.kill();
-    let _ = child.wait();
-    result
-}
-
 #[derive(Clone)]
 struct PiTrackedTool {
     kind: ActivityKind,
@@ -1630,7 +1091,6 @@ struct PiTrackedTool {
 
 #[derive(Default)]
 struct PiStreamState {
-    auto_title: PiAutoTitle,
     compaction: CompactionTracker,
     run_started: bool,
     message_saw_text: bool,
@@ -1644,10 +1104,7 @@ struct PiStreamState {
 
 impl PiStreamState {
     fn reset_turn(&mut self) {
-        *self = Self {
-            auto_title: self.auto_title.clone(),
-            ..Default::default()
-        };
+        *self = Self::default();
     }
 
     fn reasoning_block(
@@ -1708,55 +1165,6 @@ fn handle_pi_message(
         let Some(id) = value.get("id").and_then(Value::as_str) else {
             return;
         };
-        let title_response = {
-            let mut pending = pending.lock();
-            if matches!(pending.get(id), Some(PendingResponse::AutoTitle { .. })) {
-                pending.remove(id)
-            } else {
-                None
-            }
-        };
-        if let Some(PendingResponse::AutoTitle { request, phase }) = title_response {
-            if !state.auto_title.is_current(&request) {
-                return;
-            }
-            if value.get("success").and_then(Value::as_bool) != Some(true) {
-                state.auto_title.finish(&request);
-                eprintln!(
-                    "Oh My Pi automatic title: {}",
-                    value.get("error").unwrap_or(&Value::Null)
-                );
-                return;
-            }
-            if let AutoTitlePhase::CheckName = phase {
-                if value.pointer("/data/sessionId").and_then(Value::as_str)
-                    != Some(&request.session_id)
-                {
-                    state.auto_title.finish(&request);
-                    return;
-                }
-                state.auto_title.observe_state(flavor, &value);
-                if let Some(title) = value
-                    .pointer("/data/sessionName")
-                    .and_then(Value::as_str)
-                    .filter(|title| !title.trim().is_empty())
-                {
-                    state.auto_title.finish(&request);
-                    let title = if flavor == PiFlavor::OhMyPi {
-                        sanitize_ohmypi_title(title)
-                    } else {
-                        Some(title.to_owned())
-                    };
-                    let _ = events.send(DriverEvent::AutoTitleUpdated(title));
-                } else {
-                    let _ = commands.send(CommandMessage::AutoTitle {
-                        request,
-                        phase: AutoTitlePhase::Generate,
-                    });
-                }
-            }
-            return;
-        }
         let compact = {
             let mut pending = pending.lock();
             if matches!(pending.get(id), Some(PendingResponse::Compact(_))) {
@@ -1819,7 +1227,7 @@ fn handle_pi_message(
             let local_only =
                 value.pointer("/data/agentInvoked").and_then(Value::as_bool) == Some(false);
             if success && !local_only {
-                // OMP may acknowledge a prompt before reporting that an
+                // Pi may acknowledge a prompt before reporting that an
                 // extension handled it locally. Retain the id for that second
                 // response; normal agent completion retires it below.
                 return;
@@ -1849,9 +1257,6 @@ fn handle_pi_message(
             return;
         };
         if value.get("success").and_then(Value::as_bool) == Some(true) {
-            if value.get("command").and_then(Value::as_str) == Some("get_state") {
-                state.auto_title.observe_state(flavor, &value);
-            }
             let _ = response.send(Ok(value));
         } else {
             let error = value
@@ -1864,13 +1269,6 @@ fn handle_pi_message(
         return;
     }
 
-    if event_type == "available_commands_update" {
-        publish_commands(
-            crate::slash_command_catalog::parse_oh_my_pi_commands(&value),
-            events,
-        );
-        return;
-    }
 
     if event_type == flavor.session_info_event() {
         let title = value
@@ -1878,26 +1276,11 @@ fn handle_pi_message(
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|title| !title.is_empty());
-        let title = if flavor == PiFlavor::OhMyPi {
-            title.and_then(sanitize_ohmypi_title)
-        } else {
-            title.map(str::to_owned)
-        };
-        if flavor == PiFlavor::OhMyPi
-            && !state.auto_title.observe_title(
-                value.get("sessionId").and_then(Value::as_str),
-                title.as_deref(),
-            )
-        {
-            return;
-        }
+        let title = title.map(str::to_owned);
         let _ = events.send(DriverEvent::AutoTitleUpdated(title));
         return;
     }
 
-    // Oh My Pi reuses `agent_end` for intermediate settles, flagging the real
-    // one with `isTerminal`. Anything else here would end the turn early while
-    // maintenance or async delivery still has work queued.
     if event_type == flavor.settled_event() {
         if value.get("isTerminal").and_then(Value::as_bool) == Some(false) {
             return;
@@ -1907,9 +1290,7 @@ fn handle_pi_message(
             pending.lock().retain(|_, response| {
                 matches!(
                     response,
-                    PendingResponse::Request(_)
-                        | PendingResponse::Compact(_)
-                        | PendingResponse::AutoTitle { .. }
+                    PendingResponse::Request(_) | PendingResponse::Compact(_)
                 )
             });
             let success = !state.failed;
@@ -1975,14 +1356,6 @@ fn handle_pi_message(
             }
         }
         "command_output" => {
-            if flavor == PiFlavor::OhMyPi
-                && value
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .is_some_and(|text| state.auto_title.consume_output(text))
-            {
-                return;
-            }
             if let Some(text) = value
                 .get("text")
                 .and_then(Value::as_str)
@@ -2019,14 +1392,6 @@ fn handle_pi_message(
         }
         "message_start" => {
             if value.pointer("/message/role").and_then(Value::as_str) == Some("assistant") {
-                if flavor == PiFlavor::OhMyPi
-                    && let Some(request) = state.auto_title.start()
-                {
-                    let _ = commands.send(CommandMessage::AutoTitle {
-                        request,
-                        phase: AutoTitlePhase::CheckName,
-                    });
-                }
                 flush_pending_message_text(events, state);
                 state.message_saw_text = false;
                 state.message_saw_reasoning = false;
@@ -2530,7 +1895,7 @@ mod tests {
     }
 
     #[test]
-    fn ohmypi_compaction_events_refresh_usage_without_generating_an_assistant_turn() {
+    fn compaction_events_refresh_usage_without_generating_an_assistant_turn() {
         for manual in [false, true] {
             let (pending, commands, command_rx, mut state) = harness();
             let (events, received) = unbounded();
@@ -2544,7 +1909,7 @@ mod tests {
                     )),
                 );
             }
-            // OMP 18.14.2 returns its instruction envelope, without the
+            // Compaction returns its instruction envelope, without the
             // tokensAfter count it writes into the native session file.
             let result = json!({
                 "summary": "Resume prior conversation. Earlier turns archived under HISTORY below, oldest→newest.\n\nHISTORY\n===================",
@@ -2558,7 +1923,7 @@ mod tests {
                 json!({"type": if manual { "manual_compaction_end" } else { "auto_compaction_end" }, "result": result, "aborted": false}),
             ] {
                 handle_pi_message(
-                    PiFlavor::OhMyPi,
+                    PiFlavor::Pi,
                     frame,
                     &pending,
                     &commands,
@@ -2572,7 +1937,7 @@ mod tests {
                     "refresh once the RPC response settles"
                 );
                 handle_pi_message(
-                    PiFlavor::OhMyPi,
+                    PiFlavor::Pi,
                     json!({"type":"response", "id":"rpc-compact", "command":"compact", "success":true, "data":result}),
                     &pending,
                     &commands,
@@ -2617,7 +1982,7 @@ mod tests {
             .insert("rpc-compact".into(), PendingResponse::Compact(item));
         interrupt_pending_compactions(&pending, &events);
         handle_pi_message(
-            PiFlavor::OhMyPi,
+            PiFlavor::Pi,
             json!({"type":"manual_compaction_end", "result":{"summary":"A late result"}, "aborted":false}),
             &pending,
             &commands,
@@ -2625,7 +1990,7 @@ mod tests {
             &mut state,
         );
         handle_pi_message(
-            PiFlavor::OhMyPi,
+            PiFlavor::Pi,
             json!({"type":"response","id":"rpc-compact","command":"compact","success":false,"error":"Compaction aborted"}),
             &pending,
             &commands,
@@ -2647,43 +2012,6 @@ mod tests {
     }
 
     #[test]
-    fn live_command_updates_reach_the_composer_and_clear_removed_commands() {
-        let (pending, commands, _command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        for entries in [
-            json!([
-                {"name": "compact", "source": "builtin", "description": "Compact context"},
-                {"name": "skill:verify", "source": "skill", "description": "Verify changes"}
-            ]),
-            json!([]),
-        ] {
-            handle_pi_message(
-                PiFlavor::OhMyPi,
-                json!({"type": "available_commands_update", "commands": entries}),
-                &pending,
-                &commands,
-                &events,
-                &mut state,
-            );
-        }
-        let DriverEvent::AvailableCommands(reported) = event_rx.recv().unwrap() else {
-            panic!("missing command update")
-        };
-        assert_eq!(
-            reported
-                .iter()
-                .map(|command| command.name.as_str())
-                .collect::<Vec<_>>(),
-            ["compact", "verify"]
-        );
-        assert_eq!(reported[0].description, "Compact context");
-        assert!(
-            matches!(event_rx.recv().unwrap(), DriverEvent::AvailableCommands(commands) if commands.is_empty())
-        );
-        assert!(!state.run_started);
-    }
-
-    #[test]
     fn local_slash_command_output_and_completion_do_not_need_an_agent_turn() {
         let (pending, commands, _command_rx, mut state) = harness();
         let (events, event_rx) = unbounded();
@@ -2693,10 +2021,10 @@ mod tests {
             json!({"type": "command_output", "text": "Available commands\n"}),
             json!({"type": "command_output", "text": "/compact"}),
             json!({"type": "response", "id": "waku-1", "command": "prompt", "success": true, "data": {"agentInvoked": false}}),
-            json!({"type": "agent_end", "isTerminal": true}),
+            json!({"type": "agent_settled"}),
         ] {
             handle_pi_message(
-                PiFlavor::OhMyPi,
+                PiFlavor::Pi,
                 frame,
                 &pending,
                 &commands,
@@ -2778,7 +2106,6 @@ mod tests {
         let binary = crate::command_env::find_executable("pi").expect("pi is not installed");
         let (events, event_rx) = crate::driver::test_event_channel();
         let driver = PiDriver::start(
-            PiFlavor::Pi,
             DriverStartOptions {
                 binary,
                 cwd: std::env::temp_dir(),
@@ -3037,7 +2364,7 @@ mod tests {
             }),
         ] {
             handle_pi_message(
-                PiFlavor::OhMyPi,
+                PiFlavor::Pi,
                 value,
                 &pending,
                 &commands,
@@ -3091,854 +2418,6 @@ mod tests {
                 .as_deref()
                 .is_some_and(|text| text.contains("Command exited with code 1"))
         );
-    }
-
-    /// Drives the installed Oh My Pi RPC through one real provider turn.
-    /// Ignored by default because it needs the CLI, credentials, and network.
-    #[test]
-    #[ignore = "requires an installed, authenticated omp"]
-    fn ohmypi_context_usage_against_the_real_rpc() {
-        let binary = crate::command_env::find_executable("omp").expect("omp is not installed");
-        let (events, event_rx) = crate::driver::test_event_channel();
-        let driver = PiDriver::start(
-            PiFlavor::OhMyPi,
-            DriverStartOptions {
-                binary,
-                cwd: std::env::temp_dir(),
-                mode: RuntimeMode::FullAccess,
-                model: None,
-                reasoning_effort: None,
-                service_tier: None,
-                context_window: None,
-                agent_preset: None,
-                execution_policy: Default::default(),
-                provider_cursor: None,
-                delegation_session_path: None,
-                delegation_registry_dir: None,
-            },
-            events,
-        )
-        .expect("the Oh My Pi RPC session should start");
-
-        let mut cursor = None;
-        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(60)) {
-            match event {
-                DriverEvent::Connected { provider_cursor } => {
-                    cursor = provider_cursor;
-                    break;
-                }
-                DriverEvent::Error(error) => panic!("Oh My Pi failed to initialize: {error}"),
-                _ => {}
-            }
-        }
-        assert!(
-            matches!(
-                cursor,
-                Some(ProviderResumeCursor::OhMyPi {
-                    session_file: Some(_),
-                    ..
-                })
-            ),
-            "Oh My Pi should report its own cursor with a session file, got {cursor:?}"
-        );
-
-        driver.prompt("Reply with exactly: OK. Do not use any tools.".into());
-        let mut finished = false;
-        let mut context_tokens = None;
-        let mut context_window = None;
-        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(180)) {
-            match event {
-                DriverEvent::UsageUpdated {
-                    context_tokens: tokens,
-                    context_window: window,
-                } => {
-                    context_tokens = tokens.or(context_tokens);
-                    context_window = window.or(context_window);
-                }
-                DriverEvent::TurnFinished { success, .. } => {
-                    assert!(success, "Oh My Pi should finish the probe turn");
-                    finished = true;
-                    break;
-                }
-                DriverEvent::Error(error) => panic!("Oh My Pi reported: {error}"),
-                _ => {}
-            }
-        }
-
-        assert!(finished, "Oh My Pi never settled the probe turn");
-        assert!(context_tokens.is_some_and(|tokens| tokens > 0));
-        assert!(context_window.is_some_and(|window| window > 0));
-    }
-
-    /// Replays a native session on a private copy, without submitting a prompt.
-    #[test]
-    #[ignore = "requires omp and WAKU_TEST_OMP_SESSION pointing to a compactable native session"]
-    fn ohmypi_compaction_usage_against_the_real_rpc() {
-        let source = std::env::var_os("WAKU_TEST_OMP_SESSION").expect("set WAKU_TEST_OMP_SESSION");
-        let mut entries: Vec<Value> = std::fs::read_to_string(source)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        // Replay the state immediately before the last observed compaction.
-        if let Some(index) = entries
-            .iter()
-            .rposition(|entry| entry["type"] == "compaction")
-        {
-            entries.truncate(index);
-        }
-        // OMP may put its reserved title slot before the session header.
-        let header = entries
-            .iter_mut()
-            .find(|entry| entry["type"] == "session")
-            .expect("session has no header");
-        let cwd = PathBuf::from(header["cwd"].as_str().expect("session has no cwd"));
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let directory = std::env::temp_dir().join(format!("waku-omp-compact-{session_id}"));
-        std::fs::create_dir_all(&directory).unwrap();
-        let directory = directory.canonicalize().unwrap();
-        header["id"] = json!(session_id);
-        let native_file = directory.join("session.jsonl");
-        let mut transcript = String::new();
-        for entry in entries {
-            transcript.push_str(&serde_json::to_string(&entry).unwrap());
-            transcript.push('\n');
-        }
-        std::fs::write(&native_file, transcript).unwrap();
-        let (events, received) = crate::driver::test_event_channel();
-        let driver = PiDriver::start(
-            PiFlavor::OhMyPi,
-            DriverStartOptions {
-                binary: crate::command_env::find_executable("omp").expect("omp is not installed"),
-                cwd,
-                mode: RuntimeMode::FullAccess,
-                model: None,
-                reasoning_effort: None,
-                service_tier: None,
-                context_window: None,
-                execution_policy: Default::default(),
-                agent_preset: None,
-                provider_cursor: Some(ProviderResumeCursor::OhMyPi {
-                    session_id,
-                    session_file: Some(native_file),
-                }),
-                delegation_session_path: None,
-                delegation_registry_dir: None,
-            },
-            events,
-        )
-        .unwrap();
-        let before = loop {
-            match received.recv_timeout(Duration::from_secs(45)).unwrap() {
-                DriverEvent::UsageUpdated {
-                    context_tokens: Some(tokens),
-                    ..
-                } => break tokens,
-                DriverEvent::Error(error) => panic!("Oh My Pi initialization failed: {error}"),
-                _ => {}
-            }
-        };
-        driver.compact(CompactionRequest {
-            id: "probe-compact".into(),
-            instructions: None,
-        });
-        let mut completed = false;
-        let after = loop {
-            match received.recv_timeout(Duration::from_secs(45)).unwrap() {
-                DriverEvent::CompactionUpdated(item)
-                    if item.status != CompactionStatus::Running =>
-                {
-                    assert_eq!(item.id, "probe-compact");
-                    assert_eq!(item.status, CompactionStatus::Completed, "{item:?}");
-                    assert!(
-                        !item
-                            .summary_for_display()
-                            .unwrap_or_default()
-                            .contains("HISTORY")
-                    );
-                    completed = true;
-                }
-                DriverEvent::UsageUpdated {
-                    context_tokens: Some(tokens),
-                    ..
-                } if completed => break tokens,
-                DriverEvent::TextDelta(text) => {
-                    panic!("compaction generated assistant text: {text}")
-                }
-                DriverEvent::Error(error) => panic!("Oh My Pi compaction failed: {error}"),
-                _ => {}
-            }
-        };
-        assert!(
-            after > 0 && after < before,
-            "occupancy did not shrink: {before} → {after}"
-        );
-        eprintln!("Oh My Pi compaction occupancy: {before} → {after}");
-        drop(driver);
-        while !matches!(
-            received.recv_timeout(Duration::from_secs(10)).unwrap(),
-            DriverEvent::ProcessExited
-        ) {}
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    #[ignore = "requires an installed, authenticated omp"]
-    fn ohmypi_automatic_title_against_the_real_rpc() {
-        let (events, event_rx) = crate::driver::test_event_channel();
-        let driver = PiDriver::start(
-            PiFlavor::OhMyPi,
-            DriverStartOptions {
-                binary: crate::command_env::find_executable("omp").expect("omp is not installed"),
-                cwd: std::env::temp_dir(),
-                mode: RuntimeMode::FullAccess,
-                model: std::env::var("WAKU_TEST_OMP_MODEL").ok(),
-                reasoning_effort: Some("low".into()),
-                service_tier: None,
-                context_window: None,
-                agent_preset: None,
-                execution_policy: Default::default(),
-                provider_cursor: None,
-                delegation_session_path: None,
-                delegation_registry_dir: None,
-            },
-            events,
-        )
-        .expect("the Oh My Pi RPC session should start");
-        let prompt = "请用一句话解释怎样优化长对话列表的滚动性能，不要使用任何工具。";
-        driver.prompt(prompt.into());
-        let deadline = Instant::now() + Duration::from_secs(120);
-        let mut title = None;
-        let mut native_file = None;
-        let mut transcript = String::new();
-        let mut starts = 0;
-        let mut finishes = 0;
-        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
-            let Ok(event) = event_rx.recv_timeout(remaining) else {
-                break;
-            };
-            match event {
-                DriverEvent::Connected {
-                    provider_cursor: Some(ProviderResumeCursor::OhMyPi { session_file, .. }),
-                } => native_file = session_file,
-                DriverEvent::AutoTitleUpdated(Some(value)) => title = Some(value),
-                DriverEvent::TextDelta(value) => transcript.push_str(&value),
-                DriverEvent::TurnStarted => starts += 1,
-                DriverEvent::TurnFinished { success, .. } => {
-                    assert!(success, "Oh My Pi should finish the probe turn");
-                    finishes += 1;
-                }
-                DriverEvent::Error(error) => panic!("Oh My Pi reported: {error}"),
-                _ => {}
-            }
-            if title.is_some() && finishes > 0 {
-                break;
-            }
-        }
-        assert_eq!(starts, 1);
-        assert_eq!(finishes, 1);
-        let title = title.expect("Oh My Pi should replace the prompt with a generated title");
-        assert_ne!(title, prompt);
-        assert!(!title.trim().is_empty());
-        assert!(!transcript.is_empty());
-        assert!(!transcript.contains("Session renamed to"));
-        let native = std::fs::read_to_string(native_file.expect("native session file")).unwrap();
-        let slot: Value = serde_json::from_str(native.lines().next().unwrap()).unwrap();
-        assert_eq!(slot["title"], title);
-        eprintln!("OMP generated title: {title}");
-        drop(driver);
-    }
-
-    #[test]
-    #[ignore = "requires an installed, authenticated omp"]
-    fn ohmypi_titles_unnamed_history_on_resume_without_a_new_turn() {
-        let directory =
-            std::env::temp_dir().join(format!("waku-omp-title-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let session_file = directory.join("history.jsonl");
-        let entries = [
-            json!({"type":"session", "version":3, "id":session_id,
-                "timestamp":"2026-10-31T11:00:00Z", "cwd":directory}),
-            json!({"type":"message", "id":"user-1", "parentId":null,
-                "timestamp":"2026-10-31T11:00:01Z", "message": {"role":"user",
-                "content":[{"type":"text", "text":"如果想一次把 prompt 发给多个模型，可以怎么做？"}], "timestamp":1793444401000_u64}}),
-        ];
-        std::fs::write(
-            &session_file,
-            entries
-                .iter()
-                .map(Value::to_string)
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n",
-        )
-        .unwrap();
-        let (events, event_rx) = crate::driver::test_event_channel();
-        let driver = PiDriver::start(
-            PiFlavor::OhMyPi,
-            DriverStartOptions {
-                binary: crate::command_env::find_executable("omp").expect("omp is not installed"),
-                cwd: directory.clone(),
-                mode: RuntimeMode::FullAccess,
-                model: std::env::var("WAKU_TEST_OMP_MODEL").ok(),
-                reasoning_effort: Some("low".into()),
-                service_tier: None,
-                context_window: None,
-                agent_preset: None,
-                execution_policy: Default::default(),
-                provider_cursor: Some(ProviderResumeCursor::OhMyPi {
-                    session_id,
-                    session_file: Some(session_file.clone()),
-                }),
-                delegation_session_path: None,
-                delegation_registry_dir: None,
-            },
-            events,
-        )
-        .expect("the old unnamed conversation should resume");
-        let deadline = Instant::now() + Duration::from_secs(90);
-        let mut generated = None;
-        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
-            match event_rx.recv_timeout(remaining) {
-                Ok(DriverEvent::AutoTitleUpdated(Some(title))) => {
-                    generated = Some(title);
-                    break;
-                }
-                Ok(
-                    DriverEvent::TurnStarted
-                    | DriverEvent::TurnFinished { .. }
-                    | DriverEvent::TextDelta(_),
-                ) => panic!("repairing a title must not create a conversation turn"),
-                Ok(DriverEvent::Error(error)) => panic!("Oh My Pi reported: {error}"),
-                Ok(_) => {}
-                Err(_) => break,
-            }
-        }
-        let title = generated.expect(
-            "an old unnamed conversation should receive a title without another user prompt",
-        );
-        assert!(!title.trim().is_empty());
-        eprintln!("OMP restored title: {title}");
-        drop(driver);
-        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(10)) {
-            if matches!(event, DriverEvent::ProcessExited) {
-                break;
-            }
-            assert!(!matches!(
-                event,
-                DriverEvent::TurnStarted
-                    | DriverEvent::TurnFinished { .. }
-                    | DriverEvent::TextDelta(_)
-            ));
-        }
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn ohmypi_branches_where_pi_forks_and_never_asks_it_to_clone() {
-        let messages = [
-            json!({"entryId": "turn-1"}),
-            json!({"entryId": "turn-2"}),
-            json!({"entryId": "turn-3"}),
-        ];
-        assert_eq!(
-            pi_fork_request(PiFlavor::OhMyPi, &messages, 2).unwrap(),
-            json!({"type": "branch", "entryId": "turn-2"})
-        );
-        assert!(pi_fork_request(PiFlavor::OhMyPi, &messages, 4).is_err());
-    }
-
-    /// Oh My Pi reuses `agent_end` for intermediate settles, so only the
-    /// terminal one may end the turn.
-    #[test]
-    fn ohmypi_settles_on_the_terminal_agent_end_only() {
-        let (pending, commands, _command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        for value in [
-            json!({"type": "agent_start"}),
-            json!({
-                "type": "message_update",
-                "assistantMessageEvent": {"type": "text_delta", "delta": "done"}
-            }),
-            json!({"type": "agent_end", "isTerminal": false}),
-            json!({"type": "agent_end", "messages": []}),
-        ] {
-            handle_pi_message(
-                PiFlavor::OhMyPi,
-                value,
-                &pending,
-                &commands,
-                &events,
-                &mut state,
-            );
-        }
-
-        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
-        assert!(matches!(
-            event_rx.recv().unwrap(),
-            DriverEvent::TextDelta(value) if value == "done"
-        ));
-        assert!(matches!(
-            event_rx.recv().unwrap(),
-            DriverEvent::TurnFinished { success: true, .. }
-        ));
-        assert!(matches!(event_rx.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    /// Pi's own settle event carries no meaning for Oh My Pi, and vice versa.
-    #[test]
-    fn each_flavor_ignores_the_other_settle_and_title_events() {
-        let (pending, commands, _command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        for (flavor, value) in [
-            (PiFlavor::OhMyPi, json!({"type": "agent_start"})),
-            (PiFlavor::OhMyPi, json!({"type": "agent_settled"})),
-            (
-                PiFlavor::OhMyPi,
-                json!({"type": "session_info_changed", "name": "Pi's spelling"}),
-            ),
-            (PiFlavor::Pi, json!({"type": "agent_end"})),
-            (
-                PiFlavor::Pi,
-                json!({"type": "session_info_update", "title": "Oh My Pi's spelling"}),
-            ),
-        ] {
-            handle_pi_message(flavor, value, &pending, &commands, &events, &mut state);
-        }
-
-        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
-        assert!(matches!(event_rx.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn ohmypi_session_titles_arrive_on_its_own_event() {
-        let (pending, commands, _command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        handle_pi_message(
-            PiFlavor::OhMyPi,
-            json!({"type": "session_info_update", "title": "Named by Oh My Pi"}),
-            &pending,
-            &commands,
-            &events,
-            &mut state,
-        );
-        assert!(matches!(
-            event_rx.try_recv().unwrap(),
-            DriverEvent::AutoTitleUpdated(Some(title)) if title == "Named by Oh My Pi"
-        ));
-    }
-
-    #[test]
-    fn ohmypi_asks_for_a_title_without_settling_or_polluting_the_turn() {
-        let (pending, commands, command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        state.auto_title.observe_state(
-            PiFlavor::OhMyPi,
-            &json!({"data": {"sessionId": "session-1"}}),
-        );
-        let auto_title = state.auto_title.clone();
-        let mut wire = Vec::new();
-        let mut next = 0;
-        send_prompt(
-            &mut wire,
-            &pending,
-            &mut next,
-            "Improve transcript scrolling",
-        )
-        .unwrap();
-        let mut handle = |value| {
-            handle_pi_message(
-                PiFlavor::OhMyPi,
-                value,
-                &pending,
-                &commands,
-                &events,
-                &mut state,
-            )
-        };
-        handle(json!({"type": "agent_start"}));
-        handle(json!({"type": "message_start", "message": {"role": "assistant"}}));
-        handle(json!({"type": "message_start", "message": {"role": "assistant"}}));
-        let CommandMessage::AutoTitle {
-            request,
-            phase: AutoTitlePhase::CheckName,
-        } = command_rx.try_recv().unwrap()
-        else {
-            panic!("expected a native name check")
-        };
-        assert!(
-            command_rx.try_recv().is_err(),
-            "one request per user prompt"
-        );
-        send_auto_title_request(
-            &mut wire,
-            &pending,
-            &mut next,
-            &auto_title,
-            request,
-            AutoTitlePhase::CheckName,
-        )
-        .unwrap();
-        handle(json!({"type": "response", "id": "waku-2", "success": true,
-            "data": {"sessionId": "session-1", "sessionName": ""}}));
-        let CommandMessage::AutoTitle {
-            request,
-            phase: AutoTitlePhase::Generate,
-        } = command_rx.try_recv().unwrap()
-        else {
-            panic!("expected native /rename")
-        };
-        send_auto_title_request(
-            &mut wire,
-            &pending,
-            &mut next,
-            &auto_title,
-            request,
-            AutoTitlePhase::Generate,
-        )
-        .unwrap();
-        handle(json!({"type": "response", "id": "waku-3", "success": true,
-            "data": {"agentInvoked": false}}));
-        handle(json!({"type": "message_update", "assistantMessageEvent": {
-            "type": "text_delta", "delta": "Use a virtualized list."}}));
-        handle(json!({"type": "agent_end", "isTerminal": true}));
-        // A background title can land after the normal turn has already ended.
-        handle(
-            json!({"type": "session_info_update", "sessionId": "old-session", "title": "Stale title"}),
-        );
-        handle(
-            json!({"type": "session_info_update", "sessionId": "session-1", "title": "Improve Transcript Scrolling"}),
-        );
-        handle(
-            json!({"type": "command_output", "text": "Session renamed to Improve Transcript Scrolling."}),
-        );
-        handle(json!({"type": "message_start", "message": {"role": "assistant"}}));
-        assert!(
-            command_rx.try_recv().is_err(),
-            "named sessions must stay named"
-        );
-        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
-        assert!(
-            matches!(event_rx.recv().unwrap(), DriverEvent::TextDelta(text) if text == "Use a virtualized list.")
-        );
-        assert!(matches!(
-            event_rx.recv().unwrap(),
-            DriverEvent::TurnFinished { success: true, .. }
-        ));
-        assert!(
-            matches!(event_rx.recv().unwrap(), DriverEvent::AutoTitleUpdated(Some(title)) if title == "Improve Transcript Scrolling")
-        );
-        assert!(event_rx.try_recv().is_err());
-        assert!(pending.lock().is_empty());
-        let wire: Vec<Value> = String::from_utf8(wire)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(wire[1]["type"], "get_state");
-        assert_eq!(wire[2]["message"], "/rename");
-    }
-
-    #[test]
-    fn ohmypi_rechecks_the_native_name_before_generating() {
-        let (pending, commands, command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        state.auto_title.observe_state(
-            PiFlavor::OhMyPi,
-            &json!({"data": {"sessionId": "session-1"}}),
-        );
-        let request = state.auto_title.start().unwrap();
-        send_auto_title_request(
-            &mut Vec::new(),
-            &pending,
-            &mut 0,
-            &state.auto_title,
-            request,
-            AutoTitlePhase::CheckName,
-        )
-        .unwrap();
-        handle_pi_message(
-            PiFlavor::OhMyPi,
-            json!({"type": "response", "id": "waku-1", "success": true,
-                "data": {"sessionId": "session-1", "sessionName": "User's native name"}}),
-            &pending,
-            &commands,
-            &events,
-            &mut state,
-        );
-        assert!(command_rx.try_recv().is_err());
-        assert!(state.auto_title.start().is_none());
-        assert!(
-            matches!(event_rx.recv().unwrap(), DriverEvent::AutoTitleUpdated(Some(title)) if title == "User's native name")
-        );
-        assert!(event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn automatic_title_failure_is_retried_only_on_a_later_prompt() {
-        let (pending, commands, _command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        state.auto_title.observe_state(
-            PiFlavor::OhMyPi,
-            &json!({"data": {"sessionId": "session-1"}}),
-        );
-        let old = state.auto_title.start().unwrap();
-        send_auto_title_request(
-            &mut Vec::new(),
-            &pending,
-            &mut 0,
-            &state.auto_title,
-            old.clone(),
-            AutoTitlePhase::Generate,
-        )
-        .unwrap();
-        state.run_started = true;
-        handle_pi_message(
-            PiFlavor::OhMyPi,
-            json!({"type": "response", "id": "waku-1", "success": false, "error": "Title model unavailable"}),
-            &pending,
-            &commands,
-            &events,
-            &mut state,
-        );
-        assert!(
-            event_rx.try_recv().is_err(),
-            "best-effort title failure cannot fail the main turn"
-        );
-        assert!(state.run_started);
-        assert!(state.auto_title.start().is_none());
-        state.auto_title.prepare_prompt("Try another task");
-        let next = state.auto_title.start().unwrap();
-        state.auto_title.finish(&old);
-        assert!(!state.auto_title.is_current(&old));
-        assert!(
-            state.auto_title.is_current(&next),
-            "an older response cannot retire a newer attempt"
-        );
-    }
-
-    #[test]
-    fn automatic_titles_preserve_explicit_renames_and_other_command_output() {
-        let title = PiAutoTitle::default();
-        title.observe_state(
-            PiFlavor::OhMyPi,
-            &json!({"data": {"sessionId": "session-1"}}),
-        );
-        let request = title.start().unwrap();
-        assert!(!title.consume_output("Context usage: 500 tokens"));
-        assert!(title.is_current(&request));
-        title.prepare_prompt("/rename My name");
-        assert!(!title.is_current(&request));
-        assert!(!title.consume_output("Session renamed to My name."));
-        assert!(title.start().is_none());
-
-        let title = PiAutoTitle::default();
-        title.observe_state(
-            PiFlavor::OhMyPi,
-            &json!({"data": {"sessionId": "named", "sessionName": "Already named"}}),
-        );
-        assert!(title.start().is_none());
-        let pi = PiAutoTitle::default();
-        pi.observe_state(PiFlavor::Pi, &json!({"data": {"sessionId": "pi-session"}}));
-        assert!(
-            pi.start().is_none(),
-            "upstream Pi has its own title behavior"
-        );
-    }
-
-    #[test]
-    fn restored_unnamed_sessions_get_titles_and_stopped_attempts_can_retry() {
-        let restored = json!({"data": {"sessionId": "restored", "messageCount": 12}});
-        let title = PiAutoTitle::default();
-        title.observe_state(PiFlavor::OhMyPi, &restored);
-        assert!(
-            title
-                .start_restored(&json!({"data": {"messageCount": 0}}))
-                .is_none()
-        );
-        let old = title
-            .start_restored(&restored)
-            .expect("restored history can be named without another turn");
-        title.cancel();
-        title.prepare_prompt("Continue the task");
-        let retry = title.start().expect("Stop must not leave naming in flight");
-        title.finish(&old);
-        assert!(title.is_current(&retry));
-
-        assert!(
-            title.consume_output(
-                "Could not generate a session title. Use /rename <title> to set one."
-            )
-        );
-        assert!(!title.is_current(&retry));
-        assert!(
-            title.start().is_none(),
-            "a failed model response must not retry within the same prompt"
-        );
-
-        let review = PiAutoTitle {
-            disabled: true,
-            ..Default::default()
-        };
-        review.observe_state(PiFlavor::OhMyPi, &restored);
-        assert!(
-            review.observe_title(Some("restored"), Some("Provider-supplied title")),
-            "native title events still pass through when generation is disabled"
-        );
-        assert!(
-            review.start_restored(&restored).is_none(),
-            "review subtasks must not pay for hidden title requests"
-        );
-    }
-
-    #[test]
-    fn sanitizes_nerd_font_pua_and_leading_emoji_from_ohmypi_titles() {
-        assert_eq!(
-            sanitize_ohmypi_title("\u{ea76} TSK: Fix title polling").as_deref(),
-            Some("TSK: Fix title polling")
-        );
-        assert_eq!(
-            sanitize_ohmypi_title("🧠 TSK: Fix title polling").as_deref(),
-            Some("TSK: Fix title polling")
-        );
-        assert_eq!(
-            sanitize_ohmypi_title("Fix title polling").as_deref(),
-            Some("Fix title polling")
-        );
-        assert_eq!(sanitize_ohmypi_title("\u{ea76}   "), None);
-    }
-
-    #[test]
-    fn cancelled_auto_title_output_is_still_consumed_and_does_not_leak() {
-        let (pending, commands, _command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        state.auto_title.observe_state(
-            PiFlavor::OhMyPi,
-            &json!({"data": {"sessionId": "session-1"}}),
-        );
-        let request = state.auto_title.start().unwrap();
-        send_auto_title_request(
-            &mut Vec::new(),
-            &pending,
-            &mut 0,
-            &state.auto_title,
-            request,
-            AutoTitlePhase::Generate,
-        )
-        .unwrap();
-        state.auto_title.cancel();
-        // A late background rename output after cancellation must be consumed
-        // without entering the transcript or wedging TurnStarted.
-        handle_pi_message(
-            PiFlavor::OhMyPi,
-            json!({"type": "command_output", "text": "Session renamed to Cancelled Task."}),
-            &pending,
-            &commands,
-            &events,
-            &mut state,
-        );
-        assert!(event_rx.try_recv().is_err());
-        assert!(!state.run_started);
-    }
-
-    #[test]
-    fn standalone_command_output_while_idle_settles_immediately() {
-        let (pending, commands, _command_rx, mut state) = harness();
-        let (events, event_rx) = unbounded();
-        // Standalone user-facing command output when no prompt or turn is
-        // active must open and immediately settle the turn.
-        handle_pi_message(
-            PiFlavor::OhMyPi,
-            json!({"type": "command_output", "text": "Session renamed to Explicit Name."}),
-            &pending,
-            &commands,
-            &events,
-            &mut state,
-        );
-        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
-        assert!(
-            matches!(event_rx.recv().unwrap(), DriverEvent::TextDelta(text) if text == "Session renamed to Explicit Name.\n\n")
-        );
-        assert!(matches!(
-            event_rx.recv().unwrap(),
-            DriverEvent::TurnFinished { success: true, summary: None }
-        ));
-        assert!(event_rx.try_recv().is_err());
-        assert!(!state.run_started);
-    }
-
-    #[test]
-    fn observe_title_clears_in_flight_without_waiting_for_command_output() {
-        let title = PiAutoTitle::default();
-        title.observe_state(
-            PiFlavor::OhMyPi,
-            &json!({"data": {"sessionId": "session-1"}}),
-        );
-        let request = title.start().unwrap();
-        assert!(title.is_current(&request));
-        title.mark_generating();
-        // session_info_update arrives first in OMP
-        assert!(title.observe_title(Some("session-1"), Some("Generated Title")));
-        assert!(!title.is_current(&request));
-        // command_output arrives subsequently and is still consumed
-        assert!(title.consume_output("Session renamed to Generated Title."));
-    }
-
-    #[test]
-    fn prepare_prompt_resets_attempted_for_subsequent_prompts() {
-        let title = PiAutoTitle::default();
-        title.observe_state(
-            PiFlavor::OhMyPi,
-            &json!({"data": {"sessionId": "session-1"}}),
-        );
-        let first = title.start().unwrap();
-        title.finish(&first);
-        // While within the same turn, attempted is true
-        assert!(title.start().is_none());
-        // A new user prompt arrives, resetting attempted
-        title.prepare_prompt("A new user task");
-        let second = title.start().expect("new prompt can attempt title generation");
-        assert!(title.is_current(&second));
-    }
-
-    #[test]
-    fn chunked_frames_reassemble_and_reject_broken_runs() {
-        use base64::Engine as _;
-        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
-
-        let payload = json!({"type": "response", "id": "waku-1", "success": true});
-        let bytes = serde_json::to_vec(&payload).unwrap();
-        let (first, second) = bytes.split_at(bytes.len() / 2);
-        let chunk = |index: u64, data: &[u8]| {
-            json!({
-                "type": "rpc_chunk",
-                "chunkId": "rpc-1",
-                "index": index,
-                "count": 2,
-                "byteLength": bytes.len(),
-                "data": encode(data),
-            })
-        };
-
-        let mut assembly = ChunkAssembly::default();
-        assert_eq!(assembly.accept(chunk(0, first)).unwrap(), None);
-        assert_eq!(assembly.accept(chunk(1, second)).unwrap(), Some(payload));
-
-        // An ordinary frame passes straight through.
-        let mut assembly = ChunkAssembly::default();
-        let plain = json!({"type": "agent_start"});
-        assert_eq!(assembly.accept(plain.clone()).unwrap(), Some(plain.clone()));
-
-        // Anything interleaved into a run invalidates it rather than splicing.
-        let mut assembly = ChunkAssembly::default();
-        assert_eq!(assembly.accept(chunk(0, first)).unwrap(), None);
-        assert!(assembly.accept(plain).is_err());
-        assert!(assembly.active.is_none());
-
-        // A run that starts mid-sequence is not a frame Waku can trust.
-        let mut assembly = ChunkAssembly::default();
-        assert!(assembly.accept(chunk(1, second)).is_err());
     }
 
     #[test]
@@ -3999,8 +2478,8 @@ mod tests {
     fn deepseek_tool_periods_do_not_split_reasoning_and_tool_activity() {
         // Shape recorded from a DeepSeek Flash message in Oh My Pi's native
         // session: thinking, a literal period, then toolCall, stopReason toolUse.
-        for flavor in [PiFlavor::Pi, PiFlavor::OhMyPi] {
-            for streamed in [false, true] {
+        let flavor = PiFlavor::Pi;
+        for streamed in [false, true] {
                 let (pending, commands, _command_rx, mut state) = harness();
                 let (events, event_rx) = unbounded();
                 let message = json!({
@@ -4061,7 +2540,6 @@ mod tests {
                     DriverEvent::TextDelta(text),
                 ] if !started.complete && finished.complete && text == "Done."));
             }
-        }
     }
 
     #[test]
@@ -4087,7 +2565,7 @@ mod tests {
             let (pending, commands, _command_rx, mut state) = harness();
             let (events, event_rx) = unbounded();
             handle_pi_message(
-                PiFlavor::OhMyPi,
+                PiFlavor::Pi,
                 json!({"type": "message_start", "message": {"role": "assistant", "provider": provider, "model": model}}),
                 &pending,
                 &commands,
@@ -4096,7 +2574,7 @@ mod tests {
             );
             for delta in deltas {
                 handle_pi_message(
-                    PiFlavor::OhMyPi,
+                    PiFlavor::Pi,
                     json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": delta}}),
                     &pending,
                     &commands,
@@ -4120,7 +2598,7 @@ mod tests {
                 content.push(json!({"type": "toolCall", "id": "tool-1", "name": "read"}));
             }
             handle_pi_message(
-                PiFlavor::OhMyPi,
+                PiFlavor::Pi,
                 json!({"type": "message_end", "message": {
                     "role": "assistant", "provider": provider, "model": model,
                     "stopReason": if tool_use { "toolUse" } else { "stop" }, "content": content
@@ -4155,7 +2633,7 @@ mod tests {
             }}),
         ] {
             handle_pi_message(
-                PiFlavor::OhMyPi,
+                PiFlavor::Pi,
                 frame,
                 &pending,
                 &commands,
@@ -4180,7 +2658,7 @@ mod tests {
             }}),
         ] {
             handle_pi_message(
-                PiFlavor::OhMyPi,
+                PiFlavor::Pi,
                 frame,
                 &pending,
                 &commands,
@@ -4238,7 +2716,7 @@ mod tests {
 
     #[test]
     fn indexed_thinking_preserves_native_blocks_and_authoritative_completions() {
-        for flavor in [PiFlavor::Pi, PiFlavor::OhMyPi] {
+        let flavor = PiFlavor::Pi;
             let (pending, commands, _command_rx, mut state) = harness();
             let (events, received) = unbounded();
             let first = "**Checking settings definition**\n\n**Checking default-path references**";
@@ -4298,7 +2776,6 @@ mod tests {
             assert!(
                 matches!(received.recv().unwrap(), DriverEvent::ReasoningStarted { id, .. } if &id != a && &id != b)
             );
-        }
     }
 
     #[test]
@@ -4436,7 +2913,7 @@ mod delegation_tests {
     use super::*;
 
     fn command() -> std::process::Command {
-        std::process::Command::new("omp")
+        std::process::Command::new("pi")
     }
 
     fn args(command: &std::process::Command) -> Vec<String> {
@@ -4459,7 +2936,7 @@ mod delegation_tests {
         let mut command = command();
         configure_pi_delegation_command(
             &mut command,
-            PiFlavor::OhMyPi,
+            PiFlavor::Pi,
             Some(Path::new("/tmp/registration.json")),
             || Ok(PathBuf::from("/bundle/delegation/pi-extension.ts")),
         );
@@ -4498,23 +2975,22 @@ mod delegation_tests {
     /// `--yolo` would auto-approve the writes the allowlist exists to prevent.
     #[test]
     fn a_review_subtask_is_launched_with_a_read_only_tool_allowlist() {
-        for _flavor in [PiFlavor::Pi, PiFlavor::OhMyPi] {
-            let mut command = command();
-            command.args(review_read_only_args());
-            let args = args(&command);
-            let tools = args
-                .iter()
-                .position(|arg| arg == "--tools")
-                .map(|index| args[index + 1].clone())
-                .expect("a review subtask must carry a tool allowlist");
-            for denied in ["bash", "edit", "write", "python", "notebook", "task"] {
-                assert!(!tools.split(',').any(|tool| tool == denied), "{denied}");
-            }
-            for allowed in ["read", "grep", "glob"] {
-                assert!(tools.split(',').any(|tool| tool == allowed), "{allowed}");
-            }
-            assert!(!args.iter().any(|arg| arg == "--approve" || arg == "--yolo"));
+        let _flavor = PiFlavor::Pi;
+        let mut command = command();
+        command.args(review_read_only_args());
+        let args = args(&command);
+        let tools = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .map(|index| args[index + 1].clone())
+            .expect("a review subtask must carry a tool allowlist");
+        for denied in ["bash", "edit", "write", "python", "notebook", "task"] {
+            assert!(!tools.split(',').any(|tool| tool == denied), "{denied}");
         }
+        for allowed in ["read", "grep", "glob"] {
+            assert!(tools.split(',').any(|tool| tool == allowed), "{allowed}");
+        }
+        assert!(!args.iter().any(|arg| arg == "--approve" || arg == "--yolo"));
     }
 
     #[test]
@@ -4529,88 +3005,5 @@ mod delegation_tests {
             || anyhow::bail!("asset missing"),
         );
         assert!(args(&command).is_empty());
-    }
-
-    #[test]
-    fn bundled_pi_extensions_mark_tools_essential_for_oh_my_pi() {
-        let delegation_source = include_str!("../../../../resources/delegation/pi-extension.ts");
-        assert!(delegation_source.contains("name: \"delegate_batch\""));
-        assert!(delegation_source.contains("name: \"wait_delegates\""));
-        assert_eq!(
-            delegation_source
-                .matches("loadMode: \"essential\",")
-                .count(),
-            2,
-            "both delegation tools must declare loadMode: \"essential\" so Oh My Pi keeps their schemas top-level"
-        );
-    }
-}
-
-#[cfg(test)]
-mod xdev_tool_tests {
-    use super::*;
-    use crossbeam_channel::unbounded;
-    use serde_json::json;
-
-    #[test]
-    fn xdev_write_tool_events_unwrap_target_tool_identity_and_arguments() {
-        let pending = Arc::new(Mutex::new(HashMap::new()));
-        let (commands, _command_rx) = unbounded();
-        let (events, event_rx) = unbounded();
-        let mut state = PiStreamState::default();
-
-        for frame in [
-            json!({
-                "type": "tool_execution_start",
-                "toolCallId": "tool_xdev_1",
-                "toolName": "write",
-                "args": {
-                    "i": "Reading delegate_batch schema",
-                    "path": "xd://delegate_batch",
-                    "content": "{}"
-                }
-            }),
-            json!({
-                "type": "tool_execution_end",
-                "toolCallId": "tool_xdev_1",
-                "toolName": "write",
-                "result": {
-                    "content": [{
-                        "type": "text",
-                        "text": "Invalid args for xd://delegate_batch: Validation failed"
-                    }]
-                },
-                "isError": true
-            }),
-        ] {
-            handle_pi_message(
-                PiFlavor::OhMyPi,
-                frame,
-                &pending,
-                &commands,
-                &events,
-                &mut state,
-            );
-        }
-
-        let DriverEvent::RichActivity(started) = event_rx.recv().unwrap() else {
-            panic!("expected started RichActivity");
-        };
-        assert_eq!(started.kind, ActivityKind::Tool);
-        assert_eq!(started.title, "delegate_batch");
-        assert_eq!(started.tool_name.as_deref(), Some("delegate_batch"));
-        assert!(started.file_changes.is_empty());
-        assert_eq!(started.arguments.as_deref(), Some("{}"));
-        assert!(!started.complete);
-
-        let DriverEvent::RichActivity(ended) = event_rx.recv().unwrap() else {
-            panic!("expected completed RichActivity");
-        };
-        assert_eq!(ended.kind, ActivityKind::Tool);
-        assert_eq!(ended.title, "delegate_batch");
-        assert_eq!(ended.tool_name.as_deref(), Some("delegate_batch"));
-        assert!(ended.file_changes.is_empty());
-        assert!(ended.complete);
-        assert!(ended.failed);
     }
 }

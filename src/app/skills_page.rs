@@ -544,7 +544,6 @@ impl Waku {
             SkillSource::Provider(ProviderKind::Codex),
             SkillSource::Provider(ProviderKind::OpenCode),
             SkillSource::Provider(ProviderKind::Pi),
-            SkillSource::Provider(ProviderKind::OhMyPi),
             SkillSource::Provider(ProviderKind::Antigravity),
         ];
         dropdown_menu(

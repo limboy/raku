@@ -269,7 +269,7 @@ mod tests {
                     "model_references": [
                         {"referenceId": "retired", "provider": "deepSeek",
                          "modelId": "deepseek-chat", "displayLabel": "Harness"},
-                        {"referenceId": "active", "provider": "ohMyPi",
+                        {"referenceId": "active", "provider": "pi",
                          "modelId": "deepseek/deepseek-flash", "displayLabel": "DeepSeek"}
                     ]
                 }
@@ -285,7 +285,7 @@ mod tests {
             draft.model_references,
             vec![crate::delegation::ModelReference::new(
                 "active",
-                crate::model::ProviderKind::OhMyPi,
+                crate::model::ProviderKind::Pi,
                 "deepseek/deepseek-flash",
                 "DeepSeek",
             )]

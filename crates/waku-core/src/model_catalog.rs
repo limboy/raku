@@ -60,9 +60,9 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         // Discovery through the adopted background service is authoritative;
         // a fabricated catalog would offer models the server rejects.
         ProviderKind::OpenCode => Vec::new(),
-        // Pi and Oh My Pi take their catalog from the user's configured LLM providers.
+        // Pi takes its catalog from the user's configured LLM providers.
         // A fabricated fallback would make unavailable models look selectable.
-        ProviderKind::OhMyPi | ProviderKind::Pi => Vec::new(),
+        ProviderKind::Pi => Vec::new(),
     }
 }
 
@@ -76,8 +76,7 @@ pub fn discover_catalog(
         ProviderKind::Antigravity => (discover_antigravity_models(binary), None),
         ProviderKind::Claude => (discover_claude_models(binary), None),
         ProviderKind::OpenCode => crate::opencode_session::discover_catalog(binary),
-        ProviderKind::Pi => (discover_pi_models(binary, PiDialect::Pi), None),
-        ProviderKind::OhMyPi => (discover_pi_models(binary, PiDialect::OhMyPi), None),
+        ProviderKind::Pi => (discover_pi_models(binary), None),
     };
     let models = if discovered.is_empty() {
         // A failed or empty probe keeps the last successful discovery over
@@ -526,47 +525,20 @@ fn parse_antigravity_models(
     out
 }
 
-/// Pi and Oh My Pi share the RPC catalog commands but not the flags that keep
-/// a probe cheap, nor the shape of a model's thinking metadata.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum PiDialect {
-    Pi,
-    OhMyPi,
-}
+const PI_PROBE_ARGS: &[&str] = &[
+    "--mode",
+    "rpc",
+    "--no-session",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-context-files",
+];
 
-impl PiDialect {
-    fn probe_args(self) -> &'static [&'static str] {
-        match self {
-            Self::Pi => &[
-                "--mode",
-                "rpc",
-                "--no-session",
-                "--no-skills",
-                "--no-prompt-templates",
-                "--no-context-files",
-            ],
-            // Oh My Pi rejects unknown flags outright, and spells context
-            // files `--no-rules`.
-            Self::OhMyPi => &[
-                "--mode",
-                "rpc",
-                "--no-session",
-                "--no-skills",
-                "--no-rules",
-                "--no-extensions",
-            ],
-        }
-    }
-}
-
-fn discover_pi_models(binary: &Path, dialect: PiDialect) -> Vec<ProviderModel> {
+fn discover_pi_models(binary: &Path) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
-    if dialect == PiDialect::Pi {
-        // Oh My Pi has no such opt-out; it gates its update check on a setting.
-        command.env("PI_SKIP_VERSION_CHECK", "1");
-    }
+    command.env("PI_SKIP_VERSION_CHECK", "1");
     let command = command
-        .args(dialect.probe_args())
+        .args(PI_PROBE_ARGS)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -603,7 +575,7 @@ fn discover_pi_models(binary: &Path, dialect: PiDialect) -> Vec<ProviderModel> {
         } else {
             Value::Null
         };
-        parse_pi_model_response(dialect, &state, &models)
+        parse_pi_model_response(&state, &models)
     } else {
         Vec::new()
     };
@@ -613,7 +585,6 @@ fn discover_pi_models(binary: &Path, dialect: PiDialect) -> Vec<ProviderModel> {
 }
 
 fn parse_pi_model_response(
-    dialect: PiDialect,
     state: &Value,
     response: &Value,
 ) -> Vec<ProviderModel> {
@@ -647,7 +618,7 @@ fn parse_pi_model_response(
             let mut model = ProviderModel::new(slug.clone(), name)
                 .sub_provider(display_name_from_slug(provider));
             model.is_default = default_slug.as_deref() == Some(slug.as_str());
-            model.reasoning_efforts = pi_reasoning_options(dialect, value);
+            model.reasoning_efforts = pi_reasoning_options(value);
             if !model.reasoning_efforts.is_empty() {
                 let preferred = model
                     .is_default
@@ -681,28 +652,9 @@ fn parse_pi_model_response(
 
 const PI_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-fn pi_reasoning_options(dialect: PiDialect, model: &Value) -> Vec<ProviderModelOption> {
+fn pi_reasoning_options(model: &Value) -> Vec<ProviderModelOption> {
     if model.get("reasoning").and_then(Value::as_bool) != Some(true) {
         return Vec::new();
-    }
-    if dialect == PiDialect::OhMyPi {
-        // Oh My Pi advertises the levels a model actually honors. `off` is
-        // never in that list because it bypasses provider mapping entirely,
-        // but it is always accepted.
-        let Some(efforts) = model.pointer("/thinking/efforts").and_then(Value::as_array) else {
-            return Vec::new();
-        };
-        return PI_THINKING_LEVELS
-            .into_iter()
-            .filter(|level| {
-                *level == "off"
-                    || efforts
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .any(|effort| effort == *level)
-            })
-            .map(|level| ProviderModelOption::new(level, reasoning_effort_label(level)))
-            .collect();
     }
     let level_map = model.get("thinkingLevelMap").and_then(Value::as_object);
     PI_THINKING_LEVELS
@@ -1353,7 +1305,7 @@ printf '%s\n' '{"type":"control_response","response":{"request_id":"waku-initial
             ]}
         });
 
-        let models = parse_pi_model_response(PiDialect::Pi, &state, &response);
+        let models = parse_pi_model_response(&state, &response);
 
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "github-copilot/gpt-5.6-terra");
@@ -1395,48 +1347,13 @@ done
 "#,
         );
 
-        let models = discover_pi_models(&binary, PiDialect::Pi);
+        let models = discover_pi_models(&binary);
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "extension-provider/extension-model");
         assert_eq!(models[0].name, "Extension Model");
         assert!(models[0].is_default);
         let _ = std::fs::remove_file(binary);
-    }
-
-    /// Oh My Pi replaced Pi's `thinkingLevelMap` with the list of efforts a
-    /// model honors. `off` is never in that list but is always accepted.
-    #[test]
-    fn ohmypi_reasoning_options_come_from_the_advertised_efforts() {
-        let state = json!({"data": {"model": {"provider": "deepseek", "id": "deepseek-v4-pro"}}});
-        let response = json!({"data": {"models": [
-            {
-                "provider": "deepseek",
-                "id": "deepseek-v4-pro",
-                "name": "DeepSeek V4 Pro",
-                "reasoning": true,
-                "thinking": {"mode": "effort", "efforts": ["low", "high", "max"]}
-            },
-            {
-                "provider": "deepseek",
-                "id": "deepseek-v4-chat",
-                "name": "DeepSeek V4 Chat",
-                "reasoning": false
-            }
-        ]}});
-
-        let models = parse_pi_model_response(PiDialect::OhMyPi, &state, &response);
-
-        assert_eq!(models.len(), 2);
-        assert_eq!(
-            models[0]
-                .reasoning_efforts
-                .iter()
-                .map(|option| option.id.as_str())
-                .collect::<Vec<_>>(),
-            ["off", "low", "high", "max"]
-        );
-        assert!(models[1].reasoning_efforts.is_empty());
     }
 
     #[test]
@@ -1500,42 +1417,5 @@ done
             resolve_antigravity_model_and_effort(Some("gpt-oss-120b-medium"), None),
             (Some("gpt-oss-120b-medium".into()), None)
         );
-    }
-
-    /// Ignored by default because it needs the CLI and its configured
-    /// providers; run it after changing Oh My Pi's probe flags.
-    #[test]
-    #[ignore = "requires an installed, authenticated omp"]
-    fn ohmypi_catalog_against_the_real_cli() {
-        let binary = crate::command_env::find_executable("omp").expect("omp is not installed");
-        let models = discover_pi_models(&binary, PiDialect::OhMyPi);
-        assert!(!models.is_empty(), "Oh My Pi reported no models");
-        for model in &models {
-            assert!(
-                model.id.contains('/'),
-                "{} is not a provider/model slug",
-                model.id
-            );
-            assert!(!model.name.trim().is_empty());
-        }
-        assert_eq!(
-            models.iter().filter(|model| model.is_default).count(),
-            1,
-            "exactly one model should be marked default"
-        );
-        println!("discovered {} Oh My Pi models", models.len());
-        for model in models.iter().take(5) {
-            println!(
-                "  {} — {} [{}]",
-                model.id,
-                model.name,
-                model
-                    .reasoning_efforts
-                    .iter()
-                    .map(|option| option.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-        }
     }
 }

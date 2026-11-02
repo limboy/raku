@@ -217,10 +217,7 @@ pub(crate) fn start_local(
             Arc::new(antigravity::AntigravityDriver::start(options, events)?)
         }
         ProviderKind::Codex => Arc::new(codex::CodexDriver::start(options, events)?),
-        ProviderKind::Pi => Arc::new(pi::PiDriver::start(pi::PiFlavor::Pi, options, events)?),
-        ProviderKind::OhMyPi => {
-            Arc::new(pi::PiDriver::start(pi::PiFlavor::OhMyPi, options, events)?)
-        }
+        ProviderKind::Pi => Arc::new(pi::PiDriver::start(options, events)?),
         // OpenCode is not a per-workspace server: one adopted background
         // service carries every workspace, and every Waku task rides its one
         // event stream.
@@ -266,7 +263,7 @@ mod tests {
                 ExecutionPolicy::Interactive,
             ),
             (
-                ProviderKind::OhMyPi,
+                ProviderKind::Pi,
                 RuntimeMode::Auto,
                 ExecutionPolicy::Interactive,
             ),
@@ -309,7 +306,7 @@ mod tests {
         }
         // Pi's restricted tool allowlist is independent of the permission
         // modes offered to interactive sessions.
-        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+        for provider in [ProviderKind::Pi] {
             assert!(
                 validate_start(provider, RuntimeMode::Ask, ExecutionPolicy::ReviewReadOnly).is_ok()
             );

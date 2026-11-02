@@ -19,16 +19,14 @@ pub enum ProviderKind {
     /// load as OpenCode.
     #[serde(alias = "openCode2")]
     OpenCode,
-    OhMyPi,
     Pi,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Claude,
         Self::Codex,
         Self::OpenCode,
-        Self::OhMyPi,
         Self::Pi,
         Self::Antigravity,
     ];
@@ -39,7 +37,6 @@ impl ProviderKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
-            Self::OhMyPi => "ohmypi",
             Self::Pi => "pi",
         }
     }
@@ -50,7 +47,6 @@ impl ProviderKind {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex CLI",
             Self::OpenCode => "OpenCode",
-            Self::OhMyPi => "Oh My Pi",
             Self::Pi => "Pi",
         }
     }
@@ -61,7 +57,6 @@ impl ProviderKind {
             Self::Claude => "Claude",
             Self::Codex => "Codex",
             Self::OpenCode => "OpenCode",
-            Self::OhMyPi => "Oh My Pi",
             Self::Pi => "Pi",
         }
     }
@@ -72,7 +67,6 @@ impl ProviderKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
-            Self::OhMyPi => "omp",
             Self::Pi => "pi",
         }
     }
@@ -106,11 +100,6 @@ pub enum ProviderResumeCursor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         directory: Option<String>,
     },
-    OhMyPi {
-        session_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        session_file: Option<PathBuf>,
-    },
     Pi {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,10 +120,6 @@ impl ProviderResumeCursor {
                 session_id: id,
                 directory: None,
             },
-            ProviderKind::OhMyPi => Self::OhMyPi {
-                session_id: id,
-                session_file: None,
-            },
             ProviderKind::Pi => Self::Pi {
                 session_id: id,
                 session_file: None,
@@ -148,7 +133,6 @@ impl ProviderResumeCursor {
             Self::Claude { .. } => ProviderKind::Claude,
             Self::Codex { .. } => ProviderKind::Codex,
             Self::OpenCode { .. } => ProviderKind::OpenCode,
-            Self::OhMyPi { .. } => ProviderKind::OhMyPi,
             Self::Pi { .. } => ProviderKind::Pi,
         }
     }
@@ -158,7 +142,6 @@ impl ProviderResumeCursor {
             Self::Antigravity { session_id }
             | Self::Claude { session_id, .. }
             | Self::OpenCode { session_id, .. }
-            | Self::OhMyPi { session_id, .. }
             | Self::Pi { session_id, .. } => session_id,
             Self::Codex { thread_id } => thread_id,
         }
@@ -4380,7 +4363,7 @@ mod tests {
             assert!(session.auto_title.is_none());
             assert_eq!(session.display_title(), "🧠 My title");
         }
-        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::OhMyPi);
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Pi);
         session.auto_title = Some("🖥️".into());
         assert_eq!(session.display_title(), AgentSession::DEFAULT_TITLE);
     }
@@ -4434,7 +4417,6 @@ mod tests {
             ProviderKind::Claude,
             ProviderKind::Codex,
             ProviderKind::OpenCode,
-            ProviderKind::OhMyPi,
             ProviderKind::Pi,
         ] {
             assert!(provider.capabilities().conversation.fork);
@@ -4516,7 +4498,7 @@ mod tests {
 
     #[test]
     fn all_contains_every_provider_kind() {
-        assert_eq!(ProviderKind::ALL.len(), 6);
+        assert_eq!(ProviderKind::ALL.len(), 5);
         let ids: std::collections::HashSet<_> =
             ProviderKind::ALL.iter().map(|kind| kind.id()).collect();
         assert_eq!(
@@ -5125,7 +5107,7 @@ mod tests {
     #[test]
     fn forced_cleanup_interrupts_compaction_even_if_the_activity_was_marked_complete() {
         use crate::compaction::{CompactionStatus, ContextCompaction};
-        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::OhMyPi);
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Pi);
         session.active_compaction = Some("pending".into());
         let mut activity =
             ActivityItem::from_compaction(ContextCompaction::new("pending", None, 1));
@@ -5206,9 +5188,8 @@ mod review_subtask_tests {
             ProviderKind::Codex,
             ProviderKind::Claude,
             ProviderKind::OpenCode,
-            // Pi and Oh My Pi launch subtasks with a read-only tool allowlist.
+            // Pi launches subtasks with a read-only tool allowlist.
             ProviderKind::Pi,
-            ProviderKind::OhMyPi,
         ] {
             assert!(
                 provider.capabilities().delegation.review_subtask,

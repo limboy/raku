@@ -192,7 +192,7 @@ settings.general_keywords:
 settings.appearance_keywords:
   en: appearance theme system light dark language english chinese simplified font size text editor
 settings.providers_keywords:
-  en: providers agents models cli version install detect claude codex opencode pi ohmypi antigravity agy
+  en: providers agents models cli version install detect claude codex opencode pi antigravity agy
 settings.skills:
   en: Skills
 settings.skills_keywords:
@@ -1089,7 +1089,7 @@ composer.remove_target:
 composer.delegation_target_added:
   en: Delegation target added
 composer.delegation_unavailable:
-  en: This agent cannot delegate; switch to Codex, OpenCode, Pi, or Oh My Pi to use ^
+  en: This agent cannot delegate; switch to Codex, OpenCode, or Pi to use ^
 composer.invalid_model_reference:
   en: "Select this model again; its reference is ambiguous or unavailable: %{label}"
 
@@ -1859,12 +1859,6 @@ usage_error.opencode_go_not_entitled:
   en: OpenCode Go usage needs an active OpenCode Go subscription
 usage_error.no_rate_limit_windows:
   en: The usage endpoint reported no rate-limit windows
-usage_error.start_omp_probe:
-  en: Failed to start `omp usage`
-usage_error.omp_usage_timeout:
-  en: Oh My Pi did not answer the usage request in time
-usage_error.omp_usage_failed:
-  en: "Oh My Pi usage failed: %{error}"
 usage_error.claude_credentials_missing:
   en: No Claude Code credentials in the keychain or ~/.claude
 usage_error.run_security:

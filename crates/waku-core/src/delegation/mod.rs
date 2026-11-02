@@ -469,8 +469,8 @@ mod tests {
         // or making paid requests: all children must report a launch failure.
         let mut settings = crate::settings::DaemonSettings::default();
         settings.provider_binary_overrides.insert(
-            ProviderKind::OhMyPi,
-            directory.join("missing-omp").to_string_lossy().into_owned(),
+            ProviderKind::Pi,
+            directory.join("missing-pi").to_string_lossy().into_owned(),
         );
         std::fs::write(
             directory.join("settings.json"),
@@ -481,7 +481,7 @@ mod tests {
         let session = Uuid::new_v4();
         let key = session.to_string();
         let targets = ["target-1", "target-2", "target-3"]
-            .map(|id| ModelReference::new(id, ProviderKind::OhMyPi, id, id));
+            .map(|id| ModelReference::new(id, ProviderKind::Pi, id, id));
         manager
             .register_parent_session_with_cwd(
                 &key,
@@ -588,7 +588,7 @@ mod tests {
                 task.error_message
                     .as_deref()
                     .unwrap()
-                    .contains("provider Oh My Pi is not installed")
+                    .contains("provider Pi is not installed")
             );
         }
 

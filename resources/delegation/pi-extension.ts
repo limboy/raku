@@ -19,9 +19,7 @@ type JsonObject = Record<string, unknown>;
 
 type EssentialToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0] & {
   /**
-   * Oh My Pi (`omp`) mounts `"discoverable"` extension tools under `xd://` with
-   * no parameter schema in the initial prompt. Marking delegation tools
-   * `"essential"` keeps their full schemas top-level on turn 1.
+   * Marking delegation tools `"essential"` keeps their full schemas top-level on turn 1.
    */
   loadMode: "essential";
 };

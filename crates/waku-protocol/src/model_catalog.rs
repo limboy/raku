@@ -42,7 +42,6 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         ],
         ProviderKind::Antigravity
         | ProviderKind::OpenCode
-        | ProviderKind::OhMyPi
         | ProviderKind::Pi => Vec::new(),
     }
 }

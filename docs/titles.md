@@ -241,37 +241,6 @@ Both existing Pi conversations checked during the audit retained their prompt
 fallback and had no native `session_info` name entries. An extension can supply
 a name; built-in rename support is not automatic naming.
 
-**Oh My Pi RPC naming.** Verified against installed OMP 18.14.0: its
-`AgentSessionConfig.autoTitle` defaults to false, and the CLI enables it only
-for the interactive TUI. A `session_info_update` event is evidence of a
-completed rename, not a promise that RPC will start generating a title.
-
-Waku requests the native `/rename` command when an unnamed session's first
-assistant message begins, or as soon as an older unnamed conversation's native
-history is reattached. Review subtasks do not request titles.
-During a live turn, an asynchronous `get_state` immediately before that command
-preserves any existing native name; on session reattachment, `initialize`'s
-`get_state` check has already verified the session is unnamed, so `/rename` is
-issued directly without a redundant round trip.
-
-OMP chooses its configured title model, generates the title in the background,
-persists it with native `titleSource: "user"`, and sends `session_info_update`.
-Unless configured with `title.icons: "boring"`, OMP heads generated titles with
-a Title Card (`<icon> <CODE>: <title>`). Waku sanitizes any Private Use Area
-(PUA) glyphs produced under custom `symbolPreset: "nerd"` configs so titles
-never render as missing glyphs in macOS GUI fonts, while preserving standard
-Unicode emoji and task codes. Neither request blocks the provider writer, so
-Stop and steering remain available while the model is naming the session.
-
-Internal rename acknowledgements do not start or settle a Waku turn, and
-the native rename reports are consumed without entering the transcript even
-if the attempt was cancelled or settled after turn end. Standalone background
-command outputs that arrive while idle complete immediately rather than leaving
-a turn hanging. A failed attempt leaves the prompt fallback in place and can
-retry on the next user prompt; stale attempts cannot supersede a newer one.
-Explicit `/rename` commands retain their normal output, existing native names
-are kept, and Waku's user-owned `title` continues to take display precedence.
-
 ## Adding a provider
 
 In order of preference:

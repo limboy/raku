@@ -93,7 +93,7 @@ settings.appearance: 外观
 settings.providers: 服务商
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本 数学 公式 表达式 math latex
 settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
-settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex opencode pi ohmypi antigravity agy
+settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex opencode pi antigravity agy
 settings.skills: 技能
 settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex opencode pi antigravity agy 共享
 settings.back: 返回
@@ -530,7 +530,7 @@ composer.show_in_text_field: 在输入框中显示
 composer.pasted_text: 已粘贴文本
 composer.remove_target: 移除委派目标
 composer.delegation_target_added: 已添加委派目标
-composer.delegation_unavailable: 当前 Agent 无法委派，切换到 Codex、OpenCode、Pi 或 Oh My Pi 才能使用 ^
+composer.delegation_unavailable: 当前 Agent 无法委派，切换到 Codex、OpenCode 或 Pi 才能使用 ^
 composer.invalid_model_reference: "此模型引用不明确或不可用，请重新选择：%{label}"
 composer.queued_message_actions: 后续消息操作
 branches.detached_head: 游离 HEAD
@@ -903,9 +903,6 @@ usage_error.codex_access_token_missing: Codex auth.json 中没有访问令牌；
 usage_error.opencode_go_key_rejected: OpenCode Go API 密钥无法读取用量（HTTP %{status}）；请重新连接 OpenCode Go
 usage_error.opencode_go_not_entitled: OpenCode Go 用量需要有效的 OpenCode Go 订阅
 usage_error.no_rate_limit_windows: 用量接口未返回任何速率限制周期
-usage_error.start_omp_probe: 无法启动 `omp usage`
-usage_error.omp_usage_timeout: Oh My Pi 未在规定时间内响应用量请求
-usage_error.omp_usage_failed: "Oh My Pi 用量查询失败：%{error}"
 usage_error.claude_credentials_missing: 钥匙串和 ~/.claude 中均未找到 Claude Code 凭据
 usage_error.run_security: 无法运行 /usr/bin/security
 usage_error.keychain_item_missing: 钥匙串中没有 %{service} 项

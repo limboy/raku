@@ -105,17 +105,16 @@ mod tests {
 
     #[test]
     fn cold_compaction_requires_a_startable_mode_but_a_live_runtime_can_be_reused() {
-        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
-            let mut session = AgentSession::new(Uuid::new_v4(), provider);
-            session.provider_cursor = Some(ProviderResumeCursor::from_session_id(
-                provider,
-                "native".into(),
-            ));
-            session.runtime_mode = RuntimeMode::Ask;
-            assert!(validate_compaction_request(&session, false, false).is_err());
-            assert!(validate_compaction_request(&session, true, false).is_ok());
-            session.runtime_mode = RuntimeMode::FullAccess;
-            assert!(validate_compaction_request(&session, false, false).is_ok());
-        }
+        let provider = ProviderKind::Pi;
+        let mut session = AgentSession::new(Uuid::new_v4(), provider);
+        session.provider_cursor = Some(ProviderResumeCursor::from_session_id(
+            provider,
+            "native".into(),
+        ));
+        session.runtime_mode = RuntimeMode::Ask;
+        assert!(validate_compaction_request(&session, false, false).is_err());
+        assert!(validate_compaction_request(&session, true, false).is_ok());
+        session.runtime_mode = RuntimeMode::FullAccess;
+        assert!(validate_compaction_request(&session, false, false).is_ok());
     }
 }

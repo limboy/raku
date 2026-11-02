@@ -41,7 +41,7 @@ const WALK_MAX_DEPTH: usize = 8;
 /// - Claude Code's SDK initialization control request reports built-ins,
 ///   plugins, commands, skills, descriptions, and argument hints.
 /// - Codex app-server's `experimentalFeature/list` and `skills/list`, OpenCode's
-///   HTTP command catalogues, and Pi/Oh My Pi's RPC registries report the commands
+///   HTTP command catalogues, and Pi's RPC registry report the commands
 ///   their non-TUI transports can actually invoke.
 ///
 /// Filesystem discovery remains as graceful fallback metadata for configured
@@ -55,9 +55,6 @@ const WALK_MAX_DEPTH: usize = 8;
 ///   resolved by the server's native command endpoint.
 /// - Pi: prompt templates in `.pi/prompts` and `~/.pi/agent/prompts`,
 ///   expanded by Waku, plus skills in `.pi/skills` and `~/.pi/agent/skills`.
-/// - Oh My Pi: the same layout under its own root — commands in
-///   `.omp/commands` and `~/.omp/agent/commands`, skills in `.omp/skills`
-///   and `~/.omp/agent/skills`.
 ///
 /// Skills — `SKILL.md` directories in each ecosystem's locations and the
 /// cross-tool `.agents/skills` / `~/.agents/skills` — are listed for every
@@ -197,24 +194,6 @@ fn assemble_slash_commands(
                     &mut commands,
                 );
                 scan_skill_files(provider, &home.join(".pi/agent/skills"), &mut commands);
-            }
-        }
-        ProviderKind::OhMyPi => {
-            scan_command_files(
-                &project_root.join(".omp/commands"),
-                CommandScope::Project,
-                true,
-                &mut commands,
-            );
-            scan_skill_files(provider, &project_root.join(".omp/skills"), &mut commands);
-            if let Some(home) = home.as_deref() {
-                scan_command_files(
-                    &home.join(".omp/agent/commands"),
-                    CommandScope::User,
-                    true,
-                    &mut commands,
-                );
-                scan_skill_files(provider, &home.join(".omp/agent/skills"), &mut commands);
             }
         }
     }
@@ -583,7 +562,7 @@ pub fn resolved_skill_submission(
 ) -> Option<String> {
     if !matches!(
         provider,
-        ProviderKind::Codex | ProviderKind::Pi | ProviderKind::OhMyPi
+        ProviderKind::Codex | ProviderKind::Pi
     ) {
         return None;
     }
@@ -600,7 +579,7 @@ pub fn resolved_skill_submission(
     }
     Some(match provider {
         ProviderKind::Codex => format!("${invocation}"),
-        ProviderKind::Pi | ProviderKind::OhMyPi => format!("/skill:{invocation}"),
+        ProviderKind::Pi => format!("/skill:{invocation}"),
         _ => unreachable!("non-native skill providers returned above"),
     })
 }
@@ -1311,18 +1290,11 @@ mod tests {
             resolved_submission(ProviderKind::Pi, "/deploy-runbook staging", &commands).as_deref(),
             Some("/skill:deploy-runbook staging")
         );
-        assert_eq!(
-            resolved_submission(ProviderKind::OhMyPi, "/deploy-runbook staging", &commands)
-                .as_deref(),
-            Some("/skill:deploy-runbook staging")
-        );
-
         // Each ecosystem's own project-level skill tree is read too.
         for (provider, dir) in [
             (ProviderKind::Codex, ".codex/skills"),
             (ProviderKind::OpenCode, ".opencode/skills"),
             (ProviderKind::Pi, ".pi/skills"),
-            (ProviderKind::OhMyPi, ".omp/skills"),
         ] {
             let skill_dir = root.join(dir).join("native-skill");
             std::fs::create_dir_all(&skill_dir).unwrap();

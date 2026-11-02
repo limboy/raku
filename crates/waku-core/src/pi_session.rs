@@ -57,7 +57,7 @@ pub(crate) fn is_deepseek_tool_placeholder(message: &Value) -> bool {
 /// Stored messages no longer carry native stop reasons, so require a tool
 /// activity immediately after the period in the same turn as confirmation.
 pub(crate) fn remove_deepseek_tool_placeholders(session: &mut AgentSession) -> bool {
-    if !matches!(session.provider, ProviderKind::Pi | ProviderKind::OhMyPi)
+    if session.provider != ProviderKind::Pi
         || !session.model.as_deref().is_some_and(is_deepseek_model)
     {
         return false;
@@ -311,7 +311,7 @@ fn parse_session(path: &Path) -> anyhow::Result<ParsedSession> {
     })
 }
 
-fn active_chain(session: &ParsedSession, provider: ProviderKind) -> Vec<&NativeEntry> {
+fn active_chain(session: &ParsedSession) -> Vec<&NativeEntry> {
     let by_id = session
         .entries
         .iter()
@@ -332,13 +332,6 @@ fn active_chain(session: &ParsedSession, provider: ProviderKind) -> Vec<&NativeE
         current = next;
     }
     chain.reverse();
-    if provider == ProviderKind::OhMyPi
-        && let Some(boundary) = chain
-            .iter()
-            .rposition(|entry| entry.kind == "reset_boundary")
-    {
-        chain.drain(..=boundary);
-    }
     chain
 }
 
@@ -359,7 +352,7 @@ fn summary_from_session(
     path: &Path,
     session: &ParsedSession,
 ) -> Option<ProviderSessionSummary> {
-    let first_prompt = active_chain(session, provider)
+    let first_prompt = active_chain(session)
         .into_iter()
         .find(|entry| entry.kind == "message" && entry.role.as_deref() == Some("user"))
         .and_then(|entry| entry.text.as_deref())
@@ -372,10 +365,6 @@ fn summary_from_session(
         .or(first_prompt)?;
     let cursor = match provider {
         ProviderKind::Pi => ProviderResumeCursor::Pi {
-            session_id: session.session_id.clone(),
-            session_file: Some(path.to_path_buf()),
-        },
-        ProviderKind::OhMyPi => ProviderResumeCursor::OhMyPi {
             session_id: session.session_id.clone(),
             session_file: Some(path.to_path_buf()),
         },
@@ -422,22 +411,6 @@ fn session_roots(provider: ProviderKind) -> anyhow::Result<Vec<PathBuf>> {
                 .map(&expand_home)
                 .filter(|path| path.is_absolute());
             Ok(configured.into_iter().chain([default]).collect())
-        }
-        ProviderKind::OhMyPi => {
-            let mut roots = vec![
-                configured_agent
-                    .unwrap_or_else(|| home.join(".omp/agent"))
-                    .join("sessions"),
-            ];
-            let profiles = home.join(".omp/profiles");
-            if let Ok(entries) = fs::read_dir(profiles) {
-                roots.extend(
-                    entries
-                        .flatten()
-                        .map(|entry| entry.path().join("agent/sessions")),
-                );
-            }
-            Ok(roots)
         }
         _ => bail!("{} is not a Pi session provider", provider.display_name()),
     }
@@ -500,9 +473,9 @@ fn status_from_reason(reason: Option<&str>) -> TurnStatus {
     }
 }
 
-fn history_from_session(provider: ProviderKind, session: &ParsedSession) -> ProviderSessionHistory {
+fn history_from_session(session: &ParsedSession) -> ProviderSessionHistory {
     let mut history = ProviderSessionHistory::default();
-    for entry in active_chain(session, provider) {
+    for entry in active_chain(session) {
         if entry.kind == "message" && entry.role.as_deref() == Some("user") {
             let turn_id = Uuid::new_v4();
             history.turns.push(AgentTurn {
@@ -565,7 +538,7 @@ pub fn provider_session_history(
             provider.display_name()
         );
     }
-    let mut history = history_from_session(provider, &session);
+    let mut history = history_from_session(&session);
     let retained = history
         .turns
         .iter()
@@ -609,7 +582,7 @@ mod tests {
             r#"{"type":"message","id":"u2","parentId":"a1","timestamp":"2026-01-01T00:00:04Z","message":{"role":"user","content":"two"}}"#,
         ]);
         let session = parse_session(&path).unwrap();
-        let history = history_from_session(ProviderKind::Pi, &session);
+        let history = history_from_session(&session);
         assert_eq!(history.turns.len(), 2);
         assert_eq!(history.messages.len(), 3);
         assert_eq!(history.messages[1].content, "answer");
@@ -638,7 +611,7 @@ mod tests {
             r#"{"type":"message","id":"a3","parentId":"a2","message":{"role":"assistant","provider":"deepseek","model":"deepseek-flash","content":[{"type":"text","text":"."}],"stopReason":"stop"}}"#,
         ]);
         let original = fs::read(&path).unwrap();
-        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+        for provider in [ProviderKind::Pi] {
             let history =
                 provider_session_history(provider, "deepseek-session", &path, 10).unwrap();
             assert_eq!(history.messages.len(), 2);
@@ -683,31 +656,5 @@ mod tests {
             .unwrap()
             .push(serde_json::json!({"type": "text", "text": "Keep this commentary"}));
         assert!(!is_deepseek_tool_placeholder(&real));
-    }
-
-    #[test]
-    fn oh_my_pi_reset_hides_the_earlier_transcript_and_uses_the_title_slot() {
-        let header = serde_json::json!({
-            "type": "session",
-            "version": 3,
-            "id": "session-2",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "cwd": std::env::temp_dir(),
-        })
-        .to_string();
-        let path = write_session(&[
-            r#"{"type":"title","v":1,"title":"Current title","updatedAt":"2026-01-01T00:00:05Z","pad":""}"#,
-            &header,
-            r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"old"}}"#,
-            r#"{"type":"reset_boundary","id":"r1","parentId":"u1","timestamp":"2026-01-01T00:00:02Z"}"#,
-            r#"{"type":"message","id":"u2","parentId":"r1","timestamp":"2026-01-01T00:00:03Z","message":{"role":"user","content":"new"}}"#,
-        ]);
-        let session = parse_session(&path).unwrap();
-        let summary = summary_from_session(ProviderKind::OhMyPi, &path, &session).unwrap();
-        let history = history_from_session(ProviderKind::OhMyPi, &session);
-        assert_eq!(summary.title, "Current title");
-        assert_eq!(history.turns.len(), 1);
-        assert_eq!(history.messages[0].content, "new");
-        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }

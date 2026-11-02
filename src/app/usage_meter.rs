@@ -3,9 +3,8 @@
 //! rate-limit lanes, mirroring Claude Code's `/usage` rows. Context numbers
 //! stream in from every provider transport that reports them; plan lanes come
 //! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`]),
-//! OpenCode Go's usage endpoint, Codex's own rate-limit notifications, Grok's
-//! billing probe, and Oh My Pi's `omp usage --json` reports. Frames read only
-//! snapshots stored on the entity.
+//! OpenCode Go's usage endpoint, Codex's own rate-limit notifications, and
+//! Antigravity's billing probe. Frames read only snapshots stored on the entity.
 
 use gpui::{PathBuilder, relative};
 
@@ -15,8 +14,7 @@ use crate::usage::{PlanUsage, format_tokens, reset_label};
 const USAGE_METER_MENU_ID: &str = "usage-meter";
 
 /// Top-level providers with a single account-wide plan fetcher. Codex
-/// additionally refreshes live from its own stream notifications; Oh My Pi
-/// resolves per upstream/model/session key via [`PlanUsageKey::OhMyPi`].
+/// additionally refreshes live from its own stream notifications.
 pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 3] = [
     ProviderKind::Claude,
     ProviderKind::Codex,
@@ -24,18 +22,12 @@ pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 3] = [
 ];
 
 /// Cache key for an account-level plan snapshot. Top-level providers hold one
-/// account per binary; Oh My Pi multiplexes several upstream OAuth providers
-/// and per-model quota pools (such as Antigravity's Gemini vs third-party
-/// counters), and pins multi-account credentials per session file.
+/// account per binary.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlanUsageKey {
     Provider(ProviderKind),
     Antigravity {
         model: Option<String>,
-    },
-    OhMyPi {
-        model: String,
-        session_file: Option<PathBuf>,
     },
 }
 
@@ -44,7 +36,6 @@ impl PlanUsageKey {
         match self {
             Self::Provider(provider) => *provider,
             Self::Antigravity { .. } => ProviderKind::Antigravity,
-            Self::OhMyPi { .. } => ProviderKind::OhMyPi,
         }
     }
 }
@@ -72,20 +63,6 @@ impl Waku {
                     .map(str::to_owned);
                 Some(PlanUsageKey::Antigravity { model })
             }
-            ProviderKind::OhMyPi => {
-                let model = self.model_for_session(session)?.trim();
-                if !model.contains('/') {
-                    return None;
-                }
-                let session_file = match session.provider_cursor.as_ref() {
-                    Some(ProviderResumeCursor::OhMyPi { session_file, .. }) => session_file.clone(),
-                    _ => None,
-                };
-                Some(PlanUsageKey::OhMyPi {
-                    model: model.to_owned(),
-                    session_file,
-                })
-            }
             _ => None,
         }
     }
@@ -107,10 +84,7 @@ impl Waku {
             }
         }
         if let Some(session) = self.selected_session().filter(|session| {
-            matches!(
-                session.provider,
-                ProviderKind::OhMyPi | ProviderKind::Antigravity
-            )
+            session.provider == ProviderKind::Antigravity
         }) && let Some(key) = self.plan_usage_key_for_session(session)
         {
             keys.push(key);
@@ -147,10 +121,6 @@ impl Waku {
             let (model, session_file) = match &key {
                 PlanUsageKey::Provider(_) => (None, None),
                 PlanUsageKey::Antigravity { model } => (model.clone(), None),
-                PlanUsageKey::OhMyPi {
-                    model,
-                    session_file,
-                } => (Some(model.clone()), session_file.clone()),
             };
             let daemon = self.daemon.client();
             cx.background_executor()
@@ -284,21 +254,7 @@ impl Waku {
         let usage_url = plan_usage_settings_url(provider, self.model_for_session(session));
         let plan = key
             .as_ref()
-            .and_then(|key| {
-                self.plan_usage.get(key).or_else(|| match key {
-                    // Keep the unpinned model snapshot visible on the frame a
-                    // new session first materializes its transcript file,
-                    // until the pinned lookup lands.
-                    PlanUsageKey::OhMyPi {
-                        model,
-                        session_file: Some(_),
-                    } => self.plan_usage.get(&PlanUsageKey::OhMyPi {
-                        model: model.clone(),
-                        session_file: None,
-                    }),
-                    _ => None,
-                })
-            })
+            .and_then(|key| self.plan_usage.get(key))
             .cloned();
         let error = key
             .as_ref()
@@ -310,12 +266,7 @@ impl Waku {
             && error.is_none()
             && match &key {
                 Some(key) => !self.plan_usage_unconfigured.contains(key),
-                None => {
-                    provider == ProviderKind::OhMyPi
-                        && self
-                            .provider_model_discoveries_pending
-                            .contains(&ProviderKind::OhMyPi)
-                }
+                None => false,
             };
 
         let weak = cx.entity().downgrade();
@@ -564,25 +515,10 @@ fn context_gauge(percent: Option<f64>, track: Hsla, fill: Hsla) -> impl IntoElem
     .flex_none()
 }
 
-fn plan_usage_settings_url(provider: ProviderKind, model: Option<&str>) -> Option<&'static str> {
+fn plan_usage_settings_url(provider: ProviderKind, _model: Option<&str>) -> Option<&'static str> {
     match provider {
         ProviderKind::Claude => Some("https://claude.ai/settings/usage"),
         ProviderKind::Codex => Some("https://chatgpt.com/codex/settings/usage"),
-        ProviderKind::OhMyPi => match model
-            .and_then(|slug| slug.split_once('/'))
-            .map(|(upstream, _)| upstream.trim())
-        {
-            Some(upstream) if upstream.eq_ignore_ascii_case("anthropic") => {
-                Some("https://claude.ai/settings/usage")
-            }
-            Some(upstream)
-                if upstream.eq_ignore_ascii_case("openai-codex")
-                    || upstream.eq_ignore_ascii_case("openai-codex-device") =>
-            {
-                Some("https://chatgpt.com/codex/settings/usage")
-            }
-            _ => None,
-        },
         _ => None,
     }
 }
@@ -865,25 +801,6 @@ mod tests {
                 tokens: 4_718_002,
                 window: Some(0),
             }),
-            None
-        );
-    }
-
-    #[test]
-    fn ohmypi_settings_url_follows_the_active_upstream_provider() {
-        assert_eq!(
-            plan_usage_settings_url(ProviderKind::OhMyPi, Some("openai-codex/gpt-5.3-codex")),
-            Some("https://chatgpt.com/codex/settings/usage")
-        );
-        assert_eq!(
-            plan_usage_settings_url(ProviderKind::OhMyPi, Some("anthropic/claude-sonnet-4-6")),
-            Some("https://claude.ai/settings/usage")
-        );
-        assert_eq!(
-            plan_usage_settings_url(
-                ProviderKind::OhMyPi,
-                Some("google-antigravity/gemini-4-argon")
-            ),
             None
         );
     }

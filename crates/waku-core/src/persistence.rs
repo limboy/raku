@@ -1901,7 +1901,7 @@ mod tests {
             directory.join("app.json"),
             br#"{"theme":"dark","favorite_models":[
                 {"provider":"deepSeek","model":"retired"},
-                {"provider":"ohMyPi","model":"deepseek/deepseek-flash"}
+                {"provider":"pi","model":"deepseek/deepseek-flash"}
             ]}"#,
         )
         .unwrap();
@@ -1920,7 +1920,7 @@ mod tests {
         assert_eq!(
             restored.favorite_models,
             vec![FavoriteModel {
-                provider: ProviderKind::OhMyPi,
+                provider: ProviderKind::Pi,
                 model: "deepseek/deepseek-flash".into(),
             }]
         );
@@ -2008,7 +2008,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        connection.execute("INSERT INTO sessions(id,project_id,title,provider,status,created_at,updated_at) VALUES('s','p','New task','ohMyPi','idle',1,1)", []).unwrap();
+        connection.execute("INSERT INTO sessions(id,project_id,title,provider,status,created_at,updated_at) VALUES('s','p','New task','pi','idle',1,1)", []).unwrap();
         connection
             .execute(
                 "INSERT INTO session_details(session_id,data) VALUES('s',?1)",
@@ -2865,13 +2865,17 @@ mod tests {
     #[test]
     fn hydration_removes_deepseek_tool_periods_and_preserves_activity_order() {
         for (provider, model, removes_periods) in [
-            (ProviderKind::OhMyPi, "deepseek/deepseek-flash", true),
+            (
+                ProviderKind::Pi,
+                "deepseek/deepseek-flash",
+                true,
+            ),
             (
                 ProviderKind::Pi,
                 "openrouter/deepseek/deepseek-v4-flash",
                 true,
             ),
-            (ProviderKind::OhMyPi, "other/model", false),
+            (ProviderKind::Pi, "other/model", false),
             (ProviderKind::Codex, "deepseek/deepseek-flash", false),
         ] {
             let directory = temporary_directory();

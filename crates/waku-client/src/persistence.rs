@@ -1274,7 +1274,7 @@ mod tests {
                 "sidebar_width": 318.0,
                 "remembered_model_traits": [
                     {"provider": "deepSeek", "model": "retired"},
-                    {"provider": "ohMyPi", "model": "deepseek/deepseek-flash",
+                    {"provider": "pi", "model": "deepseek/deepseek-flash",
                      "reasoning_effort": "low"}
                 ]
             }))
@@ -1293,7 +1293,7 @@ mod tests {
         assert_eq!(draft.service_tier, None);
         assert_eq!(draft.context_window, None);
         assert_eq!(
-            state.model_traits_for(ProviderKind::OhMyPi, "deepseek/deepseek-flash"),
+            state.model_traits_for(ProviderKind::Pi, "deepseek/deepseek-flash"),
             (Some("low".into()), None, None)
         );
         fs::remove_dir_all(directory).unwrap();

@@ -295,7 +295,7 @@ impl Backend for WakuBackend {
                 binary_override,
                 cli_version,
                 model,
-                session_file,
+                session_file: _,
             } => {
                 let usage = match provider {
                     crate::model::ProviderKind::Antigravity => {
@@ -313,17 +313,6 @@ impl Backend for WakuBackend {
                     }
                     crate::model::ProviderKind::OpenCode => {
                         crate::usage::fetch_opencode_go_plan_usage()?
-                    }
-                    crate::model::ProviderKind::OhMyPi => {
-                        ensure_shell_environment();
-                        let probe =
-                            crate::model::provider_probe(provider, binary_override.as_deref());
-                        let binary = probe.path.ok_or_else(|| anyhow!("omp is not installed"))?;
-                        crate::usage::fetch_ohmypi_plan_usage(
-                            &binary,
-                            model.as_deref(),
-                            session_file.as_deref(),
-                        )?
                     }
                     _ => bail!("provider has no plan usage fetcher"),
                 };
@@ -537,7 +526,7 @@ impl Backend for WakuBackend {
                     ProviderKind::OpenCode => {
                         crate::opencode_session::list_provider_sessions(&binary, limit)?
                     }
-                    ProviderKind::OhMyPi | ProviderKind::Pi => {
+                    ProviderKind::Pi => {
                         crate::pi_session::list_provider_sessions(provider, limit)?
                     }
                 };
@@ -598,11 +587,7 @@ impl Backend for WakuBackend {
                             VISIBLE_TURN_LIMIT,
                         )?
                     }
-                    ProviderResumeCursor::OhMyPi {
-                        session_id,
-                        session_file,
-                    }
-                    | ProviderResumeCursor::Pi {
+                    ProviderResumeCursor::Pi {
                         session_id,
                         session_file,
                     } => {
@@ -1286,7 +1271,7 @@ impl WakuBackend {
                 })?;
                 Ok((fork.cursor, fork.message_ids))
             }
-            ProviderKind::Codex | ProviderKind::OhMyPi | ProviderKind::Pi => Ok((
+            ProviderKind::Codex | ProviderKind::Pi => Ok((
                 self.fork_response_with_driver(source, cwd, turns_to_remove)?,
                 HashMap::new(),
             )),
@@ -1342,17 +1327,6 @@ impl WakuBackend {
                 ) =>
             {
                 bail!("Pi's native session file is unavailable");
-            }
-            ProviderKind::OhMyPi
-                if !matches!(
-                    source.provider_cursor.as_ref(),
-                    Some(ProviderResumeCursor::OhMyPi {
-                        session_file: Some(_),
-                        ..
-                    })
-                ) =>
-            {
-                bail!("Oh My Pi's native session file is unavailable");
             }
             _ => {}
         }
@@ -1461,7 +1435,7 @@ impl WakuBackend {
                 };
                 Ok((Some(cursor), HashMap::new(), false))
             }
-            ProviderKind::Codex | ProviderKind::OhMyPi | ProviderKind::Pi => Ok((
+            ProviderKind::Codex | ProviderKind::Pi => Ok((
                 self.rollback_response_with_driver(source, cwd, binary, rollback_turns)?,
                 HashMap::new(),
                 false,
@@ -2471,7 +2445,7 @@ mod tests {
             );
             String::from_utf8(output.stdout).unwrap()
         };
-        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+        for provider in [ProviderKind::Pi] {
             for provider_started in [false, true] {
                 let directory =
                     std::env::temp_dir().join(format!("waku-rewind-mode-{}", Uuid::new_v4()));
@@ -2585,7 +2559,7 @@ mod tests {
     fn cold_pi_history_fork_does_not_require_or_change_the_interactive_mode() {
         use crate::model::RuntimeMode;
         use std::os::unix::fs::PermissionsExt as _;
-        for provider in [ProviderKind::Pi, ProviderKind::OhMyPi] {
+        for provider in [ProviderKind::Pi] {
             let directory =
                 std::env::temp_dir().join(format!("waku-history-mode-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&directory).unwrap();
@@ -2609,10 +2583,6 @@ mod tests {
             let native_file = directory.join("source.jsonl");
             source.provider_cursor = Some(match provider {
                 ProviderKind::Pi => ProviderResumeCursor::Pi {
-                    session_id: "source".into(),
-                    session_file: Some(native_file),
-                },
-                ProviderKind::OhMyPi => ProviderResumeCursor::OhMyPi {
                     session_id: "source".into(),
                     session_file: Some(native_file),
                 },

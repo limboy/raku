@@ -17,7 +17,7 @@ session that spans the whole conversation**:
 | --- | --- | --- |
 | Codex app-server (JSON-RPC over stdio) | [driver/codex.rs](../crates/waku-core/src/driver/codex.rs) | Codex CLI |
 | OpenCode background service (HTTP + server-sent events) | [driver/opencode.rs](../crates/waku-core/src/driver/opencode.rs) | OpenCode |
-| Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/waku-core/src/driver/pi.rs) | Pi, Oh My Pi |
+| Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/waku-core/src/driver/pi.rs) | Pi |
 | Claude streaming-input session (NDJSON over stdio) | [driver/claude.rs](../crates/waku-core/src/driver/claude.rs) | Claude Code |
 | Antigravity streaming-input session (NDJSON over stdio) | [driver/antigravity.rs](../crates/waku-core/src/driver/antigravity.rs) | Antigravity CLI |
 
@@ -83,7 +83,7 @@ from another provider or restored from disk is preserved: if incompatible, the
 chip marks it unavailable and sending explains the supported choices before
 consuming the draft. The daemon also validates starts before replacing a live
 runtime and rejects unsupported options/commands before delivery. Review
-subtasks use their own execution policy, so Pi/Oh My Pi's read-only tool
+subtasks use their own execution policy, so Pi's read-only tool
 allowlist remains available independently of their interactive access modes.
 Rewind-and-resend validates the selected interactive mode before changing
 history or Git. Pure history forks may borrow a supported launch mode in a
@@ -94,14 +94,14 @@ the source and forked tasks keep their selected interactive mode.
 
 Compaction belongs to the provider's native session. Waku offers a manual
 `/compact` command, a usage-panel action, and a command-palette action for
-Codex, Claude Code, Antigravity CLI, OpenCode, Pi and Oh My Pi. Pi, Oh My Pi
+Codex, Claude Code, Antigravity CLI, OpenCode, and Pi. Pi
 and Claude accept optional focus instructions; Codex, Antigravity CLI and
 OpenCode reject that argument instead of silently discarding it. Other
 providers keep their native command handling.
 
 The driver contract carries `CompactionRequest` and complete
 `CompactionUpdated` snapshots. Manual requests use Codex's
-`thread/compact/start`, OpenCode's `POST /api/session/{id}/compact`, Pi/OMP's
+`thread/compact/start`, OpenCode's `POST /api/session/{id}/compact`, Pi's
 `compact` RPC, or Claude's native `/compact` user message. An acknowledgement
 is not completion. Codex's `contextCompaction` items, OpenCode's
 `session.compaction.*`, Pi's compaction events/results (including older
@@ -221,19 +221,19 @@ registration file.
 
 ## At a glance
 
-| | Codex CLI | Pi | Oh My Pi | Claude Code | OpenCode | Antigravity CLI |
-| --- | --- | --- | --- | --- | --- | --- |
-| Binary | `codex` | `pi` | `omp` | `claude` | `opencode` | `agy` |
-| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | NDJSON RPC over stdio | stream-json over stdio | HTTP + SSE | stream-json over stdio |
-| Process spans the whole session | yes | yes | yes | yes | yes | yes |
-| Process spawned per turn | no | no | no | no | no | no |
-| Bidirectional | yes | yes | yes | yes | yes | prompts only |
-| Reasoning stream | yes | yes | yes | yes | yes | token count only |
-| Interactive approvals | yes | no | no (has them; Waku runs `--yolo`) | yes | yes | no (headless policy) |
-| Mid-turn steering | yes | yes | yes | yes | yes | no (follow-up queue) |
-| Model discovery | yes | yes | yes | yes | yes | yes |
-| Restricted to Full access | no | yes | yes | no | no | no |
-| Rewind and branch at a turn | yes | yes | yes | yes | yes | no |
+| | Codex CLI | Pi | Claude Code | OpenCode | Antigravity CLI |
+| --- | --- | --- | --- | --- | --- |
+| Binary | `codex` | `pi` | `claude` | `opencode` | `agy` |
+| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | stream-json over stdio | HTTP + SSE | stream-json over stdio |
+| Process spans the whole session | yes | yes | yes | yes | yes |
+| Process spawned per turn | no | no | no | no | no |
+| Bidirectional | yes | yes | yes | yes | prompts only |
+| Reasoning stream | yes | yes | yes | yes | token count only |
+| Interactive approvals | yes | no | yes | yes | no (headless policy) |
+| Mid-turn steering | yes | yes | yes | yes | no (follow-up queue) |
+| Model discovery | yes | yes | yes | yes | yes |
+| Restricted to Full access | no | yes | no | no | no |
+| Rewind and branch at a turn | yes | yes | yes | yes | no |
 
 Every provider now holds a session across turns. That was not true when this
 document was first written: five of the seven spawned a process per prompt, and
@@ -327,47 +327,17 @@ unknown markers are dropped. Private control markers never reach the transcript
 
 ---
 
-## Pi and Oh My Pi
+## Pi
 
-Oh My Pi is a fork of Pi that kept the RPC transport and renamed part of its
-surface, so one driver serves both. `PiFlavor`
-([pi.rs:39](../crates/waku-core/src/driver/pi.rs#L39)) carries every divergence,
-which is what keeps the two from drifting into near-copies:
+Pi speaks an NDJSON request/response protocol over stdio ([pi.rs](../crates/waku-core/src/driver/pi.rs)):
 
-| | Pi | Oh My Pi |
-| --- | --- | --- |
-| Binary | `pi` | `omp` |
-| Full-access flag | `--approve` | `--yolo` |
-| Update check | skipped by `PI_SKIP_VERSION_CHECK=1` | no env opt-out; gated by a setting, and off the startup path either way |
-| Oversized frames | whole | chunked, once `negotiate_protocol {protocolVersion: 2}` is accepted |
-| Run settles on | `agent_settled` | `agent_end` |
-| Title event / field | `session_info_changed` / `name` | `session_info_update` / `title` |
-| Branch commands | `get_fork_messages`, `fork` | `get_branch_messages`, `branch` |
-| Whole-session copy | in place | only at launch, so Waku shells out (see below) |
-| Catalog probe's context-files flag | `--no-context-files` | `--no-rules` |
+**Launch** — `pi --mode rpc --approve` with `PI_SKIP_VERSION_CHECK=1`.
 
-Everything below is shared unless noted.
-
-**Launch** — `pi --mode rpc --approve` with `PI_SKIP_VERSION_CHECK=1`;
-`omp --mode rpc --yolo`
-([pi.rs:246](../crates/waku-core/src/driver/pi.rs#L246)). Oh My Pi negotiates
-protocol v2 first, before `get_state`, so a large first response arrives chunked
-rather than shrunk to an error frame. Its opening `ready` frame is what makes
-that worth doing — it reports `supportedProtocolVersions: [1, 2]` alongside a
-`maxFrameBytes` of 1 MiB and a `maxReassembledFrameBytes` of 64 MiB, so v1 caps
-a response at the frame size while v2 reassembles up to 64× that.
-
-Neither `--yolo` nor `--fork` appears in `omp --help`, but both are accepted
-(verified against 17.3.8). Do not "fix" them by reading the help text: omp
-rejects a genuinely unknown flag outright with `Error: unknown flag`, so the
-absence is the help being abridged, not the flag being gone. That same
-strictness is why its catalog probe cannot borrow Pi's argument list.
-
-**Protocol** — NDJSON over stdio, but request/response rather than JSON-RPC:
+**Protocol** — NDJSON over stdio, request/response rather than JSON-RPC:
 Waku stamps each request with a string id (`waku-<n>`) and Pi answers with
 `{"type": "response", "id", "success", "data"}`. Everything else on the stream
 is an unsolicited event. Requests are issued synchronously by the writer thread
-with a 10 s timeout ([pi.rs:800](../crates/waku-core/src/driver/pi.rs#L800));
+with a 10 s timeout ([pi.rs](../crates/waku-core/src/driver/pi.rs));
 events keep flowing on the reader thread meanwhile. The handshake gets 30 s
 instead: the agent does not answer at all until it has finished loading its
 extensions, resources and — when model networking is on — its model catalog,
@@ -385,7 +355,7 @@ both go into the cursor, and resume needs the **file path**, not just the id.
 
 **Per turn** — `{"type": "prompt", "message": …}`.
 
-**Inbound stream** ([pi.rs:1182](../crates/waku-core/src/driver/pi.rs#L1182)):
+**Inbound stream** ([pi.rs](../crates/waku-core/src/driver/pi.rs)):
 
 | Event | Becomes |
 | --- | --- |
@@ -394,16 +364,12 @@ both go into the cursor, and resume needs the **file path**, not just the id.
 | `message_end` | fallback text/thinking when no delta was streamed |
 | `tool_execution_start` / `_update` / `_end` | `RichActivity` |
 | `auto_retry_end` | clears or sets the failure flag |
-| `agent_settled` (Pi) / `agent_end` (Oh My Pi) | `TurnFinished`, then resets stream state |
+| `agent_settled` | `TurnFinished`, then resets stream state |
 | `extension_ui_request` | auto-cancelled — Waku has no UI for extension prompts |
 
 **Access modes** — Full access only, enforced at driver start rather than
 degraded silently: any other selection fails with "currently supports Full
-access only" ([pi.rs:209](../crates/waku-core/src/driver/pi.rs#L209)).
-Pi has no permission system at all, so `--approve` is the whole story. Oh My Pi
-*does* have one, which Waku's `--yolo` then bypasses — the restriction is Waku's
-here, not the CLI's, and lifting it is a matter of wiring Oh My Pi's permission
-requests to a `Permission` event.
+access only". Pi has no permission system at all, so `--approve` is the whole story.
 
 **Cancel** — `{"type": "abort"}`.
 
@@ -411,44 +377,17 @@ requests to a `Permission` event.
 resolves to `SteerAccepted` or `SteerRejected`.
 
 **Rewind and branch** — both go through `get_fork_messages` → `fork {entryId}`
-(`get_branch_messages` → `branch` on Oh My Pi), or `clone` when nothing is
-removed, then `get_state`
-([pi.rs:996](../crates/waku-core/src/driver/pi.rs#L996)). Rewind adopts the fork
+or `clone` when nothing is removed, then `get_state`. Rewind adopts the fork
 as the session's new cursor. Branch additionally `switch_session`es back to the
 source file and verifies it landed on the right session; if that restore fails
 the runtime is dropped, because the RPC process may still be sitting on the fork
 ([runtime.rs](../src/app/runtime.rs)).
 
-**Copying a whole session differs.** Removing no turns is a plain copy, which Pi
-performs in place. Oh My Pi only copies at launch, so Waku shells out to a
-throwaway `omp --mode rpc --yolo --fork <session file>` and reads the new cursor
-off it ([pi.rs:1108](../crates/waku-core/src/driver/pi.rs#L1108)). That is the
-better shape anyway: the out-of-process copy never moves the live session, so
-unlike the in-place path it needs no restore afterwards and cannot strand the
-RPC process on the fork.
-
 **Models** — a separate `pi --mode rpc --no-session --no-skills
 --no-prompt-templates --no-context-files` process answering
 `get_available_models` and `get_state`. Extensions stay enabled because they can
 register model providers. Ids are `provider/model` slugs and are validated as
-such before launch.
-
-Oh My Pi rejects unknown flags outright, so its probe is its own list —
-`--no-session --no-skills --no-rules --no-extensions` — and the two describe
-thinking differently. Pi maps levels through a per-model `thinkingLevelMap`; Oh
-My Pi advertises the levels a model actually honors under `thinking.efforts`.
-`off` never appears in that list because it bypasses provider mapping entirely,
-yet it is always accepted, so it is added back
-([model_catalog.rs](../crates/waku-core/src/model_catalog.rs)).
-
-**Plan usage** — Oh My Pi only: `omp usage --json --no-extensions`
-([usage.rs](../crates/waku-core/src/usage.rs)), queried off-thread for the
-selected task's `<upstream>/<model>` slug. Reports are matched to the active
-branch's `credential_pin` in the session file when multiple OAuth accounts are
-configured, scoped to the active model family (e.g. Antigravity's Gemini vs
-Claude/GPT pools, Codex's standard vs Spark lanes), and deduplicated across
-`sharedGroup` routing copies. Unmetered API-key upstreams return `None` and omit
-the plan section.
+such before launch. Pi maps reasoning levels through a per-model `thinkingLevelMap`.
 
 ---
 
@@ -694,14 +633,12 @@ maps into each CLI's own vocabulary.
 | Auto | `on-request` / `workspace-write` / `auto_review` | `auto` | auto-answered (`once`) |
 | Full access | `never` / `danger-full-access` / `user` | `bypassPermissions` + `--dangerously-skip-permissions` | auto-answered (`once`) |
 
-Pi and Oh My Pi accept Full access only and always run wide open
-(`--approve`, `--yolo`).
+Pi accepts Full access only and always runs wide open (`--approve`).
 
 Codex, Claude and OpenCode can route Supervised permission requests to Waku.
 Antigravity selects its mode through launch flags but cannot prompt through its
 headless stream-json transport; unapproved tools are soft-denied instead. Pi
-has no permission system, and Oh My Pi's interactive integration currently
-bypasses its permission system with `--yolo`.
+has no permission system.
 
 ## Resume cursors
 
@@ -712,7 +649,6 @@ persisted with the session and is what makes a Waku task outlive its process:
 | --- | --- | --- |
 | Codex | `thread_id` | `thread/resume` |
 | Pi | `session_id`, `session_file` | `switch_session` needs the path |
-| Oh My Pi | `session_id`, `session_file` | same, plus `--fork <file>` for a whole-session copy |
 | Claude | `session_id`, `resume_at` | `resume_at` is the transcript message uuid used for forking |
 | OpenCode | `session_id`, `directory` | `GET /api/session/{id}` / service fork; `directory` is the workspace string the service stored |
 
@@ -739,8 +675,8 @@ without the SDK: there is no Rust Agent SDK, but the SDK is a wrapper around the
 `claude` CLI's own streaming-input protocol, which Waku speaks directly. No Node
 sidecar and no npm dependency.
 
-Waku goes further: Pi and Oh My Pi, which T3 Code does not
-support, are long-lived here too. Every provider holds a session.
+Waku goes further: Pi, which T3 Code does not
+support, is long-lived here too. Every provider holds a session.
 
 What the long-lived session buys, and what Waku pays for not having it:
 

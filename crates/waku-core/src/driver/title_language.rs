@@ -5,8 +5,7 @@ use whatlang::Lang;
 
 use crate::model::{ExecutionPolicy, MessageRole, ProviderKind, ProviderSessionHistory};
 
-// OMP's tiny-model input sanitizer drops paired XML blocks, including their
-// contents. Bracketed metadata survives both its cleanup and conversation framing.
+// Bracketed metadata survives both cleanup and conversation framing.
 const CONTEXT_START: &str = "\n\n[[waku-session-title-language=";
 const CONTEXT_LANGUAGE: &str = "]]\nAutomatic session titles MUST use ";
 const CONTEXT_END: &str = concat!(
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn commands_and_empty_prompts_do_not_consume_the_naming_context() {
-        let context = TitleLanguageContext::new(ProviderKind::OhMyPi, ExecutionPolicy::Interactive);
+        let context = TitleLanguageContext::new(ProviderKind::Pi, ExecutionPolicy::Interactive);
         for command in ["", "   ", "/rename 用户指定标题", "  /compact"] {
             assert_eq!(context.prepare(command.into()), command);
         }
@@ -330,81 +329,23 @@ mod tests {
         hide_title_language_context(&mut history);
         assert_eq!(history.messages[0].visible_content(), prompt);
 
-        let context = TitleLanguageContext::new(ProviderKind::OhMyPi, ExecutionPolicy::Interactive);
+        let context = TitleLanguageContext::new(ProviderKind::Pi, ExecutionPolicy::Interactive);
         let upgraded = context.prepare(legacy);
         assert_eq!(strip_context(&upgraded), Some(prompt));
         assert!(upgraded.ends_with(CONTEXT_CLOSE));
-        let retry = TitleLanguageContext::new(ProviderKind::OhMyPi, ExecutionPolicy::Interactive);
+        let retry = TitleLanguageContext::new(ProviderKind::Pi, ExecutionPolicy::Interactive);
         assert_eq!(retry.prepare(upgraded.clone()), upgraded);
     }
 
     #[test]
-    #[ignore = "requires an npm-installed omp and Bun to run OMP's real title-input sanitizer"]
-    fn omp_title_preprocessing_preserves_the_language_context() {
-        use std::io::Write;
-        use std::process::Stdio;
-
-        let binary = crate::command_env::find_executable("omp")
-            .expect("omp is not installed")
-            .canonicalize()
-            .unwrap();
-        let source = binary
-            .parent()
-            .and_then(|parent| parent.parent())
-            .unwrap()
-            .join("src/tiny/message-preproc.ts");
-        assert!(
-            source.is_file(),
-            "OMP source is unavailable: {}",
-            source.display()
-        );
-        let bun = crate::command_env::find_executable("bun").expect("Bun is not installed");
-        let run = |input: &str| {
-            let mut command = crate::command_env::command(&bun);
-            command
-                .args([
-                    "--eval",
-                    "const {preprocessTinyMessage} = await import(process.env.WAKU_TEST_OMP_PREPROCESSOR); process.stdout.write(preprocessTinyMessage(await Bun.stdin.text()));",
-                ])
-                .env("WAKU_TEST_OMP_PREPROCESSOR", &source)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            let mut child = crate::command_env::spawn(&mut command).unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            let output = child.wait_with_output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap()
-        };
-        let prompt = "你觉得生活中有哪些堪称「跃迁」的事件？";
-        let legacy = format!(
-            "{prompt}{LEGACY_CONTEXT_START}cmn{LEGACY_CONTEXT_LANGUAGE}Chinese{CONTEXT_END}{LEGACY_CONTEXT_CLOSE}"
-        );
-        assert_eq!(run(&legacy), prompt, "legacy XML loses the language policy");
-        let prepared =
-            TitleLanguageContext::new(ProviderKind::OhMyPi, ExecutionPolicy::Interactive)
-                .prepare(prompt.into());
-        assert_eq!(strip_context(&run(&prepared)), Some(prompt));
-    }
-
-    #[test]
-    #[ignore = "requires an authenticated native harness; set WAKU_TEST_TITLE_HARNESS (default omp)"]
+    #[ignore = "requires an authenticated native harness; set WAKU_TEST_TITLE_HARNESS (default pi)"]
     fn native_titles_follow_the_original_prompt_language() {
         use std::time::{Duration, Instant};
 
         use crate::driver::{DriverStartOptions, start_local, test_event_channel};
         use crate::model::{DriverEvent, RuntimeMode};
 
-        let command = std::env::var("WAKU_TEST_TITLE_HARNESS").unwrap_or_else(|_| "omp".into());
+        let command = std::env::var("WAKU_TEST_TITLE_HARNESS").unwrap_or_else(|_| "pi".into());
         let provider = ProviderKind::ALL
             .into_iter()
             .find(|provider| provider.command() == command)

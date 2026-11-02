@@ -70,7 +70,6 @@ argument**; `NO_COLOR=1` and `CI=1` are set for all of them.
 | Codex CLI | `codex exec` | `--sandbox read-only --ephemeral --color never --skip-git-repo-check` | pinned `gpt-5.6-luna` | pinned `none`, via `-c` |
 | OpenCode | `opencode run` | `--standalone --agent plan` | `--model` | `#<variant>` suffix on the model |
 | Pi | `pi` | `--print --no-session --no-tools --no-context-files --no-extensions --no-skills --no-prompt-templates --no-approve` | `--model` | `--thinking` |
-| Oh My Pi | `omp` | `--print --no-session --no-tools --no-rules --no-extensions --no-skills` | `--model` | `--thinking` |
 
 Where a provider is not simply "flags plus prompt":
 
@@ -81,9 +80,6 @@ Where a provider is not simply "flags plus prompt":
 - **Codex** runs `exec` as an ephemeral read-only turn; `--skip-git-repo-check`
   lets a workspace that is not a repo root run. Effort rides on a `-c` config
   override because `codex exec` has no flag for it.
-- **Oh My Pi** rejects unknown flags outright, so it gets its own list rather
-  than Pi's: context files are `--no-rules`, and it has no prompt-template or
-  project-trust switch to turn off.
 - **OpenCode** runs `plan`, its read-only agent, on a private `--standalone`
   server rather than on the user's background service, so a commit subject
   neither starts that service nor queues behind it. The run is still an
