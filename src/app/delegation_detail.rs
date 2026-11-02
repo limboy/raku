@@ -125,6 +125,12 @@ impl DetailOutput {
         };
         match event {
             DriverEvent::TextDelta(delta) if !delta.is_empty() => {
+                if self.phase != Some(StreamPhase::Text) && delta.trim().is_empty() {
+                    // Separator-only text between tool calls. It renders as
+                    // nothing, so it must not open a message or end the
+                    // activity cluster it sits in.
+                    return false;
+                }
                 if self.phase == Some(StreamPhase::Reasoning) {
                     complete_session_reasoning(&mut self.session);
                 }
@@ -1604,36 +1610,41 @@ mod tests {
     }
 
     #[test]
-    fn separator_only_messages_do_not_space_out_activities_and_can_gain_visible_text() {
+    fn separator_only_text_does_not_open_a_message_or_split_activities() {
         let mut output = DetailOutput::default();
         output.append_page(page(
             vec![
                 event(1, "reasoningDelta", "first thought"),
                 event(2, "textDelta", "\n\n"),
-                event(3, "reasoningDelta", "second thought"),
+                event(3, "reasoningDelta", " second thought"),
                 event(4, "textDelta", "\n\n"),
             ],
             4,
         ));
+        // The separator text renders as nothing, so it must neither add a
+        // message nor end the activity cluster around it.
+        assert_eq!(output.row_plan(), vec![DetailRow::Activities(0)]);
+        assert!(output.session.messages.is_empty());
         assert_eq!(
-            output.row_plan(),
-            vec![DetailRow::Activities(0), DetailRow::Activities(1)]
+            output.session.transcript_blocks[0].activities[0]
+                .reasoning
+                .as_ref()
+                .unwrap()
+                .content,
+            "first thought second thought"
         );
-        assert_eq!(output.session.transcript_blocks[1].after_message, 1);
-        assert_eq!(output.session.messages.len(), 2);
 
+        // Text that does have content after a separator still opens the
+        // response's first visible message.
         output.append_page(page(vec![event(5, "textDelta", "Answer")], 5));
         assert_eq!(
             output.row_plan(),
-            vec![
-                DetailRow::Activities(0),
-                DetailRow::Activities(1),
-                DetailRow::Message(1),
-            ]
+            vec![DetailRow::Activities(0), DetailRow::Message(0)]
         );
-        assert_eq!(output.session.messages[1].content, "\n\nAnswer");
+        assert_eq!(output.session.messages.len(), 1);
+        assert_eq!(output.session.messages[0].content, "Answer");
         output.settle(Some("Answer"));
-        assert_eq!(output.session.messages.len(), 2);
+        assert_eq!(output.session.messages.len(), 1);
     }
 
     #[test]

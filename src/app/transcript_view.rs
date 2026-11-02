@@ -1250,7 +1250,23 @@ impl Waku {
             | TranscriptRowKind::ChangedFiles(_)
             | TranscriptRowKind::WorkingIndicator => false,
         };
+        // Providers separate consecutive tool calls with whitespace-only text
+        // blocks (Claude Code emits `"\n\n"`). Such a message has nothing to
+        // show, but its body and padding would otherwise open a large empty
+        // band between the activity groups on either side of it.
+        let blank_assistant = matches!(
+            kind,
+            TranscriptRowKind::Message(message_index)
+                if self.selected_session().is_some_and(|session| {
+                    session.messages.get(message_index).is_some_and(|message| {
+                        message.role == MessageRole::Assistant
+                            && message.visible_content().trim().is_empty()
+                            && message.attachments.is_empty()
+                    })
+                })
+        );
         let inner = match kind {
+            TranscriptRowKind::Message(_) if blank_assistant => div().into_any_element(),
             TranscriptRowKind::Message(message_index) => self
                 .selected_session()
                 .and_then(|session| session.messages.get(message_index))
@@ -1415,6 +1431,7 @@ impl Waku {
                 .border_color(theme.border)
                 .px(px(12.0))
                 .py(px(8.0))
+                .when(blank_assistant, |section| section.py(px(0.0)))
                 .when(ends_work, |section| {
                     section
                         .border_b_1()
@@ -1433,18 +1450,22 @@ impl Waku {
             .justify_center()
             .px(px(20.0))
             .py(px(8.0))
-            .when(is_work_row, |row| row.py(px(0.0)))
+            .when(is_work_row || blank_assistant, |row| row.py(px(0.0)))
             .when(opens_work, |row| row.pb(px(0.0)))
             .when(ends_work, |row| row.pb(px(8.0)))
             .when(
                 matches!(kind, TranscriptRowKind::ResponseFooter(_, _)),
                 |element| element.pt(px(0.0)),
             )
-            .when(index == 0, |element| element.pt(px(22.0)))
+            .when(index == 0 && !blank_assistant, |element| {
+                element.pt(px(22.0))
+            })
             .when(starts_followup_turn, |element| {
                 element.pt(px(FOLLOWUP_TURN_TOP_GAP))
             })
-            .when(index + 1 == row_count, |element| element.pb(px(22.0)))
+            .when(index + 1 == row_count && !blank_assistant, |element| {
+                element.pb(px(22.0))
+            })
             .child(
                 div()
                     .w_full()

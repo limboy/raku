@@ -535,6 +535,40 @@ fn conversation_navigation_preview_does_not_change_during_a_running_turn() {
 }
 
 #[test]
+fn separator_only_text_between_tool_calls_does_not_create_a_message() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Claude);
+    let session_id = session.id;
+    session.begin_turn("Prompt");
+    append_text_delta_to_session(
+        std::slice::from_mut(&mut session),
+        session_id,
+        false,
+        "\n\n".to_owned(),
+    );
+    assert_eq!(session.messages.len(), 1, "only the user prompt");
+
+    // A real text block may follow the separator directly.
+    append_text_delta_to_session(
+        std::slice::from_mut(&mut session),
+        session_id,
+        false,
+        "Answer".to_owned(),
+    );
+    assert_eq!(session.messages.len(), 2);
+    assert_eq!(session.messages[1].content, "Answer");
+
+    // Whitespace that continues an open message is still part of it.
+    append_text_delta_to_session(
+        std::slice::from_mut(&mut session),
+        session_id,
+        true,
+        "\n\n".to_owned(),
+    );
+    assert_eq!(session.messages.len(), 2);
+    assert_eq!(session.messages[1].content, "Answer\n\n");
+}
+
+#[test]
 fn panel_widths_preserve_main_content_when_the_window_narrows() {
     let (sidebar, right_panel) = fitted_panel_widths(980.0, true, true, 420.0, 720.0);
 

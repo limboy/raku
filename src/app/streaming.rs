@@ -18,10 +18,17 @@ impl Waku {
         delta: String,
     ) {
         let previous_phase = runtime.stream_phase;
+        let continuing = previous_phase == Some(StreamPhase::Text);
+        if !continuing && delta.trim().is_empty() {
+            // Claude Code emits whitespace-only text blocks (`"\n\n"`) between
+            // consecutive tool calls. Starting a message for one would put an
+            // empty row between activity groups, so leave the phase where it
+            // is and let the next activity stay in the current cluster too.
+            return;
+        }
         if previous_phase == Some(StreamPhase::Reasoning) {
             self.complete_reasoning_activity(session_id);
         }
-        let continuing = previous_phase == Some(StreamPhase::Text);
         append_text_delta_to_session(&mut self.state.sessions, session_id, continuing, delta);
         self.state.mark_session_dirty(session_id);
         runtime.stream_phase = Some(StreamPhase::Text);
@@ -988,6 +995,12 @@ pub(super) fn append_text_delta_to_session(
     let Some(session) = sessions.iter_mut().find(|session| session.id == session_id) else {
         return;
     };
+    // Whitespace alone has nothing to show. Starting a message for it leaves a
+    // blank transcript row; providers that separate tool calls with `"\n\n"`
+    // text blocks would stack one between every pair of activity groups.
+    if !continuing && delta.trim().is_empty() {
+        return;
+    }
     if !continuing {
         for message in &mut session.messages {
             if message.role == MessageRole::Assistant && message.streaming {
