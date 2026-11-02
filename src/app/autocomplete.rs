@@ -200,7 +200,7 @@ impl Waku {
         let provider = self
             .selected_session()
             .map(|session| session.provider)
-            .unwrap_or(self.state.last_provider);
+            .unwrap_or_else(|| self.state.new_session_provider(self.state.selected_project));
         let reported = self
             .selected_session()
             .map(|session| session.available_commands.clone())
@@ -334,7 +334,7 @@ impl Waku {
             let provider = self
                 .selected_session()
                 .map(|session| session.provider)
-                .unwrap_or(self.state.last_provider);
+                .unwrap_or_else(|| self.state.new_session_provider(self.state.selected_project));
             let binary_override = self.state.provider_binary_overrides.get(&provider).cloned();
             self.slash_commands
                 .invalidate(&(provider, path.clone(), binary_override));

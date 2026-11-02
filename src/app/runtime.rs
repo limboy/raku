@@ -871,7 +871,7 @@ impl Waku {
                 .or_else(|| self.state.projects.first().map(|project| project.id))
             {
                 self.state.selected_project = Some(project_id);
-                self.create_session_for(project_id, self.state.last_provider, cx);
+                self.create_session_for(project_id, cx);
             }
         }
     }
@@ -3322,7 +3322,7 @@ impl Waku {
             .iter()
             .find(|session| session.id == session_id)
             .map(|session| session.provider)
-            .unwrap_or(self.state.last_provider);
+            .unwrap_or_else(|| self.state.new_session_provider(self.state.selected_project));
         // Provider syntax resolves here, at the seam between the transcript
         // and the transport. The user message keeps the typed slash form,
         // while templates expand and skills adopt provider-native syntax.

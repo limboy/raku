@@ -101,6 +101,52 @@ pub struct RememberedModelTraits {
     context_window: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct ProjectModelSelection {
+    provider: ProviderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_window: Option<String>,
+}
+
+impl ProjectModelSelection {
+    fn for_provider(provider: ProviderKind) -> Self {
+        Self {
+            provider,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            context_window: None,
+        }
+    }
+
+    fn for_session(session: &AgentSession) -> Self {
+        Self {
+            provider: session.provider,
+            model: session.model.clone(),
+            reasoning_effort: session.reasoning_effort.clone(),
+            service_tier: session.service_tier.clone(),
+            context_window: session.context_window.clone(),
+        }
+    }
+
+    fn apply_to(&self, session: &mut AgentSession) {
+        if session.provider != self.provider {
+            session.agent_preset = None;
+        }
+        session.provider = self.provider;
+        session.model.clone_from(&self.model);
+        session.reasoning_effort.clone_from(&self.reasoning_effort);
+        session.service_tier.clone_from(&self.service_tier);
+        session.context_window.clone_from(&self.context_window);
+    }
+}
+
 /// Remote composer-draft proxy. Draft bytes and attachments remain owned by
 /// the daemon even though the desktop keeps an in-memory editing snapshot.
 #[derive(Clone)]
@@ -331,6 +377,9 @@ struct AppState {
     last_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_context_window: Option<String>,
+    /// The nil UUID groups all daemon-created No Project workspaces together.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    project_model_selections: HashMap<Uuid, ProjectModelSelection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     remembered_model_traits: Vec<RememberedModelTraits>,
     #[serde(default = "default_sidebar_visibility")]
@@ -383,6 +432,10 @@ pub struct PersistedState {
     pub last_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_context_window: Option<String>,
+    /// Legacy global selection is only a fallback for projects without history.
+    /// Explicit selections update this map instead of the `last_*` fields.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    project_model_selections: HashMap<Uuid, ProjectModelSelection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remembered_model_traits: Vec<RememberedModelTraits>,
     #[serde(default)]
@@ -464,6 +517,7 @@ impl PersistedState {
             last_reasoning_effort: None,
             last_service_tier: None,
             last_context_window: None,
+            project_model_selections: HashMap::new(),
             remembered_model_traits: Vec::new(),
             favorite_models: Vec::new(),
             model_picker_favorites_only: false,
@@ -501,10 +555,44 @@ impl PersistedState {
         }
     }
 
-    pub fn new_session(&self, project_id: Uuid, provider: ProviderKind) -> AgentSession {
+    fn model_selection_key(&self, project_id: Option<Uuid>) -> Uuid {
+        project_id
+            .filter(|id| {
+                !self
+                    .projects
+                    .iter()
+                    .any(|project| project.id == *id && project.is_projectless())
+            })
+            .unwrap_or(Uuid::nil())
+    }
+
+    pub fn new_session_provider(&self, project_id: Option<Uuid>) -> ProviderKind {
+        let provider = self
+            .project_model_selections
+            .get(&self.model_selection_key(project_id))
+            .map_or(self.last_provider, |selection| selection.provider);
+        if self.disabled_providers.contains(&provider) {
+            ProviderKind::ALL
+                .into_iter()
+                .find(|provider| !self.disabled_providers.contains(provider))
+                .unwrap_or(provider)
+        } else {
+            provider
+        }
+    }
+
+    pub fn new_session(&self, project_id: Uuid) -> AgentSession {
+        let provider = self.new_session_provider(Some(project_id));
         let mut session = AgentSession::new(project_id, provider);
         session.runtime_mode = self.last_runtime_mode;
-        if provider == self.last_provider {
+        if let Some(selection) = self
+            .project_model_selections
+            .get(&self.model_selection_key(Some(project_id)))
+        {
+            if selection.provider == provider {
+                selection.apply_to(&mut session);
+            }
+        } else if provider == self.last_provider {
             session.model.clone_from(&self.last_model);
             session
                 .reasoning_effort
@@ -513,6 +601,54 @@ impl PersistedState {
             session.context_window.clone_from(&self.last_context_window);
         }
         session
+    }
+
+    /// Only an explicit model/options edit changes the next task's selection.
+    /// Visiting history must not replace a project's remembered choice.
+    pub fn remember_session_model_selection(&mut self, session_id: Uuid) {
+        let Some(session) = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+        else {
+            return;
+        };
+        let key = self.model_selection_key(Some(session.project_id));
+        let selection = ProjectModelSelection::for_session(session);
+        self.project_model_selections.insert(key, selection);
+    }
+
+    /// New Task can reuse an unsent draft; apply preferences when it is opened,
+    /// while keeping its text, workspace, access mode and identity intact.
+    pub fn refresh_new_session_model_selection(&mut self, session_id: Uuid) {
+        let Some(session) = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id && !session.has_started())
+        else {
+            return;
+        };
+        let selection = ProjectModelSelection::for_session(&self.new_session(session.project_id));
+        if selection != ProjectModelSelection::for_session(session)
+            && let Some(session) = self.session_mut(session_id)
+        {
+            selection.apply_to(session);
+        }
+    }
+
+    pub fn replace_new_session_provider(&mut self, provider: ProviderKind, fallback: ProviderKind) {
+        if self.last_provider == provider {
+            self.last_provider = fallback;
+            self.last_model = None;
+            self.last_reasoning_effort = None;
+            self.last_service_tier = None;
+            self.last_context_window = None;
+        }
+        for selection in self.project_model_selections.values_mut() {
+            if selection.provider == provider {
+                *selection = ProjectModelSelection::for_provider(fallback);
+            }
+        }
     }
 
     pub fn remember_model_traits(
@@ -634,6 +770,7 @@ impl PersistedState {
             last_reasoning_effort: self.last_reasoning_effort.clone(),
             last_service_tier: self.last_service_tier.clone(),
             last_context_window: self.last_context_window.clone(),
+            project_model_selections: self.project_model_selections.clone(),
             remembered_model_traits: self.remembered_model_traits.clone(),
             sidebar_visible: self.sidebar_visible,
             right_panel_visible: self.right_panel_visible,
@@ -672,6 +809,7 @@ impl PersistedState {
         self.last_reasoning_effort = app_state.last_reasoning_effort;
         self.last_service_tier = app_state.last_service_tier;
         self.last_context_window = app_state.last_context_window;
+        self.project_model_selections = app_state.project_model_selections;
         self.remembered_model_traits = app_state.remembered_model_traits;
         self.sidebar_visible = app_state.sidebar_visible;
         self.right_panel_visible = app_state.right_panel_visible;
@@ -705,7 +843,7 @@ impl PersistedState {
         else {
             return;
         };
-        let session = self.new_session(project_id, self.last_provider);
+        let session = self.new_session(project_id);
         self.selected_session = Some(session.id);
         self.sessions.push(session);
     }
@@ -743,28 +881,58 @@ impl PersistedState {
             }
         }
         self.version = STATE_VERSION;
-        self.backfill_remembered_selection();
+        self.backfill_project_model_selections();
     }
 
-    fn backfill_remembered_selection(&mut self) {
-        let Some(session) = self
-            .selected_session
-            .and_then(|selected| self.sessions.iter().find(|session| session.id == selected))
-            .cloned()
-        else {
-            return;
-        };
-        if self.last_model.is_none() {
-            self.last_model = session.model;
+    fn backfill_project_model_selections(&mut self) {
+        let projectless_ids = self
+            .projects
+            .iter()
+            .filter(|project| project.is_projectless())
+            .map(|project| project.id)
+            .collect::<HashSet<_>>();
+        let mut latest = HashMap::<Uuid, &AgentSession>::new();
+        for session in &self.sessions {
+            let key = if projectless_ids.contains(&session.project_id) {
+                Uuid::nil()
+            } else {
+                session.project_id
+            };
+            if latest.get(&key).is_none_or(|previous| {
+                (session.updated_at, session.created_at)
+                    >= (previous.updated_at, previous.created_at)
+            }) {
+                latest.insert(key, session);
+            }
         }
-        if self.last_reasoning_effort.is_none() {
-            self.last_reasoning_effort = session.reasoning_effort;
-        }
-        if self.last_service_tier.is_none() {
-            self.last_service_tier = session.service_tier;
-        }
-        if self.last_context_window.is_none() {
-            self.last_context_window = session.context_window;
+        for (key, session) in latest {
+            if self.project_model_selections.contains_key(&key) {
+                continue;
+            }
+            let mut selection = ProjectModelSelection::for_session(session);
+            // Startup list projections omit model options. Recover the old
+            // defaults without hydrating any transcripts just for migration.
+            if !session.detail_loaded {
+                let (reasoning_effort, service_tier, context_window) =
+                    if selection.provider == self.last_provider && selection.model == self.last_model
+                    {
+                        (
+                            self.last_reasoning_effort.clone(),
+                            self.last_service_tier.clone(),
+                            self.last_context_window.clone(),
+                        )
+                    } else {
+                        selection
+                            .model
+                            .as_deref()
+                            .map(|model| self.model_traits_for(selection.provider, model))
+                            .unwrap_or_default()
+                    };
+                selection.reasoning_effort = reasoning_effort;
+                selection.service_tier = service_tier;
+                selection.context_window = context_window;
+            }
+            self.project_model_selections.insert(key, selection);
         }
     }
 }
@@ -1053,10 +1221,11 @@ impl StateStore {
             && cwd.parent().is_some()
         {
             let project = Project::from_path(cwd);
-            let session = state.new_session(project.id, state.last_provider);
-            state.selected_project = Some(project.id);
-            state.selected_session = Some(session.id);
+            let project_id = project.id;
             state.projects.push(project);
+            let session = state.new_session(project_id);
+            state.selected_project = Some(project_id);
+            state.selected_session = Some(session.id);
             state.push_session(session);
         }
         state.ensure_runtime_session();
@@ -1286,7 +1455,7 @@ mod tests {
         state.apply_app_state(read_app_state_file(&path).unwrap());
         assert_eq!(state.selected_project, Some(project_id));
         assert_eq!(state.sidebar_width, 318.0);
-        let draft = state.new_session(project_id, state.last_provider);
+        let draft = state.new_session(project_id);
         assert_eq!(draft.provider, ProviderKind::Codex);
         assert_eq!(draft.model, None);
         assert_eq!(draft.reasoning_effort, None);
@@ -1490,10 +1659,246 @@ mod tests {
         let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
         state.last_runtime_mode = RuntimeMode::Ask;
 
-        let session = state.new_session(state.projects[0].id, ProviderKind::Codex);
+        let session = state.new_session(state.projects[0].id);
 
         assert_eq!(session.runtime_mode, RuntimeMode::Ask);
         assert_eq!(state.app_state().last_runtime_mode, RuntimeMode::Ask);
+    }
+
+    #[test]
+    fn project_model_choices_only_affect_that_projects_future_tasks() {
+        let mut state = PersistedState::empty();
+        for provider in ProviderKind::ALL {
+            let project = Project::from_path(PathBuf::from(format!("/tmp/{}", provider.id())));
+            let mut session = AgentSession::new(project.id, provider);
+            session.model = Some(format!("{}-model", provider.id()));
+            session.reasoning_effort = Some("high".into());
+            let session_id = session.id;
+            state.projects.push(project);
+            state.push_session(session);
+            state.remember_session_model_selection(session_id);
+        }
+        let before = state
+            .projects
+            .iter()
+            .map(|project| ProjectModelSelection::for_session(&state.new_session(project.id)))
+            .collect::<Vec<_>>();
+        let existing_task = serde_json::to_value(&state.sessions[1]).unwrap();
+        let changed_id = state.sessions[0].id;
+        state.session_mut(changed_id).unwrap().provider = ProviderKind::Pi;
+        state.session_mut(changed_id).unwrap().model = Some("another-model".into());
+        state.remember_session_model_selection(changed_id);
+
+        assert_eq!(
+            state.new_session(state.projects[0].id).provider,
+            ProviderKind::Pi
+        );
+        assert_eq!(
+            state.new_session(state.projects[0].id).model.as_deref(),
+            Some("another-model")
+        );
+        for (project, expected) in state.projects.iter().zip(before).skip(1) {
+            assert_eq!(
+                ProjectModelSelection::for_session(&state.new_session(project.id)),
+                expected
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(&state.sessions[1]).unwrap(),
+            existing_task
+        );
+        let untouched = Project::from_path(PathBuf::from("/tmp/untouched-project"));
+        assert_eq!(
+            state.new_session(untouched.id).provider,
+            ProviderKind::Codex
+        );
+        assert_eq!(state.new_session(untouched.id).model, None);
+    }
+
+    #[test]
+    fn no_project_model_choice_survives_workspace_replacement_and_reload() {
+        let root = waku_protocol::projectless::workspace_root().unwrap();
+        let first = Project::from_path(root.join("2026-11-02/first"));
+        let second = Project::from_path(root.join("2026-11-02/second"));
+        let mut state = PersistedState::empty();
+        let mut session = AgentSession::new(first.id, ProviderKind::Pi);
+        session.model = Some("anthropic/claude-opus".into());
+        session.reasoning_effort = Some("medium".into());
+        let session_id = session.id;
+        state.projects.push(first);
+        state.push_session(session);
+        state.remember_session_model_selection(session_id);
+        // Removing the last workspace must not remove the No Project preference.
+        state.projects.clear();
+        state.sessions.clear();
+        let encoded = serde_json::to_vec(&state.app_state()).unwrap();
+        let mut restored = PersistedState::empty();
+        restored.apply_app_state(serde_json::from_slice(&encoded).unwrap());
+        let project_id = second.id;
+        restored.projects.push(second);
+
+        let next = restored.new_session(project_id);
+        assert_eq!(next.provider, ProviderKind::Pi);
+        assert_eq!(next.model.as_deref(), Some("anthropic/claude-opus"));
+        assert_eq!(next.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(restored.new_session_provider(None), ProviderKind::Pi);
+        assert_eq!(
+            restored.new_session(Uuid::new_v4()).provider,
+            ProviderKind::Codex
+        );
+    }
+
+    #[test]
+    fn project_model_choices_survive_history_navigation_and_restart() {
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let project_id = state.projects[0].id;
+        let old_id = state.sessions[0].id;
+        let mut current = AgentSession::new(project_id, ProviderKind::Claude);
+        current.model = Some("claude-sonnet-5".into());
+        current.reasoning_effort = Some("high".into());
+        current.service_tier = Some("fast".into());
+        current.context_window = Some("1m".into());
+        let current_id = current.id;
+        state.push_session(current);
+        state.remember_session_model_selection(current_id);
+        state.selected_session = Some(old_id);
+        let encoded = serde_json::to_vec(&state.app_state()).unwrap();
+        let mut restored = PersistedState::empty();
+        restored.projects = state.projects;
+        restored.sessions = state.sessions;
+        // Even newer history cannot overwrite an explicitly saved preference.
+        restored.sessions[0].updated_at = u64::MAX;
+        restored.apply_app_state(serde_json::from_slice(&encoded).unwrap());
+        restored.migrate_loaded();
+        restored.selected_session = None;
+        restored.ensure_runtime_session();
+        let next = restored.sessions.last().unwrap();
+
+        assert_eq!(next.provider, ProviderKind::Claude);
+        assert_eq!(next.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(next.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(next.service_tier.as_deref(), Some("fast"));
+        assert_eq!(next.context_window.as_deref(), Some("1m"));
+        assert_eq!(restored.sessions[0].provider, ProviderKind::Codex);
+    }
+
+    #[test]
+    fn legacy_preferences_are_seeded_from_each_projects_latest_task() {
+        let root = waku_protocol::projectless::workspace_root().unwrap();
+        let projects = vec![
+            Project::from_path(PathBuf::from("/tmp/project-a")),
+            Project::from_path(PathBuf::from("/tmp/project-b")),
+            Project::from_path(root.join("2026-11-01/first")),
+            Project::from_path(root.join("2026-11-02/second")),
+        ];
+        let mut state = PersistedState::empty();
+        state.apply_app_state(
+            serde_json::from_str(
+                r#"{
+                    "app_state_version":1,
+                    "last_provider":"claude",
+                    "last_model":"model-4",
+                    "last_reasoning_effort":"high",
+                    "last_service_tier":"fast",
+                    "last_context_window":"1m",
+                    "remembered_model_traits":[
+                        {"provider":"pi","model":"model-3","reasoning_effort":"medium"}
+                    ]
+                }"#,
+            )
+            .unwrap(),
+        );
+        for (index, provider) in [
+            ProviderKind::Claude,
+            ProviderKind::Antigravity,
+            ProviderKind::Codex,
+            ProviderKind::Pi,
+            ProviderKind::Claude,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut session = AgentSession::new(projects[index % projects.len()].id, provider);
+            session.model = Some(format!("model-{index}"));
+            session.updated_at = index as u64;
+            state.push_session(session.list_projection());
+        }
+        state.projects = projects;
+        state.migrate_loaded();
+
+        let first = state.new_session(state.projects[0].id);
+        assert_eq!(first.provider, ProviderKind::Claude);
+        assert_eq!(first.model.as_deref(), Some("model-4"));
+        assert_eq!(first.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(first.service_tier.as_deref(), Some("fast"));
+        assert_eq!(first.context_window.as_deref(), Some("1m"));
+        let second = state.new_session(state.projects[1].id);
+        assert_eq!(second.provider, ProviderKind::Antigravity);
+        assert_eq!(second.model.as_deref(), Some("model-1"));
+        for project in &state.projects[2..] {
+            let next = state.new_session(project.id);
+            assert_eq!(next.provider, ProviderKind::Pi);
+            assert_eq!(next.model.as_deref(), Some("model-3"));
+            assert_eq!(next.reasoning_effort.as_deref(), Some("medium"));
+        }
+    }
+
+    #[test]
+    fn reused_drafts_pick_up_project_preferences_without_changing_started_tasks() {
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let project_id = state.projects[0].id;
+        let draft_id = state.sessions[0].id;
+        state.sessions[0].runtime_mode = RuntimeMode::Ask;
+        state.sessions[0].workspace = waku_protocol::model::SessionWorkspace::NewWorktree {
+            base_branch: Some("main".into()),
+        };
+        let workspace = state.sessions[0].workspace.clone();
+        let mut started = AgentSession::new(project_id, ProviderKind::Codex);
+        started.model = Some("existing-model".into());
+        started.push_message(waku_protocol::model::MessageRole::User, "Keep working");
+        let started_id = started.id;
+        state.push_session(started);
+        let mut choice = AgentSession::new(project_id, ProviderKind::Pi);
+        choice.model = Some("provider/model".into());
+        let choice_id = choice.id;
+        state.push_session(choice);
+        state.remember_session_model_selection(choice_id);
+
+        state.refresh_new_session_model_selection(draft_id);
+        state.refresh_new_session_model_selection(started_id);
+
+        let draft = &state.sessions[0];
+        assert_eq!(draft.id, draft_id);
+        assert_eq!(draft.provider, ProviderKind::Pi);
+        assert_eq!(draft.model.as_deref(), Some("provider/model"));
+        assert_eq!(draft.runtime_mode, RuntimeMode::Ask);
+        assert_eq!(draft.workspace, workspace);
+        assert_eq!(state.sessions[1].provider, ProviderKind::Codex);
+        assert_eq!(state.sessions[1].model.as_deref(), Some("existing-model"));
+    }
+
+    #[test]
+    fn disabled_providers_fall_back_without_reusing_their_models_or_changing_history() {
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let project_id = state.projects[0].id;
+        let session_id = state.sessions[0].id;
+        state.sessions[0].provider = ProviderKind::Pi;
+        state.sessions[0].model = Some("provider/model".into());
+        state.sessions[0].reasoning_effort = Some("high".into());
+        state.remember_session_model_selection(session_id);
+        state.disabled_providers.push(ProviderKind::Pi);
+
+        let next = state.new_session(project_id);
+        assert_ne!(next.provider, ProviderKind::Pi);
+        assert_eq!(next.model, None);
+        assert_eq!(next.reasoning_effort, None);
+        state.replace_new_session_provider(ProviderKind::Pi, ProviderKind::Claude);
+        let next = state.new_session(project_id);
+        assert_eq!(next.provider, ProviderKind::Claude);
+        assert_eq!(next.model, None);
+        assert_eq!(next.reasoning_effort, None);
+        assert_eq!(state.sessions[0].provider, ProviderKind::Pi);
+        assert_eq!(state.sessions[0].model.as_deref(), Some("provider/model"));
     }
 
     #[test]

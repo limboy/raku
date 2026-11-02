@@ -1128,13 +1128,7 @@ impl Waku {
             // default and any unstarted drafts off the switched-off provider.
             // The remembered model belongs to the old provider, so it resets
             // with it.
-            if self.state.last_provider == provider {
-                self.state.last_provider = fallback;
-                self.state.last_model = None;
-                self.state.last_reasoning_effort = None;
-                self.state.last_service_tier = None;
-                self.state.last_context_window = None;
-            }
+            self.state.replace_new_session_provider(provider, fallback);
             let draft_ids = self
                 .state
                 .sessions

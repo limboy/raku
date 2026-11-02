@@ -2113,7 +2113,7 @@ impl Waku {
                     .selected_session
                     .and_then(|id| state.sessions.iter().find(|session| session.id == id))
                     .map(|session| session.provider)
-                    .unwrap_or(state.last_provider),
+                    .unwrap_or_else(|| state.new_session_provider(state.selected_project)),
             )
         };
         let mut session_navigation = SessionNavigation::default();

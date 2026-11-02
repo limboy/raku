@@ -21,7 +21,7 @@ impl Waku {
     pub(super) fn select_project(&mut self, project_id: Uuid, cx: &mut Context<Self>) {
         self.state.selected_project = Some(project_id);
         self.finished_project_ids.remove(&project_id);
-        self.create_session_for(project_id, self.state.last_provider, cx);
+        self.create_session_for(project_id, cx);
     }
 
     pub(super) fn select_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
@@ -181,32 +181,12 @@ impl Waku {
         }
         self.state.selected_session = Some(session_id);
         self.task_switcher.record_access(session_id);
-        if let Some((
-            project_id,
-            provider,
-            runtime_mode,
-            model,
-            reasoning_effort,
-            service_tier,
-            context_window,
-        )) = self.selected_session().map(|session| {
-            (
-                session.project_id,
-                session.provider,
-                session.runtime_mode,
-                session.model.clone(),
-                session.reasoning_effort.clone(),
-                session.service_tier.clone(),
-                session.context_window.clone(),
-            )
-        }) {
+        if let Some((project_id, runtime_mode)) = self
+            .selected_session()
+            .map(|session| (session.project_id, session.runtime_mode))
+        {
             self.state.selected_project = Some(project_id);
-            self.state.last_provider = provider;
             self.state.last_runtime_mode = runtime_mode;
-            self.state.last_model = model;
-            self.state.last_reasoning_effort = reasoning_effort;
-            self.state.last_service_tier = service_tier;
-            self.state.last_context_window = context_window;
         }
         // Activation may have switched projects after the initial request's
         // reveal, so sync the filtered history before revealing its selection.
@@ -263,12 +243,7 @@ impl Waku {
         self.invalidate_composer_sources(cx);
     }
 
-    pub(super) fn create_session_for(
-        &mut self,
-        project_id: Uuid,
-        provider: ProviderKind,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn create_session_for(&mut self, project_id: Uuid, cx: &mut Context<Self>) {
         if let Some(draft_id) = self
             .state
             .sessions
@@ -276,6 +251,7 @@ impl Waku {
             .find(|session| session.project_id == project_id && !session.has_started())
             .map(|session| session.id)
         {
+            self.state.refresh_new_session_model_selection(draft_id);
             self.select_session(draft_id, cx);
             return;
         }
@@ -284,7 +260,7 @@ impl Waku {
         // a selected source task.
         let runtime_mode =
             new_task_runtime_mode(self.selected_session(), self.state.last_runtime_mode);
-        let mut session = self.state.new_session(project_id, provider);
+        let mut session = self.state.new_session(project_id);
         session.runtime_mode = runtime_mode;
         let id = session.id;
         self.state.push_session(session);
@@ -396,7 +372,7 @@ impl Waku {
             } else if projectless {
                 self.create_projectless_session(cx);
             } else {
-                self.create_session_for(project_id, self.state.last_provider, cx);
+                self.create_session_for(project_id, cx);
             }
         } else {
             self.save();
@@ -429,9 +405,10 @@ impl Waku {
                     .session_navigation
                     .remembered_new_task(&self.state.sessions, project_id)
                 {
+                    self.state.refresh_new_session_model_selection(session_id);
                     self.select_session(session_id, cx);
                 } else {
-                    self.create_session_for(project_id, self.state.last_provider, cx);
+                    self.create_session_for(project_id, cx);
                 }
             }
             None => self.create_projectless_session(cx),
@@ -967,18 +944,14 @@ impl Waku {
             self.state.model_traits_for(provider, &model);
         if let Some(session) = self.selected_session_mut() {
             session.provider = provider;
-            session.model = Some(model.clone());
+            session.model = Some(model);
             if provider_changed {
                 session.agent_preset = None;
             }
-            session.reasoning_effort.clone_from(&reasoning_effort);
-            session.service_tier.clone_from(&service_tier);
-            session.context_window.clone_from(&context_window);
-            self.state.last_provider = provider;
-            self.state.last_model = Some(model);
-            self.state.last_reasoning_effort = reasoning_effort;
-            self.state.last_service_tier = service_tier;
-            self.state.last_context_window = context_window;
+            session.reasoning_effort = reasoning_effort;
+            session.service_tier = service_tier;
+            session.context_window = context_window;
+            self.state.remember_session_model_selection(session_id);
             if !self.state.model_picker_favorites_only {
                 self.model_picker_tab = ModelPickerTab::Provider(provider);
             }
@@ -1125,8 +1098,8 @@ impl Waku {
             && session.reasoning_effort.as_deref() != Some(effort.as_str())
         {
             let session_id = session.id;
-            session.reasoning_effort = Some(effort.clone());
-            self.state.last_reasoning_effort = Some(effort);
+            session.reasoning_effort = Some(effort);
+            self.state.remember_session_model_selection(session_id);
             self.remember_selected_model_traits();
             self.apply_session_options(session_id, cx);
             self.save();
@@ -1139,8 +1112,8 @@ impl Waku {
             && session.service_tier.as_deref() != Some(tier.as_str())
         {
             let session_id = session.id;
-            session.service_tier = Some(tier.clone());
-            self.state.last_service_tier = Some(tier);
+            session.service_tier = Some(tier);
+            self.state.remember_session_model_selection(session_id);
             self.remember_selected_model_traits();
             self.apply_session_options(session_id, cx);
             self.save();
@@ -1153,8 +1126,8 @@ impl Waku {
             && session.context_window.as_deref() != Some(window.as_str())
         {
             let session_id = session.id;
-            session.context_window = Some(window.clone());
-            self.state.last_context_window = Some(window);
+            session.context_window = Some(window);
+            self.state.remember_session_model_selection(session_id);
             self.remember_selected_model_traits();
             self.apply_session_options(session_id, cx);
             self.save();
@@ -1509,7 +1482,7 @@ impl Waku {
                     let project_id = project.id;
                     this.state.projects.push(project);
                     this.analytics.track(crate::analytics::Event::ProjectAdded);
-                    this.create_session_for(project_id, this.state.last_provider, cx);
+                    this.create_session_for(project_id, cx);
                 });
             }
         })
@@ -1531,6 +1504,7 @@ impl Waku {
             })
             .map(|session| session.id)
         {
+            self.state.refresh_new_session_model_selection(draft_id);
             self.select_session(draft_id, cx);
             return;
         }
@@ -1556,7 +1530,7 @@ impl Waku {
                     project.name = Project::PROJECTLESS_NAME.to_owned();
                     let project_id = project.id;
                     waku.state.projects.push(project);
-                    waku.create_session_for(project_id, waku.state.last_provider, cx);
+                    waku.create_session_for(project_id, cx);
                 }
                 Err(error) => {
                     waku.show_toast(tr!("errors.create_projectless_task", error = error));
