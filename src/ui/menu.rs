@@ -98,12 +98,9 @@ pub enum MenuItem {
         #[allow(clippy::type_complexity)]
         on_click: Rc<dyn Fn(&mut Window, &mut App)>,
     },
-    /// Opens a one-level flyout beside the parent card. `value` keeps the
-    /// current choice visible in the parent row, matching native inspector
-    /// menus whose submenu is a preference rather than an action.
+    /// Opens a one-level flyout beside the parent card.
     Submenu {
         label: SharedString,
-        value: Option<SharedString>,
         #[allow(clippy::type_complexity)]
         items: Rc<dyn Fn(&mut App) -> Vec<MenuItem>>,
     },
@@ -149,19 +146,6 @@ impl MenuItem {
     ) -> Self {
         Self::Submenu {
             label: label.into(),
-            value: None,
-            items: Rc::new(items),
-        }
-    }
-
-    pub fn submenu_with_value(
-        label: impl Into<SharedString>,
-        value: impl Into<SharedString>,
-        items: impl Fn(&mut App) -> Vec<MenuItem> + 'static,
-    ) -> Self {
-        Self::Submenu {
-            label: label.into(),
-            value: Some(value.into()),
             items: Rc::new(items),
         }
     }
@@ -1166,11 +1150,7 @@ fn render_menu_item(
             });
             track_pointer_highlight(entry, index, in_submenu, disabled, handle).into_any_element()
         }
-        MenuItem::Submenu {
-            label,
-            value,
-            items: _,
-        } => {
+        MenuItem::Submenu { label, items: _ } => {
             // Waku currently exposes one flyout level. Keeping a nested
             // submenu row inert prevents a child builder from accidentally
             // stealing the parent flyout's keyboard state.
@@ -1200,14 +1180,6 @@ fn render_menu_item(
                     cx.stop_propagation();
                 })
                 .child(div().flex_1().min_w_0().truncate().child(label))
-                .when_some(value, |element, value| {
-                    element.child(
-                        div()
-                            .flex_none()
-                            .text_color(theme.text_tertiary)
-                            .child(value),
-                    )
-                })
                 .child(icon("icons/chevron-right.svg", 10.0, theme.text_tertiary))
                 .into_any_element()
         }
@@ -1613,16 +1585,12 @@ mod tests {
                 MenuAlign::BelowLeft,
                 move |_| {
                     let activated = activated.clone();
-                    vec![MenuItem::submenu_with_value(
-                        "Grouping",
-                        "Updated",
-                        move |_| {
-                            let activated = activated.clone();
-                            vec![MenuItem::new("Project", move |_, _| {
-                                activated.set(true);
-                            })]
-                        },
-                    )]
+                    vec![MenuItem::submenu("Grouping", move |_| {
+                        let activated = activated.clone();
+                        vec![MenuItem::new("Project", move |_, _| {
+                            activated.set(true);
+                        })]
+                    })]
                 },
             )
         }
@@ -1776,7 +1744,7 @@ mod tests {
     fn submenus_are_focusable() {
         let items = vec![
             MenuItem::submenu("Export", |_| Vec::new()),
-            MenuItem::submenu_with_value("Grouping", "Updated", |_| Vec::new()),
+            MenuItem::submenu("Grouping", |_| Vec::new()),
         ];
         assert_eq!(*focusable_indexes(&items), vec![0, 1]);
     }
