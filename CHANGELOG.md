@@ -16,6 +16,9 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Remove the DeepSeek Harness (`dsh`) provider; DeepSeek models remain available through other supported agents
+- Strip decorative leading icons from automatic session titles
+
 ## [2.0.2] - 2026-11-02
 
 - Open files in their default app or reveal them in the file manager from the right sidebar

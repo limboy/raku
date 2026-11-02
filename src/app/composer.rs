@@ -1737,122 +1737,6 @@ impl Waku {
         )
     }
 
-    pub(super) fn render_agent_preset_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let session = self
-            .selected_session()
-            .filter(|session| session.provider == ProviderKind::DeepSeek)?;
-        if session.has_started() || session.is_busy() {
-            return None;
-        }
-        let presets = self
-            .provider_probe(ProviderKind::DeepSeek)
-            .map(|probe| probe.agent_presets.clone())
-            .unwrap_or_default();
-        if presets.is_empty() {
-            return None;
-        }
-        let selected_id = self.agent_preset_for_session(session)?;
-        let selected_label = self.agent_preset_label_for_session(session)?;
-        let theme = Theme::current(cx);
-        let weak = cx.entity().downgrade();
-        let refresh_weak = weak.clone();
-        let handle = self.menu_handle_with("agent-preset", cx, move |open, _, cx| {
-            if open {
-                let _ = refresh_weak.update(cx, |this, _| {
-                    this.refresh_provider_model_discovery(ProviderKind::DeepSeek);
-                });
-            }
-        });
-        let trigger = MenuChip::new("agent-preset")
-            .icon("icons/bot.svg", theme.text_tertiary)
-            .label(selected_label)
-            .caret(false)
-            .selected(handle.is_open());
-
-        Some(dropdown_menu(
-            trigger,
-            "agent-preset-menu",
-            &handle,
-            MenuAlign::AboveLeft,
-            move |_| {
-                presets
-                    .clone()
-                    .into_iter()
-                    .map(|preset| {
-                        let weak = weak.clone();
-                        let preset_id = preset.id.clone();
-                        let selected = preset_id == selected_id;
-                        let name = if preset.is_custom {
-                            format!("{} · {}", preset.display_name(), tr!("agent_preset.custom"))
-                        } else {
-                            preset.display_name()
-                        };
-                        let description = preset
-                            .display_description()
-                            .unwrap_or_else(|| tr!("agent_preset.no_description"))
-                            // GPUI wraps at Unicode line-break opportunities,
-                            // but an underscored tool name is otherwise one
-                            // indivisible word. The zero-width spaces preserve
-                            // its visible spelling while allowing the menu to
-                            // keep it inside the card.
-                            .replace('_', "_\u{200b}");
-                        MenuItem::custom(move |_, _| {
-                            div()
-                                .w(px(340.0))
-                                .py(px(5.0))
-                                .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .gap(px(10.0))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .truncate()
-                                                .text_size(sp(12.5))
-                                                .font_weight(if selected {
-                                                    FontWeight::SEMIBOLD
-                                                } else {
-                                                    FontWeight::MEDIUM
-                                                })
-                                                .text_color(theme.text)
-                                                .child(name.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .mt(px(2.0))
-                                                .text_size(sp(12.5))
-                                                .line_height(sp(14.0))
-                                                .whitespace_normal()
-                                                .overflow_hidden()
-                                                .text_color(theme.text_tertiary)
-                                                .child(description.clone()),
-                                        ),
-                                )
-                                .when(selected, |element| {
-                                    element.child(icon(
-                                        "icons/check.svg",
-                                        11.0,
-                                        theme.text_tertiary,
-                                    ))
-                                })
-                                .into_any_element()
-                        })
-                        .on_click(move |_, cx| {
-                            let _ = weak.update(cx, |this, cx| {
-                                this.set_agent_preset(preset_id.clone(), cx);
-                            });
-                        })
-                    })
-                    .collect()
-            },
-        ))
-    }
-
     /// The thread-goal chip: present only while the provider reports a goal,
     /// it pairs a target icon with the status phrase (and budget consumption)
     /// and opens the goal dialog. `/goal` is the keyboard route to the same
@@ -3024,7 +2908,6 @@ impl Waku {
                         .line_height(sp(14.0))
                         .child(self.render_provider_model_control(cx))
                         .children(self.render_model_traits_control(cx))
-                        .children(self.render_agent_preset_control(cx))
                         .child(self.render_access_control(cx))
                         .children(self.render_goal_control(cx))
                         .child(div().flex_1())

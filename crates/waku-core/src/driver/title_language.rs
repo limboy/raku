@@ -462,6 +462,14 @@ mod tests {
             };
             driver.cancel();
             eprintln!("{} native title: {title}", provider.display_name());
+            let mut session = crate::model::AgentSession::new(uuid::Uuid::new_v4(), provider);
+            session.set_auto_title(Some(title));
+            let title = session.display_title();
+            assert_eq!(
+                waku_protocol::title::without_leading_icons(title),
+                title,
+                "the displayed title must not contain leading icons"
+            );
             assert_eq!(
                 title.chars().any(|c| matches!(c, '\u{3400}'..='\u{9fff}')),
                 chinese

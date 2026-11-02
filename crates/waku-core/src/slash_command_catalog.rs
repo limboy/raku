@@ -36,10 +36,6 @@ pub(crate) fn discover(
         ProviderKind::OpenCode => discover_opencode(binary, project_root),
         ProviderKind::OhMyPi => discover_oh_my_pi(binary, project_root),
         ProviderKind::Pi => discover_pi(binary, project_root),
-        // Harness requires an agent id for commands/list. Creating throwaway sessions
-        // merely to seed autocomplete would pollute provider history, so its
-        // live DriverEvent::AvailableCommands update is the catalog surface.
-        ProviderKind::DeepSeek => None,
     }
 }
 
@@ -83,7 +79,10 @@ fn discover_antigravity(binary: &Path, project_root: &Path) -> Option<Vec<SlashC
 
 fn parse_antigravity_skills(value: &Value) -> Vec<SlashCommand> {
     let mut out = Vec::new();
-    if let Some(skills) = value.pointer("/command/data/skills").and_then(Value::as_array) {
+    if let Some(skills) = value
+        .pointer("/command/data/skills")
+        .and_then(Value::as_array)
+    {
         for skill in skills.iter().take(COMMAND_CATALOG_CAP) {
             let Some(name) = skill
                 .get("name")

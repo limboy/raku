@@ -37,8 +37,7 @@ binary path ([commit_dialog.rs:129](../src/app/commit_dialog.rs#L129)):
 | `reasoning_effort` | the session's own `reasoning_effort`, verbatim |
 
 Both are `Option`, and a `None` omits the flag, leaving the CLI on its own
-default. **DeepSeek** is passed no model flag at all, so it always runs whatever
-`--profile headless` resolves to.
+default.
 
 ## The prompt
 
@@ -69,7 +68,6 @@ argument**; `NO_COLOR=1` and `CI=1` are set for all of them.
 | --- | --- | --- | --- | --- |
 | Claude Code | `claude` | `--print --output-format text --permission-mode plan --tools "" --disable-slash-commands --no-session-persistence --no-chrome` | pinned `claude-haiku-4-5` | pinned `low` |
 | Codex CLI | `codex exec` | `--sandbox read-only --ephemeral --color never --skip-git-repo-check` | pinned `gpt-5.6-luna` | pinned `none`, via `-c` |
-| DeepSeek Harness | `dsh` | `--profile headless` | — | — |
 | OpenCode | `opencode run` | `--standalone --agent plan` | `--model` | `#<variant>` suffix on the model |
 | Pi | `pi` | `--print --no-session --no-tools --no-context-files --no-extensions --no-skills --no-prompt-templates --no-approve` | `--model` | `--thinking` |
 | Oh My Pi | `omp` | `--print --no-session --no-tools --no-rules --no-extensions --no-skills` | `--model` | `--thinking` |
@@ -83,9 +81,6 @@ Where a provider is not simply "flags plus prompt":
 - **Codex** runs `exec` as an ephemeral read-only turn; `--skip-git-repo-check`
   lets a workspace that is not a repo root run. Effort rides on a `-c` config
   override because `codex exec` has no flag for it.
-- **DeepSeek** gets only `--profile headless`, Harness's one-shot stdout-only
-  client. It has no tool switch — the prompt's "do not call tools" is the whole
-  guard, which holds because all context is inlined.
 - **Oh My Pi** rejects unknown flags outright, so it gets its own list rather
   than Pi's: context files are `--no-rules`, and it has no prompt-template or
   project-trust switch to turn off.

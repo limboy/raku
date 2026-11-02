@@ -17,7 +17,7 @@ English code, paths, technical identifiers, or background instructions;
 technical terms can retain their original form.
 
 Codex receives this policy in its title turn's system instructions. For
-Claude, OpenCode, DeepSeek, Antigravity, Pi, and Oh My Pi, Waku appends the
+Claude, OpenCode, Antigravity, Pi, and Oh My Pi, Waku appends the
 same naming context to the first ordinary prompt whose language can be
 identified in each live driver. Language detection uses a bounded sample of
 the original prose, excluding code blocks, inline code, quoted background,
@@ -39,6 +39,15 @@ before its title model sees a request. Legacy XML context remains hidden on
 import and is upgraded if a prepared request is retried. Later prompts,
 steering, slash commands (including explicit renames), Codex's main turn, and
 review subtasks do not receive the context.
+
+## Title icons
+
+Automatic titles are plain text in Waku. Leading emoji and Nerd Font icons are
+removed when a provider title arrives; existing stored automatic titles use the
+same cleanup when displayed. Whole emoji sequences are removed, including skin
+tones, joined emoji, flags, and variation selectors. Text after the icons,
+including Oh My Pi's short code and emoji within the title body, is preserved.
+Explicit user titles and provider-native session files are unchanged.
 
 ## The two title fields
 
@@ -73,15 +82,15 @@ fast it replaces that placeholder, not merely on whether it eventually does.
 
 Every provider funnels into `DriverEvent::AutoTitleUpdated(Option<String>)`,
 consumed once in [streaming.rs:258](../src/app/streaming.rs#L258) →
-`set_auto_title`, which trims, maps empty to `None`, and is the universal
-last-stage normalizer. `AutoTitleUpdated` is in the `force_save` set
+`set_auto_title`, which trims, removes leading icons, maps empty to `None`, and
+is the universal last-stage normalizer. `AutoTitleUpdated` is in the `force_save` set
 ([runtime.rs](../src/app/runtime.rs)), so a title persists the moment it lands.
 
 What differs is how the title reaches that event:
 
 1. **Pushed on the provider's own stream.** The agent sends a title event and
-   the driver forwards it. Nothing to poll, nothing to schedule. OpenCode,
-   DeepSeek, and Codex's native paths work this way. Oh My Pi uses
+   the driver forwards it. Nothing to poll, nothing to schedule. OpenCode
+   and Codex's native paths work this way. Oh My Pi uses
    the same delivery shape after Waku explicitly requests native naming. Pi
    also pushes name changes, but its built-in rename support does not generate
    a name automatically.
@@ -113,7 +122,6 @@ title near when the provider writes it, and long enough to survive a slow start.
 | OpenCode | OpenCode | SSE stream | connect, `session.renamed` | [opencode.rs:515](../crates/waku-core/src/driver/opencode.rs#L515), [opencode.rs:1568](../crates/waku-core/src/driver/opencode.rs#L1568) |
 | Pi | user or extension; no built-in automatic generator in installed 1.4.0 | NDJSON stream | connect, explicit `session_info_changed` | [pi.rs](../crates/waku-core/src/driver/pi.rs) |
 | Oh My Pi | Oh My Pi's configured title model | NDJSON stream | first assistant message while unnamed → native `/rename` → `session_info_update`, or direct `/rename` on reattached history | [pi.rs](../crates/waku-core/src/driver/pi.rs) |
-| DeepSeek | Harness | stream + projections | `session/title`, projection replay | [deepseek.rs:782](../crates/waku-core/src/driver/deepseek.rs#L782), [deepseek.rs:1139](../crates/waku-core/src/driver/deepseek.rs#L1139) |
 | Antigravity CLI | Antigravity | SQLite (`conversation_summaries.db`) | poll from each prompt (`5s, 10s`), plus turn end | [antigravity.rs](../crates/waku-core/src/driver/antigravity.rs), [antigravity_session.rs](../crates/waku-core/src/antigravity_session.rs) |
 
 ### Claude Code
@@ -207,7 +215,7 @@ Output is cleaned by `normalize_codex_title` — it decodes JSON or `{title}`,
 drops code fences, strips a `Title:` prefix, trims quotes and markdown emphasis,
 collapses whitespace, and caps at 80 characters.
 
-### OpenCode, Pi, DeepSeek
+### OpenCode, Pi, Oh My Pi
 
 These providers deliver titles on their own streams. Oh My Pi requires an
 explicit request before it generates one in RPC mode.
@@ -224,9 +232,6 @@ explicit request before it generates one in RPC mode.
   ([pi.rs:69](../crates/waku-core/src/driver/pi.rs#L69)). Either may send an
   empty value, which becomes `AutoTitleUpdated(None)` and clears the title back
   to the fallback. This event alone does not establish automatic generation.
-- **DeepSeek** — the Harness `session/title` event, plus a `title` projection
-  replayed from history at connect, so a reattached session gets its title
-  without waiting for a new one.
 
 **Pi naming gap.** The installed upstream Pi 1.4.0 has `setSessionName`, the
 `set_session_name` RPC, and the explicit `/name <name>` command. Its built-in

@@ -197,10 +197,7 @@ fn accept_info(registration: &ServiceRegistration, info: &ServerInfo) -> anyhow:
 /// `serve --service`; the two are indistinguishable by construction, and
 /// neither is ever signalled. `Private` is reserved for the future Computer
 /// Use path (`serve --stdio --port 0` with a Waku-generated password, which
-/// prints one JSON line and exits when stdin closes) and is unreachable today;
-/// wiring it up will also need the guardian-script plus `process_group(0)`
-/// wrapper from `deepseek_session`, because the dev watcher SIGTERMs Waku
-/// without running destructors.
+/// prints one JSON line and exits when stdin closes) and is unreachable today.
 #[allow(dead_code)]
 pub(crate) enum Ownership {
     Adopted { pid: u32 },

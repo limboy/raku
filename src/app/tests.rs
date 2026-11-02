@@ -2056,12 +2056,12 @@ fn model_picker_subtitle_deduplicates_the_provider_name() {
     use super::composer::model_picker_subtitle;
 
     assert_eq!(
-        model_picker_subtitle(ProviderKind::DeepSeek, Some("DeepSeek")),
-        "DeepSeek"
+        model_picker_subtitle(ProviderKind::OpenCode, Some("OpenCode")),
+        "OpenCode"
     );
     assert_eq!(
-        model_picker_subtitle(ProviderKind::DeepSeek, Some("OpenAI")),
-        "OpenAI · DeepSeek"
+        model_picker_subtitle(ProviderKind::OpenCode, Some("OpenAI")),
+        "OpenAI · OpenCode"
     );
 }
 

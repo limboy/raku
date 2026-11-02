@@ -543,9 +543,6 @@ impl Backend for WakuBackend {
                     ProviderKind::OpenCode => {
                         crate::opencode_session::list_provider_sessions(&binary, limit)?
                     }
-                    ProviderKind::DeepSeek => {
-                        crate::deepseek_session::list_provider_sessions(&binary, limit)?
-                    }
                     ProviderKind::OhMyPi | ProviderKind::Pi => {
                         crate::pi_session::list_provider_sessions(provider, limit)?
                     }
@@ -602,14 +599,6 @@ impl Backend for WakuBackend {
                     ProviderResumeCursor::OpenCode { session_id, .. } => {
                         let binary = self.provider_binary(ProviderKind::OpenCode)?;
                         crate::opencode_session::provider_session_history(
-                            &binary,
-                            session_id,
-                            VISIBLE_TURN_LIMIT,
-                        )?
-                    }
-                    ProviderResumeCursor::DeepSeek { session_id } => {
-                        let binary = self.provider_binary(ProviderKind::DeepSeek)?;
-                        crate::deepseek_session::provider_session_history(
                             &binary,
                             session_id,
                             VISIBLE_TURN_LIMIT,
@@ -1297,10 +1286,7 @@ impl WakuBackend {
                 })?;
                 Ok((fork.cursor, fork.message_ids))
             }
-            ProviderKind::Codex
-            | ProviderKind::DeepSeek
-            | ProviderKind::OhMyPi
-            | ProviderKind::Pi => Ok((
+            ProviderKind::Codex | ProviderKind::OhMyPi | ProviderKind::Pi => Ok((
                 self.fork_response_with_driver(source, cwd, turns_to_remove)?,
                 HashMap::new(),
             )),
@@ -1345,14 +1331,6 @@ impl WakuBackend {
                 ) =>
             {
                 bail!("Codex's native thread is unavailable");
-            }
-            ProviderKind::DeepSeek
-                if !matches!(
-                    source.provider_cursor.as_ref(),
-                    Some(ProviderResumeCursor::DeepSeek { .. })
-                ) =>
-            {
-                bail!("DeepSeek Harness's native session is unavailable");
             }
             ProviderKind::Pi
                 if !matches!(
@@ -1477,10 +1455,7 @@ impl WakuBackend {
                 };
                 Ok((Some(cursor), HashMap::new(), false))
             }
-            ProviderKind::Codex
-            | ProviderKind::DeepSeek
-            | ProviderKind::OhMyPi
-            | ProviderKind::Pi => Ok((
+            ProviderKind::Codex | ProviderKind::OhMyPi | ProviderKind::Pi => Ok((
                 self.rollback_response_with_driver(source, cwd, binary, rollback_turns)?,
                 HashMap::new(),
                 false,

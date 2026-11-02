@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use uuid::Uuid;
+use waku_protocol::persistence::from_persisted_json;
 pub use waku_protocol::settings::DaemonSettings;
 
 pub struct DaemonSettingsStore {
@@ -26,7 +27,7 @@ impl DaemonSettingsStore {
         legacy_paths: impl IntoIterator<Item = PathBuf>,
     ) -> io::Result<Self> {
         let (mut settings, write_current) = match fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(bytes) => match from_persisted_json(&bytes) {
                 Ok(settings) => (settings, false),
                 Err(error) => {
                     let backup = quarantine_corrupt_settings(&path)?;
@@ -45,7 +46,7 @@ impl DaemonSettingsStore {
                     }
                     match fs::read(legacy_path) {
                         Ok(bytes) => {
-                            if let Ok(settings) = serde_json::from_slice(&bytes) {
+                            if let Ok(settings) = from_persisted_json(&bytes) {
                                 restored = Some(settings);
                                 break;
                             }
@@ -109,6 +110,42 @@ mod tests {
     use serde_json::Value;
     use uuid::Uuid;
     use waku_protocol::model::ProviderKind;
+
+    #[test]
+    fn retired_provider_settings_do_not_quarantine_valid_configuration() {
+        let directory = std::env::temp_dir().join(format!("waku-settings-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+                "computer_use_enabled": true,
+                "disabled_providers": ["deepSeek", "claude"],
+                "provider_binary_overrides": {
+                    "deepSeek": "/old/dsh",
+                    "pi": "/custom/pi"
+                },
+                "future": 42
+            }"#,
+        )
+        .unwrap();
+
+        let store = DaemonSettingsStore::open(path.clone()).unwrap();
+        let settings = store.get();
+        assert!(settings.computer_use_enabled);
+        assert_eq!(settings.disabled_providers, vec![ProviderKind::Claude]);
+        assert_eq!(
+            settings.provider_binary_overrides,
+            [(ProviderKind::Pi, "/custom/pi".into())].into()
+        );
+        assert_eq!(settings.extra.get("future"), Some(&Value::from(42)));
+        store.replace(settings).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        let decoded: DaemonSettings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(decoded, store.get());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn legacy_combined_settings_keep_only_daemon_fields() {

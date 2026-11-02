@@ -177,7 +177,7 @@ ModelMention
 - provider 不能保证这一策略时，只有经验证的无工具模式才可作为替代，并明确展示上下文范围；否则该渠道暂不支持评审委派。
 - 准确区分“隔离快照保护原仓库”和“操作权限被约束”。更换 cwd 或写一句“不要修改文件”均不能充当权限保证。
 
-本节是准确执行独立代码评审的前提。若例子中的 DeepSeek 只能通过未验证的 Harness 路由使用，应先补相应 adapter 或由用户明确选择另一个可用渠道，不能擅自切换。
+本节是准确执行独立代码评审的前提。例子中的 DeepSeek 模型通过 Pi、Oh My Pi 或 OpenCode 等受支持渠道使用；Waku 不提供原生 Harness provider，也不能擅自切换用户指定的渠道。
 
 ## 7. daemon 调度、事件与存储
 
@@ -308,7 +308,7 @@ ModelMention
 
 请评审者优先判断：
 
-1. 首批父 provider 与两个目标调用渠道是否实际可行；原生 DeepSeek Harness 的只读或无工具约束如何落实？
+1. 首批父 provider 与两个目标调用渠道是否实际可行；各渠道的只读或无工具约束如何落实？
 2. 单独的 delegation 存储与 reducer 是否是合适边界，是否遗漏备份、搜索、删除、rewind、重试或客户端过期投影的影响？
 3. 快照捕获是否充分覆盖暂存/未暂存/未跟踪文件，以及历史 turn 的确切 base/target？
 4. 长轮询、child 注册、父停止与持久结果交付是否存在 mailbox 死锁、双重交付或停止后复活的路径？
@@ -362,7 +362,7 @@ ModelMention
     OpenCode 的 `ses_…` 通过别名读取 canonical Waku 注册，后续轮次的 token 和目标更新不会失效。
 - `ExecutionPolicy::{Interactive, ReviewReadOnly}`。子任务一律 `ReviewReadOnly`：
   Codex 用 `sandbox: read-only` + `approvalPolicy: never`；OpenCode 强制 `plan` preset 且
-  只读工具放行、其余一律 `reject`；DeepSeek Harness 启用 `/plan` 并自动拒绝审批与提问。
+  只读工具放行、其余一律 `reject`。
   Claude 子任务直接拒绝提问；任何仍请求人机交互的子 driver 都会明确失败并停止。
 
 ### 客户端
@@ -415,5 +415,5 @@ ModelMention
    （UI 的分页读取与取消走类型化 RPC）。
 2. 未实现「父轮次中断后后台自动续跑汇总」；子任务结论持久化，用户重新进入会话即可查看。
 3. 父 provider 支持矩阵：Codex、OpenCode（MCP 注入）、Pi、Oh My Pi（扩展注入）。
-   子任务可用的 provider：Codex、OpenCode、DeepSeek Harness、Claude、Pi、Oh My Pi。
+   子任务可用的 provider：Codex、OpenCode、Claude、Pi、Oh My Pi。
    Amp / Cursor / Fx / Grok / Kimi 因只有“询问用户”的审批模型而在候选列表中排除。

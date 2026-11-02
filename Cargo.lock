@@ -8420,6 +8420,8 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "unicode-properties",
+ "unicode-segmentation",
  "uuid",
 ]
 

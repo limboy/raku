@@ -6,7 +6,6 @@ mod claude;
 mod codex;
 mod compaction;
 mod computer_use;
-mod deepseek;
 mod opencode;
 mod opencode_computer_use;
 mod pi;
@@ -243,7 +242,6 @@ pub(crate) fn start_local(
         ProviderKind::OhMyPi => {
             Arc::new(pi::PiDriver::start(pi::PiFlavor::OhMyPi, options, events)?)
         }
-        ProviderKind::DeepSeek => Arc::new(deepseek::DeepSeekDriver::start(options, events)?),
         // OpenCode is not a per-workspace server: one adopted background
         // service carries every workspace, and every Waku task rides its one
         // event stream.

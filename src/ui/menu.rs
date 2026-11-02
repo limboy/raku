@@ -1011,9 +1011,9 @@ impl RenderOnce for MenuCard {
                 .map(|item| match item {
                     MenuItem::Separator => 9.0,
                     MenuItem::Header(_) => 22.0,
-                    MenuItem::Entry { .. }
-                    | MenuItem::Submenu { .. }
-                    | MenuItem::Custom { .. } => 26.0,
+                    MenuItem::Entry { .. } | MenuItem::Submenu { .. } | MenuItem::Custom { .. } => {
+                        26.0
+                    }
                 })
                 .sum::<f32>()
         });

@@ -163,11 +163,7 @@ pub fn provider_color(theme: &Theme, provider: ProviderKind) -> Hsla {
     match provider {
         ProviderKind::Antigravity => rgb(0x3186FF).into(),
         ProviderKind::Claude => rgb(0xD97757).into(),
-        ProviderKind::DeepSeek => rgb(0x4D6BFE).into(),
-        ProviderKind::Codex
-        | ProviderKind::OpenCode
-        | ProviderKind::OhMyPi
-        | ProviderKind::Pi => {
+        ProviderKind::Codex | ProviderKind::OpenCode | ProviderKind::OhMyPi | ProviderKind::Pi => {
             if theme.is_dark {
                 rgb(0xF3F3F3).into()
             } else {
@@ -183,7 +179,6 @@ pub fn provider_icon(provider: ProviderKind) -> &'static str {
         ProviderKind::Antigravity => "icons/provider-antigravity.svg",
         ProviderKind::Claude => "icons/provider-claude.svg",
         ProviderKind::Codex => "icons/provider-openai.svg",
-        ProviderKind::DeepSeek => "icons/provider-deepseek.svg",
         ProviderKind::OpenCode => "icons/provider-opencode.svg",
         ProviderKind::OhMyPi => "icons/provider-ohmypi.svg",
         ProviderKind::Pi => "icons/provider-pi.svg",
@@ -234,9 +229,10 @@ pub fn activity_noun(kind: ActivityKind) -> (String, String) {
         ActivityKind::FileList => (tr!("activity.file_list"), tr!("activity.file_lists")),
         ActivityKind::Search => (tr!("activity.search"), tr!("activity.searches")),
         ActivityKind::Plan => (tr!("activity.plan_step"), tr!("activity.plan_steps")),
-        ActivityKind::ImageGeneration => {
-            (tr!("activity.generated_image"), tr!("activity.generated_images"))
-        }
+        ActivityKind::ImageGeneration => (
+            tr!("activity.generated_image"),
+            tr!("activity.generated_images"),
+        ),
         ActivityKind::Tool | ActivityKind::Compaction => {
             (tr!("activity.tool_call"), tr!("activity.tool_calls"))
         }

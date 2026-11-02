@@ -14,7 +14,7 @@ pub fn provider_probe(provider: ProviderKind, binary_override: Option<&str>) -> 
         installed: path.is_some(),
         path,
         models: crate::model_catalog::fallback_models(provider),
-        agent_presets: crate::model_catalog::fallback_agent_presets(provider),
+        agent_presets: Vec::new(),
     }
 }
 

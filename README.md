@@ -29,7 +29,6 @@ Waku works with:
 - Antigravity CLI
 - Claude Code
 - Codex CLI
-- DeepSeek
 - Oh My Pi
 - OpenCode
 - Pi

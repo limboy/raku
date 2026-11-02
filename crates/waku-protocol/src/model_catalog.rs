@@ -1,6 +1,6 @@
 //! Provider fallback choices used before daemon-side discovery completes.
 
-use crate::model::{ProviderAgentPreset, ProviderKind, ProviderModel, ProviderModelOption};
+use crate::model::{ProviderKind, ProviderModel, ProviderModelOption};
 
 pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
     match provider {
@@ -41,28 +41,10 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
             ProviderModel::new("claude-haiku-4-5", "Claude Haiku 4.5"),
         ],
         ProviderKind::Antigravity
-        | ProviderKind::DeepSeek
         | ProviderKind::OpenCode
         | ProviderKind::OhMyPi
         | ProviderKind::Pi => Vec::new(),
     }
-}
-
-pub fn fallback_agent_presets(provider: ProviderKind) -> Vec<ProviderAgentPreset> {
-    if provider != ProviderKind::DeepSeek {
-        return Vec::new();
-    }
-    vec![
-        ProviderAgentPreset::new("standard", tr!("agent_preset.standard"))
-            .description(tr!("agent_preset.standard_description"))
-            .default(),
-        ProviderAgentPreset::new("code", tr!("agent_preset.code"))
-            .description(tr!("agent_preset.code_description")),
-        ProviderAgentPreset::new("minimal", tr!("agent_preset.minimal"))
-            .description(tr!("agent_preset.minimal_description")),
-        ProviderAgentPreset::new("cordis", tr!("agent_preset.creator"))
-            .description(tr!("agent_preset.creator_description")),
-    ]
 }
 
 fn reasoning_effort_label(effort: &str) -> String {
@@ -115,4 +97,3 @@ fn claude_long_context(model: ProviderModel) -> ProviderModel {
         "200k",
     )
 }
-

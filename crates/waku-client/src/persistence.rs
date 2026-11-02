@@ -23,6 +23,7 @@ use waku_protocol::model::{
     ProviderSessionHistory, ProviderSessionSummary, RuntimeMode,
 };
 use waku_protocol::theme::ThemePreference;
+use waku_protocol::persistence::{from_persisted_json, migrate_retired_provider_references};
 
 pub use waku_protocol::persistence::{
     ComposerDraft, ComposerDraftAttachment, ComposerDraftChange, ComposerDraftKey,
@@ -851,8 +852,10 @@ fn restore_desktop_documents(
     state_path: &Path,
     bytes: &[u8],
 ) -> io::Result<()> {
-    let desktop: waku_protocol::backup::DesktopBackup =
+    let mut desktop: waku_protocol::backup::DesktopBackup =
         serde_json::from_slice(bytes).map_err(to_io_error)?;
+    migrate_retired_provider_references(&mut desktop.settings);
+    migrate_retired_provider_references(&mut desktop.state);
     let mut settings: AppSettings =
         serde_json::from_value(desktop.settings).map_err(to_io_error)?;
     let state: AppState = serde_json::from_value(desktop.state).map_err(to_io_error)?;
@@ -865,7 +868,7 @@ fn restore_desktop_documents(
     // machines. Apply the same desktop defaults as a normal preferences load.
     let current: Option<AppSettings> = fs::read(settings_path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        .and_then(|bytes| from_persisted_json(&bytes).ok());
     settings.backup_directory = current
         .as_ref()
         .and_then(|current| current.backup_directory.clone());
@@ -876,7 +879,7 @@ fn restore_desktop_documents(
 
 fn read_app_state_file(path: &Path) -> Option<AppState> {
     let bytes = fs::read(path).ok()?;
-    let app_state = serde_json::from_slice::<AppState>(&bytes).ok()?;
+    let app_state = from_persisted_json::<AppState>(&bytes).ok()?;
     (app_state.app_state_version == APP_STATE_VERSION).then_some(app_state)
 }
 
@@ -922,7 +925,7 @@ pub fn load_or_create_app_settings() -> io::Result<AppSettings> {
     let source = read_app_settings_source(&path, &default_legacy_settings_paths())?;
     let loaded_from_primary = source.as_ref().is_some_and(|(_, primary)| *primary);
     let mut settings: AppSettings = source
-        .map(|(bytes, _)| serde_json::from_slice::<AppSettings>(&bytes).map_err(to_io_error))
+        .map(|(bytes, _)| from_persisted_json::<AppSettings>(&bytes).map_err(to_io_error))
         .transpose()?
         .unwrap_or_default();
     let retired_preferences = settings.analytics_enabled || !settings.render_math;
@@ -1207,7 +1210,7 @@ impl StateStore {
         let source =
             read_app_settings_source(&self.app_settings_path, &self.legacy_settings_paths)?;
         source
-            .map(|(bytes, _)| serde_json::from_slice(&bytes).map_err(to_io_error))
+            .map(|(bytes, _)| from_persisted_json(&bytes).map_err(to_io_error))
             .transpose()
     }
 
@@ -1271,6 +1274,50 @@ fn restore_task_state_skeletons(sessions: &mut [AgentSession]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_provider_selections_do_not_reset_desktop_state() {
+        let directory = std::env::temp_dir().join(format!("waku-state-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("state.json");
+        let project_id = Uuid::new_v4();
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "app_state_version": 1,
+                "selected_project": project_id,
+                "last_provider": "deepSeek",
+                "last_model": "deepseek-official/deepseek-chat",
+                "last_reasoning_effort": "high",
+                "last_service_tier": "fast",
+                "last_context_window": "1m",
+                "sidebar_width": 318.0,
+                "remembered_model_traits": [
+                    {"provider": "deepSeek", "model": "retired"},
+                    {"provider": "ohMyPi", "model": "deepseek/deepseek-flash",
+                     "reasoning_effort": "low"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut state = PersistedState::empty();
+        state.apply_app_state(read_app_state_file(&path).unwrap());
+        assert_eq!(state.selected_project, Some(project_id));
+        assert_eq!(state.sidebar_width, 318.0);
+        let draft = state.new_session(project_id, state.last_provider);
+        assert_eq!(draft.provider, ProviderKind::Codex);
+        assert_eq!(draft.model, None);
+        assert_eq!(draft.reasoning_effort, None);
+        assert_eq!(draft.service_tier, None);
+        assert_eq!(draft.context_window, None);
+        assert_eq!(
+            state.model_traits_for(ProviderKind::OhMyPi, "deepseek/deepseek-flash"),
+            (Some("low".into()), None, None)
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn backup_directory_is_optional_and_round_trips_in_desktop_settings() {

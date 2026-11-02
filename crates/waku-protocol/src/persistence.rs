@@ -6,6 +6,88 @@ use uuid::Uuid;
 
 use crate::model::{AgentSession, MessageRole};
 
+/// Read persisted data, removing references to the retired Harness provider
+/// only when the ordinary typed decode fails. Active data keeps the direct
+/// deserialization path; malformed or otherwise unsupported data still fails.
+pub fn from_persisted_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<T> {
+    let error = match serde_json::from_slice(bytes) {
+        Ok(value) => return Ok(value),
+        Err(error) if error.is_data() => error,
+        Err(error) => return Err(error),
+    };
+    let mut value = serde_json::from_slice(bytes)?;
+    if !migrate_retired_provider_references(&mut value) {
+        return Err(error);
+    }
+    serde_json::from_value(value)
+}
+
+/// Drop retired provider selections without changing another provider's
+/// settings or reassigning its sessions. Raw session rows remain untouched.
+pub fn migrate_retired_provider_references(value: &mut serde_json::Value) -> bool {
+    const RETIRED_PROVIDER: &str = "deepSeek";
+    let mut changed = false;
+    match value {
+        serde_json::Value::Object(fields) => {
+            if fields
+                .get("last_provider")
+                .and_then(serde_json::Value::as_str)
+                == Some(RETIRED_PROVIDER)
+            {
+                for key in [
+                    "last_provider",
+                    "last_model",
+                    "last_reasoning_effort",
+                    "last_service_tier",
+                    "last_context_window",
+                ] {
+                    fields.remove(key);
+                }
+                changed = true;
+            }
+            for (key, value) in fields {
+                match key.as_str() {
+                    "disabled_providers" => {
+                        if let Some(providers) = value.as_array_mut() {
+                            let previous = providers.len();
+                            providers
+                                .retain(|provider| provider.as_str() != Some(RETIRED_PROVIDER));
+                            changed |= providers.len() != previous;
+                        }
+                    }
+                    "provider_binary_overrides" => {
+                        if let Some(overrides) = value.as_object_mut() {
+                            changed |= overrides.remove(RETIRED_PROVIDER).is_some();
+                        }
+                    }
+                    "favorite_models"
+                    | "remembered_model_traits"
+                    | "model_references"
+                    | "modelReferences" => {
+                        if let Some(entries) = value.as_array_mut() {
+                            let previous = entries.len();
+                            entries.retain(|entry| {
+                                entry.get("provider").and_then(serde_json::Value::as_str)
+                                    != Some(RETIRED_PROVIDER)
+                            });
+                            changed |= entries.len() != previous;
+                        }
+                    }
+                    _ => {}
+                }
+                changed |= migrate_retired_provider_references(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                changed |= migrate_retired_provider_references(value);
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ComposerDraftAttachment {
     pub path: PathBuf,
@@ -176,6 +258,50 @@ pub struct SessionMessageMatch {
 mod tests {
     use super::{ComposerDraftAttachment, ComposerDraftKey, ComposerDrafts};
     use uuid::Uuid;
+
+    #[test]
+    fn retired_model_references_do_not_discard_the_rest_of_a_draft() {
+        let project_id = Uuid::new_v4();
+        let document = serde_json::to_vec(&serde_json::json!({
+            "new_sessions": {
+                project_id.to_string(): {
+                    "text": "Keep this unfinished prompt",
+                    "model_references": [
+                        {"referenceId": "retired", "provider": "deepSeek",
+                         "modelId": "deepseek-chat", "displayLabel": "Harness"},
+                        {"referenceId": "active", "provider": "ohMyPi",
+                         "modelId": "deepseek/deepseek-flash", "displayLabel": "DeepSeek"}
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+        let drafts: ComposerDrafts = super::from_persisted_json(&document).unwrap();
+        let draft = drafts
+            .get(ComposerDraftKey::NewSession(project_id))
+            .unwrap();
+        assert_eq!(draft.text, "Keep this unfinished prompt");
+        assert_eq!(
+            draft.model_references,
+            vec![crate::delegation::ModelReference::new(
+                "active",
+                crate::model::ProviderKind::OhMyPi,
+                "deepseek/deepseek-flash",
+                "DeepSeek",
+            )]
+        );
+        let saved = serde_json::to_vec(&drafts).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ComposerDrafts>(&saved).unwrap(),
+            drafts
+        );
+        assert!(
+            super::from_persisted_json::<crate::settings::DaemonSettings>(
+                br#"{"disabled_providers":["not-a-provider","deepSeek"]}"#
+            )
+            .is_err()
+        );
+    }
 
     fn snippet(text: &str) -> ComposerDraftAttachment {
         ComposerDraftAttachment {

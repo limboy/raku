@@ -1190,7 +1190,7 @@ const CODEX_TITLE_INSTRUCTIONS: &str = concat!(
     "For mixed-language requests, follow the user's prose rather than code, paths, or technical identifiers. ",
     "A mostly Chinese request must receive a Chinese title; keep technical terms in their original form where appropriate. ",
     "Return only a plain title of at most six words, or a similarly short phrase in languages without spaces. ",
-    "Do not use tools, quotes, markdown, labels, or ending punctuation."
+    "Do not use tools, quotes, markdown, labels, emoji, or ending punctuation."
 );
 const CODEX_TITLE_MODEL: &str = "gpt-5.6-luna";
 const CODEX_TITLE_TIMEOUT: Duration = Duration::from_secs(60);

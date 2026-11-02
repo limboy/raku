@@ -494,10 +494,7 @@ fn perform_provider_rewind(
             };
             Ok((Some(cursor), None, None))
         }
-        ProviderKind::Codex
-        | ProviderKind::DeepSeek
-        | ProviderKind::OhMyPi
-        | ProviderKind::Pi => {
+        ProviderKind::Codex | ProviderKind::OhMyPi | ProviderKind::Pi => {
             let mut prepared_driver = None;
             let driver = if let Some(driver) = request.driver.as_ref() {
                 driver.clone()
@@ -646,19 +643,6 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                     anyhow::bail!(tr!(
                         "errors.provider_native_thread_unavailable",
                         provider = "Codex"
-                    ));
-                }
-                let (cursor, prepared_driver) = fork_response_with_driver(&mut request)?;
-                Ok((cursor, None, prepared_driver))
-            }
-            ProviderKind::DeepSeek => {
-                if !matches!(
-                    request.source.provider_cursor.as_ref(),
-                    Some(ProviderResumeCursor::DeepSeek { .. })
-                ) {
-                    anyhow::bail!(tr!(
-                        "errors.provider_native_session_unavailable",
-                        provider = "DeepSeek Harness"
                     ));
                 }
                 let (cursor, prepared_driver) = fork_response_with_driver(&mut request)?;
@@ -1296,8 +1280,8 @@ impl Waku {
     }
 
     /// Re-run one provider's model-owned catalog discovery, for selectors whose
-    /// contents can change while Waku stays open — models the user just
-    /// authored in a provider's config, or DeepSeek's custom agent presets.
+    /// contents can change while Waku stays open, such as models the user just
+    /// authored in a provider's config.
     /// The stale catalog stays on screen until the fresh probe lands, so an
     /// open menu never blanks into a loading state while it refreshes.
     pub(super) fn refresh_provider_model_discovery(&mut self, provider: ProviderKind) {
@@ -1402,7 +1386,7 @@ impl Waku {
                             installed: false,
                             path: None,
                             models: crate::model_catalog::fallback_models(provider),
-                            agent_presets: crate::model_catalog::fallback_agent_presets(provider),
+                            agent_presets: Vec::new(),
                         },
                     };
                     if provider_detection_tx.send(probe).is_ok() {
@@ -1821,7 +1805,7 @@ impl Waku {
         }
         let driver_start = if matches!(
             provider,
-            ProviderKind::Codex | ProviderKind::DeepSeek | ProviderKind::OhMyPi | ProviderKind::Pi
+            ProviderKind::Codex | ProviderKind::OhMyPi | ProviderKind::Pi
         ) && driver.is_none()
         {
             match self.driver_start_request_for_session(&source, source_workspace_path.clone()) {
@@ -2186,9 +2170,8 @@ impl Waku {
             .runtimes
             .get(&session_id)
             .map(|runtime| runtime.driver.clone());
-        let needs_binary = rollback_turns > 0
-            && source.provider == ProviderKind::OpenCode
-            && driver.is_none();
+        let needs_binary =
+            rollback_turns > 0 && source.provider == ProviderKind::OpenCode && driver.is_none();
         let binary = needs_binary
             .then(|| {
                 self.probes
@@ -2208,10 +2191,7 @@ impl Waku {
         let driver_start = if rollback_turns > 0
             && matches!(
                 source.provider,
-                ProviderKind::Codex
-                    | ProviderKind::DeepSeek
-                    | ProviderKind::OhMyPi
-                    | ProviderKind::Pi
+                ProviderKind::Codex | ProviderKind::OhMyPi | ProviderKind::Pi
             )
             && driver.is_none()
         {
@@ -2427,10 +2407,8 @@ impl Waku {
         }
         if claude_fork.is_some()
             || reset_native_session
-            || (matches!(
-                provider,
-                ProviderKind::Antigravity | ProviderKind::DeepSeek | ProviderKind::OpenCode
-            ) && provider_rewind_cursor.is_some())
+            || (matches!(provider, ProviderKind::Antigravity | ProviderKind::OpenCode)
+                && provider_rewind_cursor.is_some())
         {
             // Headless drivers retain their original native session ID. Recreate
             // them lazily so the next prompt resumes the fork instead.
@@ -2537,27 +2515,6 @@ impl Waku {
         (options.model, effort)
     }
 
-    pub(super) fn agent_preset_for_session(&self, session: &AgentSession) -> Option<String> {
-        if session.provider != ProviderKind::DeepSeek {
-            return None;
-        }
-        session.agent_preset.clone().or_else(|| {
-            self.provider_probe(session.provider)
-                .and_then(ProviderProbe::preferred_agent_preset)
-                .map(|preset| preset.id.clone())
-        })
-    }
-
-    pub(super) fn agent_preset_label_for_session(&self, session: &AgentSession) -> Option<String> {
-        let id = self.agent_preset_for_session(session)?;
-        Some(
-            self.provider_probe(session.provider)
-                .and_then(|probe| probe.agent_presets.iter().find(|preset| preset.id == id))
-                .map(|preset| preset.display_name())
-                .unwrap_or(id),
-        )
-    }
-
     /// Releases provider processes for sessions nobody has touched in a while.
     ///
     /// Codex, Pi and Oh My Pi keep a process resident between turns, so an abandoned task
@@ -2651,7 +2608,6 @@ impl Waku {
                     provider = session.provider.display_name()
                 ))
             })?;
-        let agent_preset = self.agent_preset_for_session(session);
         let SessionOptions {
             mode,
             model,
@@ -2671,7 +2627,7 @@ impl Waku {
                 reasoning_effort,
                 service_tier,
                 context_window,
-                agent_preset,
+                agent_preset: session.agent_preset.clone(),
                 computer_use_enabled: self.state.computer_use_enabled,
                 provider_cursor: session.provider_cursor.clone(),
             },

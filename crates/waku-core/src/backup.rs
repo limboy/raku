@@ -122,7 +122,13 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
         fs::metadata(path)?.len() <= 16 * 1024 * 1024,
         "backup metadata is too large"
     );
-    Ok(serde_json::from_reader(File::open(path)?)?)
+    match serde_json::from_reader(File::open(path)?) {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_data() => Ok(waku_protocol::persistence::from_persisted_json(
+            &fs::read(path)?,
+        )?),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Streams file contents with a bounded buffer, also used to check a backup.

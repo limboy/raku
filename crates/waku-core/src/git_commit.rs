@@ -246,12 +246,6 @@ fn agent_arguments(
             push(&mut args, "-c");
             push(&mut args, CODEX_COMMIT_EFFORT);
         }
-        ProviderKind::DeepSeek => {
-            // The headless profile is Harness's one-shot, stdout-only client.
-            // The commit prompt embeds all context and explicitly forbids tools.
-            push(&mut args, "--profile");
-            push(&mut args, "headless");
-        }
         // `opencode run` takes the message positionally. `--standalone` runs
         // the one-shot on a private server instead of starting, or occupying,
         // the user's background service. Reasoning effort is the model's
@@ -641,12 +635,7 @@ mod tests {
     fn every_provider_uses_a_noninteractive_generation_mode() {
         let prompt = "Generate subject";
         for provider in ProviderKind::ALL {
-            let args = agent_arguments(
-                provider,
-                Some("model"),
-                Some("low"),
-                prompt,
-            );
+            let args = agent_arguments(provider, Some("model"), Some("low"), prompt);
             assert!(has(&args, prompt));
             match provider {
                 ProviderKind::Antigravity => {
@@ -673,9 +662,6 @@ mod tests {
                     assert!(has_pair(&args, "--permission-mode", "plan"));
                     assert!(has_pair(&args, "--tools", ""));
                     assert!(has(&args, "--no-session-persistence"));
-                }
-                ProviderKind::DeepSeek => {
-                    assert!(has_pair(&args, "--profile", "headless"));
                 }
                 ProviderKind::Pi => {
                     assert!(has(&args, "--print"));

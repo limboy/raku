@@ -43,9 +43,6 @@ const WALK_MAX_DEPTH: usize = 8;
 /// - Codex app-server's `experimentalFeature/list` and `skills/list`, OpenCode's
 ///   HTTP command catalogues, and Pi/Oh My Pi's RPC registries report the commands
 ///   their non-TUI transports can actually invoke.
-/// - Harness exposes commands only after a real session exists, so its driver
-///   merges the live registry instead of this function creating disposable
-///   provider sessions.
 ///
 /// Filesystem discovery remains as graceful fallback metadata for configured
 /// commands and skills when a CLI is missing or an older version cannot report
@@ -220,9 +217,6 @@ fn assemble_slash_commands(
                 scan_skill_files(provider, &home.join(".omp/agent/skills"), &mut commands);
             }
         }
-        // Harness commands are session-scoped and reported live by the Host
-        // rather than from files Waku could scan.
-        ProviderKind::DeepSeek => {}
     }
     // The cross-tool skill standard, read by OpenCode among others;
     // Waku lists it for every provider.

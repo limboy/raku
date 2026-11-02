@@ -2131,7 +2131,7 @@ impl Waku {
                 installed: false,
                 path: None,
                 models: crate::model_catalog::fallback_models(provider),
-                agent_presets: crate::model_catalog::fallback_agent_presets(provider),
+                agent_presets: Vec::new(),
             })
             .collect::<Vec<_>>();
         let (provider_probe_tx, provider_probe_events) = unbounded();

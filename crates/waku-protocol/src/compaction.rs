@@ -113,7 +113,6 @@ impl ProviderKind {
                 lifecycle: true,
                 summary: self != Self::Claude,
             },
-            _ => CompactionCapabilities::default(),
         }
     }
 }

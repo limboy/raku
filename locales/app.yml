@@ -194,7 +194,7 @@ settings.general_keywords:
 settings.appearance_keywords:
   en: appearance theme system light dark language english chinese simplified font size text editor
 settings.providers_keywords:
-  en: providers agents models cli version install detect claude codex opencode pi deepseek ohmypi antigravity agy
+  en: providers agents models cli version install detect claude codex opencode pi ohmypi antigravity agy
 settings.skills:
   en: Skills
 settings.skills_keywords:
@@ -816,26 +816,6 @@ mode.auto_description:
   en: An AI reviewer approves routine actions; risky ones still ask
 mode.full_access_description:
   en: Allow commands and edits without prompts
-agent_preset.standard:
-  en: Standard mode
-agent_preset.code:
-  en: Code mode
-agent_preset.minimal:
-  en: Minimal mode
-agent_preset.creator:
-  en: Creator mode
-agent_preset.standard_description:
-  en: Full coding agent with file editing, shell, file and web search, skills, planning, goals, subagents, and workflows.
-agent_preset.code_description:
-  en: All Standard mode capabilities, with tools exposed through the Code Mode SDK so the model can combine multi-step operations in one TypeScript program.
-agent_preset.minimal_description:
-  en: Two-tool coding agent with persistent bash and str_replace_editor.
-agent_preset.creator_description:
-  en: Built for creating custom agent presets, with all Standard mode capabilities plus runtime inspection, plugin experiments, and preset-authoring guidance.
-agent_preset.custom:
-  en: Custom
-agent_preset.no_description:
-  en: No description.
 computer_use.allow_for_task:
   en: Allow for task
 computer_use.always_allow_app:

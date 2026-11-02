@@ -377,7 +377,7 @@ fn sanitize_ohmypi_title(title: &str) -> Option<String> {
         .chars()
         .filter(|c| !matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{10ffff}'))
         .collect();
-    let trimmed = sanitized.trim();
+    let trimmed = waku_protocol::title::without_leading_icons(&sanitized);
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
@@ -3894,14 +3894,14 @@ mod tests {
     }
 
     #[test]
-    fn sanitizes_nerd_font_pua_from_ohmypi_titles() {
+    fn sanitizes_nerd_font_pua_and_leading_emoji_from_ohmypi_titles() {
         assert_eq!(
             sanitize_ohmypi_title("\u{ea76} TSK: Fix title polling").as_deref(),
             Some("TSK: Fix title polling")
         );
         assert_eq!(
             sanitize_ohmypi_title("🧠 TSK: Fix title polling").as_deref(),
-            Some("🧠 TSK: Fix title polling")
+            Some("TSK: Fix title polling")
         );
         assert_eq!(
             sanitize_ohmypi_title("Fix title polling").as_deref(),

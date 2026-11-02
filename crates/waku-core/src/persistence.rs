@@ -34,6 +34,7 @@ use crate::model::{
     RuntimeMode, SessionWorkspace,
 };
 use crate::theme::ThemePreference;
+use waku_protocol::persistence::from_persisted_json;
 pub use waku_protocol::persistence::{
     ComposerDraft, ComposerDraftAttachment, ComposerDraftChange, ComposerDraftKey,
     ComposerDraftTarget, ComposerDrafts, SessionMessageMatch,
@@ -125,7 +126,7 @@ impl ComposerDraftStore {
             }
             Err(error) => return Err(error),
         };
-        serde_json::from_slice(&bytes).map_err(to_io_error)
+        from_persisted_json(&bytes).map_err(to_io_error)
     }
 
     /// Write a complete snapshot atomically. Older background jobs become
@@ -1079,9 +1080,7 @@ impl StateStore {
         let Some(bytes) = source else {
             return Ok(None);
         };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(to_io_error)
+        from_persisted_json(&bytes).map(Some).map_err(to_io_error)
     }
 
     fn read_app_state(&self) -> io::Result<Option<AppState>> {
@@ -1091,7 +1090,7 @@ impl StateStore {
         // `state.json` used to be the pre-SQLite all-in-one store. Requiring a
         // format-specific version key makes that document (and malformed
         // app-managed state) safely reset instead of being migrated.
-        let Ok(app_state) = serde_json::from_slice::<AppState>(&bytes) else {
+        let Ok(app_state) = from_persisted_json::<AppState>(&bytes) else {
             return Ok(None);
         };
         if app_state.app_state_version != APP_STATE_VERSION {
@@ -1280,7 +1279,7 @@ impl StateStore {
             session.detail_loaded = true;
             return Ok(());
         };
-        let stored = serde_json::from_str::<AgentSession>(&data).map_err(to_io_error)?;
+        let stored = from_persisted_json::<AgentSession>(data.as_bytes()).map_err(to_io_error)?;
         session.transcript_blocks = stored.transcript_blocks;
         session.turns = stored.turns;
         session.queued_messages = stored.queued_messages;
@@ -1898,6 +1897,73 @@ mod tests {
             store.hydrate(session).unwrap();
         }
         state
+    }
+
+    #[test]
+    fn retired_provider_sessions_stay_on_disk_without_blocking_active_sessions() {
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        state.sessions[0].begin_turn("Keep this supported task");
+        state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
+        let active_id = state.sessions[0].id;
+        let mut retired = state.new_session(state.projects[0].id, ProviderKind::Codex);
+        retired.begin_turn("Keep this retired task's history");
+        retired.finish_active_turn(crate::model::TurnStatus::Completed);
+        let retired_id = retired.id;
+        state.sessions.push(retired);
+        store.save(&mut state).unwrap();
+        let connection = Connection::open(directory.join("app.db")).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET provider = 'deepSeek' WHERE id = ?1",
+                params![retired_id.to_string()],
+            )
+            .unwrap();
+        fs::write(
+            directory.join("app.json"),
+            br#"{"theme":"dark","favorite_models":[
+                {"provider":"deepSeek","model":"retired"},
+                {"provider":"ohMyPi","model":"deepseek/deepseek-flash"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let reopened = store_in(&directory);
+        let mut restored = reopened.load().unwrap();
+        assert_eq!(
+            restored
+                .sessions
+                .iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            vec![active_id]
+        );
+        assert_eq!(restored.theme, ThemePreference::Dark);
+        assert_eq!(
+            restored.favorite_models,
+            vec![FavoriteModel {
+                provider: ProviderKind::OhMyPi,
+                model: "deepseek/deepseek-flash".into(),
+            }]
+        );
+        reopened
+            .hydrate(restored.session_mut(active_id).unwrap())
+            .unwrap();
+        assert_eq!(
+            restored.sessions[0].messages[0].content,
+            "Keep this supported task"
+        );
+        reopened.save(&mut restored).unwrap();
+        let provider: String = connection
+            .query_row(
+                "SELECT provider FROM sessions WHERE id = ?1",
+                params![retired_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provider, "deepSeek");
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

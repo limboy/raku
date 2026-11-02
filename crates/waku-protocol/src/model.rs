@@ -14,7 +14,6 @@ pub enum ProviderKind {
     Claude,
     #[default]
     Codex,
-    DeepSeek,
     /// OpenCode 2 shipped as its own `opencode2` provider while it was in beta.
     /// Its release took over the `opencode` command, so those sessions now
     /// load as OpenCode.
@@ -25,10 +24,9 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 6] = [
         Self::Claude,
         Self::Codex,
-        Self::DeepSeek,
         Self::OpenCode,
         Self::OhMyPi,
         Self::Pi,
@@ -40,7 +38,6 @@ impl ProviderKind {
             Self::Antigravity => "antigravity",
             Self::Claude => "claude",
             Self::Codex => "codex",
-            Self::DeepSeek => "deepseek",
             Self::OpenCode => "opencode",
             Self::OhMyPi => "ohmypi",
             Self::Pi => "pi",
@@ -52,7 +49,6 @@ impl ProviderKind {
             Self::Antigravity => "Antigravity CLI",
             Self::Claude => "Claude Code",
             Self::Codex => "Codex CLI",
-            Self::DeepSeek => "DeepSeek Harness",
             Self::OpenCode => "OpenCode",
             Self::OhMyPi => "Oh My Pi",
             Self::Pi => "Pi",
@@ -64,7 +60,6 @@ impl ProviderKind {
             Self::Antigravity => "Antigravity",
             Self::Claude => "Claude",
             Self::Codex => "Codex",
-            Self::DeepSeek => "DeepSeek",
             Self::OpenCode => "OpenCode",
             Self::OhMyPi => "Oh My Pi",
             Self::Pi => "Pi",
@@ -76,7 +71,6 @@ impl ProviderKind {
             Self::Antigravity => "agy",
             Self::Claude => "claude",
             Self::Codex => "codex",
-            Self::DeepSeek => "dsh",
             Self::OpenCode => "opencode",
             Self::OhMyPi => "omp",
             Self::Pi => "pi",
@@ -89,7 +83,6 @@ impl ProviderKind {
             Self::Antigravity
                 | Self::Claude
                 | Self::Codex
-                | Self::DeepSeek
                 | Self::OpenCode
                 | Self::OhMyPi
                 | Self::Pi
@@ -102,7 +95,6 @@ impl ProviderKind {
             Self::Antigravity
                 | Self::Claude
                 | Self::Codex
-                | Self::DeepSeek
                 | Self::OpenCode
                 | Self::OhMyPi
                 | Self::Pi
@@ -118,17 +110,16 @@ impl ProviderKind {
     pub fn supports_review_subtask(self) -> bool {
         matches!(
             self,
-            Self::Codex | Self::Claude | Self::DeepSeek | Self::OpenCode | Self::Pi | Self::OhMyPi
+            Self::Codex | Self::Claude | Self::OpenCode | Self::Pi | Self::OhMyPi
         )
     }
 
     pub fn supports_model_discovery(self) -> bool {
         matches!(
             self,
-            Self::Antigravity |
-            Self::Claude
+            Self::Antigravity
+                | Self::Claude
                 | Self::Codex
-                | Self::DeepSeek
                 | Self::OpenCode
                 | Self::OhMyPi
                 | Self::Pi
@@ -164,9 +155,6 @@ pub enum ProviderResumeCursor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         directory: Option<String>,
     },
-    DeepSeek {
-        session_id: String,
-    },
     OhMyPi {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,7 +176,6 @@ impl ProviderResumeCursor {
                 resume_at: None,
             },
             ProviderKind::Codex => Self::Codex { thread_id: id },
-            ProviderKind::DeepSeek => Self::DeepSeek { session_id: id },
             ProviderKind::OpenCode => Self::OpenCode {
                 session_id: id,
                 directory: None,
@@ -209,7 +196,6 @@ impl ProviderResumeCursor {
             Self::Antigravity { .. } => ProviderKind::Antigravity,
             Self::Claude { .. } => ProviderKind::Claude,
             Self::Codex { .. } => ProviderKind::Codex,
-            Self::DeepSeek { .. } => ProviderKind::DeepSeek,
             Self::OpenCode { .. } => ProviderKind::OpenCode,
             Self::OhMyPi { .. } => ProviderKind::OhMyPi,
             Self::Pi { .. } => ProviderKind::Pi,
@@ -218,9 +204,8 @@ impl ProviderResumeCursor {
 
     pub fn native_id(&self) -> &str {
         match self {
-            Self::Antigravity { session_id } |
-            Self::Claude { session_id, .. }
-            | Self::DeepSeek { session_id }
+            Self::Antigravity { session_id }
+            | Self::Claude { session_id, .. }
             | Self::OpenCode { session_id, .. }
             | Self::OhMyPi { session_id, .. }
             | Self::Pi { session_id, .. } => session_id,
@@ -362,8 +347,7 @@ pub struct FavoriteModel {
 
 /// One provider-owned agent composition available when a task starts.
 ///
-/// DeepSeek Harness calls these agent presets. A preset chooses the tools and
-/// prompt composition for a session.
+/// A preset chooses the tools and prompt composition for a session.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProviderAgentPreset {
     pub id: String,
@@ -372,8 +356,6 @@ pub struct ProviderAgentPreset {
     pub description: Option<String>,
     #[serde(default)]
     pub is_default: bool,
-    #[serde(default)]
-    pub is_custom: bool,
 }
 
 impl ProviderAgentPreset {
@@ -383,7 +365,6 @@ impl ProviderAgentPreset {
             name: name.into(),
             description: None,
             is_default: false,
-            is_custom: false,
         }
     }
 
@@ -398,35 +379,6 @@ impl ProviderAgentPreset {
     pub fn default(mut self) -> Self {
         self.is_default = true;
         self
-    }
-
-    /// Harness localizes its four shipped presets in the Web client rather
-    /// than in the Host roster, whose metadata may use the install language.
-    /// Mirror that boundary while leaving user-authored metadata untouched.
-    pub fn display_name(&self) -> String {
-        if !self.is_custom {
-            match self.id.as_str() {
-                "standard" => return tr!("agent_preset.standard"),
-                "code" => return tr!("agent_preset.code"),
-                "minimal" => return tr!("agent_preset.minimal"),
-                "cordis" => return tr!("agent_preset.creator"),
-                _ => {}
-            }
-        }
-        self.name.clone()
-    }
-
-    pub fn display_description(&self) -> Option<String> {
-        if !self.is_custom {
-            match self.id.as_str() {
-                "standard" => return Some(tr!("agent_preset.standard_description")),
-                "code" => return Some(tr!("agent_preset.code_description")),
-                "minimal" => return Some(tr!("agent_preset.minimal_description")),
-                "cordis" => return Some(tr!("agent_preset.creator_description")),
-                _ => {}
-            }
-        }
-        self.description.clone()
     }
 }
 
@@ -508,13 +460,6 @@ impl ProviderProbe {
 
     pub fn model(&self, requested: &str) -> Option<&ProviderModel> {
         self.models.iter().find(|model| model.id == requested)
-    }
-
-    pub fn preferred_agent_preset(&self) -> Option<&ProviderAgentPreset> {
-        self.agent_presets
-            .iter()
-            .find(|preset| preset.is_default)
-            .or_else(|| self.agent_presets.first())
     }
 }
 
@@ -930,9 +875,7 @@ pub struct AgentSession {
     /// Selected context window, when the provider exposes more than one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<String>,
-    /// Provider-owned agent composition selected before the first turn.
-    /// Currently populated by DeepSeek Harness, which locks this value once
-    /// conversation history exists.
+    /// Provider-owned agent composition selected for the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_preset: Option<String>,
     pub status: SessionStatus,
@@ -1150,7 +1093,8 @@ impl AgentSession {
         } else {
             self.auto_title
                 .as_deref()
-                .filter(|title| !title.trim().is_empty())
+                .map(crate::title::without_leading_icons)
+                .filter(|title| !title.is_empty())
                 .unwrap_or(Self::DEFAULT_TITLE)
         }
     }
@@ -1190,7 +1134,7 @@ impl AgentSession {
     /// title. Returns whether the stored fallback changed.
     pub fn set_auto_title(&mut self, title: Option<String>) -> bool {
         let title = title.and_then(|title| {
-            let title = title.trim();
+            let title = crate::title::without_leading_icons(&title);
             (!title.is_empty()).then(|| title.to_owned())
         });
         if self.auto_title == title {
@@ -2029,10 +1973,8 @@ impl BackgroundWorkItem {
     pub fn settle_from_output(&mut self) -> bool {
         if self.key.kind == BackgroundWorkKind::Process
             && self.status.is_live()
-            && let Some((code, settled_status)) = self
-                .output
-                .as_deref()
-                .and_then(parse_command_exit_status)
+            && let Some((code, settled_status)) =
+                self.output.as_deref().and_then(parse_command_exit_status)
         {
             self.status = settled_status;
             if self.exit_code.is_none() {
@@ -2645,7 +2587,8 @@ impl ActivityItem {
             self.display_target = Some(target);
         }
         if self.kind == ActivityKind::Command
-            && let Some(description) = find_activity_string(source, &["description", "toolSummary"], 0)
+            && let Some(description) =
+                find_activity_string(source, &["description", "toolSummary"], 0)
         {
             self.display_description = Some(compact_activity_target(&description));
         }
@@ -2941,8 +2884,24 @@ fn extract_activity_display_target(
             "notebookPath",
             "notebook_path",
         ],
-        ActivityKind::FileSearch => &["pattern", "Pattern", "query", "Query", "regex", "glob", "SearchPath"],
-        ActivityKind::FileList => &["path", "Path", "directory", "DirectoryPath", "SearchDirectory", "dir", "root"],
+        ActivityKind::FileSearch => &[
+            "pattern",
+            "Pattern",
+            "query",
+            "Query",
+            "regex",
+            "glob",
+            "SearchPath",
+        ],
+        ActivityKind::FileList => &[
+            "path",
+            "Path",
+            "directory",
+            "DirectoryPath",
+            "SearchDirectory",
+            "dir",
+            "root",
+        ],
         ActivityKind::Search => &["query", "Query", "queries", "Url", "url"],
         ActivityKind::Tool => &["title", "toolSummary"],
         _ => return None,
@@ -4182,17 +4141,6 @@ mod tests {
                 1,
             ),
             (
-                ProviderKind::DeepSeek,
-                serde_json::json!({
-                    "path": "src/deepseek.rs",
-                    "oldText": "old",
-                    "newText": "new\nmore"
-                }),
-                "src/deepseek.rs",
-                2,
-                1,
-            ),
-            (
                 ProviderKind::OpenCode,
                 serde_json::json!({
                     "filePath": "src/opencode.rs",
@@ -4461,6 +4409,33 @@ mod tests {
     }
 
     #[test]
+    fn automatic_titles_drop_leading_icons_for_every_provider() {
+        for provider in ProviderKind::ALL {
+            let mut session = AgentSession::new(Uuid::new_v4(), provider);
+            assert!(session.set_auto_title(Some(" 🤖 MODELS: 排查模型安装 ".into())));
+            assert_eq!(session.auto_title.as_deref(), Some("MODELS: 排查模型安装"));
+            assert_eq!(session.display_title(), "MODELS: 排查模型安装");
+            assert!(!session.set_auto_title(Some("🖥️ MODELS: 排查模型安装".into())));
+
+            // Existing stored titles and list projections also lose the icon
+            // without rewriting provider history or the user's explicit name.
+            session.auto_title = Some("👩🏽‍💻 COMP: Assess computer use".into());
+            assert_eq!(
+                session.list_projection().display_title(),
+                "COMP: Assess computer use"
+            );
+            assert!(session.set_title("🧠 My title"));
+            assert_eq!(session.display_title(), "🧠 My title");
+            assert!(session.set_auto_title(Some("🤖".into())));
+            assert!(session.auto_title.is_none());
+            assert_eq!(session.display_title(), "🧠 My title");
+        }
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::OhMyPi);
+        session.auto_title = Some("🖥️".into());
+        assert_eq!(session.display_title(), AgentSession::DEFAULT_TITLE);
+    }
+
+    #[test]
     fn model_selection_keeps_started_sessions_on_their_provider() {
         let project = Project::from_path(PathBuf::from("/tmp/waku"));
         let mut session = AgentSession::new(project.id, ProviderKind::Codex);
@@ -4497,7 +4472,6 @@ mod tests {
         assert_eq!(ProviderKind::Antigravity.command(), "agy");
         assert_eq!(ProviderKind::Claude.id(), "claude");
         assert_eq!(ProviderKind::Codex.command(), "codex");
-        assert_eq!(ProviderKind::DeepSeek.command(), "dsh");
         assert_eq!(ProviderKind::OpenCode.id(), "opencode");
         assert_eq!(ProviderKind::OpenCode.command(), "opencode");
         assert_eq!(ProviderKind::Pi.command(), "pi");
@@ -4509,7 +4483,6 @@ mod tests {
             ProviderKind::Antigravity,
             ProviderKind::Claude,
             ProviderKind::Codex,
-            ProviderKind::DeepSeek,
             ProviderKind::OpenCode,
             ProviderKind::OhMyPi,
             ProviderKind::Pi,
@@ -4524,7 +4497,6 @@ mod tests {
         assert!(ProviderKind::Antigravity.supports_model_discovery());
         assert!(ProviderKind::Claude.supports_model_discovery());
         assert!(ProviderKind::Codex.supports_model_discovery());
-        assert!(ProviderKind::DeepSeek.supports_model_discovery());
         assert!(ProviderKind::OpenCode.supports_model_discovery());
         assert!(ProviderKind::Pi.supports_model_discovery());
     }
@@ -4594,7 +4566,7 @@ mod tests {
 
     #[test]
     fn all_contains_every_provider_kind() {
-        assert_eq!(ProviderKind::ALL.len(), 7);
+        assert_eq!(ProviderKind::ALL.len(), 6);
         let ids: std::collections::HashSet<_> =
             ProviderKind::ALL.iter().map(|kind| kind.id()).collect();
         assert_eq!(
@@ -5283,7 +5255,6 @@ mod review_subtask_tests {
         for provider in [
             ProviderKind::Codex,
             ProviderKind::Claude,
-            ProviderKind::DeepSeek,
             ProviderKind::OpenCode,
             // Pi and Oh My Pi launch subtasks with a read-only tool allowlist.
             ProviderKind::Pi,

@@ -30,8 +30,6 @@ pub mod command_env;
 pub mod composer_complete;
 pub mod computer_use;
 pub mod daemon;
-pub mod deepseek_pool;
-pub mod deepseek_session;
 pub mod delegation;
 pub mod driver;
 mod frontmatter;

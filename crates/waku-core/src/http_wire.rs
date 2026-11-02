@@ -1,6 +1,5 @@
-//! Minimal blocking HTTP/1.1 and server-sent-event wire for the providers Waku
-//! drives over a local HTTP server rather than stdio: OpenCode's background
-//! service and DeepSeek Harness's RPC routes.
+//! Minimal blocking HTTP/1.1 and server-sent-event wire for OpenCode's local
+//! background service.
 //!
 //! A local server sets the same two traps for every client, so the wire lives
 //! here once:
@@ -40,6 +39,7 @@ pub(crate) struct Endpoint {
 
 impl Endpoint {
     /// An unauthenticated loopback server.
+    #[cfg(test)]
     pub(crate) fn local(port: u16) -> Self {
         Self {
             host: "127.0.0.1".to_owned(),

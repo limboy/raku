@@ -57,9 +57,6 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         // Antigravity models depend on the signed-in Google or enterprise
         // account, and headless runs exit non-zero on ineligible slugs.
         ProviderKind::Antigravity => Vec::new(),
-        // Harness reports its account/configuration-specific catalog from its
-        // Host. An invented fallback would make unavailable routes selectable.
-        ProviderKind::DeepSeek => Vec::new(),
         // Discovery through the adopted background service is authoritative;
         // a fabricated catalog would offer models the server rejects.
         ProviderKind::OpenCode => Vec::new(),
@@ -69,26 +66,7 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
     }
 }
 
-pub fn fallback_agent_presets(provider: ProviderKind) -> Vec<ProviderAgentPreset> {
-    if provider != ProviderKind::DeepSeek {
-        return Vec::new();
-    }
-    vec![
-        ProviderAgentPreset::new("standard", tr!("agent_preset.standard"))
-            .description(tr!("agent_preset.standard_description"))
-            .default(),
-        ProviderAgentPreset::new("code", tr!("agent_preset.code"))
-            .description(tr!("agent_preset.code_description")),
-        ProviderAgentPreset::new("minimal", tr!("agent_preset.minimal"))
-            .description(tr!("agent_preset.minimal_description")),
-        ProviderAgentPreset::new("cordis", tr!("agent_preset.creator"))
-            .description(tr!("agent_preset.creator_description")),
-    ]
-}
-
-/// Discovers both ordinary models and provider-owned agent compositions in
-/// one provider process. Harness serves both catalogs from the same resident
-/// Host, so querying them together avoids starting it twice during detection.
+/// Discovers ordinary models and provider-owned agent compositions.
 pub fn discover_catalog(
     provider: ProviderKind,
     binary: &Path,
@@ -97,7 +75,6 @@ pub fn discover_catalog(
         ProviderKind::Codex => (discover_codex_models(binary), None),
         ProviderKind::Antigravity => (discover_antigravity_models(binary), None),
         ProviderKind::Claude => (discover_claude_models(binary), None),
-        ProviderKind::DeepSeek => discover_deepseek_catalog(binary),
         ProviderKind::OpenCode => crate::opencode_session::discover_catalog(binary),
         ProviderKind::Pi => (discover_pi_models(binary, PiDialect::Pi), None),
         ProviderKind::OhMyPi => (discover_pi_models(binary, PiDialect::OhMyPi), None),
@@ -111,7 +88,7 @@ pub fn discover_catalog(
         write_cached_models(provider, &models);
         models
     };
-    let presets = discovered_presets.unwrap_or_else(|| fallback_agent_presets(provider));
+    let presets = discovered_presets.unwrap_or_default();
     (models, presets)
 }
 
@@ -315,10 +292,13 @@ pub(crate) fn resolve_antigravity_model_and_effort(
 }
 
 fn discover_antigravity_models(binary: &Path) -> Vec<ProviderModel> {
-    let Some(models_json) = run_antigravity_json_command(binary, &["--output-format", "json", "models"]) else {
+    let Some(models_json) =
+        run_antigravity_json_command(binary, &["--output-format", "json", "models"])
+    else {
         return Vec::new();
     };
-    let active = run_antigravity_json_command(binary, &["--output-format", "json", "--print", "/model"]);
+    let active =
+        run_antigravity_json_command(binary, &["--output-format", "json", "--print", "/model"]);
     parse_antigravity_models(&models_json, active.as_ref())
 }
 
@@ -383,7 +363,10 @@ fn strip_antigravity_effort_label<'a>(label: &'a str, effort: &str) -> &'a str {
     trimmed
 }
 
-fn parse_antigravity_models(models_envelope: &Value, active_envelope: Option<&Value>) -> Vec<ProviderModel> {
+fn parse_antigravity_models(
+    models_envelope: &Value,
+    active_envelope: Option<&Value>,
+) -> Vec<ProviderModel> {
     let mut raw_entries: Vec<(String, String)> = models_envelope
         .pointer("/command/data/models")
         .and_then(Value::as_array)
@@ -454,8 +437,15 @@ fn parse_antigravity_models(models_envelope: &Value, active_envelope: Option<&Va
             && let Some(&canonical_effort) = ANTIGRAVITY_EFFORTS.iter().find(|&&e| e == effort_str)
         {
             let base_label = strip_antigravity_effort_label(&label, canonical_effort).to_owned();
-            if let Some(existing) = groups.iter_mut().find(|g| g.base_id == base && !g.raw_variants.is_empty()) {
-                if !existing.raw_variants.iter().any(|(_, _, e)| *e == canonical_effort) {
+            if let Some(existing) = groups
+                .iter_mut()
+                .find(|g| g.base_id == base && !g.raw_variants.is_empty())
+            {
+                if !existing
+                    .raw_variants
+                    .iter()
+                    .any(|(_, _, e)| *e == canonical_effort)
+                {
                     existing.raw_variants.push((slug, label, canonical_effort));
                 }
             } else {
@@ -504,8 +494,8 @@ fn parse_antigravity_models(models_envelope: &Value, active_envelope: Option<&Va
             let options = sorted_efforts
                 .iter()
                 .map(|effort| ProviderModelOption::new(*effort, reasoning_effort_label(effort)));
-            let mut model =
-                ProviderModel::new(group.base_id, group.base_label).reasoning(options, default_effort);
+            let mut model = ProviderModel::new(group.base_id, group.base_label)
+                .reasoning(options, default_effort);
             if is_active_group && !marked_default {
                 model = model.default();
                 marked_default = true;
@@ -534,128 +524,6 @@ fn parse_antigravity_models(models_envelope: &Value, active_envelope: Option<&Va
         first.is_default = true;
     }
     out
-}
-
-fn discover_deepseek_catalog(
-    binary: &Path,
-) -> (Vec<ProviderModel>, Option<Vec<ProviderAgentPreset>>) {
-    let Ok(server) = crate::deepseek_pool::acquire(binary) else {
-        return (Vec::new(), None);
-    };
-    let models = server
-        .rpc("llm.models", json!({}))
-        .map(|catalog| parse_deepseek_model_catalog(&catalog))
-        .unwrap_or_default();
-    let presets = server
-        .rpc("agentPreset.list", json!({}))
-        .ok()
-        .map(|roster| parse_deepseek_agent_presets(&roster));
-    (models, presets)
-}
-
-fn parse_deepseek_agent_presets(roster: &Value) -> Vec<ProviderAgentPreset> {
-    roster
-        .get("presets")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        // Harness deliberately leaves broken presets in its management
-        // roster, but its own session picker excludes them.
-        .filter(|value| value.get("broken").is_none())
-        .filter_map(|value| {
-            let id = value
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.trim().is_empty())?;
-            let name = value
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or(id);
-            let mut preset = ProviderAgentPreset::new(id, name);
-            preset.is_default = value
-                .get("isDefault")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            preset.is_custom = value.get("trust").and_then(Value::as_str) == Some("user");
-            preset.description = value
-                .get("description")
-                .and_then(Value::as_str)
-                .filter(|description| !description.trim().is_empty())
-                .map(str::to_owned);
-            Some(preset)
-        })
-        .collect()
-}
-
-fn parse_deepseek_model_catalog(catalog: &Value) -> Vec<ProviderModel> {
-    catalog
-        .get("groups")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .flat_map(|group| {
-            let provider_id = group
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.trim().is_empty());
-            let provider_name = group
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.trim().is_empty());
-            let models = group.get("models").and_then(Value::as_array);
-            provider_id
-                .zip(provider_name)
-                .zip(models)
-                .into_iter()
-                .flat_map(|((provider_id, provider_name), models)| {
-                    models.iter().filter_map(move |value| {
-                        let model_id = value
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .filter(|id| !id.trim().is_empty())?;
-                        let name = value
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .filter(|name| !name.trim().is_empty())
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| display_name_from_slug(model_id));
-                        let mut model =
-                            ProviderModel::new(format!("{provider_id}/{model_id}"), name)
-                                .sub_provider(provider_name);
-                        if let Some(reasoning) = value.get("reasoning") {
-                            model.reasoning_efforts = reasoning
-                                .get("efforts")
-                                .and_then(Value::as_array)
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|effort| {
-                                    let id = effort.get("id").and_then(Value::as_str)?;
-                                    let name = effort
-                                        .get("name")
-                                        .and_then(Value::as_str)
-                                        .filter(|name| !name.trim().is_empty())
-                                        .unwrap_or(id);
-                                    Some(
-                                        ProviderModelOption::new(id, name).description(
-                                            effort
-                                                .get("description")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or_default(),
-                                        ),
-                                    )
-                                })
-                                .collect();
-                            model.default_reasoning_effort = reasoning
-                                .get("defaultEffort")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
-                        }
-                        Some(model)
-                    })
-                })
-        })
-        .collect()
 }
 
 /// Pi and Oh My Pi share the RPC catalog commands but not the flags that keep
@@ -1416,93 +1284,6 @@ printf '%s\n' '{"type":"control_response","response":{"request_id":"waku-initial
         // `thinking` is not on the known strength ladder, so the only ranked
         // id wins; an unranked id never becomes the default while one ranks.
         assert_eq!(model.default_reasoning_effort.as_deref(), Some("none"));
-    }
-
-    #[test]
-    fn parses_deepseek_host_model_groups_and_reasoning() {
-        let models = parse_deepseek_model_catalog(&json!({
-            "groups": [
-                {
-                    "id": "deepseek-official",
-                    "name": "DeepSeek",
-                    "models": [
-                        {
-                            "id": "deepseek-chat",
-                            "name": "DeepSeek Chat",
-                            "reasoning": {
-                                "efforts": [
-                                    {"id": "off", "name": "Off"},
-                                    {"id": "high", "name": "High", "description": "Think longer"}
-                                ],
-                                "defaultEffort": "off"
-                            }
-                        }
-                    ]
-                },
-                {"id": "empty", "name": "Empty", "models": []}
-            ],
-            "failures": []
-        }));
-
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "deepseek-official/deepseek-chat");
-        assert_eq!(models[0].name, "DeepSeek Chat");
-        assert_eq!(models[0].sub_provider.as_deref(), Some("DeepSeek"));
-        assert_eq!(models[0].reasoning_efforts[1].id, "high");
-        assert_eq!(
-            models[0].reasoning_efforts[1].description.as_deref(),
-            Some("Think longer")
-        );
-        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("off"));
-    }
-
-    #[test]
-    fn parses_only_selectable_deepseek_agent_presets() {
-        let presets = parse_deepseek_agent_presets(&json!({
-            "presets": [
-                {
-                    "id": "standard",
-                    "trust": "system",
-                    "isDefault": true,
-                    "name": "Host-localized standard"
-                },
-                {
-                    "id": "my-agent",
-                    "trust": "user",
-                    "isDefault": false,
-                    "name": "My agent",
-                    "description": "A local composition"
-                },
-                {
-                    "id": "broken",
-                    "trust": "user",
-                    "isDefault": false,
-                    "broken": "plugin failed"
-                }
-            ]
-        }));
-
-        assert_eq!(presets.len(), 2);
-        assert_eq!(presets[0].id, "standard");
-        assert!(presets[0].is_default);
-        assert_eq!(presets[1].name, "My agent");
-        assert!(presets[1].is_custom);
-        assert_eq!(
-            presets[1].description.as_deref(),
-            Some("A local composition")
-        );
-    }
-
-    #[test]
-    #[ignore = "requires an installed DeepSeek Harness"]
-    fn installed_deepseek_harness_reports_models() {
-        let binary =
-            crate::command_env::find_executable("dsh").expect("DeepSeek Harness is not installed");
-        let models = discover_catalog(ProviderKind::DeepSeek, &binary).0;
-        assert!(
-            !models.is_empty(),
-            "the installed DeepSeek Harness reported no models"
-        );
     }
 
     #[test]

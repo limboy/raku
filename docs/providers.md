@@ -9,8 +9,8 @@ polled off disk, and the one Waku generates itself — is in
 [titles.md](titles.md).
 
 Every provider is reached through the same driver abstraction in
-[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are six
-transport implementations behind seven providers, and **every one of them holds a
+[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are five
+transport implementations behind six providers, and **every one of them holds a
 session that spans the whole conversation**:
 
 | Transport | File | Providers |
@@ -19,11 +19,7 @@ session that spans the whole conversation**:
 | OpenCode background service (HTTP + server-sent events) | [driver/opencode.rs](../crates/waku-core/src/driver/opencode.rs) | OpenCode |
 | Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/waku-core/src/driver/pi.rs) | Pi, Oh My Pi |
 | Claude streaming-input session (NDJSON over stdio) | [driver/claude.rs](../crates/waku-core/src/driver/claude.rs) | Claude Code |
-| Harness client API (typed HTTP + downlink streams) | [driver/deepseek.rs](../crates/waku-core/src/driver/deepseek.rs) | DeepSeek Harness |
 | Antigravity streaming-input session (NDJSON over stdio) | [driver/antigravity.rs](../crates/waku-core/src/driver/antigravity.rs) | Antigravity CLI |
-
-DeepSeek Harness has no dedicated section below yet; its driver's module
-comment is the current reference.
 
 ## The driver contract
 
