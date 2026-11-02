@@ -2269,12 +2269,10 @@ impl Waku {
                 |generation| format!("detail-{generation}-activity-toggle-{block_index}"),
             );
             let header_title = activity_header_title(activities, live_group, live_reasoning_id);
-            let (group_failed, group_running) =
-                activities
-                    .iter()
-                    .fold((false, false), |(failed, running), activity| {
-                        (failed || activity.failed, running || !activity.complete)
-                    });
+            let group_running = activities.iter().any(|activity| !activity.complete);
+            if !live_group && group_running {
+                motion::pulse_lease_slow(window.current_view(), cx);
+            }
             let header_focus = self.transcript_control_focus(group_key.clone(), cx);
             div()
                 .w_full()
@@ -2318,28 +2316,16 @@ impl Waku {
                                 .text_color(theme.text_secondary)
                                 .child(SharedString::from(header_title)),
                         )
-                        .when(!live_group, |header| {
+                        .when(!live_group && group_running, |header| {
                             header.child(
                                 div()
                                     .flex_none()
                                     .flex()
                                     .items_center()
                                     .gap(px(4.0))
-                                    .text_color(if group_failed {
-                                        theme.danger
-                                    } else {
-                                        theme.text_tertiary
-                                    })
-                                    .when(group_failed, |status| {
-                                        status.child(icon("icons/x.svg", 10.0, theme.danger))
-                                    })
-                                    .child(tr!(if group_failed {
-                                        "activity.status_failed"
-                                    } else if group_running {
-                                        "activity.status_running"
-                                    } else {
-                                        "activity.status_completed"
-                                    })),
+                                    .text_color(theme.text_secondary)
+                                    .child(pulse_dot(5.0, theme.accent))
+                                    .child(tr!("activity.status_running")),
                             )
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
