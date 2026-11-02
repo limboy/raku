@@ -106,7 +106,8 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
-      - uses: actions/cache@v6
+      - uses: actions/cache/restore@v6
+        id: cargo-cache
         with:
           path: |
             ~/.cargo/registry
@@ -122,12 +123,22 @@ jobs:
             --package waku --bin waku --package waku-daemon --bin waku-daemon
           mkdir -p target/release
           for executable in waku waku-daemon; do
-            lipo -verify_arch arm64 "target/aarch64-apple-darwin/release/$executable"
+            lipo "target/aarch64-apple-darwin/release/$executable" -verify_arch arm64
             ln -sf "../aarch64-apple-darwin/release/$executable" "target/release/$executable"
           done
         env:
           WAKU_ANALYTICS_ENDPOINT: ${{ secrets.WAKU_ANALYTICS_ENDPOINT }}
           WAKU_ANALYTICS_WEBSITE_ID: ${{ secrets.WAKU_ANALYTICS_WEBSITE_ID }}
+
+      - name: Save release build cache before packaging
+        if: ${{ always() && steps.cargo-cache.outputs.cache-hit != 'true' && steps.cargo-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
       - name: Import Apple Developer Certificate
         id: certificate
