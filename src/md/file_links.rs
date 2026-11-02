@@ -1,8 +1,10 @@
-//! In-memory resolution of inline code spans against a workspace file index.
+//! In-memory resolution of inline code spans and `@` file mentions against a
+//! workspace file index.
 //! Build alongside file discovery on the background executor; rendering only
 //! performs exact hash lookups, including unambiguous path suffixes.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -55,6 +57,64 @@ impl FileLinks {
             .get(path)
             .or_else(|| self.suffixes.get(path)?.as_ref())?;
         Some(format!("{target}{location}"))
+    }
+
+    /// Find mentions in prose without probing the filesystem. Try the full
+    /// token before stripping sentence punctuation, so indexed filenames with
+    /// brackets or parentheses keep their literal spelling.
+    pub fn mentions(&self, text: &str) -> Vec<(Range<usize>, String)> {
+        let mut links = Vec::new();
+        for (start, _) in text.match_indices('@') {
+            if text[..start].chars().next_back().is_some_and(|ch| {
+                ch.is_alphanumeric() || matches!(ch, '_' | '.' | '/' | '\\' | '-' | '+' | '@')
+            }) {
+                continue;
+            }
+            let path_start = start + 1;
+            let rest = &text[path_start..];
+            let mut end = path_start
+                + rest
+                    .find(|ch: char| {
+                        ch.is_whitespace()
+                            || matches!(
+                                ch,
+                                '"' | '\''
+                                    | '`'
+                                    | '<'
+                                    | '>'
+                                    | '，'
+                                    | '。'
+                                    | '、'
+                                    | '；'
+                                    | '：'
+                                    | '！'
+                                    | '？'
+                                    | '（'
+                                    | '）'
+                                    | '【'
+                                    | '】'
+                                    | '《'
+                                    | '》'
+                                    | '「'
+                                    | '」'
+                                    | '『'
+                                    | '』'
+                            )
+                    })
+                    .unwrap_or(rest.len());
+            while end > path_start {
+                if let Some(target) = self.resolve(&text[path_start..end]) {
+                    links.push((start..end, target));
+                    break;
+                }
+                let (offset, last) = text[path_start..end].char_indices().next_back().unwrap();
+                if !matches!(last, '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}') {
+                    break;
+                }
+                end = path_start + offset;
+            }
+        }
+        links
     }
 }
 
@@ -181,5 +241,45 @@ mod tests {
         ] {
             assert_eq!(index.resolve(reference), None, "{reference}");
         }
+    }
+
+    #[test]
+    fn mentions_resolve_existing_paths_and_leave_surrounding_prose_plain() {
+        let index = FileLinks::new(
+            Path::new("/workspace"),
+            [
+                "docs/plan-mode-plan.md",
+                "docs/计划.md",
+                "src/routes/[id].rs",
+                "src/a/index.ts",
+                "src/b/index.ts",
+            ],
+        );
+        let text = "review 下 @docs/plan-mode-plan.md 这个方案。\n\
+            看看（@docs/计划.md），以及 (@src/routes/[id].rs:12:4). \
+            @missing.md @index.ts user@docs/plan-mode-plan.md \
+            https://example.com/@docs/plan-mode-plan.md";
+        assert_eq!(
+            index
+                .mentions(text)
+                .into_iter()
+                .map(|(range, target)| (text[range].to_owned(), target))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "@docs/plan-mode-plan.md",
+                    "file:///workspace/docs/plan-mode-plan.md",
+                ),
+                (
+                    "@docs/计划.md",
+                    "file:///workspace/docs/%E8%AE%A1%E5%88%92.md"
+                ),
+                (
+                    "@src/routes/[id].rs:12:4",
+                    "file:///workspace/src/routes/[id].rs:12:4",
+                ),
+            ]
+            .map(|(reference, target)| (reference.to_owned(), target.to_owned())),
+        );
     }
 }

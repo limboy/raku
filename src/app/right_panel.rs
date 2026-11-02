@@ -1383,6 +1383,14 @@ mod tests {
                 TranscriptLinkRoute::ProjectFile(path.into()),
             );
         }
+        let prompt = "review 下 @articles/new.astro 这个方案";
+        let mentions = files.mentions(prompt);
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(&prompt[mentions[0].0.clone()], "@articles/new.astro");
+        assert_eq!(
+            transcript_link_route(&mentions[0].1, Some(workspace)),
+            TranscriptLinkRoute::ProjectFile("src/pages/articles/new.astro".into()),
+        );
     }
 
     /// Selection resolves rows by key, so a repeated key makes a drag jump

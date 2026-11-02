@@ -370,7 +370,15 @@ pub fn flatten(
             }
         }
         let file_target = (run.style.code && run.style.link.is_none())
-            .then(|| file_links.and_then(|index| index.resolve(&run.text)))
+            .then(|| {
+                file_links.and_then(|index| {
+                    index.resolve(&run.text).or_else(|| {
+                        run.text
+                            .strip_prefix('@')
+                            .and_then(|path| index.resolve(path))
+                    })
+                })
+            })
             .flatten();
         let link = run.style.link.as_ref().or(file_target.as_ref());
         if let Some(url) = link {
@@ -384,7 +392,7 @@ pub fn flatten(
             }
         }
 
-        out.push(TextRun {
+        let text_run = TextRun {
             len: run.text.len(),
             font: run_font,
             color: if run.style.code {
@@ -404,7 +412,41 @@ pub fn flatten(
                 thickness: px(1.0),
                 color: Some(palette.tertiary),
             }),
-        });
+        };
+        if link.is_none()
+            && !run.style.code
+            && !run.style.math
+            && let Some(index) = file_links
+        {
+            let mut cursor = 0;
+            for (range, target) in index.mentions(&run.text) {
+                if range.start > cursor {
+                    out.push(TextRun {
+                        len: range.start - cursor,
+                        ..text_run.clone()
+                    });
+                }
+                out.push(TextRun {
+                    len: range.len(),
+                    underline: Some(UnderlineStyle {
+                        color: Some(palette.tertiary),
+                        thickness: px(1.0),
+                        wavy: false,
+                    }),
+                    ..text_run.clone()
+                });
+                cursor = range.end;
+                links.push((start + range.start..start + range.end, target));
+            }
+            if cursor < run.text.len() {
+                out.push(TextRun {
+                    len: run.text.len() - cursor,
+                    ..text_run
+                });
+            }
+        } else {
+            out.push(text_run);
+        }
     }
 
     let active_link = (!links.is_empty()).then(|| Rc::new(Cell::new(None)));
@@ -2307,7 +2349,7 @@ mod tests {
     #[test]
     fn file_index_updates_refresh_settled_links_and_reuse_unchanged_flats() {
         let view = MarkdownView::new();
-        let runs = runs_of("Open `README.md`.");
+        let runs = runs_of("Open @README.md.");
         let build = |files: Option<&FileLinks>| {
             flatten(&runs, &palette(), FontWeight::NORMAL, palette().text, files)
         };
@@ -2342,6 +2384,53 @@ mod tests {
         assert_eq!(switched.links[0].1, "file:///other/README.md");
         view.sync_file_links(None);
         assert!(view.flat(0, || build(None)).links.is_empty());
+    }
+
+    #[test]
+    fn file_mentions_keep_markdown_styles_and_explicit_link_targets() {
+        let source = "review 下 @docs/plan-mode-plan.md 这个方案。\
+            **@a.rs** `@b.rs` @missing.rs user@a.rs \
+            [@a.rs](https://example.com) $@a.rs$ `cat @a.rs`";
+        let files = FileLinks::new(
+            std::path::Path::new("/workspace"),
+            ["docs/plan-mode-plan.md", "a.rs", "b.rs"],
+        );
+        let runs = runs_of(source);
+        let plain = flatten(&runs, &palette(), FontWeight::NORMAL, palette().text, None);
+        let linked = flatten(
+            &runs,
+            &palette(),
+            FontWeight::NORMAL,
+            palette().text,
+            Some(&files),
+        );
+        assert_runs_tile(&linked);
+        assert_eq!(linked.text, plain.text);
+        assert_eq!(linked.code_ranges, plain.code_ranges);
+        assert_eq!(
+            linked
+                .links
+                .iter()
+                .map(|(range, target)| (&linked.text[range.clone()], target.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "@docs/plan-mode-plan.md",
+                    "file:///workspace/docs/plan-mode-plan.md",
+                ),
+                ("@a.rs", "file:///workspace/a.rs"),
+                ("@b.rs", "file:///workspace/b.rs"),
+                ("@a.rs", "https://example.com"),
+            ],
+        );
+        // Adding underline ranges must not change fonts or byte positions.
+        let fonts = |flat: &FlatText| {
+            flat.runs
+                .iter()
+                .flat_map(|run| std::iter::repeat_n(run.font.clone(), run.len))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fonts(&linked), fonts(&plain));
     }
 
     #[gpui::test]
@@ -2387,6 +2476,8 @@ mod tests {
         for source in [
             "Open `a.rs` then `b.rs`.",
             "Open `a.rs` and $x$ then `b.rs`.",
+            "review 下 @a.rs 这个方案，然后 @b.rs。",
+            "Open @a.rs and $x$ then @b.rs.",
         ] {
             let mut markdown = MarkdownView::new();
             markdown.set_text(source, false);
