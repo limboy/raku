@@ -11,7 +11,10 @@ mod opencode;
 mod opencode_computer_use;
 mod pi;
 mod support;
+mod title_language;
 mod title_refresh;
+
+pub(crate) use title_language::hide_title_language_context;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,11 +78,15 @@ pub(crate) fn test_event_channel() -> (DriverEventSender, Receiver<DriverEvent>)
 #[derive(Clone)]
 pub struct DriverHandle {
     inner: Arc<dyn DriverControl>,
+    title_language: Arc<title_language::TitleLanguageContext>,
 }
 
 impl DriverHandle {
     pub fn from_control(control: Arc<dyn DriverControl>) -> Self {
-        Self { inner: control }
+        Self {
+            inner: control,
+            title_language: Arc::default(),
+        }
     }
 
     pub fn compact(&self, request: waku_protocol::compaction::CompactionRequest) {
@@ -87,7 +94,7 @@ impl DriverHandle {
     }
 
     pub fn prompt(&self, prompt: String) {
-        self.inner.prompt(prompt);
+        self.inner.prompt(self.title_language.prepare(prompt));
     }
 
     /// Whether this transport can inject a user message into the currently
@@ -223,6 +230,10 @@ pub(crate) fn start_local(
     // debug builds register the REPL server's Cua bridge or attach the skill.
     options.computer_use_enabled =
         crate::computer_use::resolve_enabled(options.computer_use_enabled);
+    let title_language = Arc::new(title_language::TitleLanguageContext::new(
+        provider,
+        options.execution_policy,
+    ));
     let inner: Arc<dyn DriverControl> = match provider {
         ProviderKind::Antigravity => {
             Arc::new(antigravity::AntigravityDriver::start(options, events)?)
@@ -242,7 +253,10 @@ pub(crate) fn start_local(
         // mode ask rather than decide alone.
         ProviderKind::Claude => Arc::new(claude::ClaudeDriver::start(options, events)?),
     };
-    Ok(DriverHandle { inner })
+    Ok(DriverHandle {
+        inner,
+        title_language,
+    })
 }
 
 #[cfg(test)]

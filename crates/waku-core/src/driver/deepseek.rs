@@ -1673,16 +1673,20 @@ mod tests {
             }),
             &events,
         );
-        assert!(matches!(
-            event_rx.recv().unwrap(),
+        // JSON object key order depends on serde_json's enabled features;
+        // both independent projections must arrive regardless of that order.
+        let events = event_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().any(|event| matches!(
+            event,
             DriverEvent::AutoTitleUpdated(Some(title)) if title == "Harness title"
-        ));
-        assert!(matches!(
-            event_rx.recv().unwrap(),
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
             DriverEvent::UsageUpdated {
                 context_tokens: Some(120),
                 context_window: Some(8192)
             }
-        ));
+        )));
     }
 }

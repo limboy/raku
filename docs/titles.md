@@ -9,6 +9,37 @@ when a headless transport does not enable it automatically. Oh My Pi, for
 example, enables automatic titles in its TUI but not RPC. Codex is the one
 provider for which Waku runs its own title-generation turn.
 
+## Title language
+
+Automatic titles follow the predominant language and script of the user's
+request. Mixed Chinese/English requests follow the user's prose rather than
+English code, paths, technical identifiers, or background instructions;
+technical terms can retain their original form.
+
+Codex receives this policy in its title turn's system instructions. For
+Claude, OpenCode, DeepSeek, Antigravity, Pi, and Oh My Pi, Waku appends the
+same naming context to the first ordinary prompt whose language can be
+identified in each live driver. Language detection uses a bounded sample of
+the original prose, excluding code blocks, inline code, quoted background,
+paths, and identifiers. CJK characters are compared with Latin words rather
+than Latin letters, so long English technical terms do not outweigh Chinese
+prose. The context names the detected language explicitly, so the context's
+own English wording cannot determine the title language. Uncertain input
+keeps native behavior and leaves the context available for a later request.
+This reaches native title generators that summarize that message,
+including Oh My Pi's explicit native `/rename` request. Pi still relies on
+its prompt fallback or an installed naming extension; it does not gain a
+separate model call. Providers continue to own generation and model selection.
+
+The context is added only to the provider transport. Waku's typed prompt is
+unchanged, and cold imports hide the exact context suffix using display text
+while retaining the provider's original message content. The context uses
+bracketed markers: Oh My Pi strips paired XML blocks, including their contents,
+before its title model sees a request. Legacy XML context remains hidden on
+import and is upgraded if a prepared request is retried. Later prompts,
+steering, slash commands (including explicit renames), Codex's main turn, and
+review subtasks do not receive the context.
+
 ## The two title fields
 
 [`AgentSession`](../crates/waku-protocol/src/model.rs) carries two:
@@ -109,14 +140,13 @@ moves the title call with it — verified by running with
 set it: the default is already the cheapest current Haiku, so there is nothing
 to pin.
 
-**Claude does not title every session.** A first prompt shorter than **10
-characters** never fires `generate_session_title` at all, so no `ai-title` is
-ever written and no amount of polling will find one. Measured on 2.1.228 by
-probing prompt lengths: 9 characters fires nothing, 10 fires the request.
-`"1+1 is?"` is 7, so such a session keeps the truncated-prompt fallback
-permanently — which is the right answer anyway, since the whole prompt already
-fits in the row. Treat a missing title on a very short prompt as correct
-behavior, not a regression.
+**Claude does not title every session.** On 2.1.228, a provider-facing first
+message shorter than **10 characters** never fired `generate_session_title`:
+9 characters fired nothing, 10 fired the request. This threshold applies to
+the transport text, including Waku's naming context, rather than only the
+typed request. CLI versions and settings can also suppress native naming.
+When no title arrives, Waku keeps the user's prompt fallback in its original
+language; a missing cosmetic title must not fail the turn.
 
 Claude never puts that title on the stream — it writes it to the native
 transcript, `~/.claude/projects/*/<session_id>.jsonl` (or under

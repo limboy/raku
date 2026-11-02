@@ -638,6 +638,7 @@ impl Backend for WakuBackend {
                         )?
                     }
                 };
+                crate::driver::hide_title_language_context(&mut history);
                 let blobs = self.task_store.blobs();
                 for activity in history
                     .transcript_blocks
