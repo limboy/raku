@@ -604,6 +604,9 @@ errors.change_branch: "ブランチを変更できませんでした：%{error}"
 errors.capture_pre_turn_checkpoint: "ターン開始前のチェックポイントを取得できませんでした：%{error}"
 errors.capture_turn_checkpoint: "ターンのチェックポイントを取得できませんでした：%{error}"
 errors.save_local_state: "ローカルの状態を保存できませんでした：%{error}"
+save_failure.title: 最近の変更はまだ保存されていません
+save_failure.detail: "Waku は再試行を続け、保存に成功するまで変更を保持します。今終了すると変更が失われる可能性があります。%{error}"
+save_failure.retry_tooltip: 今すぐ保存を再試行
 errors.task_project_not_found: タスクのプロジェクトが見つかりませんでした
 errors.provider_native_session_unavailable: "%{provider} のネイティブセッションは利用できません"
 errors.provider_native_thread_unavailable: "%{provider} のネイティブスレッドは利用できません"

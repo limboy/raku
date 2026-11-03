@@ -1450,41 +1450,51 @@ impl Waku {
 
     pub(super) fn save(&mut self) {
         self.last_stream_save = Instant::now();
-        let daemon_error = self
-            .daemon
-            .update_settings(self.state.daemon_settings())
-            .err()
-            .map(|error| error.to_string());
-        let document_error = self.write_desktop_documents();
-        let app_error = self
-            .store
-            .save_task_state(&mut self.state)
-            .err()
-            .map(|error| error.to_string());
-        if let Some(error) = daemon_error.or(document_error).or(app_error) {
-            self.show_toast(tr!("errors.save_local_state", error = error));
-        } else {
-            self.stream_state_dirty = false;
+        self.stream_state_dirty = false;
+        let sequence = self.save_status.next_sequence();
+        if let Err(error) = self.daemon.update_settings(self.state.daemon_settings()) {
+            self.show_toast(tr!("errors.save_local_state", error = error.to_string()));
+        }
+        self.write_desktop_documents(sequence);
+        // Sent here, on the UI thread, so saves reach the daemon in order;
+        // the waiter thread only awaits each acknowledgement.
+        match self.store.save_task_state(&mut self.state) {
+            Ok(pending) => {
+                let _ = self.task_state_save_waiter.send((sequence, pending));
+            }
+            Err(error) => self.report_save_outcome(save_status::SaveOutcome::TaskState {
+                sequence,
+                session_ids: Vec::new(),
+                result: Err(error.to_string()),
+            }),
         }
     }
 
+    fn report_save_outcome(&self, outcome: save_status::SaveOutcome) {
+        let _ = self.save_outcomes_tx.send(outcome);
+        signal_event_pump(&self.event_wake_tx);
+    }
+
     /// Captures the desktop documents now and writes them on the background
-    /// executor. Returns a capture error, or a failure left by an earlier
-    /// background write, so it still reaches the user on this save.
-    fn write_desktop_documents(&mut self) -> Option<String> {
-        let previous_error = self.desktop_document_error.lock().take();
+    /// executor; the outcome comes back through the event pump.
+    fn write_desktop_documents(&mut self, sequence: u64) {
         let documents = match self.store.capture_desktop_documents(&self.state) {
             Ok(documents) => documents,
-            Err(error) => return Some(error.to_string()),
+            Err(error) => {
+                return self.report_save_outcome(save_status::SaveOutcome::Documents {
+                    sequence,
+                    result: Err(error.to_string()),
+                });
+            }
         };
         let writer = self.store.desktop_document_writer();
-        let errors = self.desktop_document_error.clone();
+        let outcomes = self.save_outcomes_tx.clone();
+        let wake = self.event_wake_tx.clone();
         self.desktop_document_write = Some(self.background_executor.spawn(async move {
-            if let Err(error) = writer.write(documents) {
-                *errors.lock() = Some(error.to_string());
-            }
+            let result = writer.write(documents).map_err(|error| error.to_string());
+            let _ = outcomes.send(save_status::SaveOutcome::Documents { sequence, result });
+            signal_event_pump(&wake);
         }));
-        previous_error
     }
 
     fn checkpoint_capture_pending(&self, session_id: Uuid, turn_count: usize) -> bool {
@@ -3432,6 +3442,7 @@ impl Waku {
             | self.drain_provider_detection_events()
             | self.drain_plan_usage_events()
             | self.drain_task_state_sync_events(cx)
+            | self.drain_save_outcomes(cx)
         {
             cx.notify();
         }

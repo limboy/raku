@@ -12,7 +12,7 @@ pub mod persistence;
 mod process;
 mod workspace_client;
 
-pub use client::DaemonClient;
+pub use client::{DaemonClient, PendingResponse};
 pub use process::{DaemonProcess, DaemonSupervisor};
 pub use waku_protocol::*;
 pub use workspace_client::WorkspaceClient;

@@ -1299,8 +1299,12 @@ pub struct Waku {
     /// replacing it only cancels a capture this newer one supersedes.
     background_executor: gpui::BackgroundExecutor,
     desktop_document_write: Option<gpui::Task<()>>,
-    /// A failure from the background write, reported by the next save.
-    desktop_document_error: Arc<parking_lot::Mutex<Option<String>>>,
+    /// Saves report back here (see `save_status`): task-state saves through
+    /// an ordered waiter thread, desktop documents from their write task.
+    save_status: save_status::SaveStatus,
+    save_outcomes_tx: Sender<save_status::SaveOutcome>,
+    save_outcomes: Receiver<save_status::SaveOutcome>,
+    task_state_save_waiter: Sender<(u64, waku_client::persistence::PendingTaskStateSave)>,
     /// User expansion overrides keyed by persisted transcript block index.
     activities_expanded: HashMap<usize, bool>,
     /// Per-item disclosure overrides. Reasoning starts open while live; tool
@@ -1624,6 +1628,7 @@ mod project_picker;
 mod render;
 mod right_panel;
 mod runtime;
+mod save_status;
 mod session_export;
 mod sessions;
 mod settings;
@@ -2114,6 +2119,11 @@ impl Waku {
         let (plan_usage_tx, plan_usage_events) = unbounded();
         let (event_wake_tx, event_wake_events) = smol::channel::bounded(1);
         let (task_state_sync_tx, task_state_sync_events) = unbounded();
+        let (save_outcomes_tx, save_outcomes) = unbounded();
+        let task_state_save_waiter = save_status::spawn_task_state_save_waiter(
+            save_outcomes_tx.clone(),
+            event_wake_tx.clone(),
+        );
         let model_picker_tab = if state.model_picker_favorites_only {
             ModelPickerTab::Favorites
         } else {
@@ -2737,7 +2747,10 @@ impl Waku {
                 last_stream_save: Instant::now(),
                 background_executor: cx.background_executor().clone(),
                 desktop_document_write: None,
-                desktop_document_error: Arc::default(),
+                save_status: save_status::SaveStatus::default(),
+                task_state_save_waiter,
+                save_outcomes_tx,
+                save_outcomes,
                 activities_expanded: HashMap::new(),
                 expanded_activity_items: HashMap::new(),
                 expanded_turns: HashSet::new(),

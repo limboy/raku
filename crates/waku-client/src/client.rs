@@ -3,7 +3,7 @@ use std::io;
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow, bail};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select, unbounded};
@@ -168,6 +168,21 @@ impl DaemonClient {
         runtime_id: Uuid,
         command: Command,
     ) -> anyhow::Result<ResponsePayload> {
+        self.begin_request(session_id, runtime_id, command)?.wait()
+    }
+
+    /// Queues a request now and returns a handle that waits for its reply.
+    ///
+    /// The request is ordered against every other message this client sends
+    /// at the moment of this call, not when the reply is awaited. A caller on
+    /// the UI thread can therefore keep its sends in order while a background
+    /// thread does the waiting.
+    pub fn begin_request(
+        &self,
+        session_id: Uuid,
+        runtime_id: Uuid,
+        command: Command,
+    ) -> anyhow::Result<PendingResponse> {
         // Copying a large local snapshot can outlive an ordinary RPC. Keep
         // the UI asynchronous without reporting a timeout while the daemon
         // is still publishing a valid backup or restore handoff.
@@ -187,6 +202,13 @@ impl DaemonClient {
         let request_id = Uuid::new_v4();
         let (response, response_rx) = bounded(1);
         self.inner.pending.lock().insert(request_id, response);
+        // The socket thread marks the connection closed and then fails every
+        // pending request. One registered after that sweep would otherwise
+        // wait out the full timeout for a reply that can never arrive.
+        if self.inner.disconnected.load(Ordering::Acquire) {
+            self.inner.pending.lock().remove(&request_id);
+            bail!("Waku daemon is disconnected");
+        }
         let message = ClientMessage::Request(Request {
             request_id,
             session_id,
@@ -202,14 +224,12 @@ impl DaemonClient {
             self.inner.pending.lock().remove(&request_id);
             bail!("Waku daemon connection is closed");
         }
-        match response_rx.recv_timeout(timeout) {
-            Ok(Ok(payload)) => Ok(payload),
-            Ok(Err(error)) => Err(anyhow!(error.message)),
-            Err(error) => {
-                self.inner.pending.lock().remove(&request_id);
-                Err(anyhow!("timed out waiting for Waku daemon: {error}"))
-            }
-        }
+        Ok(PendingResponse {
+            inner: self.inner.clone(),
+            request_id,
+            response: response_rx,
+            deadline: Instant::now() + timeout,
+        })
     }
 
     pub fn notify(
@@ -251,6 +271,30 @@ impl DaemonClient {
 
     pub fn shutdown(&self) {
         let _ = self.inner.outgoing.send(Outgoing::Shutdown);
+    }
+}
+
+/// A request already sent to the daemon, awaiting its reply.
+pub struct PendingResponse {
+    inner: Arc<ClientInner>,
+    request_id: Uuid,
+    response: Receiver<Result<ResponsePayload, RpcError>>,
+    /// Fixed when the request was sent, so waiting on a queue of replies in
+    /// order cannot stretch each one's timeout past its own.
+    deadline: Instant,
+}
+
+impl PendingResponse {
+    /// Blocks until the reply, a disconnect, or the request's deadline.
+    pub fn wait(self) -> anyhow::Result<ResponsePayload> {
+        match self.response.recv_deadline(self.deadline) {
+            Ok(Ok(payload)) => Ok(payload),
+            Ok(Err(error)) => Err(anyhow!(error.message)),
+            Err(error) => {
+                self.inner.pending.lock().remove(&self.request_id);
+                Err(anyhow!("timed out waiting for Waku daemon: {error}"))
+            }
+        }
     }
 }
 
@@ -578,6 +622,45 @@ fn read_server_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A save the daemon never acknowledges must fail as soon as the socket
+    /// closes, so the caller re-marks and retries instead of waiting out the
+    /// request timeout or assuming success.
+    #[test]
+    fn pending_requests_fail_promptly_when_the_connection_drops() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let _hello = socket.read().unwrap();
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&ServerMessage::Hello {
+                        protocol_version: PROTOCOL_VERSION,
+                        daemon_version: "test".into(),
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .unwrap();
+            // Receive the request, then drop the connection unanswered.
+            let _request = socket.read().unwrap();
+        });
+        let client = DaemonClient::connect(&address, "token".into()).unwrap();
+        let pending = client
+            .begin_request(Uuid::nil(), Uuid::nil(), Command::LoadComposerDrafts)
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert!(pending.wait().is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(
+            client
+                .begin_request(Uuid::nil(), Uuid::nil(), Command::LoadComposerDrafts)
+                .is_err()
+        );
+        server.join().unwrap();
+    }
 
     #[test]
     fn daemon_endpoint_accepts_addresses_and_secure_urls() {

@@ -310,6 +310,7 @@ impl Render for Waku {
                         element.border_l_1().border_color(theme.sidebar_border)
                     })
                     .child(self.render_header(window, cx))
+                    .children(self.render_save_failure_banner(cx))
                     .child(if empty {
                         self.render_empty_state(cx).into_any_element()
                     } else {

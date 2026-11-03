@@ -1176,6 +1176,12 @@ errors.capture_turn_checkpoint:
   en: "Could not capture the turn checkpoint: %{error}"
 errors.save_local_state:
   en: "Could not save local state: %{error}"
+save_failure.title:
+  en: Recent changes aren't saved yet
+save_failure.detail:
+  en: "Waku keeps retrying and holds your changes until a save succeeds. Quitting now could lose them. %{error}"
+save_failure.retry_tooltip:
+  en: Retry saving now
 errors.task_project_not_found:
   en: The task's project could not be found
 errors.provider_native_session_unavailable:

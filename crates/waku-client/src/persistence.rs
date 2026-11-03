@@ -1156,6 +1156,33 @@ impl DesktopDocumentWriter {
     }
 }
 
+/// A task-state save already sent to the daemon.
+///
+/// Saves used to be fire-and-forget, with the dirty set cleared on send: a
+/// save the daemon failed to write, or one still queued when the connection
+/// dropped, lost those edits silently. Waiting on this reports the outcome.
+pub struct PendingTaskStateSave {
+    session_ids: Vec<Uuid>,
+    response: crate::PendingResponse,
+}
+
+impl PendingTaskStateSave {
+    /// Sessions this save carried; re-mark them dirty if it fails.
+    pub fn session_ids(&self) -> &[Uuid] {
+        &self.session_ids
+    }
+
+    /// Blocks until the daemon has stored the save or it has failed.
+    pub fn wait(self) -> io::Result<()> {
+        match self.response.wait().map_err(to_io_error)? {
+            ResponsePayload::Ack | ResponsePayload::TaskStateSaved { .. } => Ok(()),
+            _ => Err(io::Error::other(
+                "Waku daemon returned an invalid task-state save response",
+            )),
+        }
+    }
+}
+
 /// Desktop state store: app files stay local, task data crosses RPC.
 pub struct StateStore {
     path: PathBuf,
@@ -1384,11 +1411,21 @@ impl StateStore {
     /// plus a background [`DesktopDocumentWriter::write`], then
     /// [`Self::save_task_state`].
     pub fn save(&self, state: &mut PersistedState) -> io::Result<()> {
-        self.documents.write(self.capture_desktop_documents(state)?)?;
-        self.save_task_state(state)
+        self.documents
+            .write(self.capture_desktop_documents(state)?)?;
+        let pending = self.save_task_state(state)?;
+        let session_ids = pending.session_ids().to_vec();
+        pending.wait().inspect_err(|_| {
+            for session_id in session_ids {
+                state.mark_session_dirty(session_id);
+            }
+        })
     }
 
-    pub fn capture_desktop_documents(&self, state: &PersistedState) -> io::Result<DesktopDocuments> {
+    pub fn capture_desktop_documents(
+        &self,
+        state: &PersistedState,
+    ) -> io::Result<DesktopDocuments> {
         self.documents.capture(state)
     }
 
@@ -1396,8 +1433,15 @@ impl StateStore {
         self.documents.clone()
     }
 
-    /// Queues the dirty sessions for the daemon. A channel send; no I/O.
-    pub fn save_task_state(&self, state: &mut PersistedState) -> io::Result<()> {
+    /// Sends the dirty sessions to the daemon and returns the save to await.
+    ///
+    /// The send is a channel push (no I/O), so it belongs on the caller's
+    /// thread: that fixes the save's order among everything else this client
+    /// sends. Await it elsewhere. The dirty set is cleared now; a save that
+    /// fails must put [`PendingTaskStateSave::session_ids`] back with
+    /// [`PersistedState::mark_session_dirty`], or those edits are never
+    /// resent.
+    pub fn save_task_state(&self, state: &mut PersistedState) -> io::Result<PendingTaskStateSave> {
         if !self.task_state_loaded.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -1410,11 +1454,13 @@ impl StateStore {
             .iter()
             .filter(|session| dirty_ids.contains(&session.id))
             .cloned()
-            .collect();
+            .collect::<Vec<_>>();
+        let session_ids = sessions.iter().map(|session| session.id).collect();
         let live_session_ids = state.sessions.iter().map(|session| session.id).collect();
-        self.daemon
+        let response = self
+            .daemon
             .client()
-            .notify(
+            .begin_request(
                 Uuid::nil(),
                 Uuid::nil(),
                 Command::SaveTaskState {
@@ -1425,7 +1471,10 @@ impl StateStore {
             )
             .map_err(to_io_error)?;
         state.dirty_sessions.clear();
-        Ok(())
+        Ok(PendingTaskStateSave {
+            session_ids,
+            response,
+        })
     }
 
     pub fn remove_session(&self, session_id: Uuid) -> io::Result<()> {

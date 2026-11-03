@@ -957,7 +957,9 @@ fn serve_connection(
                     // Drained. Level-triggered interest reports anything an
                     // interrupted read left behind as soon as it is rearmed.
                     Err(tungstenite::Error::Io(error)) if retryable_io(&error) => break,
-                    Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                    Err(
+                        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed,
+                    ) => {
                         return Ok(());
                     }
                     Err(error) => return Err(error).context("Waku daemon WebSocket failed"),
@@ -1186,7 +1188,7 @@ fn handle_request(
             },
         };
         if !notification {
-            hub.cache_response(request_id, outcome.clone());
+            hub.cache_response(request_id, client_outcome(&outcome));
         }
         (outcome, true)
     };
@@ -1219,10 +1221,27 @@ fn handle_request(
     if !notification {
         let _ = outgoing.send(ServerMessage::Response {
             request_id,
-            outcome: outcome.clone(),
+            outcome: client_outcome(&outcome),
         });
     }
     HandledRequest { outcome, executed }
+}
+
+/// What a client receives for `outcome`.
+///
+/// A task-state save echoes every saved session so the hub can refresh its
+/// catalog, but the client already holds them. Streaming saves are awaited
+/// once a second; sending (and caching) multi-megabyte transcripts back each
+/// time would only churn the response cache, so the client gets an `Ack`.
+fn client_outcome(outcome: &ResponseOutcome) -> ResponseOutcome {
+    match outcome {
+        ResponseOutcome::Ok {
+            payload: ResponsePayload::TaskStateSaved { .. },
+        } => ResponseOutcome::Ok {
+            payload: ResponsePayload::Ack,
+        },
+        outcome => outcome.clone(),
+    }
 }
 
 fn task_catalog_action(command: &Command) -> TaskCatalogAction {
@@ -1455,7 +1474,7 @@ mod tests {
                     },
                 )
                 .unwrap(),
-            ResponsePayload::TaskStateSaved { .. }
+            ResponsePayload::Ack
         ));
         assert_eq!(
             observer_revisions.recv_timeout(Duration::from_secs(1)),
@@ -1571,21 +1590,20 @@ mod tests {
         remover
             .request(session.id, Uuid::nil(), Command::RemoveSession)
             .unwrap();
-        let ResponsePayload::TaskStateSaved { sessions } = stale_client
-            .request(
-                Uuid::nil(),
-                Uuid::nil(),
-                Command::SaveTaskState {
-                    projects: vec![project],
-                    live_session_ids: vec![session.id],
-                    sessions: vec![session],
-                },
-            )
-            .unwrap()
-        else {
-            panic!("expected task-state save response");
-        };
-        assert!(sessions.is_empty());
+        assert!(matches!(
+            stale_client
+                .request(
+                    Uuid::nil(),
+                    Uuid::nil(),
+                    Command::SaveTaskState {
+                        projects: vec![project],
+                        live_session_ids: vec![session.id],
+                        sessions: vec![session],
+                    },
+                )
+                .unwrap(),
+            ResponsePayload::Ack
+        ));
         let ResponsePayload::TaskState { sessions, .. } = stale_client
             .request(Uuid::nil(), Uuid::nil(), Command::LoadTaskState)
             .unwrap()
