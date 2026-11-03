@@ -1703,6 +1703,10 @@ browser.start_hint:
   en: Enter a URL or search above — %{shortcut} focuses the address bar
 browser.unavailable:
   en: Browser unavailable
+browser.load_failed:
+  en: Can't open this page
+browser.retry_tooltip:
+  en: Try again (%{shortcut})
 browser.unavailable_on_platform:
   en: The browser surface is not available on this platform yet
 

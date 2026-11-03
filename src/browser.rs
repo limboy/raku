@@ -141,6 +141,8 @@ fn display_url(url: &str) -> &str {
 
 #[cfg(target_os = "macos")]
 mod host {
+    mod navigation;
+
     use std::cell::Cell;
     use std::ffi::c_void;
     use std::ptr::null_mut;
@@ -156,6 +158,9 @@ mod host {
         ns_string,
     };
     use objc2_web_kit::WKWebView;
+
+    pub(super) use navigation::NavigationError;
+    use navigation::{LoadObserver, NavigationRelay};
     use wry::WebViewExtMacOS;
     use wry::dpi::{LogicalPosition, LogicalSize};
 
@@ -243,6 +248,13 @@ mod host {
         }
     }
 
+    /// Native callbacks the host forwards to the surface.
+    pub(super) struct HostCallbacks {
+        pub on_responder_change: Box<dyn Fn(bool)>,
+        pub on_load_state: Box<dyn Fn()>,
+        pub on_navigation_failed: Box<dyn Fn(NavigationError)>,
+    }
+
     /// The wry webview plus deduplication state, so per-frame syncs only call
     /// into AppKit when geometry or visibility actually changed.
     pub(super) struct WebviewHost {
@@ -253,22 +265,42 @@ mod host {
         /// Watches the window's first responder; dropped (and unregistered)
         /// with the host.
         _responder_observer: Option<Retained<ResponderObserver>>,
+        _load_observer: Retained<LoadObserver>,
+        /// The webview holds its navigation delegate weakly; this keeps the
+        /// relay alive for as long as it is installed.
+        navigation_relay: Option<Retained<NavigationRelay>>,
     }
 
     impl WebviewHost {
-        pub fn new(webview: wry::WebView, on_responder_change: Box<dyn Fn(bool)>) -> Self {
+        pub fn new(webview: wry::WebView, callbacks: HostCallbacks) -> Self {
             let wk: Retained<WKWebView> = Retained::into_super(webview.webview());
             lower_below_scene_overlay(&wk);
             let responder_observer = wk
                 .window()
-                .map(|window| ResponderObserver::new(window, on_responder_change));
+                .map(|window| ResponderObserver::new(window, callbacks.on_responder_change));
+            let load_observer = LoadObserver::new(wk.clone(), callbacks.on_load_state);
+            let navigation_relay = NavigationRelay::install(&wk, callbacks.on_navigation_failed);
             Self {
                 webview,
                 wk,
                 last_bounds: Cell::new(None),
                 visible: Cell::new(false),
                 _responder_observer: responder_observer,
+                _load_observer: load_observer,
+                navigation_relay,
             }
+        }
+
+        pub fn is_loading(&self) -> bool {
+            unsafe { self.wk.isLoading() }
+        }
+
+        /// The last committed page's URL. After a provisional failure WebKit
+        /// falls back to it; `None` if nothing has committed yet.
+        pub fn committed_url(&self) -> Option<String> {
+            unsafe { self.wk.URL() }
+                .and_then(|url| url.absoluteString())
+                .map(|url| url.to_string())
         }
 
         pub fn wk(&self) -> &WKWebView {
@@ -324,6 +356,15 @@ mod host {
                     .downcast_ref::<NSView>()
                     .is_some_and(|responder| responder.isDescendantOf(view))
             })
+        }
+    }
+
+    impl Drop for WebviewHost {
+        fn drop(&mut self) {
+            // Hand the webview back its own delegate before the relay goes.
+            if let Some(relay) = &self.navigation_relay {
+                relay.uninstall(&self.wk);
+            }
         }
     }
 
@@ -1167,6 +1208,9 @@ pub struct BrowserView {
     current_url: Option<String>,
     page_title: Option<String>,
     loading: bool,
+    /// The last navigation never committed; shown in place of the page until
+    /// a later one does.
+    load_failure: Option<LoadFailure>,
     can_go_back: bool,
     can_go_forward: bool,
     /// The user has edited the address since it last echoed the page, so page
@@ -1275,6 +1319,7 @@ impl BrowserView {
             current_url: None,
             page_title: None,
             loading: false,
+            load_failure: None,
             can_go_back: false,
             can_go_forward: false,
             address_dirty: false,
@@ -1320,6 +1365,8 @@ impl BrowserView {
         let on_page_load = deferred.clone();
         let on_title = deferred.clone();
         let on_new_window = deferred.clone();
+        let on_load_state = deferred.clone();
+        let on_navigation_failed = deferred.clone();
 
         // The responder observer's decision needs the window (GPUI focus
         // moves), which `Deferred` cannot reach; go through the window handle.
@@ -1386,10 +1433,63 @@ impl BrowserView {
 
         match built {
             Ok(webview) => {
-                self.host = Some(Rc::new(WebviewHost::new(webview, on_responder_change)))
+                let callbacks = host::HostCallbacks {
+                    on_responder_change,
+                    on_load_state: Box::new(move || {
+                        on_load_state.update(|this, cx| this.webkit_load_state_changed(cx));
+                    }),
+                    on_navigation_failed: Box::new(move |error| {
+                        on_navigation_failed.update(move |this, cx| {
+                            this.navigation_failed(error, cx);
+                        });
+                    }),
+                };
+                self.host = Some(Rc::new(WebviewHost::new(webview, callbacks)))
             }
             Err(error) => self.host_error = Some(error.to_string()),
         }
+    }
+
+    /// WebKit's `loading` or `estimatedProgress` changed. Mirror the live
+    /// value rather than the notification: it may run a turn after the
+    /// change, behind a navigation that has already set `loading` again.
+    #[cfg(target_os = "macos")]
+    fn webkit_load_state_changed(&mut self, cx: &mut Context<Self>) {
+        if let Some(host) = &self.host {
+            let loading = host.is_loading();
+            if self.loading != loading {
+                self.loading = loading;
+                self.refresh_navigation_state();
+            }
+        }
+        // Progress moved too; the toolbar reads it at render.
+        cx.notify();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn navigation_failed(&mut self, error: host::NavigationError, cx: &mut Context<Self>) {
+        let failed = error.provisional
+            && navigation_error_kind(&error.domain, error.code) == NavigationErrorKind::Failed;
+        if failed {
+            let url = error
+                .url
+                .or_else(|| self.current_url.clone())
+                .unwrap_or_default();
+            self.current_url = Some(url.clone());
+            self.page_title = None;
+            self.load_failure = Some(LoadFailure {
+                url,
+                message: error.message,
+            });
+            self.echo_page_url(cx);
+        }
+        // `loading` normally follows from KVO; settle it here as well in case
+        // WebKit never reported the load as started.
+        if let Some(host) = &self.host {
+            self.loading = host.is_loading();
+        }
+        self.refresh_navigation_state();
+        cx.notify();
     }
 
     /// The native first responder moved (KVO on the window): resolve the two
@@ -1529,6 +1629,8 @@ impl BrowserView {
         match event {
             PageLoad::Started => {
                 self.loading = true;
+                // A navigation committed, so there is a page to show again.
+                self.load_failure = None;
                 // A fresh document invalidates the previous page's title; the
                 // new one arrives via the title observer once known.
                 self.page_title = None;
@@ -1557,8 +1659,33 @@ impl BrowserView {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn refresh_navigation_state(&mut self) {
         if let Some(host) = &self.host {
-            self.can_go_back = host.webview.can_go_back().unwrap_or(false);
+            // Back from an error page returns to the page it replaced.
+            self.can_go_back = host.webview.can_go_back().unwrap_or(false)
+                || (self.load_failure.is_some() && self.committed_url().is_some());
             self.can_go_forward = host.webview.can_go_forward().unwrap_or(false);
+        }
+    }
+
+    /// The page still loaded under an error page, if any.
+    #[cfg(target_os = "macos")]
+    fn committed_url(&self) -> Option<String> {
+        self.host.as_ref().and_then(|host| host.committed_url())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn committed_url(&self) -> Option<String> {
+        None
+    }
+
+    /// Load the failed address again. The error page stays up until the
+    /// retry commits, so a second failure does not flash an empty page.
+    fn retry_failed_load(&mut self, cx: &mut Context<Self>) {
+        if let Some(url) = self
+            .load_failure
+            .as_ref()
+            .map(|failure| failure.url.clone())
+        {
+            self.navigate_to_url(url, cx);
         }
     }
 
@@ -1682,7 +1809,9 @@ impl BrowserView {
         let Some(host) = self.host.clone() else {
             return;
         };
-        let has_page = self.navigation_requested;
+        // An error page is drawn by GPUI in the page area; the native view,
+        // still holding the previous page or nothing, stays hidden under it.
+        let has_page = self.navigation_requested && self.load_failure.is_none();
 
         if surface_visible && has_page && occlusion_started && !self.snapshot_pending {
             self.request_snapshot(cx);
@@ -1825,6 +1954,20 @@ impl BrowserView {
     }
 
     fn go_back(&mut self, _cx: &mut Context<Self>) {
+        // A failed load never entered the history; Back dismisses it and
+        // reveals the committed page underneath, as browsers do.
+        if self.load_failure.is_some()
+            && let Some(url) = self.committed_url()
+        {
+            self.load_failure = None;
+            self.current_url = Some(url);
+            self.address_dirty = false;
+            self.echo_page_url(_cx);
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            self.refresh_navigation_state();
+            _cx.notify();
+            return;
+        }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some(host) = &self.host {
             let _ = host.webview.go_back();
@@ -1843,6 +1986,11 @@ impl BrowserView {
     }
 
     fn reload(&mut self, _cx: &mut Context<Self>) {
+        // Reloading would refresh the committed page hidden underneath, not
+        // the address that failed.
+        if self.load_failure.is_some() {
+            return self.retry_failed_load(_cx);
+        }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some(host) = &self.host
             && self.navigation_requested
@@ -1854,6 +2002,9 @@ impl BrowserView {
     }
 
     fn hard_reload(&mut self, _cx: &mut Context<Self>) {
+        if self.load_failure.is_some() {
+            return self.retry_failed_load(_cx);
+        }
         #[cfg(target_os = "macos")]
         if let Some(host) = &self.host
             && self.navigation_requested
@@ -2180,6 +2331,91 @@ impl BrowserView {
             )
     }
 
+    /// Shown in place of a page whose navigation never committed. WebKit
+    /// itself draws nothing for one, which left an empty panel behind.
+    fn render_load_failure(
+        &self,
+        failure: &LoadFailure,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let retry = div()
+            .id("browser-retry")
+            .tab_index(0)
+            .mt(px(16.0))
+            .h(px(28.0))
+            .px(px(12.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .flex()
+            .items_center()
+            .text_size(sp(12.5))
+            .text_color(theme.text)
+            .cursor_default()
+            .focus_visible(|style| style.border_color(theme.accent))
+            .hover(|element| element.bg(theme.overlay))
+            .active(|element| element.bg(theme.overlay_strong))
+            .tooltip(Tooltip::text(tr!(
+                "browser.retry_tooltip",
+                shortcut = crate::platform::primary_shortcut("⌘R", "Ctrl+R")
+            )))
+            .child(tr!("common.retry"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.retry_failed_load(cx);
+                cx.stop_propagation();
+            }))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.retry_failed_load(cx);
+                    cx.stop_propagation();
+                }
+            }));
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .px(px(48.0))
+            .pb(px(40.0))
+            .child(icon("icons/alert.svg", 22.0, theme.text_tertiary))
+            .child(
+                div()
+                    .mt(px(14.0))
+                    .text_size(sp(13.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(tr!("browser.load_failed")),
+            )
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .max_w(px(340.0))
+                    .text_center()
+                    .text_size(sp(12.5))
+                    .line_height(sp(17.0))
+                    .text_color(theme.text_secondary)
+                    .whitespace_normal()
+                    .child(failure.message.clone()),
+            )
+            .when(!failure.url.is_empty(), |element| {
+                element.child(
+                    div()
+                        .mt(px(4.0))
+                        .max_w(px(340.0))
+                        .text_center()
+                        .text_size(sp(12.0))
+                        .line_height(sp(16.0))
+                        .text_color(theme.text_tertiary)
+                        .truncate()
+                        .child(display_url(&failure.url).to_owned()),
+                )
+            })
+            .child(retry)
+    }
+
     /// Push GPUI's mouse events into the visual-hosted page.
     ///
     /// Visual hosting delivers no input at all — with no window of its own,
@@ -2317,6 +2553,36 @@ impl BrowserView {
                     )
                 },
             )
+    }
+}
+
+/// A navigation that failed before committing, as the error page shows it.
+struct LoadFailure {
+    url: String,
+    message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavigationErrorKind {
+    /// A real failure: show the error page.
+    Failed,
+    /// Replaced by a newer navigation or stopped by the user.
+    Cancelled,
+    /// Taken over by something other than the page: a download, a plug-in.
+    Handled,
+}
+
+/// Sorts a WebKit navigation error. Only [`NavigationErrorKind::Failed`] is
+/// worth an error page; the others are WebKit reporting its own decisions.
+fn navigation_error_kind(domain: &str, code: isize) -> NavigationErrorKind {
+    const NS_URL_ERROR_CANCELLED: isize = -999;
+    const FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE: isize = 102;
+    const PLUG_IN_WILL_HANDLE_LOAD: isize = 204;
+    match (domain, code) {
+        ("NSURLErrorDomain", NS_URL_ERROR_CANCELLED) => NavigationErrorKind::Cancelled,
+        ("WebKitErrorDomain", FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE)
+        | ("WebKitErrorDomain", PLUG_IN_WILL_HANDLE_LOAD) => NavigationErrorKind::Handled,
+        _ => NavigationErrorKind::Failed,
     }
 }
 
@@ -2480,14 +2746,15 @@ impl Render for BrowserView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
         self.reconcile_focus(window, cx);
-        if self.loading {
-            // `estimatedProgress` moves without any observable notification;
-            // while a load is in flight the toolbar redraws with the frames.
-            window.request_animation_frame();
-        }
+        // No per-frame redraw while loading: on macOS the load observer
+        // notifies on every `loading` and `estimatedProgress` change, and the
+        // WebView2 host reports no progress to animate.
 
         let body = if let Some(error) = self.host_error.clone() {
             self.render_host_error(error.into(), theme)
+                .into_any_element()
+        } else if let Some(failure) = &self.load_failure {
+            self.render_load_failure(failure, theme, cx)
                 .into_any_element()
         } else if self.navigation_requested {
             self.render_page_area(theme).into_any_element()
@@ -2568,6 +2835,33 @@ mod tests {
             Some(AddressTarget::Search("readme".into()))
         );
         assert_eq!(resolve_address("   "), None);
+    }
+
+    #[test]
+    fn only_real_navigation_failures_get_an_error_page() {
+        // Connection refused (a stopped dev server) and an unknown host.
+        assert_eq!(
+            navigation_error_kind("NSURLErrorDomain", -1004),
+            NavigationErrorKind::Failed
+        );
+        assert_eq!(
+            navigation_error_kind("NSURLErrorDomain", -1003),
+            NavigationErrorKind::Failed
+        );
+        // Superseded by another navigation or stopped.
+        assert_eq!(
+            navigation_error_kind("NSURLErrorDomain", -999),
+            NavigationErrorKind::Cancelled
+        );
+        // A response that became a download.
+        assert_eq!(
+            navigation_error_kind("WebKitErrorDomain", 102),
+            NavigationErrorKind::Handled
+        );
+        assert_eq!(
+            navigation_error_kind("WebKitErrorDomain", 101),
+            NavigationErrorKind::Failed
+        );
     }
 
     #[test]
