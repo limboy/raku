@@ -31,6 +31,7 @@ menu.search_sessions: セッションを検索…
 menu.toggle_sidebar: サイドバーの表示を切り替える
 menu.toggle_right_panel: 右パネルの表示を切り替える
 menu.focus_composer: 入力欄にフォーカスを移動
+menu.toggle_project_picker: プロジェクト選択の表示を切り替える
 menu.toggle_model_picker: モデル選択の表示を切り替える
 menu.toggle_usage_panel: 使用状況パネルの表示を切り替える
 menu.window: ウインドウ
@@ -173,6 +174,7 @@ session.new_task: 新規タスク
 sidebar.today: 今日
 sidebar.pinned: ピン留め
 sidebar.new_task: 新規タスク（%{shortcut}）
+sidebar.switch_project: プロジェクトを切り替える（%{shortcut}）
 sidebar.search_tasks: タスクを検索（%{shortcut}）
 sidebar.options: サイドバーオプション
 sidebar.grouping: グループ化

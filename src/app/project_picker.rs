@@ -68,6 +68,49 @@ enum ProjectPickerAction {
 }
 
 impl Waku {
+    /// The primary shortcut + P opens the sidebar's project selector,
+    /// revealing a hidden sidebar first so the picker has a trigger to drop
+    /// from.
+    pub(super) fn toggle_project_picker_action(
+        &mut self,
+        _: &ToggleProjectPicker,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_page.is_some() {
+            return;
+        }
+        let site = ProjectPickerSite::Sidebar;
+        let handle = self.project_picker_handle(site, cx);
+        // A keyboard toggle produces no mouse-down for another open menu's
+        // dismiss-on-down-out to see, so close the rest here.
+        let other_open: Vec<_> = self
+            .menus
+            .borrow()
+            .iter()
+            .filter(|(id, other)| id.as_ref() != site.menu_id() && other.is_open())
+            .map(|(_, other)| other.clone())
+            .collect();
+        let toggle = move |window: &mut Window, cx: &mut App| {
+            for menu in other_open {
+                menu.close(window, cx);
+            }
+            crate::ui::menu::toggle_popover(&handle, site.align(), window, cx);
+        };
+        if self.sidebar_visible {
+            // The picker's toggle observers update this entity, so the toggle
+            // has to run after this listener releases it.
+            window.defer(cx, toggle);
+        } else {
+            // Wait until the revealed selector has painted and recorded the
+            // bounds the picker anchors to.
+            self.set_sidebar_visible(true, cx);
+            window.on_next_frame(move |window, _| {
+                window.on_next_frame(toggle);
+            });
+        }
+    }
+
     /// Both footer selectors reflect the same active project, including an
     /// explicit label for a task without a project.
     pub(super) fn project_picker_label(&self) -> String {

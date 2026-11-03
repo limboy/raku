@@ -62,6 +62,8 @@ menu.toggle_right_panel:
   en: Toggle Right Panel
 menu.focus_composer:
   en: Focus Composer
+menu.toggle_project_picker:
+  en: Toggle Project Picker
 menu.toggle_model_picker:
   en: Toggle Model Picker
 menu.toggle_usage_panel:
@@ -336,6 +338,8 @@ sidebar.pinned:
   en: Pinned
 sidebar.new_task:
   en: New task (%{shortcut})
+sidebar.switch_project:
+  en: Switch project (%{shortcut})
 sidebar.search_tasks:
   en: Search tasks (%{shortcut})
 sidebar.options:

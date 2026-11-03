@@ -605,6 +605,12 @@ impl Waku {
             .cursor_default()
             .focus_visible(|style| style.border_color(theme.accent))
             .when(handle.is_open(), |element| element.bg(theme.overlay))
+            .when(!handle.is_open(), |element| {
+                element.tooltip(Tooltip::text(tr!(
+                    "sidebar.switch_project",
+                    shortcut = crate::platform::primary_shortcut("⌘P", "Ctrl+P")
+                )))
+            })
             .hover(|element| element.bg(theme.sidebar_item_background))
             .active(|element| element.bg(theme.overlay_strong))
             .child(
