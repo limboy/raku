@@ -16,6 +16,14 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.1.2] - 2026-11-03
+
+- Add an error page with Retry when a browser page fails to load, and stop the toolbar from loading forever
+- Fix renaming a task that has not been opened since launch deleting it
+- Warn with a Retry banner when saving task changes fails, and retry automatically instead of losing edits
+- Speed up sending messages in large repositories by seeding checkpoint snapshots from the worktree index
+- Improve responsiveness and idle CPU use by writing app state off the UI thread and waiting on daemon sockets instead of polling
+
 ## [2.1.1] - 2026-11-03
 
 - Restore automatic titles for new Claude Code sessions using Claude's native title generator
