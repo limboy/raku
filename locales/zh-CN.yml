@@ -968,3 +968,35 @@ compaction.focus_unsupported: "此提供商不支持指定压缩重点。"
 compaction.no_history: "发送消息后才能压缩此会话。"
 compaction.waiting_usage: "下次回复后更新用量"
 compaction.history_archived: "较早的消息已归档，以腾出上下文空间。你可以继续对话，模型会按需使用归档的历史内容。"
+
+settings.agents: 智能体
+agents.description: "智能体是可以委派工作的具名模型。在输入框中输入 ^ 并选择一个，它会独立、只读地执行任务并汇报结果。"
+agents.add_agent: 添加智能体
+agents.add_agent_ellipsis: 添加智能体…
+agents.empty: 还没有智能体。添加后即可用 ^ 委派工作。
+agents.new_agent: 新建智能体
+agents.edit_agent: 编辑智能体
+agents.edit_named: "编辑 %{name}"
+agents.delete_named: "删除 %{name}"
+agents.name: 名称
+agents.name_description: 在输入框中输入 ^ 加上这个名称即可调用该智能体。
+agents.name_placeholder: 例如：Reviewer
+agents.model: 模型
+agents.model_description: 该智能体使用的模型和思考强度。
+agents.choose_model: 选择模型
+agents.search_models: 搜索模型
+agents.no_models: 没有可用模型。请在服务商设置中启用可以运行子任务的服务商。
+agents.no_matching_models: 没有匹配的模型
+agents.instructions: 指令
+agents.instructions_description: 可选。在该智能体收到的每个任务前发送。
+agents.instructions_placeholder: 例如：重点审查安全问题，并注明文件路径。
+agents.save: 保存
+agents.error_name_empty: 请为智能体命名。
+agents.error_name_invalid: 名称不能包含方括号或换行。
+agents.error_name_duplicate: 已有其他智能体使用此名称。
+agents.error_model_missing: 请为智能体选择模型。
+agents.unavailable: 不可用
+agents.unavailable_tooltip: 该智能体的服务商已关闭、未安装，或无法运行子任务。
+transcript.sub_agent: "%{count} 个智能体"
+transcript.sub_agents: "%{count} 个智能体"
+transcript.sub_agents_open: "打开 %{name}"

@@ -347,6 +347,57 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_without_a_request_key_runs_and_its_retry_dedupes() {
+        let directory = temporary_directory("waku-delegation-db");
+        std::fs::create_dir_all(&directory).unwrap();
+        let manager = manager(&directory);
+        let root = repository();
+        let session = Uuid::new_v4();
+        // Models omit the key despite the schema; the wire must accept it.
+        let request: DelegationBatchRequest = serde_json::from_value(serde_json::json!({
+            "tasks": [{
+                "task_key": "explore",
+                "target_ref": "target-1",
+                "instructions": "map the project",
+            }],
+        }))
+        .unwrap();
+        assert!(request.request_key.is_empty());
+
+        let run = |request: DelegationBatchRequest| {
+            manager
+                .scheduler()
+                .delegate_batch(
+                    session,
+                    Some("turn-1".into()),
+                    None,
+                    &root,
+                    Some(ReviewDiffSource::Uncommitted),
+                    &[target()],
+                    request,
+                )
+                .unwrap()
+        };
+        let first = run(request.clone());
+        let retry = run(request);
+        assert_eq!(first.group_id, retry.group_id);
+        // Different tasks under no key are a different batch, not a clash.
+        let other = run(batch(""));
+        assert_ne!(first.group_id, other.group_id);
+
+        for group in [first.group_id, other.group_id] {
+            manager.scheduler().cancel(group, None).unwrap();
+            manager.scheduler().wait_delegates(group, Some(0)).unwrap();
+            if let Some(snapshot) = take_snapshot(&manager, group) {
+                context::cleanup_snapshot(&snapshot);
+            }
+        }
+        manager.delete_session_delegations(session).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
     fn a_model_that_echoes_the_readable_label_still_resolves_its_target() {
         let directory = temporary_directory("waku-delegation-db");
         let manager = manager(&directory);

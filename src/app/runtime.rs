@@ -3436,10 +3436,11 @@ impl Waku {
         // `|` on purpose: a busy provider must not starve the other result
         // queues just because its own drain reported a change first.
         let probes_changed = self.drain_provider_probe_events();
+        let detection_changed = self.drain_provider_detection_events();
         if self.drain_driver_events(cx)
             | probes_changed
+            | detection_changed
             | self.drain_provider_version_events()
-            | self.drain_provider_detection_events()
             | self.drain_plan_usage_events()
             | self.drain_task_state_sync_events(cx)
             | self.drain_save_outcomes(cx)
@@ -3448,6 +3449,12 @@ impl Waku {
         }
         if probes_changed {
             self.maybe_refresh_plan_usage(cx);
+        }
+        // Catalogues land per provider in the background; the `^` agents and
+        // the agent editor's model list must follow each one as it arrives,
+        // not wait for the next session switch.
+        if probes_changed || detection_changed {
+            self.refresh_delegation_model_index();
         }
         if std::mem::take(&mut self.workspace_queries_stale) {
             self.invalidate_workspace_queries(cx);

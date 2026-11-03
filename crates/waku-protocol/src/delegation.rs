@@ -31,6 +31,15 @@ pub struct ModelReference {
     /// The unambiguous inline spelling chosen from the model catalogue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker_label: Option<String>,
+    /// The configured sub-agent this target was picked as, if any. Two agents
+    /// may share a model route yet stay distinct targets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<Uuid>,
+    /// Standing instructions from the sub-agent's configuration, snapshotted
+    /// when the agent was picked so a later settings edit cannot rewrite a
+    /// turn that already ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_instructions: Option<String>,
 }
 
 impl ModelReference {
@@ -51,8 +60,70 @@ impl ModelReference {
             sub_provider: None,
             display_label: display_label.into(),
             marker_label: None,
+            agent_id: None,
+            agent_instructions: None,
         }
     }
+
+    /// Whether two references address the same destination: one route at one
+    /// reasoning level, picked as the same sub-agent (or as none).
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.provider == other.provider
+            && self.model_id == other.model_id
+            && self.sub_provider == other.sub_provider
+            && self.reasoning_effort == other.reasoning_effort
+            && self.agent_id == other.agent_id
+    }
+}
+
+/// A user-configured delegation target: a named model route with optional
+/// standing instructions, offered by the composer's `^` picker.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubAgent {
+    pub id: Uuid,
+    /// The inline marker spelling, `^[name]`. Unique, case-insensitively,
+    /// across the configured agents.
+    pub name: String,
+    pub provider: ProviderKind,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instructions: String,
+}
+
+/// Why a sub-agent name cannot be used as an inline `^[name]` marker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SubAgentNameError {
+    Empty,
+    /// Brackets and line breaks would end or split the marker.
+    InvalidCharacter,
+    Duplicate,
+}
+
+/// Validate `name` for an agent, ignoring the agent being edited (`editing`).
+pub fn validate_sub_agent_name(
+    name: &str,
+    agents: &[SubAgent],
+    editing: Option<Uuid>,
+) -> Result<(), SubAgentNameError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(SubAgentNameError::Empty);
+    }
+    if name.contains(['[', ']', '\n', '\r']) {
+        return Err(SubAgentNameError::InvalidCharacter);
+    }
+    if agents
+        .iter()
+        .any(|agent| Some(agent.id) != editing && agent.name.trim().eq_ignore_ascii_case(name))
+    {
+        return Err(SubAgentNameError::Duplicate);
+    }
+    Ok(())
 }
 
 /// Delegation context attached to a prompt, specifying available targets and code diff source.
@@ -83,6 +154,10 @@ pub struct DelegationTaskSpec {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DelegationBatchRequest {
+    /// Optional idempotency key. Models do omit it despite the schema; the
+    /// daemon then derives one from the turn and the tasks, so an identical
+    /// retry still reuses its group instead of failing the whole batch.
+    #[serde(default)]
     pub request_key: String,
     pub tasks: Vec<DelegationTaskSpec>,
 }

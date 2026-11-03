@@ -574,6 +574,12 @@ impl Waku {
         }
     }
 
+    /// The (group, task) the right panel currently shows, if any.
+    pub(super) fn active_delegation_task(&self) -> Option<(Uuid, Uuid)> {
+        self.active_delegation_detail_identity()
+            .map(|identity| (identity.group_id, identity.task_id))
+    }
+
     fn active_delegation_detail_identity(&self) -> Option<DetailIdentity> {
         if !self.right_panel_visible {
             return None;

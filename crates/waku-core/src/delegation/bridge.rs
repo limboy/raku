@@ -254,8 +254,7 @@ pub fn serve_mcp_stdio() -> anyhow::Result<()> {
                             "properties": {
                                 "request_key": {
                                     "type": "string",
-                                    "minLength": 1,
-                                    "description": "Stable deduplication key for this batch. Repeating it with the same tasks reuses the existing group. If argument validation fails before any subtask starts, fix the arguments and retry with the same request_key."
+                                    "description": "Optional stable deduplication key for this batch. Repeating it with the same tasks reuses the existing group. When omitted, Waku derives one from the tasks, so an identical retry is still deduplicated."
                                 },
                                 "tasks": {
                                     "type": "array",
@@ -283,7 +282,7 @@ pub fn serve_mcp_stdio() -> anyhow::Result<()> {
                                     }
                                 }
                             },
-                            "required": ["request_key", "tasks"]
+                            "required": ["tasks"]
                         }
                     },
                     {

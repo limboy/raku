@@ -5,9 +5,10 @@ use std::ops::Range;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
 pub use waku_protocol::composer::{
-    CommandScope, FileEntry, ModelCandidate, SlashCommand, Trigger, TriggerKind, detect_trigger,
-    extract_model_references, model_candidates, model_reference_range_before_caret,
-    model_reference_text, resolve_model_references,
+    CommandScope, FileEntry, ModelCandidate, SlashCommand, Trigger, TriggerKind,
+    delegation_candidates, detect_trigger, extract_model_references, model_candidates,
+    model_reference_range_before_caret, model_reference_text, resolve_model_references,
+    sub_agent_candidates,
 };
 use waku_protocol::model::{ProviderKind, ProviderModelOption, ReportedCommand};
 
@@ -322,12 +323,24 @@ pub fn filter_models(
     query: &str,
     matcher: &mut Matcher,
 ) -> Vec<Scored<ModelCandidate>> {
+    filter_models_with_cap(candidates, query, matcher, FILTER_CAP)
+}
+
+/// [`filter_models`] with a caller-chosen cap. A virtualized picker that must
+/// reach every route passes `usize::MAX`: catalogue order puts one provider's
+/// whole expansion first, and the composer's cap would hide the rest.
+pub fn filter_models_with_cap(
+    candidates: &[ModelCandidate],
+    query: &str,
+    matcher: &mut Matcher,
+    cap: usize,
+) -> Vec<Scored<ModelCandidate>> {
     let searchable = candidates
         .iter()
         .map(ModelCandidate::searchable)
         .collect::<Vec<_>>();
     let haystacks = searchable.iter().map(String::as_str).collect::<Vec<_>>();
-    filter_scored(&haystacks, query, matcher, FILTER_CAP)
+    filter_scored(&haystacks, query, matcher, cap)
         .into_iter()
         .map(|(index, positions)| Scored {
             item: candidates[index].clone(),

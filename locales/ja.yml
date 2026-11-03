@@ -1017,3 +1017,35 @@ compaction.focus_unsupported: "このプロバイダーは圧縮の追加指示�
 compaction.no_history: "メッセージを送信してから圧縮してください。"
 compaction.waiting_usage: "次の応答後に更新"
 compaction.history_archived: "以前のメッセージをアーカイブして、コンテキストに空きを作りました。会話を続けると、モデルは必要に応じてアーカイブされた履歴を参照します。"
+
+settings.agents: エージェント
+agents.description: "エージェントは作業を任せられる名前付きのモデルです。コンポーザーで ^ を入力して選ぶと、それぞれが独立して読み取り専用でタスクを実行し、結果を報告します。"
+agents.add_agent: エージェントを追加
+agents.add_agent_ellipsis: エージェントを追加…
+agents.empty: エージェントはまだありません。追加すると ^ で作業を委譲できます。
+agents.new_agent: 新規エージェント
+agents.edit_agent: エージェントを編集
+agents.edit_named: "%{name} を編集"
+agents.delete_named: "%{name} を削除"
+agents.name: 名前
+agents.name_description: コンポーザーで ^ に続けてこの名前を入力すると呼び出せます。
+agents.name_placeholder: 例：Reviewer
+agents.model: モデル
+agents.model_description: このエージェントが使うモデルと推論レベル。
+agents.choose_model: モデルを選択
+agents.search_models: モデルを検索
+agents.no_models: 利用できるモデルがありません。プロバイダー設定でサブタスクを実行できるプロバイダーを有効にしてください。
+agents.no_matching_models: 一致するモデルはありません
+agents.instructions: 指示
+agents.instructions_description: 任意。このエージェントが受け取るすべてのタスクの前に送信されます。
+agents.instructions_placeholder: 例：セキュリティの問題をレビューし、ファイルパスを示してください。
+agents.save: 保存
+agents.error_name_empty: エージェントの名前を入力してください。
+agents.error_name_invalid: 名前に角括弧や改行は使えません。
+agents.error_name_duplicate: この名前は別のエージェントが使用しています。
+agents.error_model_missing: エージェントのモデルを選択してください。
+agents.unavailable: 利用不可
+agents.unavailable_tooltip: このエージェントのプロバイダーがオフ、未インストール、またはサブタスクを実行できません。
+transcript.sub_agent: "%{count} 個のエージェント"
+transcript.sub_agents: "%{count} 個のエージェント"
+transcript.sub_agents_open: "%{name} を開く"

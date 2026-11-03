@@ -130,6 +130,9 @@ pub struct ModelCandidate {
     pub sub_provider: Option<String>,
     pub reasoning: Option<ProviderModelOption>,
     pub marker_label: String,
+    /// Set when this candidate is a configured sub-agent rather than a bare
+    /// catalogue route; its name is then the marker spelling.
+    pub agent: Option<crate::delegation::SubAgent>,
 }
 
 impl ModelCandidate {
@@ -141,6 +144,10 @@ impl ModelCandidate {
             self.model_id,
             self.provider.short_name()
         );
+        if let Some(agent) = self.agent.as_ref() {
+            // The agent's name leads: it is what the user calls it by.
+            text = format!("{} {text}", agent.name.trim());
+        }
         if let Some(sub_provider) = self.sub_provider.as_deref() {
             text.push(' ');
             text.push_str(sub_provider);
@@ -153,6 +160,9 @@ impl ModelCandidate {
     }
 
     pub fn label(&self) -> String {
+        if let Some(agent) = self.agent.as_ref() {
+            return agent.name.trim().to_owned();
+        }
         match self.reasoning.as_ref() {
             Some(reasoning) => format!("{} · {}", self.model_name, reasoning.label),
             None => self.model_name.clone(),
@@ -173,8 +183,106 @@ impl ModelCandidate {
             .map(|reasoning| reasoning.id.clone());
         reference.sub_provider = self.sub_provider.clone();
         reference.marker_label = Some(self.marker_label.clone());
+        if let Some(agent) = self.agent.as_ref() {
+            reference.agent_id = Some(agent.id);
+            let instructions = agent.instructions.trim();
+            reference.agent_instructions =
+                (!instructions.is_empty()).then(|| instructions.to_owned());
+        }
         reference
     }
+
+    /// The model half of the label, for rows that show an agent's route.
+    pub fn model_label(&self) -> String {
+        match self.reasoning.as_ref() {
+            Some(reasoning) => format!("{} · {}", self.model_name, reasoning.label),
+            None => self.model_name.clone(),
+        }
+    }
+
+    /// Whether `reference` already addresses this candidate's destination.
+    pub fn matches_reference(&self, reference: &crate::delegation::ModelReference) -> bool {
+        reference.provider == self.provider
+            && reference.model_id == self.model_id
+            && reference.sub_provider == self.sub_provider
+            && reference.reasoning_effort.as_deref()
+                == self
+                    .reasoning
+                    .as_ref()
+                    .map(|reasoning| reasoning.id.as_str())
+            && reference.agent_id == self.agent.as_ref().map(|agent| agent.id)
+    }
+}
+
+/// One candidate per configured sub-agent whose route is currently runnable.
+///
+/// `models` is the same filtered catalogue [`model_candidates`] expands, so an
+/// agent on a disabled or uninstalled provider is not offered. A model the
+/// catalogue has not listed (yet) still resolves under its raw ID: catalogues
+/// refresh in the background and must not make a saved agent vanish.
+pub fn sub_agent_candidates(
+    agents: &[crate::delegation::SubAgent],
+    models: &[(ProviderKind, ProviderModel)],
+) -> Vec<ModelCandidate> {
+    agents
+        .iter()
+        .filter(|agent| !agent.name.trim().is_empty())
+        .filter(|agent| {
+            models
+                .iter()
+                .any(|(provider, _)| *provider == agent.provider)
+        })
+        .map(|agent| {
+            let model = models.iter().find(|(provider, model)| {
+                *provider == agent.provider
+                    && model.id == agent.model_id
+                    && model.sub_provider == agent.sub_provider
+            });
+            let reasoning = agent.reasoning_effort.as_ref().map(|effort| {
+                model
+                    .and_then(|(_, model)| {
+                        model
+                            .reasoning_efforts
+                            .iter()
+                            .find(|option| &option.id == effort)
+                            .cloned()
+                    })
+                    .unwrap_or_else(|| ProviderModelOption::new(effort.clone(), effort.clone()))
+            });
+            ModelCandidate {
+                provider: agent.provider,
+                model_id: agent.model_id.clone(),
+                model_name: model
+                    .map(|(_, model)| model.name.clone())
+                    .unwrap_or_else(|| agent.model_id.clone()),
+                sub_provider: agent.sub_provider.clone(),
+                reasoning,
+                marker_label: agent.name.trim().to_owned(),
+                agent: Some(agent.clone()),
+            }
+        })
+        .collect()
+}
+
+/// The resolution index for `^[label]` markers: configured agents first, then
+/// bare catalogue routes so markers written before agents existed still
+/// resolve. A route whose spelling an agent's name already claims is dropped,
+/// so a marker never turns ambiguous because an agent took that name.
+pub fn delegation_candidates(
+    agents: Vec<ModelCandidate>,
+    models: Vec<ModelCandidate>,
+) -> Vec<ModelCandidate> {
+    let mut candidates = agents;
+    let claimed = candidates
+        .iter()
+        .map(|candidate| candidate.marker_label.to_lowercase())
+        .collect::<std::collections::HashSet<_>>();
+    candidates.extend(
+        models
+            .into_iter()
+            .filter(|candidate| !claimed.contains(&candidate.marker_label.to_lowercase())),
+    );
+    candidates
 }
 
 /// Expand a provider catalogue into delegation candidates.
@@ -192,6 +300,7 @@ pub fn model_candidates(models: &[(ProviderKind, ProviderModel)]) -> Vec<ModelCa
                 sub_provider: model.sub_provider.clone(),
                 reasoning: None,
                 marker_label: String::new(),
+                agent: None,
             });
             continue;
         }
@@ -203,6 +312,7 @@ pub fn model_candidates(models: &[(ProviderKind, ProviderModel)]) -> Vec<ModelCa
                 sub_provider: model.sub_provider.clone(),
                 reasoning: Some(option.clone()),
                 marker_label: String::new(),
+                agent: None,
             });
         }
     }
@@ -300,19 +410,16 @@ pub fn resolve_model_references(
                     .as_deref()
                     .unwrap_or(&reference.display_label)
                     .eq_ignore_ascii_case(label)
-                    || reference.model_id.eq_ignore_ascii_case(label)
+                    // An agent is addressed by its name, never by its model.
+                    || (reference.agent_id.is_none()
+                        && reference.model_id.eq_ignore_ascii_case(label))
             })
             .collect::<Vec<_>>();
         if selected.len() > 1 {
             return Err(label.to_owned());
         }
         if let Some(selected) = selected.first() {
-            if !result.iter().any(|target| {
-                target.provider == selected.provider
-                    && target.model_id == selected.model_id
-                    && target.sub_provider == selected.sub_provider
-                    && target.reasoning_effort == selected.reasoning_effort
-            }) {
+            if !result.iter().any(|target| target.same_target(selected)) {
                 result.push((*selected).clone());
             }
             continue;
@@ -326,8 +433,9 @@ pub fn resolve_model_references(
                 .iter()
                 .filter(|candidate| {
                     candidate.label().eq_ignore_ascii_case(label)
-                        || candidate.model_name.eq_ignore_ascii_case(label)
-                        || candidate.model_id.eq_ignore_ascii_case(label)
+                        || (candidate.agent.is_none()
+                            && (candidate.model_name.eq_ignore_ascii_case(label)
+                                || candidate.model_id.eq_ignore_ascii_case(label)))
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -340,32 +448,22 @@ pub fn resolve_model_references(
             other.provider != candidate.provider
                 || other.model_id != candidate.model_id
                 || other.sub_provider != candidate.sub_provider
+                || other.agent.as_ref().map(|agent| agent.id)
+                    != candidate.agent.as_ref().map(|agent| agent.id)
         }) {
             return Err(label.to_owned());
         }
         let reference = {
-            if result.iter().any(|target| {
-                target.provider == candidate.provider
-                    && target.model_id == candidate.model_id
-                    && target.sub_provider == candidate.sub_provider
-                    && target.reasoning_effort.as_deref()
-                        == candidate
-                            .reasoning
-                            .as_ref()
-                            .map(|reasoning| reasoning.id.as_str())
-            }) {
+            if result
+                .iter()
+                .any(|target| candidate.matches_reference(target))
+            {
                 continue;
             }
-            if let Some(selected) = existing.iter().find(|target| {
-                target.provider == candidate.provider
-                    && target.model_id == candidate.model_id
-                    && target.sub_provider == candidate.sub_provider
-                    && target.reasoning_effort.as_deref()
-                        == candidate
-                            .reasoning
-                            .as_ref()
-                            .map(|reasoning| reasoning.id.as_str())
-            }) {
+            if let Some(selected) = existing
+                .iter()
+                .find(|target| candidate.matches_reference(target))
+            {
                 result.push(selected.clone());
                 continue;
             }
@@ -707,5 +805,93 @@ mod tests {
         let legacy: crate::persistence::ComposerDraft =
             serde_json::from_str(r#"{"text":"old draft"}"#).unwrap();
         assert!(legacy.model_references.is_empty());
+    }
+
+    fn agent(name: &str, model_id: &str, effort: Option<&str>) -> crate::delegation::SubAgent {
+        crate::delegation::SubAgent {
+            id: uuid::Uuid::new_v4(),
+            name: name.into(),
+            provider: ProviderKind::Codex,
+            model_id: model_id.into(),
+            sub_provider: None,
+            reasoning_effort: effort.map(str::to_owned),
+            instructions: "  Review for security issues.  ".into(),
+        }
+    }
+
+    #[test]
+    fn agents_resolve_by_name_and_carry_their_identity() {
+        let models = [(
+            ProviderKind::Codex,
+            model("gpt-5", "GPT-5", &[("high", "High"), ("low", "Low")]),
+        )];
+        let reviewer = agent("Reviewer", "gpt-5", Some("high"));
+        let agents = sub_agent_candidates(std::slice::from_ref(&reviewer), &models);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].marker_label, "Reviewer");
+        assert_eq!(agents[0].model_label(), "GPT-5 · High");
+        let candidates = delegation_candidates(agents, model_candidates(&models));
+
+        let references =
+            resolve_model_references("ask ^[reviewer] to look", &candidates, &[]).unwrap();
+        assert_eq!(references.len(), 1);
+        let reference = &references[0];
+        assert_eq!(reference.display_label, "Reviewer");
+        assert_eq!(reference.agent_id, Some(reviewer.id));
+        assert_eq!(
+            reference.agent_instructions.as_deref(),
+            Some("Review for security issues.")
+        );
+        assert_eq!(reference.reasoning_effort.as_deref(), Some("high"));
+
+        // The bare model spelling still means the bare route, not the agent.
+        let bare = resolve_model_references("^[gpt-5]", &candidates, &[]);
+        assert!(
+            bare.iter()
+                .flatten()
+                .all(|reference| reference.agent_id.is_none())
+        );
+        let route = resolve_model_references("^[GPT-5 · High]", &candidates, &[]).unwrap();
+        assert_eq!(route.len(), 1);
+        assert_eq!(route[0].agent_id, None);
+    }
+
+    #[test]
+    fn two_agents_on_one_route_stay_distinct_targets() {
+        let models = [(ProviderKind::Codex, model("gpt-5", "GPT-5", &[]))];
+        let agents = sub_agent_candidates(
+            &[
+                agent("Reviewer", "gpt-5", None),
+                agent("Tester", "gpt-5", None),
+            ],
+            &models,
+        );
+        let candidates = delegation_candidates(agents, model_candidates(&models));
+        let references =
+            resolve_model_references("^[Reviewer] and ^[Tester]", &candidates, &[]).unwrap();
+        assert_eq!(references.len(), 2);
+        assert_ne!(references[0].agent_id, references[1].agent_id);
+        assert_ne!(references[0].reference_id, references[1].reference_id);
+        // Restoring a draft keeps both selected identities.
+        assert_eq!(
+            extract_model_references("^[Reviewer] and ^[Tester]", &candidates, &references),
+            references
+        );
+    }
+
+    #[test]
+    fn agents_on_unavailable_providers_are_not_offered() {
+        let models = [(ProviderKind::Pi, model("m", "M", &[]))];
+        assert!(sub_agent_candidates(&[agent("Reviewer", "gpt-5", None)], &models).is_empty());
+    }
+
+    #[test]
+    fn an_agent_name_claims_a_colliding_route_spelling() {
+        let models = [(ProviderKind::Codex, model("gpt-5", "GPT-5", &[]))];
+        let agents = sub_agent_candidates(&[agent("gpt-5", "gpt-5", None)], &models);
+        let candidates = delegation_candidates(agents, model_candidates(&models));
+        assert_eq!(candidates.len(), 1);
+        let references = resolve_model_references("^[GPT-5]", &candidates, &[]).unwrap();
+        assert!(references[0].agent_id.is_some());
     }
 }

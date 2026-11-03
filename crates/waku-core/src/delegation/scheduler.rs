@@ -225,7 +225,7 @@ impl DelegationScheduler {
         cwd: &Path,
         review_source: Option<ReviewDiffSource>,
         allowed_targets: &[ModelReference],
-        request: DelegationBatchRequest,
+        mut request: DelegationBatchRequest,
         authorization: Option<&SessionBridgeConfig>,
     ) -> anyhow::Result<DelegationBatchResponse> {
         anyhow::ensure!(
@@ -238,10 +238,6 @@ impl DelegationScheduler {
         if request.tasks.len() > MAX_TASKS_PER_GROUP {
             bail!("delegation batch cannot exceed {MAX_TASKS_PER_GROUP} tasks");
         }
-        anyhow::ensure!(
-            !request.request_key.trim().is_empty(),
-            "request_key must be nonempty. No subtasks were started; retry delegate_batch with a nonempty request_key."
-        );
         let mut keys = HashSet::new();
         for (index, task) in request.tasks.iter().enumerate() {
             anyhow::ensure!(
@@ -307,6 +303,12 @@ impl DelegationScheduler {
                 &resolved_tasks
             ))?)
         );
+        // A missing key falls back to the batch's own content: retrying the
+        // same tasks in the same turn then dedupes exactly as a stable,
+        // model-chosen key would.
+        if request.request_key.trim().is_empty() {
+            request.request_key = format!("auto-{}", &request_hash[..16]);
+        }
         let existing_response =
             |existing: DelegationGroupRow| -> anyhow::Result<DelegationBatchResponse> {
                 anyhow::ensure!(
@@ -813,17 +815,31 @@ impl DelegationScheduler {
                 Some("starting review"),
             );
 
-            // Send instructions prompt
+            // Send instructions prompt. A configured sub-agent's standing
+            // instructions lead, so the parent's per-task text is read in
+            // the role the user gave that agent.
+            let role = target
+                .agent_instructions
+                .as_deref()
+                .map(str::trim)
+                .filter(|instructions| !instructions.is_empty())
+                .map(|instructions| {
+                    format!(
+                        "You are the \"{}\" agent. Follow these standing instructions:\n{instructions}\n\n",
+                        target.display_label
+                    )
+                })
+                .unwrap_or_default();
             let prompt = if context.patch.trim().is_empty() {
                 format!(
-                    "You are executing an independent subtask.\n\n\
+                    "{role}You are executing an independent subtask.\n\n\
                  Task:\n{}\n\n\
                  Please provide your thorough findings, evaluation, and final conclusion.",
                     task.instructions
                 )
             } else {
                 format!(
-                    "You are an expert code reviewer performing an independent code review.\n\
+                    "{role}You are an expert code reviewer performing an independent code review.\n\
                  The code diff is in `.waku-review/patch.diff`.\n\
                  Inspect the changes and source files in this workspace as needed.\n\n\
                  Task:\n{}\n\n\

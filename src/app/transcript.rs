@@ -22,15 +22,25 @@ impl Waku {
     /// already cached. The fingerprint is one allocation-free linear pass, so a
     /// settled transcript now costs a scan instead of a fold.
     pub(super) fn refresh_transcript_row_kinds(&self) -> usize {
+        let delegated_turns = self.selected_delegated_turns();
         let fingerprint = self
             .selected_session()
             .map_or(EMPTY_TRANSCRIPT_FINGERPRINT, |session| {
-                transcript_rows_fingerprint(session, &self.expanded_turns)
+                let mut hash = transcript_rows_fingerprint(session, &self.expanded_turns);
+                // Sorted so the set's iteration order cannot move the hash.
+                let mut turns = delegated_turns.iter().copied().collect::<Vec<_>>();
+                turns.sort_unstable();
+                for turn_id in turns {
+                    hash = mix_uuid(hash, turn_id);
+                }
+                hash
             });
         if self.transcript_row_kinds_fingerprint.get() != Some(fingerprint) {
             let (next_kinds, work_rows) = self
                 .selected_session()
-                .map(|session| folded_transcript_rows(session, &self.expanded_turns))
+                .map(|session| {
+                    folded_transcript_rows(session, &self.expanded_turns, &delegated_turns)
+                })
                 .unwrap_or_default();
             *self.transcript_row_kinds.borrow_mut() = next_kinds;
             *self.transcript_work_rows.borrow_mut() = work_rows;
@@ -428,6 +438,30 @@ impl Waku {
         self.remeasure_transcript_row(target);
     }
 
+    /// Re-measure whichever rows host the agents cards of `turn_ids` — the
+    /// response footer, or the standalone row — after their subtasks moved.
+    pub(super) fn remeasure_sub_agent_cards(&self, turn_ids: &HashSet<Uuid>) {
+        if turn_ids.is_empty() {
+            return;
+        }
+        self.sync_transcript_rows();
+        let rows = self
+            .transcript_row_kinds
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, kind)| match **kind {
+                TranscriptRowKind::ResponseFooter(turn_id, _)
+                | TranscriptRowKind::SubAgents(turn_id) => turn_ids.contains(&turn_id),
+                _ => false,
+            })
+            .map(|(row, _)| row)
+            .collect::<Vec<_>>();
+        for row in rows {
+            self.remeasure_transcript_rows(row..row + 1);
+        }
+    }
+
     pub(super) fn remeasure_transcript_row(&self, target: TranscriptRowKind) {
         self.sync_transcript_rows();
         let row = self
@@ -456,6 +490,10 @@ pub(super) enum TranscriptRowKind {
     /// checkpoints. Responses with a footer render this inside that row; the
     /// standalone row remains for tool-only turns with nothing to copy.
     ChangedFiles(Uuid),
+    /// The delegated subtasks a settled turn started, one row per subtask.
+    /// Like [`Self::ChangedFiles`], responses with a footer render this inside
+    /// that row; the standalone row is for turns without one.
+    SubAgents(Uuid),
     /// The live turn's footer — pulsing dots plus "Working for Ns". Present
     /// from the moment the prompt lands until the turn settles, so a provider
     /// that has not produced a chunk yet still shows visible progress, and a
@@ -668,6 +706,7 @@ pub(super) fn assistant_response_footer(
                 | TranscriptRowKind::TurnFold(_)
                 | TranscriptRowKind::ResponseFooter(_, _)
                 | TranscriptRowKind::ChangedFiles(_)
+                | TranscriptRowKind::SubAgents(_)
                 | TranscriptRowKind::WorkingIndicator => None,
             })
             .filter(|part| !part.content.trim().is_empty())
@@ -970,6 +1009,7 @@ fn mix_turn_id(hash: u64, turn_id: Option<Uuid>) -> u64 {
 pub(super) fn folded_transcript_rows(
     session: &AgentSession,
     expanded_turns: &HashSet<Uuid>,
+    delegated_turns: &HashSet<Uuid>,
 ) -> (Vec<TranscriptRowKind>, HashSet<TranscriptRowKind>) {
     let anchors = session
         .transcript_blocks
@@ -1050,39 +1090,55 @@ pub(super) fn folded_transcript_rows(
     // the footer row. Only turns without a footer need a standalone row;
     // derive its insertion point from the already-folded rows so it lands
     // after the visible `Worked for …` disclosure and before the next prompt.
+    // The same placement holds the agents card, which comes first: the
+    // subtasks are part of how the turn worked, the files what it left.
+    let settled_without_footer = |turn: &&crate::model::AgentTurn| {
+        turn.status != TurnStatus::Running && !response_footers.contains_key(&turn.id)
+    };
+    let delegating_turns = session
+        .turns
+        .iter()
+        .filter(settled_without_footer)
+        .filter(|turn| delegated_turns.contains(&turn.id))
+        .map(|turn| turn.id)
+        .collect::<HashSet<_>>();
     let changed_turns = session
         .turns
         .iter()
+        .filter(settled_without_footer)
         .filter(|turn| {
-            turn.status != TurnStatus::Running
-                && turn.checkpoint.as_ref().is_some_and(|checkpoint| {
-                    checkpoint.status == CheckpointStatus::Ready && !checkpoint.files.is_empty()
-                })
-                && !response_footers.contains_key(&turn.id)
+            turn.checkpoint.as_ref().is_some_and(|checkpoint| {
+                checkpoint.status == CheckpointStatus::Ready && !checkpoint.files.is_empty()
+            })
         })
         .map(|turn| turn.id)
         .collect::<HashSet<_>>();
-    if !changed_turns.is_empty() {
+    if !changed_turns.is_empty() || !delegating_turns.is_empty() {
         let mut last_row_by_turn = HashMap::new();
         for (index, row) in rows.iter().copied().enumerate() {
             if let Some(turn_id) = row_turn_id(session, row)
-                && changed_turns.contains(&turn_id)
+                && (changed_turns.contains(&turn_id) || delegating_turns.contains(&turn_id))
             {
                 last_row_by_turn.insert(turn_id, index);
             }
         }
-        let changed_after_row = last_row_by_turn
+        let summary_after_row = last_row_by_turn
             .into_iter()
             .map(|(turn_id, index)| (index, turn_id))
             .collect::<HashMap<_, _>>();
-        let mut with_changes = Vec::with_capacity(rows.len() + changed_after_row.len());
+        let mut with_summaries = Vec::with_capacity(rows.len() + 2 * summary_after_row.len());
         for (index, row) in rows.into_iter().enumerate() {
-            with_changes.push(row);
-            if let Some(turn_id) = changed_after_row.get(&index).copied() {
-                with_changes.push(TranscriptRowKind::ChangedFiles(turn_id));
+            with_summaries.push(row);
+            if let Some(turn_id) = summary_after_row.get(&index).copied() {
+                if delegating_turns.contains(&turn_id) {
+                    with_summaries.push(TranscriptRowKind::SubAgents(turn_id));
+                }
+                if changed_turns.contains(&turn_id) {
+                    with_summaries.push(TranscriptRowKind::ChangedFiles(turn_id));
+                }
             }
         }
-        rows = with_changes;
+        rows = with_summaries;
     }
 
     // Footer actions belong to the response as a whole, not to whichever text
@@ -1198,7 +1254,18 @@ pub(super) fn folded_transcript_row_kinds(
     session: &AgentSession,
     expanded_turns: &HashSet<Uuid>,
 ) -> Vec<TranscriptRowKind> {
-    folded_transcript_rows(session, expanded_turns).0
+    folded_transcript_rows(session, expanded_turns, &HashSet::new()).0
+}
+
+/// [`folded_transcript_row_kinds`] for a session whose `delegated_turns`
+/// started subtasks.
+#[cfg(test)]
+pub(super) fn folded_transcript_row_kinds_with_delegations(
+    session: &AgentSession,
+    expanded_turns: &HashSet<Uuid>,
+    delegated_turns: &HashSet<Uuid>,
+) -> Vec<TranscriptRowKind> {
+    folded_transcript_rows(session, expanded_turns, delegated_turns).0
 }
 
 /// The rows the turn *produced*, in transcript order: its assistant text parts
@@ -1247,6 +1314,7 @@ fn response_footer_message_index_from_rows(
         | TranscriptRowKind::TurnFold(_)
         | TranscriptRowKind::ResponseFooter(_, _)
         | TranscriptRowKind::ChangedFiles(_)
+        | TranscriptRowKind::SubAgents(_)
         | TranscriptRowKind::WorkingIndicator => None,
     })?;
     let message = session.messages.get(message_index)?;
@@ -1261,6 +1329,7 @@ fn response_footer_message_index_from_rows(
             | TranscriptRowKind::TurnFold(_)
             | TranscriptRowKind::ResponseFooter(_, _)
             | TranscriptRowKind::ChangedFiles(_)
+            | TranscriptRowKind::SubAgents(_)
             | TranscriptRowKind::WorkingIndicator => None,
         })
         .any(|message| !message.content.trim().is_empty())
@@ -1284,6 +1353,7 @@ fn turn_answer_start(session: &AgentSession, turn_rows: &[TranscriptRowKind]) ->
         | TranscriptRowKind::TurnFold(_)
         | TranscriptRowKind::ResponseFooter(_, _)
         | TranscriptRowKind::ChangedFiles(_)
+        | TranscriptRowKind::SubAgents(_)
         | TranscriptRowKind::WorkingIndicator => false,
     };
     let Some(last_text) = turn_rows.iter().rposition(is_answer_text) else {
@@ -1302,6 +1372,7 @@ fn row_turn_id(session: &AgentSession, row: TranscriptRowKind) -> Option<Uuid> {
         TranscriptRowKind::TurnFold(turn_id) => Some(turn_id),
         TranscriptRowKind::ResponseFooter(turn_id, _) => Some(turn_id),
         TranscriptRowKind::ChangedFiles(turn_id) => Some(turn_id),
+        TranscriptRowKind::SubAgents(turn_id) => Some(turn_id),
         TranscriptRowKind::WorkingIndicator => None,
     }
 }
@@ -1322,7 +1393,8 @@ pub(super) fn response_row_turn_id(session: &AgentSession, row: TranscriptRowKin
         TranscriptRowKind::TurnBlock(_)
         | TranscriptRowKind::TurnFold(_)
         | TranscriptRowKind::ResponseFooter(_, _)
-        | TranscriptRowKind::ChangedFiles(_) => row_turn_id(session, row),
+        | TranscriptRowKind::ChangedFiles(_)
+        | TranscriptRowKind::SubAgents(_) => row_turn_id(session, row),
     }
 }
 

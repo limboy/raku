@@ -212,6 +212,7 @@ enum BranchPickerAction {
 enum SettingsPage {
     Appearance,
     Providers,
+    Agents,
     Skills,
     Backups,
 }
@@ -1086,6 +1087,7 @@ pub struct Waku {
     settings_close_focus: FocusHandle,
     settings_tab_focus: [FocusHandle; 5],
     backup_settings: backup_settings::BackupSettings,
+    agent_settings: agent_settings::AgentSettings,
     settings_previous_focus: Option<FocusHandle>,
     settings_focus_generation: u64,
     sidebar_settings_focus: FocusHandle,
@@ -1238,9 +1240,14 @@ pub struct Waku {
     /// Structured identities selected for inline `^` references. Retained
     /// during edits for Undo; only markers still present are submitted.
     composer_targets: Vec<crate::delegation::ModelReference>,
-    /// Every delegation target the model catalogue offers, resolved once per
-    /// catalogue change so the popup's render path stays pure.
+    /// Every delegation target `^[label]` can resolve to — configured agents,
+    /// then bare catalogue routes — rebuilt once per catalogue or settings
+    /// change so no render path resolves anything.
     delegation_model_index: Rc<Vec<crate::composer_complete::ModelCandidate>>,
+    /// The configured sub-agents whose route is runnable: what `^` lists.
+    sub_agent_index: Rc<Vec<crate::composer_complete::ModelCandidate>>,
+    /// Every runnable catalogue route, for the agent editor's model picker.
+    delegation_route_index: Rc<Vec<crate::composer_complete::ModelCandidate>>,
     /// Delegation groups per parent session, as last read from the daemon. The
     /// daemon owns these rows; the client only mirrors them for rendering.
     session_delegations:
@@ -1609,6 +1616,7 @@ pub struct Waku {
 }
 
 mod activity_diff;
+mod agent_settings;
 mod autocomplete;
 mod background_work;
 mod backup_settings;
@@ -1642,6 +1650,7 @@ mod transcript_view;
 mod usage_meter;
 mod window_chrome;
 
+pub use agent_settings::init as init_agent_settings_keys;
 pub use autocomplete::init as init_composer_autocomplete;
 use background_work::{
     BackgroundWorkRegistry, work_kind_icon, work_status_color, work_status_label,
@@ -2648,6 +2657,7 @@ impl Waku {
                 settings_close_focus: cx.focus_handle(),
                 settings_tab_focus: std::array::from_fn(|_| cx.focus_handle()),
                 backup_settings: backup_settings::BackupSettings::new(cx),
+                agent_settings: agent_settings::AgentSettings::new(cx),
                 settings_previous_focus: None,
                 settings_focus_generation: 0,
                 sidebar_settings_focus: cx.focus_handle(),
@@ -2725,6 +2735,8 @@ impl Waku {
                 composer_attachments,
                 composer_targets: initial_composer_targets,
                 delegation_model_index: Rc::new(Vec::new()),
+                sub_agent_index: Rc::new(Vec::new()),
+                delegation_route_index: Rc::new(Vec::new()),
                 session_delegations: std::collections::HashMap::new(),
                 delegation_refresh_pending: HashSet::new(),
                 delegation_detail: RefCell::new(None),

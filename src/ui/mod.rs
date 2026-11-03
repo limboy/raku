@@ -64,6 +64,20 @@ pub fn contain_scroll(handle: &ScrollHandle, cx: &mut App) {
     }
 }
 
+/// [`contain_scroll`] for a virtualized `list()`. The list clamps its own
+/// offset, so an overshoot is invisible; instead compare against `last`, the
+/// offset this listener saw on the previous event. A wheel event that moved
+/// the list was consumed by it; one that left it in place hit an edge (or the
+/// list fits) and chains to the ancestor. Call from an `on_scroll_wheel`
+/// listener on the list's wrapper, which runs after the list's own handler.
+pub fn contain_list_scroll(state: &gpui::ListState, last: &std::cell::Cell<Pixels>, cx: &mut App) {
+    let offset = state.scroll_px_offset_for_scrollbar().y;
+    let moved = (offset - last.replace(offset)).abs() > px(0.5);
+    if moved && state.max_offset_for_scrollbar().y > px(0.5) {
+        cx.stop_propagation();
+    }
+}
+
 fn nested_scroll_consumed_delta(offset: Pixels, max_offset: Pixels) -> bool {
     max_offset > px(0.5) && offset >= -max_offset && offset <= px(0.0)
 }

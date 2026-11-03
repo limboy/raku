@@ -1249,6 +1249,7 @@ impl Waku {
             | TranscriptRowKind::TurnFold(_)
             | TranscriptRowKind::ResponseFooter(_, _)
             | TranscriptRowKind::ChangedFiles(_)
+            | TranscriptRowKind::SubAgents(_)
             | TranscriptRowKind::WorkingIndicator => false,
         };
         // Providers separate consecutive tool calls with whitespace-only text
@@ -1421,6 +1422,9 @@ impl Waku {
             TranscriptRowKind::ChangedFiles(turn_id) => self
                 .render_changed_files_row(turn_id, &theme, cx)
                 .unwrap_or_else(|| div().into_any_element()),
+            TranscriptRowKind::SubAgents(turn_id) => self
+                .render_sub_agents_card(turn_id, &theme, cx)
+                .unwrap_or_else(|| div().into_any_element()),
             TranscriptRowKind::WorkingIndicator => self.render_working_indicator_row(&theme),
         };
         let inner = if is_work_row {
@@ -1529,6 +1533,9 @@ impl Waku {
             .flex_col()
             .gap(px(3.0))
             .group(group_name.clone());
+        if let Some(agents) = self.render_sub_agents_card(turn_id, theme, cx) {
+            column = column.child(div().w_full().mb(px(3.0)).child(agents));
+        }
         if let Some(changed_files) = self.render_changed_files_row(turn_id, theme, cx) {
             column = column.child(div().w_full().mb(px(3.0)).child(changed_files));
         }

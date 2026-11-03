@@ -210,6 +210,7 @@ pub fn run() {
             crate::input::init(cx);
             crate::ui::menu::init(cx);
             crate::app::init_composer_autocomplete(cx);
+            crate::app::init_agent_settings_keys(cx);
             crate::app::init_settings_keys(cx);
             crate::app::init_command_palette(cx);
             crate::app::init_commit_dialog_keys(cx);

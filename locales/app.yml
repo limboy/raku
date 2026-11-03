@@ -1986,3 +1986,66 @@ compaction.waiting_usage:
   en: "Updates after next reply"
 compaction.history_archived:
   en: "Earlier messages have been archived to free up context. You can continue the conversation; the model will use the archived history as needed."
+
+settings.agents:
+  en: Agents
+agents.description:
+  en: "Agents are named models you can hand work to. Type ^ in the composer and pick one; each runs its task independently, read-only, and reports back."
+agents.add_agent:
+  en: Add Agent
+agents.add_agent_ellipsis:
+  en: Add agent…
+agents.empty:
+  en: No agents yet. Add one to delegate work with ^.
+agents.new_agent:
+  en: New Agent
+agents.edit_agent:
+  en: Edit Agent
+agents.edit_named:
+  en: "Edit %{name}"
+agents.delete_named:
+  en: "Delete %{name}"
+agents.name:
+  en: Name
+agents.name_description:
+  en: Type ^ followed by this name in the composer to call the agent.
+agents.name_placeholder:
+  en: e.g. Reviewer
+agents.model:
+  en: Model
+agents.model_description:
+  en: The model and reasoning level this agent runs on.
+agents.choose_model:
+  en: Choose a model
+agents.search_models:
+  en: Search models
+agents.no_models:
+  en: No models available. Enable a provider that can run subtasks in Providers.
+agents.no_matching_models:
+  en: No matching models
+agents.instructions:
+  en: Instructions
+agents.instructions_description:
+  en: Optional. Sent to this agent ahead of every task it receives.
+agents.instructions_placeholder:
+  en: e.g. Review for security issues and cite file paths.
+agents.save:
+  en: Save
+agents.error_name_empty:
+  en: Give the agent a name.
+agents.error_name_invalid:
+  en: "Names can't contain brackets or line breaks."
+agents.error_name_duplicate:
+  en: Another agent already uses this name.
+agents.error_model_missing:
+  en: Choose a model for the agent.
+agents.unavailable:
+  en: Unavailable
+agents.unavailable_tooltip:
+  en: "This agent's provider is switched off, not installed, or can't run subtasks."
+transcript.sub_agent:
+  en: "%{count} agent"
+transcript.sub_agents:
+  en: "%{count} agents"
+transcript.sub_agents_open:
+  en: "Open %{name}"

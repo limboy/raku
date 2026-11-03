@@ -305,6 +305,8 @@ pub struct AppSettings {
     /// platform file manager.
     pub open_in_app: Option<String>,
     pub backup_directory: Option<PathBuf>,
+    /// Named delegation targets offered by the composer's `^` picker.
+    pub sub_agents: Vec<waku_protocol::delegation::SubAgent>,
 }
 
 impl Default for AppSettings {
@@ -320,6 +322,7 @@ impl Default for AppSettings {
             render_math: true,
             open_in_app: None,
             backup_directory: None,
+            sub_agents: Vec::new(),
         }
     }
 }
@@ -456,6 +459,8 @@ pub struct PersistedState {
     pub open_in_app: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup_directory: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_agents: Vec<waku_protocol::delegation::SubAgent>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
     #[serde(default = "default_right_panel_visibility")]
@@ -528,6 +533,7 @@ impl PersistedState {
             render_math: true,
             open_in_app: None,
             backup_directory: None,
+            sub_agents: Vec::new(),
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -751,6 +757,7 @@ impl PersistedState {
             render_math: self.render_math,
             open_in_app: self.open_in_app.clone(),
             backup_directory: self.backup_directory.clone(),
+            sub_agents: self.sub_agents.clone(),
         };
         settings.normalize_desktop_defaults();
         settings
@@ -795,6 +802,7 @@ impl PersistedState {
         self.render_math = settings.render_math;
         self.open_in_app = settings.open_in_app;
         self.backup_directory = settings.backup_directory;
+        self.sub_agents = settings.sub_agents;
     }
 
     fn apply_app_state(&mut self, app_state: AppState) {

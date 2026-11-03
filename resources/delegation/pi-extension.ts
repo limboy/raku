@@ -191,11 +191,12 @@ export default function wakuDelegation(pi: ExtensionAPI) {
       "Run independent subtasks on the models the user marked with ^, in parallel. Pass one task per target; each task's `target_ref` is a target id from the delegation block of the user's message. Returns a group id for `wait_delegates`.",
     parameters: Type.Object(
       {
-        request_key: Type.String({
-          minLength: 1,
-          description:
-            "Stable key for this batch. Repeating it with the same tasks reuses the existing group instead of running them again. If argument validation fails before any subtask starts, fix the arguments and retry with the same request_key.",
-        }),
+        request_key: Type.Optional(
+          Type.String({
+            description:
+              "Optional stable key for this batch. Repeating it with the same tasks reuses the existing group instead of running them again. When omitted, Waku derives one from the tasks, so an identical retry is still deduplicated.",
+          }),
+        ),
         tasks: Type.Array(
           Type.Object(
             {

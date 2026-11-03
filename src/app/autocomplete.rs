@@ -60,7 +60,10 @@ pub fn init(cx: &mut App) {
 pub(super) enum AutocompleteRow {
     Command(Scored<SlashCommand>),
     File(Scored<FileEntry>),
-    Model(Scored<composer_complete::ModelCandidate>),
+    /// A configured sub-agent offered by `^`.
+    Agent(Scored<composer_complete::ModelCandidate>),
+    /// The `^` list's closing entry: configure a new sub-agent in Settings.
+    AddAgent,
 }
 
 /// Filter results for one (kind, query, source index) — the popup's rows are
@@ -70,6 +73,10 @@ struct ResultsMemo {
     query: String,
     /// `Rc::as_ptr` identity of the source index the rows were filtered from.
     source: usize,
+    /// Whether the session could delegate. `^` rows depend on it as much as
+    /// on the agent index: a memo from a session that cannot delegate is
+    /// empty, and replaying it in one that can would hide the popup.
+    delegation: bool,
     rows: Rc<Vec<AutocompleteRow>>,
 }
 
@@ -112,11 +119,13 @@ impl AutocompleteUi {
 }
 
 impl Waku {
-    /// Rebuild the delegation candidates from the model catalogue.
+    /// Rebuild the delegation candidates from the model catalogue and the
+    /// configured sub-agents.
     ///
-    /// Reads only in-memory probes: a catalogue change is what re-runs this,
-    /// never a frame. Disabled providers are excluded because a subtask cannot
-    /// be started on them, and offering one would make `^` lie.
+    /// Reads only in-memory probes and settings: a catalogue or settings
+    /// change is what re-runs this, never a frame. Disabled providers are
+    /// excluded because a subtask cannot be started on them, and offering one
+    /// would make `^` lie.
     pub(super) fn refresh_delegation_model_index(&mut self) {
         let models = self
             .probes
@@ -134,7 +143,18 @@ impl Waku {
                     .map(move |model| (probe.provider, model))
             })
             .collect::<Vec<_>>();
-        self.delegation_model_index = Rc::new(composer_complete::model_candidates(&models));
+        let routes = composer_complete::model_candidates(&models);
+        let agents = composer_complete::sub_agent_candidates(&self.state.sub_agents, &models);
+        // Rebuilding with equal contents keeps the old `Rc`s, so the popup's
+        // filter memo (keyed by index identity) survives a no-op refresh.
+        if *self.sub_agent_index != agents {
+            self.sub_agent_index = Rc::new(agents.clone());
+        }
+        if *self.delegation_route_index != routes {
+            self.delegation_route_index = Rc::new(routes.clone());
+        }
+        self.delegation_model_index =
+            Rc::new(composer_complete::delegation_candidates(agents, routes));
     }
 
     /// Whether this session can delegate at all: the parent agent needs the
@@ -151,16 +171,10 @@ impl Waku {
         &mut self,
         candidate: composer_complete::ModelCandidate,
     ) -> crate::delegation::ModelReference {
-        let existing = self.composer_targets.iter().find(|target| {
-            target.provider == candidate.provider
-                && target.model_id == candidate.model_id
-                && target.sub_provider == candidate.sub_provider
-                && target.reasoning_effort
-                    == candidate
-                        .reasoning
-                        .as_ref()
-                        .map(|reasoning| reasoning.id.clone())
-        });
+        let existing = self
+            .composer_targets
+            .iter()
+            .find(|target| candidate.matches_reference(target));
         if let Some(existing) = existing {
             return existing.clone();
         }
@@ -374,12 +388,16 @@ impl Waku {
         let source = match trigger.kind {
             TriggerKind::Command => Rc::as_ptr(&self.slash_command_index) as usize,
             TriggerKind::File => Rc::as_ptr(&self.mention_file_index) as usize,
-            TriggerKind::Model => Rc::as_ptr(&self.delegation_model_index) as usize,
+            TriggerKind::Model => Rc::as_ptr(&self.sub_agent_index) as usize,
         };
+        let delegation = trigger.kind == TriggerKind::Model && self.supports_delegation();
         {
             let memo = self.composer_autocomplete.results.borrow();
             if let Some(memo) = memo.as_ref().filter(|memo| {
-                memo.kind == trigger.kind && memo.query == trigger.query && memo.source == source
+                memo.kind == trigger.kind
+                    && memo.query == trigger.query
+                    && memo.source == source
+                    && memo.delegation == delegation
             }) {
                 return memo.rows.clone();
             }
@@ -402,14 +420,17 @@ impl Waku {
             .into_iter()
             .map(AutocompleteRow::File)
             .collect(),
-            TriggerKind::Model if !self.supports_delegation() => Vec::new(),
+            TriggerKind::Model if !delegation => Vec::new(),
             TriggerKind::Model => composer_complete::filter_models(
-                &self.delegation_model_index,
+                &self.sub_agent_index,
                 &trigger.query,
                 &mut matcher,
             )
             .into_iter()
-            .map(AutocompleteRow::Model)
+            .map(AutocompleteRow::Agent)
+            // Always reachable, so an empty or non-matching list still
+            // leads somewhere: the agent the user meant may not exist yet.
+            .chain(std::iter::once(AutocompleteRow::AddAgent))
             .collect(),
         };
         let rows = Rc::new(rows);
@@ -417,6 +438,7 @@ impl Waku {
             kind: trigger.kind,
             query: trigger.query.clone(),
             source,
+            delegation,
             rows: rows.clone(),
         });
         rows
@@ -448,7 +470,7 @@ impl Waku {
     pub(super) fn accept_autocomplete(
         &mut self,
         index: Option<usize>,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(trigger) = self.composer_trigger(window, cx) else {
@@ -464,13 +486,23 @@ impl Waku {
         let Some(row) = rows.get(index) else {
             return;
         };
+        if matches!(row, AutocompleteRow::AddAgent) {
+            // The half-typed `^token` would reopen this popup the moment the
+            // composer regains focus; the agent is inserted by picking it.
+            self.composer.update(cx, |input, cx| {
+                input.replace_range(trigger.range.clone(), "", cx);
+            });
+            self.open_new_sub_agent_editor(window, cx);
+            return;
+        }
         let insert = match row {
             AutocompleteRow::Command(scored) => {
                 let composer_text = composer_complete::command_composer_text(&scored.item);
                 format!("{composer_text} ")
             }
             AutocompleteRow::File(scored) => format!("@{} ", scored.item.path),
-            AutocompleteRow::Model(scored) => {
+            AutocompleteRow::AddAgent => unreachable!("handled above"),
+            AutocompleteRow::Agent(scored) => {
                 let reference = self.push_composer_target(scored.item.clone());
                 composer_complete::model_reference_text(
                     reference
@@ -701,39 +733,33 @@ impl Waku {
                     )
                     .into_any_element()
             }
-            AutocompleteRow::Model(scored) => {
+            AutocompleteRow::Agent(scored) => {
                 let candidate = &scored.item;
                 let provider = candidate.provider;
-                // Name and reasoning first, then the calling channel, then the
-                // provider short name: two same-named models under different
-                // channels stay tellable apart.
-                base.child(icon("icons/sparkle.svg", 12.0, theme.text_tertiary))
+                let name = candidate.label();
+                // The searchable text leads with the agent's name, so the
+                // match positions over its first bytes index the name.
+                let name_ranges = highlight_byte_ranges(&name, &scored.positions, 0);
+                let mut name_font = font.clone();
+                name_font.weight = FontWeight::MEDIUM;
+                // Agent name, then the route it runs on: model and reasoning,
+                // then the calling channel or provider so two same-named
+                // models under different channels stay tellable apart.
+                base.child(icon("icons/bot.svg", 13.0, theme.text_tertiary))
                     .child(
                         div()
                             .flex_none()
-                            .max_w(px(260.0))
+                            .max_w(px(220.0))
                             .truncate()
                             .text_size(sp(12.5))
-                            .text_color(theme.text)
-                            .child(SharedString::from(candidate.model_name.clone())),
+                            .child(matched_text(
+                                name,
+                                name_ranges,
+                                theme.text,
+                                theme.accent,
+                                name_font,
+                            )),
                     )
-                    .when_some(candidate.reasoning.clone(), |element, reasoning| {
-                        element.child(
-                            div()
-                                .flex_none()
-                                .h(px(18.0))
-                                .px(px(5.0))
-                                .rounded(px(4.0))
-                                .border_1()
-                                .border_color(theme.border)
-                                .flex()
-                                .items_center()
-                                .text_size(sp(12.5))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.text_tertiary)
-                                .child(SharedString::from(reasoning.label)),
-                        )
-                    })
                     .child(
                         div()
                             .flex_1()
@@ -741,15 +767,36 @@ impl Waku {
                             .truncate()
                             .text_size(sp(12.5))
                             .text_color(theme.text_tertiary)
+                            .child(SharedString::from(candidate.model_label())),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(160.0))
+                            .truncate()
+                            .text_size(sp(12.5))
+                            .text_color(theme.text_ghost)
                             .child(SharedString::from(
-                                candidate
-                                    .sub_provider
-                                    .clone()
-                                    .unwrap_or_else(|| provider.short_name().to_owned()),
+                                super::agent_settings::route_source_label(
+                                    provider,
+                                    candidate.sub_provider.as_deref(),
+                                ),
                             )),
                     )
                     .into_any_element()
             }
+            AutocompleteRow::AddAgent => base
+                .child(icon("icons/plus.svg", 12.0, theme.text_tertiary))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(sp(12.5))
+                        .text_color(theme.text_secondary)
+                        .child(tr!("agents.add_agent_ellipsis")),
+                )
+                .into_any_element(),
 
             AutocompleteRow::File(scored) => {
                 let file = &scored.item;
