@@ -408,6 +408,14 @@ impl Waku {
             .cursor_default()
             .hover(|element| element.bg(theme.overlay))
             .active(|element| element.bg(theme.overlay_strong))
+            .tooltip(Tooltip::text(tr!(
+                if self.sidebar_visible {
+                    "sidebar.hide"
+                } else {
+                    "sidebar.open"
+                },
+                shortcut = crate::platform::primary_shortcut("⌘B", "Ctrl+B")
+            )))
             .child(icon("icons/panel-left.svg", 14.0, theme.text_tertiary))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
@@ -435,7 +443,10 @@ impl Waku {
             .when(open, |element| element.bg(theme.overlay))
             .hover(|element| element.bg(theme.overlay))
             .active(|element| element.bg(theme.overlay_strong))
-            .tooltip(Tooltip::text(tr_cow!("sidebar.search_tasks")))
+            .tooltip(Tooltip::text(tr!(
+                "sidebar.search_tasks",
+                shortcut = crate::platform::primary_shortcut("⌘K", "Ctrl+K")
+            )))
             .child(icon(
                 "icons/search.svg",
                 14.0,
@@ -583,8 +594,7 @@ impl Waku {
             .flex_1()
             .min_w_0()
             .h(px(SIDEBAR_PROJECT_ROW_HEIGHT))
-            // The border takes 1px of the inset, keeping the folder icon
-            // aligned with the New task icon beneath it.
+            // The border takes 1px of the inset.
             .px(px(3.0))
             .rounded(px(7.0))
             .border_1()
@@ -640,37 +650,28 @@ impl Waku {
         div()
             .id("sidebar-new-task")
             .tab_index(0)
-            .w_full()
-            .min_w_0()
-            .h(px(SIDEBAR_PROJECT_ROW_HEIGHT))
-            .px(px(4.0))
-            .rounded(px(7.0))
+            .size(px(TITLEBAR_BUTTON_SIZE))
+            .flex_none()
+            .rounded(px(6.0))
             .flex()
             .items_center()
-            .gap(px(10.0))
+            .justify_center()
             .cursor_default()
             .focus_visible(|style| style.border_1().border_color(theme.accent))
-            .hover(|element| element.bg(theme.sidebar_item_background))
+            .hover(|element| element.bg(theme.overlay))
             .active(|element| element.bg(theme.overlay_strong))
-            .child(
-                div()
-                    .size(px(20.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("icons/compose.svg", 14.0, theme.text_tertiary)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(sp(13.0))
-                    .text_color(theme.text_secondary)
-                    .child(tr!("sidebar.new_task")),
-            )
+            .tooltip(Tooltip::text(tr!(
+                "sidebar.new_task",
+                shortcut = crate::platform::primary_shortcut("⌘N", "Ctrl+N")
+            )))
+            .child(icon("icons/compose.svg", 14.0, theme.text_tertiary))
+            // The titlebar drags the window from a mouse-down; a press here
+            // must stay a click.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
             .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
                 this.new_session_action(&NewSession, window, cx);
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -691,10 +692,14 @@ impl Waku {
         let is_resizing = self
             .panel_resize_drag
             .is_some_and(|drag| drag.target == PanelResizeTarget::Sidebar);
-        // A narrow sidebar leaves no titlebar room beside the fixed window
-        // navigation. Keep the update reachable beside the project selector.
-        let update_in_titlebar =
-            width >= self.window_navigation_width(window, cx) + TITLEBAR_BUTTON_SIZE + 20.0;
+        // The New task button always fits beside the fixed window navigation
+        // at the minimum width. A narrow sidebar leaves no room for the update
+        // button too, so it moves beside the project selector instead.
+        let update_in_titlebar = width
+            >= self.window_navigation_width(window, cx)
+                + TITLEBAR_BUTTON_SIZE * 2.0
+                + TITLEBAR_NAVIGATION_GAP
+                + 20.0;
 
         let rows = self.sidebar_rows_cached();
         self.sync_sidebar_rows(&rows);
@@ -745,12 +750,14 @@ impl Waku {
                         .flex()
                         .items_center()
                         .justify_end()
+                        .gap(px(TITLEBAR_NAVIGATION_GAP))
                         .tab_index(0)
                         .tab_group()
                         .tab_stop(false)
                         .when(update_in_titlebar, |titlebar| {
                             titlebar.children(self.render_sidebar_update(cx))
-                        }),
+                        })
+                        .child(self.render_sidebar_new_task(cx)),
                     cx,
                 ),
             )
@@ -760,22 +767,15 @@ impl Waku {
                     .px(px(10.0))
                     .pb(px(10.0))
                     .flex()
-                    .flex_col()
-                    .gap(px(2.0))
+                    .items_center()
+                    .gap(px(6.0))
                     .tab_index(0)
                     .tab_group()
                     .tab_stop(false)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(self.render_sidebar_project_selector(cx))
-                            .when(!update_in_titlebar, |row| {
-                                row.children(self.render_sidebar_update(cx))
-                            }),
-                    )
-                    .child(self.render_sidebar_new_task(cx)),
+                    .child(self.render_sidebar_project_selector(cx))
+                    .when(!update_in_titlebar, |row| {
+                        row.children(self.render_sidebar_update(cx))
+                    }),
             )
             .child(
                 div()

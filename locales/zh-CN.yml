@@ -161,8 +161,8 @@ common.rename: 重命名
 session.new_task: 新任务
 sidebar.today: 今天
 sidebar.pinned: 已置顶
-sidebar.new_task: 新建任务
-sidebar.search_tasks: 搜索任务
+sidebar.new_task: 新建任务（%{shortcut}）
+sidebar.search_tasks: 搜索任务（%{shortcut}）
 sidebar.options: 侧边栏选项
 sidebar.grouping: 分组
 sidebar.grouping_project: 项目
@@ -183,8 +183,8 @@ sidebar.hours_ago: "%{count} 小时前"
 sidebar.days_ago: "%{count} 天前"
 sidebar.unknown_project: 未知项目
 sidebar.close: 关闭侧边栏
-sidebar.hide: 隐藏侧边栏
-sidebar.open: 打开侧边栏
+sidebar.hide: 隐藏侧边栏（%{shortcut}）
+sidebar.open: 打开侧边栏（%{shortcut}）
 sidebar.tasks: 任务
 sidebar.add_project: 添加远程项目
 sidebar.resize: 调整侧边栏宽度

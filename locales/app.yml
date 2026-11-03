@@ -335,9 +335,9 @@ sidebar.today:
 sidebar.pinned:
   en: Pinned
 sidebar.new_task:
-  en: New task
+  en: New task (%{shortcut})
 sidebar.search_tasks:
-  en: Search tasks
+  en: Search tasks (%{shortcut})
 sidebar.options:
   en: Sidebar options
 sidebar.grouping:
@@ -379,9 +379,9 @@ sidebar.unknown_project:
 sidebar.close:
   en: Close sidebar
 sidebar.hide:
-  en: Hide sidebar
+  en: Hide sidebar (%{shortcut})
 sidebar.open:
-  en: Open sidebar
+  en: Open sidebar (%{shortcut})
 sidebar.tasks:
   en: Tasks
 sidebar.add_project:
