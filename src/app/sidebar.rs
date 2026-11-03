@@ -601,7 +601,9 @@ impl Waku {
             .border_color(theme.border_strong)
             .flex()
             .items_center()
-            .gap(px(10.0))
+            // The icon's 20px box pads its 14px glyph by 3px a side, so a 3px
+            // gap matches the 6px between the glyph and the border.
+            .gap(px(3.0))
             .cursor_default()
             .focus_visible(|style| style.border_color(theme.accent))
             .when(handle.is_open(), |element| element.bg(theme.overlay))

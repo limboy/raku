@@ -345,8 +345,10 @@ pub fn run() {
                                 target_os = "macos",
                                 target_os = "windows"
                             )),
+                            // Centers the lights on the 48pt navigation row,
+                            // level with the sidebar toggle and search icons.
                             traffic_light_position: cfg!(target_os = "macos")
-                                .then(|| point(px(16.0), px(17.0))),
+                                .then(|| point(px(16.0), px(16.0))),
                         }),
                         // Waku moves its custom macOS titlebar explicitly. Keep
                         // the NSWindow movable so native controls and Window-menu
