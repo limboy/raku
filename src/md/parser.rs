@@ -416,7 +416,7 @@ fn parse_table_row(cursor: &mut Cursor) -> Vec<Vec<InlineRun>> {
         match cursor.peek_event() {
             Some(Event::Start(Tag::TableCell)) => {
                 cursor.bump();
-                // A table cell is one line of text; an image there degrades to
+                // A table cell holds only inline text; an image there degrades to
                 // its alt rather than breaking the row's geometry.
                 cells.push(pieces_into_runs(parse_inline_container(cursor)));
             }
@@ -573,9 +573,15 @@ fn parse_inline_event(cursor: &mut Cursor, pieces: &mut Vec<InlinePiece>, style:
                 parse_inline_event(cursor, pieces, &nested);
             }
         }
-        // Inline HTML renders literally, matching the block-level choice.
+        // `<br>` is the only way to break a line inside a GFM table cell, so it
+        // becomes a line break like a hard break does. Other inline HTML
+        // renders literally, matching the block-level choice.
         Event::Html(text) | Event::InlineHtml(text) => push_run(InlineRun {
-            text: text.to_string(),
+            text: if is_br_tag(&text) {
+                "\n".to_owned()
+            } else {
+                text.to_string()
+            },
             style: style.clone(),
         }),
         Event::FootnoteReference(label) => push_run(InlineRun {
@@ -588,6 +594,20 @@ fn parse_inline_event(cursor: &mut Cursor, pieces: &mut Vec<InlinePiece>, style:
         }),
         Event::End(_) | Event::Rule => {}
     }
+}
+
+/// Whether an inline HTML chunk is a line-break tag: `<br>`, `<br/>`, or
+/// `<br />`, in any case.
+fn is_br_tag(html: &str) -> bool {
+    let Some(inner) = html
+        .trim()
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+    else {
+        return false;
+    };
+    let inner = inner.trim_end().trim_end_matches('/').trim_end();
+    inner.eq_ignore_ascii_case("br")
 }
 
 /// Sentence punctuation and unmatched closing delimiters are prose around a
@@ -1263,6 +1283,31 @@ mod tests {
             panic!("expected a table");
         };
         assert_eq!(rows[0][0][0].text, "alt");
+    }
+
+    #[test]
+    fn br_tags_in_table_cells_become_line_breaks() {
+        let tree = parse("| a | b |\n|---|---|\n| **Gemini**<br>`gemini` | x<br/>y<BR />z |\n");
+        let Block::Table { rows, .. } = &tree.blocks[0].block else {
+            panic!("expected a table");
+        };
+        let cell = |index: usize| {
+            rows[0][index]
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>()
+        };
+        assert_eq!(cell(0), "Gemini\ngemini");
+        assert_eq!(cell(1), "x\ny\nz");
+    }
+
+    #[test]
+    fn other_inline_html_stays_literal() {
+        let tree = parse("a <span>b</span> <brx>");
+        assert_eq!(
+            paragraph_text(&tree.blocks[0].block),
+            "a <span>b</span> <brx>"
+        );
     }
 
     #[test]

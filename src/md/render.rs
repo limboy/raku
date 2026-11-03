@@ -2184,10 +2184,21 @@ fn column_widths(
     let mut content = vec![0.0f32; columns];
     let mut note = |index: usize, cell: &Vec<InlineRun>| {
         if let Some(slot) = content.get_mut(index) {
-            let length = cell
-                .iter()
-                .map(|run| run.text.chars().count())
-                .sum::<usize>();
+            // A `<br>` splits a cell into lines; its width follows the
+            // longest line, not the whole cell.
+            let mut length = 0usize;
+            let mut line = 0usize;
+            for run in cell {
+                for character in run.text.chars() {
+                    if character == '\n' {
+                        length = length.max(line);
+                        line = 0;
+                    } else {
+                        line += 1;
+                    }
+                }
+            }
+            let length = length.max(line);
             *slot = slot.max(length as f32);
         }
     };
