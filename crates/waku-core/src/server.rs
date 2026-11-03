@@ -6,8 +6,9 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select, unbounded};
 use parking_lot::Mutex;
+use polling::{Event, Events, Poller};
 use subtle::ConstantTimeEq as _;
 use tungstenite::handshake::server::{
     ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
@@ -24,8 +25,12 @@ use crate::protocol::{
     ResponsePayload, RpcError, SequencedEvent, ServerMessage, WireDriverEvent,
 };
 
-const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
-const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// How long the accept loop and idle connections block before rechecking the
+/// shared shutdown flag. Sockets and queues wake them as soon as there is
+/// work, and an in-band `Shutdown` wakes the accept loop directly, so this
+/// only bounds how late a flag set elsewhere (the parent-process monitor,
+/// itself polled every 500 ms) is noticed.
+const SHUTDOWN_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 /// A socket write that makes no progress for this long means the client is
 /// not reading. Keeping the connection would let its event queue grow without
 /// bound, so it is dropped; clients reconnect and resume from their cursors.
@@ -615,6 +620,41 @@ pub fn serve(
     let dispatcher = Arc::new(RequestDispatcher::new(backend.clone(), hub.clone()));
     let options = Arc::new(options);
     let active_connections = Arc::new(AtomicUsize::new(0));
+    // The accept loop used to sleep 25 ms between nonblocking accepts. Block
+    // in the OS poller instead: a connection or an in-band shutdown wakes it.
+    let accept_poller =
+        Arc::new(Poller::new().context("could not create Waku daemon listener poller")?);
+    // SAFETY: deregistered below before `listener` is dropped.
+    unsafe { accept_poller.add(&listener, Event::readable(0)) }
+        .context("could not watch Waku daemon listener")?;
+    let result = accept_connections(
+        &listener,
+        &accept_poller,
+        &token,
+        &dispatcher,
+        &hub,
+        &shutdown,
+        &options,
+        &active_connections,
+    );
+    let _ = accept_poller.delete(&listener);
+    result?;
+    backend.shutdown();
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accept_connections(
+    listener: &TcpListener,
+    accept_poller: &Arc<Poller>,
+    token: &str,
+    dispatcher: &Arc<RequestDispatcher>,
+    hub: &Arc<Hub>,
+    shutdown: &Arc<AtomicBool>,
+    options: &Arc<ServerOptions>,
+    active_connections: &Arc<AtomicUsize>,
+) -> anyhow::Result<()> {
+    let mut events = Events::new();
     while !shutdown.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -627,10 +667,13 @@ pub fn serve(
                     continue;
                 }
                 let connection_permit = ConnectionPermit(active_connections.clone());
-                let token = token.clone();
+                let token = token.to_owned();
                 let dispatcher = dispatcher.clone();
                 let hub = hub.clone();
-                let shutdown = shutdown.clone();
+                let shutdown = ShutdownSignal {
+                    flag: shutdown.clone(),
+                    accept_poller: accept_poller.clone(),
+                };
                 let options = options.clone();
                 std::thread::Builder::new()
                     .name("waku-daemon-connection".into())
@@ -645,14 +688,126 @@ pub fn serve(
                     .context("could not start Waku daemon connection thread")?;
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(ACCEPT_POLL_INTERVAL);
+                accept_poller
+                    .modify(listener, Event::readable(0))
+                    .context("could not watch Waku daemon listener")?;
+                events.clear();
+                match accept_poller.wait(&mut events, Some(SHUTDOWN_CHECK_INTERVAL)) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error).context("Waku daemon listener poll failed"),
+                }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error).context("Waku daemon listener failed"),
         }
     }
-    backend.shutdown();
     Ok(())
+}
+
+/// The daemon-wide shutdown flag plus the accept loop's poller, so a
+/// connection that receives `Shutdown` can end the accept wait immediately.
+struct ShutdownSignal {
+    flag: Arc<AtomicBool>,
+    accept_poller: Arc<Poller>,
+}
+
+impl ShutdownSignal {
+    fn requested(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
+    }
+
+    fn request(&self) {
+        self.flag.store(true, Ordering::Release);
+        let _ = self.accept_poller.notify();
+    }
+}
+
+/// Reports on a channel when a socket becomes readable.
+///
+/// Connection loops used to read with a 25 ms timeout so they could also
+/// drain their outgoing queue between reads. That added up to 25 ms to every
+/// response and event in each direction and woke every connection 40 times a
+/// second while idle. A helper thread now blocks in the OS poller and signals
+/// readiness, so a connection can block on its socket and its queues at once
+/// with `select!`. Interest is one-shot: drain the socket to `WouldBlock`,
+/// then [`Self::rearm`].
+struct ReadableSignal {
+    poller: Arc<Poller>,
+    /// A duplicate handle of the watched socket, owned so the registration
+    /// can be removed before the descriptor closes.
+    stream: TcpStream,
+    ready: Receiver<()>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl ReadableSignal {
+    fn new(stream: &TcpStream) -> io::Result<Self> {
+        let stream = stream.try_clone()?;
+        let poller = Arc::new(Poller::new()?);
+        // SAFETY: `Drop` deregisters `stream` before it is closed.
+        unsafe { poller.add(&stream, Event::readable(0))? };
+        let (ready_tx, ready) = bounded(1);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let thread_poller = poller.clone();
+        let thread_stopped = stopped.clone();
+        let spawned = std::thread::Builder::new()
+            .name("waku-daemon-socket-ready".into())
+            .spawn(move || {
+                let mut events = Events::new();
+                loop {
+                    events.clear();
+                    let woke = thread_poller.wait(&mut events, None);
+                    if thread_stopped.load(Ordering::Acquire) {
+                        return;
+                    }
+                    match woke {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(_) => return,
+                    }
+                    if !events.is_empty()
+                        && let Err(TrySendError::Disconnected(())) = ready_tx.try_send(())
+                    {
+                        return;
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            let _ = poller.delete(&stream);
+            return Err(error);
+        }
+        Ok(Self {
+            poller,
+            stream,
+            ready,
+            stopped,
+        })
+    }
+
+    fn rearm(&self) -> io::Result<()> {
+        self.poller.modify(&self.stream, Event::readable(0))
+    }
+}
+
+impl Drop for ReadableSignal {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        let _ = self.poller.notify();
+        let _ = self.poller.delete(&self.stream);
+    }
+}
+
+/// One read that returns `WouldBlock` instead of waiting. The socket stays
+/// blocking otherwise, so writes keep their stall timeout.
+fn read_nonblocking<S: io::Read + io::Write>(
+    socket: &mut WebSocket<S>,
+    set_nonblocking: impl Fn(&mut S, bool) -> io::Result<()>,
+) -> tungstenite::Result<Message> {
+    set_nonblocking(socket.get_mut(), true)?;
+    let message = socket.read();
+    set_nonblocking(socket.get_mut(), false)?;
+    message
 }
 
 fn handle_connection(
@@ -660,12 +815,12 @@ fn handle_connection(
     expected_token: &str,
     dispatcher: Arc<RequestDispatcher>,
     hub: Arc<Hub>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: ShutdownSignal,
     options: &ServerOptions,
 ) -> anyhow::Result<()> {
     // Accepted sockets can inherit the listener's nonblocking flag on some
     // platforms. The handshake is deliberately blocking; steady-state reads
-    // get their bounded polling behavior from SO_RCVTIMEO below.
+    // wait on a `ReadableSignal` and then read without blocking.
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let config = WebSocketConfig::default()
@@ -724,62 +879,116 @@ fn handle_connection(
         config.max_message_size = Some(MAX_WIRE_MESSAGE_BYTES);
         config.max_frame_size = Some(MAX_WIRE_MESSAGE_BYTES);
     });
-    socket
-        .get_mut()
-        .set_read_timeout(Some(SOCKET_POLL_INTERVAL))?;
+    socket.get_mut().set_read_timeout(None)?;
     // A client that stops reading must not let its outgoing queue grow at the
     // daemon's event rate; a write stalled past this timeout drops it.
     socket
         .get_mut()
         .set_write_timeout(Some(SOCKET_WRITE_STALL_TIMEOUT))?;
+    let readable = ReadableSignal::new(socket.get_ref())?;
 
     let (outgoing, outgoing_rx) = bounded(MAX_QUEUED_MESSAGES_PER_SUBSCRIBER);
     let (subscriber, kicked) = Subscriber::new(outgoing.clone());
     let subscriber_id = hub.subscribe(&resume_from, subscriber);
 
-    'connection: while !shutdown.load(Ordering::Acquire) {
-        if kicked.try_recv().is_ok() {
-            break;
-        }
-        while let Ok(message) = outgoing_rx.try_recv() {
-            if write_json(&mut socket, &message).is_err() {
-                break 'connection;
-            }
-        }
-        match socket.read() {
-            Ok(Message::Text(text)) => match serde_json::from_str(text.as_ref()) {
-                Ok(ClientMessage::Request(request)) => {
-                    dispatcher.dispatch(request, outgoing.clone(), subscriber_id);
-                }
-                Ok(ClientMessage::Shutdown) => {
-                    if options.allow_shutdown {
-                        write_json(&mut socket, &ServerMessage::ShuttingDown)?;
-                        shutdown.store(true, Ordering::Release);
-                        break;
+    let result = serve_connection(
+        &mut socket,
+        &readable,
+        &outgoing,
+        &outgoing_rx,
+        &kicked,
+        &dispatcher,
+        subscriber_id,
+        &shutdown,
+        options,
+    );
+    hub.unsubscribe(subscriber_id);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serve_connection(
+    socket: &mut WebSocket<TcpStream>,
+    readable: &ReadableSignal,
+    outgoing: &Sender<ServerMessage>,
+    outgoing_rx: &Receiver<ServerMessage>,
+    kicked: &Receiver<()>,
+    dispatcher: &RequestDispatcher,
+    subscriber_id: u64,
+    shutdown: &ShutdownSignal,
+    options: &ServerOptions,
+) -> anyhow::Result<()> {
+    // The handshake reads may have buffered frames past the hello, which no
+    // readiness event will report; drain once before the first wait.
+    let mut drain = true;
+    while !shutdown.requested() {
+        if drain {
+            drain = false;
+            loop {
+                match read_nonblocking(socket, |stream, value| stream.set_nonblocking(value)) {
+                    Ok(Message::Text(text)) => match serde_json::from_str(text.as_ref()) {
+                        Ok(ClientMessage::Request(request)) => {
+                            dispatcher.dispatch(request, outgoing.clone(), subscriber_id);
+                        }
+                        Ok(ClientMessage::Shutdown) => {
+                            if options.allow_shutdown {
+                                write_json(socket, &ServerMessage::ShuttingDown)?;
+                                shutdown.request();
+                                return Ok(());
+                            }
+                            write_json(
+                                socket,
+                                &ServerMessage::Rejected {
+                                    message: "daemon shutdown is managed by its service owner"
+                                        .into(),
+                                },
+                            )?;
+                        }
+                        Ok(ClientMessage::Hello { .. }) => {}
+                        Err(error) => {
+                            eprintln!("waku-daemon ignored invalid message: {error}");
+                        }
+                    },
+                    Ok(Message::Close(_)) => return Ok(()),
+                    Ok(Message::Ping(_)) => {
+                        let _ = socket.flush();
                     }
-                    write_json(
-                        &mut socket,
-                        &ServerMessage::Rejected {
-                            message: "daemon shutdown is managed by its service owner".into(),
-                        },
-                    )?;
+                    Ok(_) => {}
+                    // Drained. Level-triggered interest reports anything an
+                    // interrupted read left behind as soon as it is rearmed.
+                    Err(tungstenite::Error::Io(error)) if retryable_io(&error) => break,
+                    Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error).context("Waku daemon WebSocket failed"),
                 }
-                Ok(ClientMessage::Hello { .. }) => {}
-                Err(error) => {
-                    eprintln!("waku-daemon ignored invalid message: {error}");
-                }
-            },
-            Ok(Message::Close(_)) => break,
-            Ok(Message::Ping(_)) => {
-                let _ = socket.flush();
             }
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(error)) if retryable_io(&error) => {}
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => break,
-            Err(error) => return Err(error).context("Waku daemon WebSocket failed"),
+            readable.rearm()?;
+        }
+        select! {
+            recv(kicked) -> _ => return Ok(()),
+            recv(outgoing_rx) -> message => {
+                let Ok(message) = message else {
+                    return Ok(());
+                };
+                if write_json(socket, &message).is_err() {
+                    return Ok(());
+                }
+                while let Ok(message) = outgoing_rx.try_recv() {
+                    if write_json(socket, &message).is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+            recv(readable.ready) -> ready => {
+                if ready.is_err() {
+                    return Ok(());
+                }
+                drain = true;
+            }
+            default(SHUTDOWN_CHECK_INTERVAL) => {}
         }
     }
-    hub.unsubscribe(subscriber_id);
     Ok(())
 }
 

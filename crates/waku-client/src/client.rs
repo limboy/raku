@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select, unbounded};
 use parking_lot::Mutex;
+use polling::{Event, Events, Poller};
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
@@ -19,7 +20,6 @@ use waku_protocol::{
     ResponsePayload, RpcError, SequencedEvent, ServerMessage,
 };
 
-const READ_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_BUFFERED_EVENTS_PER_RUNTIME: usize = 4096;
 
@@ -100,7 +100,10 @@ impl DaemonClient {
             ServerMessage::Rejected { message } => bail!("daemon rejected connection: {message}"),
             other => bail!("daemon sent an invalid handshake response: {other:?}"),
         }
-        set_client_read_timeout(&mut socket, Some(READ_POLL_INTERVAL))?;
+        // Steady-state reads wait on a `ReadableSignal`, then never block.
+        set_client_read_timeout(&mut socket, None)?;
+        let readable = ReadableSignal::new(client_tcp_stream(&socket)?)
+            .context("could not watch the Waku daemon connection")?;
 
         let (outgoing, outgoing_rx) = unbounded();
         let inner = Arc::new(ClientInner {
@@ -115,7 +118,7 @@ impl DaemonClient {
         let thread_inner = inner.clone();
         std::thread::Builder::new()
             .name("waku-daemon-client".into())
-            .spawn(move || run_client(socket, outgoing_rx, thread_inner))
+            .spawn(move || run_client(socket, readable, outgoing_rx, thread_inner))
             .context("could not start Waku daemon client thread")?;
         Ok(Self { inner })
     }
@@ -266,94 +269,67 @@ fn daemon_url(address: &str) -> anyhow::Result<String> {
 
 fn run_client(
     mut socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    readable: ReadableSignal,
     outgoing: Receiver<Outgoing>,
     inner: Arc<ClientInner>,
 ) {
+    // The hello read may have buffered replayed events behind it, which no
+    // readiness event will report; drain once before the first wait.
+    let mut drain = true;
     'connection: loop {
-        while let Ok(message) = outgoing.try_recv() {
-            match message {
-                Outgoing::Message(message) => {
-                    if write_json(&mut socket, &message).is_err() {
-                        break 'connection;
+        if drain {
+            drain = false;
+            loop {
+                match read_nonblocking(&mut socket) {
+                    Ok(Message::Text(text)) => {
+                        let Ok(message) = serde_json::from_str::<ServerMessage>(text.as_ref())
+                        else {
+                            continue;
+                        };
+                        if !deliver_server_message(message, &inner) {
+                            break 'connection;
+                        }
                     }
+                    Ok(Message::Close(_)) => break 'connection,
+                    Ok(Message::Ping(_)) => {
+                        let _ = socket.flush();
+                    }
+                    Ok(_) => {}
+                    // Drained. Level-triggered interest reports anything an
+                    // interrupted read left behind as soon as it is rearmed.
+                    Err(tungstenite::Error::Io(error)) if retryable_io(&error) => break,
+                    Err(_) => break 'connection,
                 }
-                Outgoing::Shutdown => {
-                    let _ = write_json(&mut socket, &ClientMessage::Shutdown);
-                    let _ = socket.flush();
-                    break 'connection;
-                }
+            }
+            if readable.rearm().is_err() {
+                break;
             }
         }
-
-        match socket.read() {
-            Ok(Message::Text(text)) => {
-                let Ok(message) = serde_json::from_str::<ServerMessage>(text.as_ref()) else {
-                    continue;
-                };
-                match message {
-                    ServerMessage::Response {
-                        request_id,
-                        outcome,
-                    } => {
-                        if let Some(pending) = inner.pending.lock().remove(&request_id) {
-                            let result = match outcome {
-                                ResponseOutcome::Ok { payload } => Ok(payload),
-                                ResponseOutcome::Error { error } => Err(error),
-                            };
-                            let _ = pending.send(result);
-                        }
-                    }
-                    ServerMessage::Event(event) => {
-                        let should_deliver = {
-                            let mut sequences = inner.last_sequences.lock();
-                            let previous = sequences
-                                .entry((event.session_id, event.runtime_id))
-                                .or_insert(LastSequence {
-                                    epoch: event.epoch,
-                                    sequence: 0,
-                                });
-                            if previous.epoch == event.epoch && event.sequence <= previous.sequence
-                            {
-                                false
-                            } else {
-                                previous.epoch = event.epoch;
-                                previous.sequence = event.sequence;
-                                true
-                            }
-                        };
-                        if should_deliver {
-                            let key = (event.session_id, event.runtime_id);
-                            let sessions = inner.sessions.lock();
-                            if let Some(events) = sessions.get(&key) {
-                                let _ = events.send(event);
-                            } else {
-                                let mut pending = inner.pending_events.lock();
-                                let buffered = pending.entry(key).or_default();
-                                buffered.push_back(event);
-                                while buffered.len() > MAX_BUFFERED_EVENTS_PER_RUNTIME {
-                                    buffered.pop_front();
-                                }
+        select! {
+            recv(outgoing) -> message => {
+                let mut message = message.ok();
+                while let Some(next) = message {
+                    match next {
+                        Outgoing::Message(message) => {
+                            if write_json(&mut socket, &message).is_err() {
+                                break 'connection;
                             }
                         }
+                        Outgoing::Shutdown => {
+                            let _ = write_json(&mut socket, &ClientMessage::Shutdown);
+                            let _ = socket.flush();
+                            break 'connection;
+                        }
                     }
-                    ServerMessage::TaskStateChanged { revision } => {
-                        inner
-                            .task_state_subscribers
-                            .lock()
-                            .retain(|subscriber| subscriber.send(revision).is_ok());
-                    }
-                    ServerMessage::ShuttingDown => break,
-                    ServerMessage::Hello { .. } | ServerMessage::Rejected { .. } => {}
+                    message = outgoing.try_recv().ok();
                 }
             }
-            Ok(Message::Close(_)) => break,
-            Ok(Message::Ping(_)) => {
-                let _ = socket.flush();
+            recv(readable.ready) -> ready => {
+                if ready.is_err() {
+                    break;
+                }
+                drain = true;
             }
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(error)) if retryable_io(&error) => {}
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => break,
-            Err(_) => break,
         }
     }
 
@@ -371,6 +347,176 @@ fn run_client(
     // `processExited` event emitted by the daemon.
     drop(std::mem::take(&mut *inner.sessions.lock()));
     inner.task_state_subscribers.lock().clear();
+}
+
+/// Routes one server message. Returns `false` once the daemon says it is
+/// shutting down, which ends the connection.
+fn deliver_server_message(message: ServerMessage, inner: &ClientInner) -> bool {
+    match message {
+        ServerMessage::Response {
+            request_id,
+            outcome,
+        } => {
+            if let Some(pending) = inner.pending.lock().remove(&request_id) {
+                let result = match outcome {
+                    ResponseOutcome::Ok { payload } => Ok(payload),
+                    ResponseOutcome::Error { error } => Err(error),
+                };
+                let _ = pending.send(result);
+            }
+        }
+        ServerMessage::Event(event) => {
+            let should_deliver = {
+                let mut sequences = inner.last_sequences.lock();
+                let previous = sequences
+                    .entry((event.session_id, event.runtime_id))
+                    .or_insert(LastSequence {
+                        epoch: event.epoch,
+                        sequence: 0,
+                    });
+                if previous.epoch == event.epoch && event.sequence <= previous.sequence {
+                    false
+                } else {
+                    previous.epoch = event.epoch;
+                    previous.sequence = event.sequence;
+                    true
+                }
+            };
+            if should_deliver {
+                let key = (event.session_id, event.runtime_id);
+                let sessions = inner.sessions.lock();
+                if let Some(events) = sessions.get(&key) {
+                    let _ = events.send(event);
+                } else {
+                    let mut pending = inner.pending_events.lock();
+                    let buffered = pending.entry(key).or_default();
+                    buffered.push_back(event);
+                    while buffered.len() > MAX_BUFFERED_EVENTS_PER_RUNTIME {
+                        buffered.pop_front();
+                    }
+                }
+            }
+        }
+        ServerMessage::TaskStateChanged { revision } => {
+            inner
+                .task_state_subscribers
+                .lock()
+                .retain(|subscriber| subscriber.send(revision).is_ok());
+        }
+        ServerMessage::ShuttingDown => return false,
+        ServerMessage::Hello { .. } | ServerMessage::Rejected { .. } => {}
+    }
+    true
+}
+
+/// Reports on a channel when the daemon socket becomes readable.
+///
+/// The socket thread used to read with a 25 ms timeout so it could also
+/// drain outgoing requests between reads. That added up to 25 ms before each
+/// request reached the daemon and woke the thread 40 times a second while
+/// idle. A helper thread now blocks in the OS poller and signals readiness, so
+/// the socket thread can block on the socket and its request queue at once
+/// with `select!`. Interest is one-shot: drain to `WouldBlock`, then
+/// [`Self::rearm`].
+struct ReadableSignal {
+    poller: Arc<Poller>,
+    /// A duplicate handle of the watched socket, owned so the registration
+    /// can be removed before the descriptor closes.
+    stream: TcpStream,
+    ready: Receiver<()>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl ReadableSignal {
+    fn new(stream: &TcpStream) -> io::Result<Self> {
+        let stream = stream.try_clone()?;
+        let poller = Arc::new(Poller::new()?);
+        // SAFETY: `Drop` deregisters `stream` before it is closed.
+        unsafe { poller.add(&stream, Event::readable(0))? };
+        let (ready_tx, ready) = bounded(1);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let thread_poller = poller.clone();
+        let thread_stopped = stopped.clone();
+        let spawned = std::thread::Builder::new()
+            .name("waku-daemon-client-ready".into())
+            .spawn(move || {
+                let mut events = Events::new();
+                loop {
+                    events.clear();
+                    let woke = thread_poller.wait(&mut events, None);
+                    if thread_stopped.load(Ordering::Acquire) {
+                        return;
+                    }
+                    match woke {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(_) => return,
+                    }
+                    if !events.is_empty()
+                        && let Err(TrySendError::Disconnected(())) = ready_tx.try_send(())
+                    {
+                        return;
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            let _ = poller.delete(&stream);
+            return Err(error);
+        }
+        Ok(Self {
+            poller,
+            stream,
+            ready,
+            stopped,
+        })
+    }
+
+    fn rearm(&self) -> io::Result<()> {
+        self.poller.modify(&self.stream, Event::readable(0))
+    }
+}
+
+impl Drop for ReadableSignal {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        let _ = self.poller.notify();
+        let _ = self.poller.delete(&self.stream);
+    }
+}
+
+fn client_tcp_stream(socket: &WebSocket<MaybeTlsStream<TcpStream>>) -> io::Result<&TcpStream> {
+    match socket.get_ref() {
+        MaybeTlsStream::Plain(stream) => Ok(stream),
+        MaybeTlsStream::Rustls(stream) => Ok(&stream.sock),
+        #[allow(unreachable_patterns)]
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported Waku daemon transport",
+        )),
+    }
+}
+
+fn set_client_nonblocking(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    nonblocking: bool,
+) -> io::Result<()> {
+    match socket.get_mut() {
+        MaybeTlsStream::Plain(stream) => stream.set_nonblocking(nonblocking),
+        MaybeTlsStream::Rustls(stream) => stream.sock.set_nonblocking(nonblocking),
+        #[allow(unreachable_patterns)]
+        _ => Ok(()),
+    }
+}
+
+/// One read that returns `WouldBlock` instead of waiting. The socket stays
+/// blocking otherwise, so request writes complete in order.
+fn read_nonblocking(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+) -> tungstenite::Result<Message> {
+    set_client_nonblocking(socket, true)?;
+    let message = socket.read();
+    set_client_nonblocking(socket, false)?;
+    message
 }
 
 fn set_client_read_timeout(
