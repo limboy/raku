@@ -40,9 +40,10 @@ impl ProjectPickerSite {
 
     fn align(self) -> MenuAlign {
         match self {
-            Self::EmptyState => MenuAlign::BelowLeft,
-            // Both footers sit at the bottom of the window.
-            Self::Sidebar | Self::Composer => MenuAlign::AboveLeft,
+            // The sidebar selector sits at the top of the sidebar.
+            Self::Sidebar | Self::EmptyState => MenuAlign::BelowLeft,
+            // The composer footer sits at the bottom of the window.
+            Self::Composer => MenuAlign::AboveLeft,
         }
     }
 }
@@ -504,7 +505,7 @@ impl Waku {
                     .child(pinned_row(
                         ProjectPickerAction::NoProject,
                         "project-picker-none",
-                        "icons/x.svg",
+                        "icons/folder-dashed.svg",
                         tr!("project.no_project"),
                         projectless_selected,
                     ))

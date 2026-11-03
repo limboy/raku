@@ -334,8 +334,12 @@ sidebar.today:
   en: Today
 sidebar.pinned:
   en: Pinned
-sidebar.search:
-  en: Search
+sidebar.search_tasks:
+  en: Search tasks
+sidebar.clear_search:
+  en: Clear search
+sidebar.no_matching_tasks:
+  en: No matching tasks
 sidebar.options:
   en: Sidebar options
 sidebar.grouping:

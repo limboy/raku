@@ -3050,7 +3050,14 @@ impl Waku {
 
         let project_handle = self.project_picker_handle(ProjectPickerSite::Composer, cx);
         let project_trigger = MenuChip::new("workspace-project")
-            .icon("icons/folder.svg", theme.text_tertiary)
+            .icon(
+                if projectless_selected {
+                    "icons/folder-dashed.svg"
+                } else {
+                    "icons/folder.svg"
+                },
+                theme.text_tertiary,
+            )
             .label(self.project_picker_label())
             .caret(false)
             .disabled(!can_configure_workspace)

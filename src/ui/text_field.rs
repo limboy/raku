@@ -10,7 +10,7 @@ use super::icon;
 
 /// The one-line text box shell: a fixed-height bordered field around a
 /// [`TextInput`], with an optional leading icon and an accent border
-/// while focused.
+/// while focused. Children are trailing controls, drawn after the input.
 ///
 /// The embedded input must stay single-line (the default mode) — that is
 /// what keeps the text from wrapping and slides overlong content under the
@@ -22,6 +22,7 @@ pub struct TextField {
     base: Stateful<Div>,
     input: gpui::Entity<TextInput>,
     icon: Option<(&'static str, f32)>,
+    trailing: Vec<AnyElement>,
 }
 
 impl TextField {
@@ -30,6 +31,7 @@ impl TextField {
             base: div().id(id),
             input,
             icon: None,
+            trailing: Vec::new(),
         }
     }
 
@@ -54,7 +56,7 @@ impl InteractiveElement for TextField {
 
 impl ParentElement for TextField {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.base.extend(elements);
+        self.trailing.extend(elements);
     }
 }
 
@@ -82,5 +84,6 @@ impl RenderOnce for TextField {
                 element.child(icon(path, size, theme.text_tertiary))
             })
             .child(div().min_w_0().flex_1().child(self.input))
+            .children(self.trailing)
     }
 }

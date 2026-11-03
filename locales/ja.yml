@@ -172,7 +172,9 @@ session.new_task: 新規タスク
 
 sidebar.today: 今日
 sidebar.pinned: ピン留め
-sidebar.search: 検索
+sidebar.search_tasks: タスクを検索
+sidebar.clear_search: 検索をクリア
+sidebar.no_matching_tasks: 一致するタスクはありません
 sidebar.options: サイドバーオプション
 sidebar.grouping: グループ化
 sidebar.grouping_project: プロジェクト

@@ -45,6 +45,7 @@ const ICONS: &[(&str, &[u8])] = icons![
     "external-link",
     "file",
     "folder",
+    "folder-dashed",
     "folder-new",
     "folder-open",
     "file-bottom-left-arrow",

@@ -979,6 +979,14 @@ pub(super) fn mix(hash: u64, value: u64) -> u64 {
     (hash ^ value).wrapping_mul(FINGERPRINT_PRIME)
 }
 
+pub(super) fn mix_str(hash: u64, value: &str) -> u64 {
+    let hash = value
+        .bytes()
+        .fold(hash, |hash, byte| mix(hash, u64::from(byte)));
+    // Terminate so adjacent strings cannot shift bytes between them.
+    mix(hash, u64::MAX)
+}
+
 pub(super) fn mix_uuid(hash: u64, id: Uuid) -> u64 {
     let bits = id.as_u128();
     mix(mix(hash, bits as u64), (bits >> 64) as u64)
