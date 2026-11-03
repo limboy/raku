@@ -1,10 +1,5 @@
 use super::*;
 
-enum BranchOperation {
-    Checkout(String),
-    Create(String),
-}
-
 impl Waku {
     pub(super) fn sync_branch_picker_rows(&self, rows: &[crate::git_branch::BranchEntry]) {
         let mut cached = self.branch_picker_row_cache.borrow_mut();
@@ -178,66 +173,7 @@ impl Waku {
         {
             return true;
         }
-        self.start_branch_operation(path, BranchOperation::Checkout(branch), cx);
-        true
-    }
-
-    pub(super) fn begin_branch_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.branch_operation_pending
-            || self.selected_session().is_none_or(|session| {
-                session.is_busy()
-                    || matches!(session.workspace, SessionWorkspace::NewWorktree { .. })
-            })
-        {
-            return;
-        }
-        self.branch_picker_mode = BranchPickerMode::Create;
-        self.branch_picker_highlight = None;
-        self.branch_create_input
-            .update(cx, |input, cx| input.clear(cx));
-        let focus = self.branch_create_input.read(cx).focus_handle(cx);
-        window.on_next_frame(move |window, _| {
-            window.on_next_frame(move |window, cx| window.focus(&focus, cx));
-        });
-        cx.notify();
-    }
-
-    /// Escape from the create form: back to browsing with the filter
-    /// refocused — the reverse of [`begin_branch_creation`], with the same
-    /// double-frame focus dance because the search field only exists once
-    /// the browse body has rendered.
-    ///
-    /// [`begin_branch_creation`]: Self::begin_branch_creation
-    pub(super) fn cancel_branch_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.branch_picker_mode = BranchPickerMode::Browse;
-        self.branch_picker_highlight = None;
-        let focus = self.branch_search.read(cx).focus_handle(cx);
-        window.on_next_frame(move |window, _| {
-            window.on_next_frame(move |window, cx| window.focus(&focus, cx));
-        });
-        cx.notify();
-    }
-
-    pub(super) fn confirm_branch_creation(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.branch_picker_mode != BranchPickerMode::Create || self.branch_operation_pending {
-            return false;
-        }
-        let branch = self
-            .branch_create_input
-            .read(cx)
-            .content()
-            .trim()
-            .to_owned();
-        if branch.is_empty() {
-            return false;
-        }
-        let Some(path) = self
-            .selected_workspace_path()
-            .map(std::path::Path::to_path_buf)
-        else {
-            return false;
-        };
-        self.start_branch_operation(path, BranchOperation::Create(branch), cx);
+        self.start_branch_checkout(path, branch, cx);
         true
     }
 
@@ -247,7 +183,7 @@ impl Waku {
         actions: &[BranchPickerAction],
         cx: &mut Context<Self>,
     ) {
-        if self.branch_picker_mode != BranchPickerMode::Browse || actions.is_empty() {
+        if actions.is_empty() {
             return;
         }
         let current = self
@@ -278,12 +214,8 @@ impl Waku {
     pub(super) fn confirm_branch_picker_action(
         &mut self,
         actions: &[BranchPickerAction],
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.branch_picker_mode == BranchPickerMode::Create {
-            return self.confirm_branch_creation(cx);
-        }
         let Some(action) = actions.get(self.branch_picker_highlight.unwrap_or(0)) else {
             return false;
         };
@@ -291,19 +223,10 @@ impl Waku {
             BranchPickerAction::Checkout(branch) => {
                 self.choose_workspace_branch(branch.clone(), cx)
             }
-            BranchPickerAction::Create => {
-                self.begin_branch_creation(window, cx);
-                false
-            }
         }
     }
 
-    fn start_branch_operation(
-        &mut self,
-        path: PathBuf,
-        operation: BranchOperation,
-        cx: &mut Context<Self>,
-    ) {
+    fn start_branch_checkout(&mut self, path: PathBuf, branch: String, cx: &mut Context<Self>) {
         if self.branch_operation_pending {
             return;
         }
@@ -316,15 +239,11 @@ impl Waku {
                 .spawn({
                     let path = path.clone();
                     async move {
-                        let (branch, create) = match operation {
-                            BranchOperation::Checkout(branch) => (branch, false),
-                            BranchOperation::Create(branch) => (branch, true),
-                        };
                         match workspace.request(
                             waku_client::WorkspaceOperation::CheckoutBranch {
                                 cwd: path,
                                 branch,
-                                create,
+                                create: false,
                             },
                         )? {
                             waku_client::WorkspaceResult::BranchChanged { snapshot } => {

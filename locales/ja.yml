@@ -120,7 +120,6 @@ input.do_anything: 何でも依頼できます…
 input.search_models: モデルを検索…
 input.search_branches: ブランチを検索
 input.search_projects: プロジェクトを検索
-input.new_branch_name: 新しいブランチ名
 input.detected_automatically: 自動検出
 input.search_or_enter_address: 検索またはアドレスを入力
 input.find: 検索
@@ -569,17 +568,11 @@ composer.queued_message_actions: フォローアップの操作
 branches.detached_head: Detached HEAD
 branches.search_project: "%{project} のブランチを検索"
 branches.switching: 切り替え中…
-branches.create_and_checkout: 新しいブランチを作成してチェックアウト
-branches.create_hint: Return キーで作成 · Esc キーでキャンセル
 branches.none_found: ブランチが見つかりません
-branches.create_and_checkout_ellipsis: 新しいブランチを作成してチェックアウト…
 branches.title: ブランチ
 branches.choose: ブランチを選択
 branches.checked_out_elsewhere: 別のワークツリーでチェックアウトされています
 
-workspace.work_in: 作業場所
-workspace.local: ローカル
-workspace.new_worktree: 新しいワークツリー
 workspace.workspace: ワークスペース
 workspace.worktree: ワークツリー
 

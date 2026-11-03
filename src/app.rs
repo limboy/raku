@@ -195,17 +195,9 @@ enum ModelPickerTab {
     Provider(ProviderKind),
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum BranchPickerMode {
-    #[default]
-    Browse,
-    Create,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum BranchPickerAction {
     Checkout(String),
-    Create,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1163,8 +1155,6 @@ pub struct Waku {
     /// draw, so its one button holds focus instead.
     model_picker_empty_focus: FocusHandle,
     branch_search: Entity<TextInput>,
-    branch_create_input: Entity<TextInput>,
-    branch_picker_mode: BranchPickerMode,
     /// Keyboard cursor over the branch picker's enabled actions. Disabled
     /// rows remain visible but never enter this index.
     branch_picker_highlight: Option<usize>,
@@ -1936,11 +1926,6 @@ impl Waku {
                 .clear_on_escape()
                 .placeholder(tr!("input.search_branches"))
         });
-        let branch_create_input = cx.new(|cx| {
-            TextInput::new(window, cx)
-                .clear_on_escape()
-                .placeholder(tr!("input.new_branch_name"))
-        });
         let project_search = cx.new(|cx| {
             TextInput::new(window, cx)
                 .clear_on_escape()
@@ -2453,9 +2438,7 @@ impl Waku {
             cx.subscribe(
                 &branch_search,
                 |this: &mut Self, search, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Edited)
-                        && this.branch_picker_mode == BranchPickerMode::Browse
-                    {
+                    if matches!(event, InputEvent::Edited) {
                         if search.read(cx).content().trim().is_empty() {
                             this.branch_picker_highlight = None;
                         } else {
@@ -2477,15 +2460,6 @@ impl Waku {
                             this.project_picker_highlight = Some(0);
                             this.project_picker_list_state.scroll_to_reveal_item(0);
                         }
-                        cx.notify();
-                    }
-                },
-            )
-            .detach();
-            cx.subscribe(
-                &branch_create_input,
-                |_: &mut Self, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Edited) {
                         cx.notify();
                     }
                 },
@@ -2649,7 +2623,6 @@ impl Waku {
                 task_switcher,
                 model_search,
                 branch_search,
-                branch_create_input,
                 project_search,
                 settings_focus,
                 settings_close_focus: cx.focus_handle(),
@@ -2691,7 +2664,6 @@ impl Waku {
                 model_picker_scroll: ScrollHandle::new(),
                 model_picker_scrollbar: ScrollbarState::new(),
                 model_picker_empty_focus,
-                branch_picker_mode: BranchPickerMode::Browse,
                 branch_picker_highlight: None,
                 branch_picker_list_state,
                 branch_picker_row_cache: RefCell::new(Vec::new()),

@@ -288,6 +288,11 @@ impl ContextMenuHandle {
         &self.focus
     }
 
+    /// The trigger's bounds as of its last paint, for a panel sized to it.
+    pub fn trigger_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.trigger_bounds.get()
+    }
+
     /// Stable focus identity for a keyboard-operable menu trigger.
     pub fn trigger_focus_handle(&self) -> &FocusHandle {
         &self.trigger_focus

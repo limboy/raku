@@ -1,5 +1,5 @@
-//! The project picker behind the sidebar, empty-state headline and composer's
-//! project chip: a filter field over a virtualized project list, with the
+//! The project picker behind the sidebar selector, the empty-state headline
+//! and the composer footer's project chip: a filter field over a virtualized project list, with the
 //! add-project and no-project actions pinned beneath it so a long list can
 //! never push them out of reach.
 //!
@@ -18,7 +18,11 @@ const PROJECT_PICKER_ROW_HEIGHT: f32 = 26.0;
 /// Rows drawn before the list scrolls. Whole rows only: the edge fade is the
 /// cue that more follow.
 const PROJECT_PICKER_VISIBLE_ROWS: f32 = 11.0;
+/// The panel width where the trigger is too narrow to match. The sidebar's
+/// panel matches its trigger.
 const PROJECT_PICKER_WIDTH: f32 = 300.0;
+/// The composer footer's panel, matching the branch picker beside it.
+const COMPOSER_PROJECT_PICKER_WIDTH: f32 = 240.0;
 
 /// Where a picker is drawn, which decides its anchoring and how a choice
 /// lands. Choices configuring an unsent task carry its draft to the new project.
@@ -40,10 +44,23 @@ impl ProjectPickerSite {
 
     fn align(self) -> MenuAlign {
         match self {
-            // The sidebar selector sits at the top of the sidebar.
             Self::Sidebar | Self::EmptyState => MenuAlign::BelowLeft,
             // The composer footer sits at the bottom of the window.
             Self::Composer => MenuAlign::AboveLeft,
+        }
+    }
+
+    /// The panel's width: the sidebar selector's own width, so the panel reads
+    /// as its trigger unfolding. The empty state's inline headline and the
+    /// composer's chip are too narrow for that, so theirs keep a fixed width.
+    fn panel_width(self, handle: &ContextMenuHandle) -> Pixels {
+        match self {
+            Self::Sidebar => handle
+                .trigger_bounds()
+                .map(|bounds| bounds.size.width)
+                .unwrap_or(px(PROJECT_PICKER_WIDTH)),
+            Self::EmptyState => px(PROJECT_PICKER_WIDTH),
+            Self::Composer => px(COMPOSER_PROJECT_PICKER_WIDTH),
         }
     }
 }
@@ -470,7 +487,7 @@ impl Waku {
                 div()
                     .tab_group()
                     .tab_stop(false)
-                    .w(px(PROJECT_PICKER_WIDTH))
+                    .w(site.panel_width(popover))
                     // A deferred panel inherits its trigger's text style, and
                     // the empty state's trigger sits in a 20pt medium
                     // headline. Pin the rows' metrics for the filter field.
@@ -598,14 +615,16 @@ impl Waku {
         site: ProjectPickerSite,
         cx: &mut Context<Self>,
     ) {
-        // A sidebar choice configures an unsent task just like the editor's
-        // picker. From an existing conversation it starts a task in the new
-        // project, leaving that conversation's draft in place.
-        let carry_draft = site == ProjectPickerSite::Composer
-            || (site == ProjectPickerSite::Sidebar
-                && self
-                    .selected_session()
-                    .is_some_and(|session| !session.has_started() && !session.is_busy()));
+        // A sidebar or composer choice configures an unsent task, carrying
+        // its draft to the new project. From an existing conversation it
+        // starts a task in the new project, leaving that conversation's draft
+        // in place.
+        let carry_draft = matches!(
+            site,
+            ProjectPickerSite::Sidebar | ProjectPickerSite::Composer
+        ) && self
+            .selected_session()
+            .is_some_and(|session| !session.has_started() && !session.is_busy());
         match action {
             ProjectPickerAction::Select(project_id) => {
                 if self.state.selected_project == Some(project_id) {

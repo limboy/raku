@@ -2649,17 +2649,14 @@ impl Waku {
 
         let weak = cx.entity().downgrade();
         let search = self.branch_search.clone();
-        let create_input = self.branch_create_input.clone();
         let search_focus = search.read(cx).focus_handle(cx);
         let handle = {
             let toggle_weak = weak.clone();
             let reset_search = search.clone();
-            let reset_create = create_input.clone();
             let picker_focus = search_focus.clone();
             self.menu_handle_with(BRANCH_PICKER_MENU_ID, cx, move |open, window, cx| {
                 let _ = toggle_weak.update(cx, |this, cx| {
                     if open {
-                        this.branch_picker_mode = BranchPickerMode::Browse;
                         this.branch_picker_highlight = None;
                         let project_name = this
                             .selected_project()
@@ -2672,10 +2669,8 @@ impl Waku {
                             );
                             input.clear(cx);
                         });
-                        reset_create.update(cx, |input, cx| input.clear(cx));
                         this.refresh_selected_branch_snapshot(cx);
                     } else {
-                        this.branch_picker_mode = BranchPickerMode::Browse;
                         let focus = this.composer_focus(cx);
                         window.focus(&focus, cx);
                     }
@@ -2711,27 +2706,22 @@ impl Waku {
             .content()
             .trim()
             .to_ascii_lowercase();
-        let visible_branches = Rc::new(
-            if handle.is_open() && self.branch_picker_mode == BranchPickerMode::Browse {
-                visible_branch_entries(&snapshot.branches, &selected_branch, &normalized_query)
-            } else {
-                Vec::new()
-            },
-        );
-        let allow_create = !planned_worktree;
+        let visible_branches = Rc::new(if handle.is_open() {
+            visible_branch_entries(&snapshot.branches, &selected_branch, &normalized_query)
+        } else {
+            Vec::new()
+        });
         let actions = Rc::new(
             visible_branches
                 .iter()
                 .filter(|branch| planned_worktree || !branch.checked_out_elsewhere)
                 .map(|branch| BranchPickerAction::Checkout(branch.name.clone()))
-                .chain(allow_create.then_some(BranchPickerAction::Create))
                 .collect::<Vec<_>>(),
         );
         let highlight = self
             .branch_picker_highlight
             .filter(|index| *index < actions.len());
-        let mode = self.branch_picker_mode;
-        if handle.is_open() && mode == BranchPickerMode::Browse {
+        if handle.is_open() {
             self.sync_branch_picker_rows(&visible_branches);
         }
         let branch_list = self.branch_picker_list_state.clone();
@@ -2745,49 +2735,12 @@ impl Waku {
                 let next_actions = actions.clone();
                 let previous_actions = actions.clone();
                 let confirm_actions = actions.clone();
-                let dismiss_weak = weak.clone();
                 let next_weak = weak.clone();
                 let previous_weak = weak.clone();
                 let confirm_weak = weak.clone();
                 let confirm_popover = popover.clone();
 
-                let body = if mode == BranchPickerMode::Create {
-                    div()
-                        .w_full()
-                        .p(px(14.0))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .text_size(sp(13.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text)
-                                .child(icon("icons/plus.svg", 14.0, theme.text_secondary))
-                                .child(tr!("branches.create_and_checkout")),
-                        )
-                        .child(
-                            div()
-                                .mt(px(12.0))
-                                .h(px(36.0))
-                                .px(px(10.0))
-                                .rounded(px(9.0))
-                                .border_1()
-                                .border_color(theme.border_strong)
-                                .bg(theme.surface)
-                                .flex()
-                                .items_center()
-                                .child(div().flex_1().min_w_0().child(create_input.clone())),
-                        )
-                        .child(
-                            div()
-                                .mt(px(9.0))
-                                .text_size(sp(12.5))
-                                .text_color(theme.text_tertiary)
-                                .child(tr!("branches.create_hint")),
-                        )
-                        .into_any_element()
-                } else {
+                let body = {
                     let rows = if visible_branches.is_empty() {
                         div()
                             .id("branch-picker-list-empty")
@@ -2903,40 +2856,6 @@ impl Waku {
                             .into_any_element()
                     };
 
-                    let create_row = allow_create.then(|| {
-                        let create_weak = weak.clone();
-                        div()
-                            .id("create-workspace-branch")
-                            .mx(px(4.0))
-                            .h(px(BRANCH_PICKER_ROW_HEIGHT))
-                            .px(px(8.0))
-                            .rounded(px(6.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .cursor_default()
-                            .when(
-                                highlight.and_then(|index| actions.get(index))
-                                    == Some(&BranchPickerAction::Create),
-                                |element| element.bg(theme.overlay_strong),
-                            )
-                            .hover(|element| element.bg(theme.overlay))
-                            .active(|element| element.opacity(0.85))
-                            .child(icon("icons/plus.svg", 12.0, theme.text_secondary))
-                            .child(
-                                div()
-                                    .text_size(sp(12.5))
-                                    .line_height(sp(15.0))
-                                    .text_color(theme.text)
-                                    .child(tr!("branches.create_and_checkout_ellipsis")),
-                            )
-                            .on_click(move |_, window, cx| {
-                                let _ = create_weak.update(cx, |this, cx| {
-                                    this.begin_branch_creation(window, cx);
-                                });
-                            })
-                    });
-
                     div()
                         .w_full()
                         .flex()
@@ -2975,17 +2894,12 @@ impl Waku {
                                 .child(tr!("branches.title")),
                         )
                         .child(rows)
-                        .when_some(create_row, |element, create_row| {
-                            element
-                                .child(div().mx(px(6.0)).my(px(4.0)).h(px(1.0)).bg(theme.border))
-                                .child(create_row)
-                                .child(div().h(px(4.0)))
-                        })
+                        .child(div().h(px(4.0)))
                         .into_any_element()
                 };
 
                 div()
-                    .w(px(360.0))
+                    .w(px(240.0))
                     .max_h(px(390.0))
                     .rounded(px(13.0))
                     .overflow_hidden()
@@ -3008,31 +2922,12 @@ impl Waku {
                     .on_action(move |_: &ConfirmEntry, window, cx| {
                         let should_close = confirm_weak
                             .update(cx, |this, cx| {
-                                this.confirm_branch_picker_action(&confirm_actions, window, cx)
+                                this.confirm_branch_picker_action(&confirm_actions, cx)
                             })
                             .unwrap_or(false);
                         if should_close {
                             confirm_popover.close(window, cx);
                             window.refresh();
-                        }
-                    })
-                    // Escape backs the create form out to browsing. The rest
-                    // of the peel is the fields' own clear-on-escape: a
-                    // non-empty filter (or typed branch name) clears before
-                    // this handler ever sees the keystroke, and an empty
-                    // browse view propagates on to the menu's own dismiss.
-                    .on_action(move |_: &DismissMenu, window, cx| {
-                        let handled = dismiss_weak
-                            .update(cx, |this, cx| {
-                                if this.branch_picker_mode == BranchPickerMode::Create {
-                                    this.cancel_branch_creation(window, cx);
-                                    return true;
-                                }
-                                false
-                            })
-                            .unwrap_or(false);
-                        if !handled {
-                            cx.propagate();
                         }
                     })
                     .child(body)
@@ -3043,99 +2938,30 @@ impl Waku {
 
     pub(super) fn render_workspace_footer(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::current(cx);
-        let projectless_selected = self.selected_project().is_some_and(Project::is_projectless);
-        let can_configure_workspace = self
+        // Where the task runs. A task in a worktree shows the fork so it
+        // never reads as the ordinary checkout.
+        let location_icon = if self
             .selected_session()
-            .is_some_and(|session| !session.has_started() && !session.is_busy());
-
-        let project_handle = self.project_picker_handle(ProjectPickerSite::Composer, cx);
-        let project_trigger = MenuChip::new("workspace-project")
-            .icon(
-                if projectless_selected {
-                    "icons/folder-dashed.svg"
-                } else {
-                    "icons/folder.svg"
-                },
-                theme.text_tertiary,
-            )
-            .label(self.project_picker_label())
-            .caret(false)
-            .disabled(!can_configure_workspace)
-            .selected(can_configure_workspace && project_handle.is_open())
-            .max_w(px(190.0));
-        let project_selector = if can_configure_workspace {
-            self.render_project_picker(
-                project_trigger,
-                &project_handle,
-                ProjectPickerSite::Composer,
-                cx,
-            )
-        } else {
-            project_trigger.into_any_element()
-        };
-
-        let workspace = self
-            .selected_session()
-            .map(|session| session.workspace.clone())
-            .unwrap_or_default();
-        let workspace_label = match &workspace {
-            SessionWorkspace::Local => SharedString::from(tr!("workspace.local")),
-            SessionWorkspace::NewWorktree { .. } => {
-                SharedString::from(tr!("workspace.new_worktree"))
-            }
-            SessionWorkspace::Worktree { branch, .. } => SharedString::from(branch.clone()),
-        };
-        let workspace_icon = if workspace.is_local() {
-            "icons/laptop.svg"
-        } else {
+            .is_some_and(|session| session.workspace.is_worktree())
+        {
             "icons/fork.svg"
-        };
-        let worktree_handle = self.menu_handle("workspace-worktree", cx);
-        let worktree_trigger = MenuChip::new("workspace-worktree")
-            .icon(workspace_icon, theme.text_tertiary)
-            .label(workspace_label)
-            .caret(false)
-            .disabled(!can_configure_workspace)
-            .selected(can_configure_workspace && worktree_handle.is_open())
-            .max_w(px(180.0));
-        let worktree_selector = if can_configure_workspace {
-            let local_selected = workspace.is_local();
-            let worktree_selected = workspace.is_worktree();
-            let weak = cx.entity().downgrade();
-            dropdown_menu(
-                worktree_trigger,
-                "workspace-worktree-menu",
-                &worktree_handle,
-                MenuAlign::AboveLeft,
-                move |_| {
-                    let local = weak.clone();
-                    let worktree = weak.clone();
-                    vec![
-                        MenuItem::Header(tr!("workspace.work_in").into()),
-                        MenuItem::new(tr!("workspace.local"), move |_, cx| {
-                            let _ = local.update(cx, |this, cx| {
-                                this.select_workspace(SessionWorkspace::Local, cx);
-                            });
-                        })
-                        .icon("icons/laptop.svg")
-                        .selected(local_selected),
-                        MenuItem::new(tr!("workspace.new_worktree"), move |_, cx| {
-                            let _ = worktree.update(cx, |this, cx| {
-                                this.select_workspace(
-                                    SessionWorkspace::NewWorktree { base_branch: None },
-                                    cx,
-                                );
-                            });
-                        })
-                        .icon("icons/fork.svg")
-                        .selected(worktree_selected)
-                        .disabled(projectless_selected),
-                    ]
-                },
-            )
+        } else if self.selected_project().is_some_and(Project::is_projectless) {
+            "icons/folder-dashed.svg"
         } else {
-            worktree_trigger.into_any_element()
+            "icons/folder.svg"
         };
+        let project_handle = self.project_picker_handle(ProjectPickerSite::Composer, cx);
+        let project_selector = self.render_project_picker(
+            MenuChip::new("workspace-project")
+                .icon(location_icon, theme.text_tertiary)
+                .label(self.project_picker_label())
+                .caret(false)
+                .selected(project_handle.is_open())
+                .max_w(px(220.0)),
+            &project_handle,
+            ProjectPickerSite::Composer,
+            cx,
+        );
 
         let branch_selector = self.render_branch_selector(cx);
 
@@ -3164,7 +2990,6 @@ impl Waku {
                     .text_size(sp(12.5))
                     .line_height(sp(14.0))
                     .child(project_selector)
-                    .child(worktree_selector)
                     .children(branch_selector)
                     .child(div().flex_1())
                     .children(usage_meter),

@@ -236,8 +236,6 @@ input.search_branches:
   en: Search branches
 input.search_projects:
   en: Search projects
-input.new_branch_name:
-  en: New branch name
 input.detected_automatically:
   en: Detected automatically
 input.search_or_enter_address:
@@ -1111,14 +1109,8 @@ branches.search_project:
   en: Search %{project} branches
 branches.switching:
   en: Switching…
-branches.create_and_checkout:
-  en: Create and checkout new branch
-branches.create_hint:
-  en: Press Return to create · Esc to cancel
 branches.none_found:
   en: No branches found
-branches.create_and_checkout_ellipsis:
-  en: Create and checkout new branch…
 branches.title:
   en: Branches
 branches.choose:
@@ -1126,12 +1118,6 @@ branches.choose:
 branches.checked_out_elsewhere:
   en: Checked out in another worktree
 
-workspace.work_in:
-  en: Work in
-workspace.local:
-  en: Local
-workspace.new_worktree:
-  en: New worktree
 workspace.workspace:
   en: workspace
 workspace.worktree:

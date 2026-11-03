@@ -267,18 +267,6 @@ impl Waku {
         self.select_session(id, cx);
     }
 
-    pub(super) fn select_workspace(&mut self, workspace: SessionWorkspace, cx: &mut Context<Self>) {
-        let Some(session) = self.selected_session_mut() else {
-            return;
-        };
-        if session.has_started() || session.is_busy() || session.workspace == workspace {
-            return;
-        }
-        session.workspace = workspace;
-        self.save();
-        cx.notify();
-    }
-
     pub(super) fn remove_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
         if self.response_fork_preparations.contains_key(&session_id) {
             self.show_toast(tr!("session.response_fork_in_progress"));
