@@ -16,6 +16,14 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.1] - 2026-11-03
+
+- Add a titlebar search button that opens task search (⌘K) over titles and message content, replacing the sidebar title filter
+- Move New task to a compose button in the sidebar titlebar (⌘N) and widen the sidebar's minimum width to fit it
+- Add ⌘P to open the sidebar project selector, and outline the selector like a text field
+- Show shortcuts in the sidebar toggle, search, and New task tooltips
+- Title untitled tasks "New task"
+
 ## [2.2.0] - 2026-11-03
 
 - Add named sub-agents in Settings → Agents, listed under `^` with a model route and standing instructions
