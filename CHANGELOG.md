@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.3] - 2026-11-04
+
+- Replace the composer's Local/New worktree selector with a project chip that opens the sidebar's project picker
+- Limit the composer's branch picker to switching between existing branches
+- Align the traffic lights with the sidebar toggle and search icons, and tighten the sidebar project label spacing
+
 ## [2.2.2] - 2026-11-03
 
 - Add a titlebar search button that opens task search (⌘K) over titles and message content, replacing the sidebar title filter
