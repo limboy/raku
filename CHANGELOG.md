@@ -16,6 +16,16 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.0] - 2026-11-03
+
+- Add named sub-agents in Settings → Agents, listed under `^` with a model route and standing instructions
+- Add an agents card beside the changed-files card that opens each subtask's transcript in the right panel
+- Let Claude sessions delegate work to sub-agents without per-call prompts in Supervised mode
+- Move the project selector to the top of the sidebar and add a task filter that searches titles as you type
+- Replace the titlebar back/forward arrows and the New Task row with a New Task button (⌘[ and ⌘] still navigate)
+- Show a dashed folder instead of an × for "No project"
+- Fix line breaks in markdown table cells rendering as literal `<br>`
+
 ## [2.1.2] - 2026-11-03
 
 - Add an error page with Retry when a browser page fails to load, and stop the toolbar from loading forever
