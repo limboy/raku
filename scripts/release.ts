@@ -105,6 +105,34 @@ function logStep(message: string): void {
   console.log(`\n==> ${message}`);
 }
 
+// `stapler` fetches or checks the notarization ticket on Apple's CloudKit, and
+// that connection drops often enough on CI runners (NSURLErrorDomain -1005,
+// Error 68) to fail whole releases. Retrying is safe because staple and
+// validate are idempotent, and the release must still fail if Apple stays
+// unreachable rather than ship an unstapled DMG.
+async function withRetries(
+  label: string,
+  run: () => Promise<unknown>,
+  attempts = 5,
+  delayMs = 20_000,
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await run();
+      return;
+    } catch (error) {
+      if (attempt >= attempts) {
+        throw error;
+      }
+      const wait = delayMs * attempt;
+      console.warn(
+        `\n${label} failed (attempt ${attempt}/${attempts}); retrying in ${wait / 1000}s`,
+      );
+      await Bun.sleep(wait);
+    }
+  }
+}
+
 type CargoMetadata = {
   packages: Array<{
     name: string;
@@ -436,13 +464,19 @@ try {
     console.log(`Notarization accepted: ${result.id ?? "unknown submission"}`);
 
     logStep("Stapling and assessing the notarized DMG");
-    await $`xcrun stapler staple -v ${outputPath}`;
-    await $`xcrun stapler validate -v ${outputPath}`;
+    await withRetries("Stapling the DMG", () =>
+      $`xcrun stapler staple -v ${outputPath}`,
+    );
+    await withRetries("Validating the DMG staple", () =>
+      $`xcrun stapler validate -v ${outputPath}`,
+    );
     await $`spctl --assess --type open --context context:primary-signature --verbose=2 ${outputPath}`;
     // Notarizing the DMG also notarized the app's code, so the same
     // submission staples the app for the Sparkle archive.
     logStep("Stapling the app for the update archive");
-    await $`xcrun stapler staple -v ${appBundle}`;
+    await withRetries("Stapling the app", () =>
+      $`xcrun stapler staple -v ${appBundle}`,
+    );
   } else if (adhoc) {
     console.warn(
       "\nCreated an ad-hoc signed DMG. It is suitable for local testing only.",
