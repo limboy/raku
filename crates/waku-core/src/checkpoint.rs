@@ -167,23 +167,52 @@ fn capture_worktree_commit_from(
         bail!("worktree snapshots require a Git repository");
     }
 
-    let common_dir = git_output(cwd, ["rev-parse", "--git-common-dir"])?
-        .trim()
-        .to_owned();
+    let layout = git_output(
+        cwd,
+        [
+            "rev-parse",
+            "--git-common-dir",
+            "--git-path",
+            "index",
+            "--show-prefix",
+        ],
+    )?;
+    let mut layout = layout.lines().map(str::trim);
+    let resolve = |path: &str| {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        }
+    };
+    let common_dir = layout.next().unwrap_or_default();
     if common_dir.is_empty() {
         bail!("git did not return its common directory");
     }
-    let common_dir = PathBuf::from(common_dir);
-    let common_dir = if common_dir.is_absolute() {
-        common_dir
-    } else {
-        cwd.join(common_dir)
-    };
+    let common_dir = resolve(common_dir);
+    let worktree_index = layout.next().filter(|path| !path.is_empty()).map(resolve);
+    let at_worktree_root = layout.next().unwrap_or_default().is_empty();
     let temporary_index = common_dir.join(format!("waku-checkpoint-index-{}", Uuid::new_v4()));
 
     let result = (|| {
-        if let Some(head) = head {
-            git_with_index(cwd, &temporary_index, ["read-tree", head])?;
+        // `add -A` re-hashes every entry whose stat data it does not trust. An
+        // index built by `read-tree` has none, so that path hashes the whole
+        // tree on every turn start and end (~0.6-1.3 s on a 4k-file, 1 GB
+        // repository, before the prompt can be sent). Seeding from the
+        // worktree's own index keeps its stat cache, so only edited files are
+        // read (~43 ms there). Only at the worktree root: from a subdirectory,
+        // `add -A -- .` leaves paths outside it as seeded, and those must stay
+        // at HEAD rather than pick up whatever happens to be staged.
+        let seeded = at_worktree_root
+            && worktree_index.as_deref().is_some_and(|source| {
+                seed_temporary_index(source, &temporary_index).is_ok()
+            });
+        if !seeded {
+            let _ = fs::remove_file(&temporary_index);
+            if let Some(head) = head {
+                git_with_index(cwd, &temporary_index, ["read-tree", head])?;
+            }
         }
         git_with_index(cwd, &temporary_index, ["add", "-A", "--", "."])?;
         let tree = git_with_index(cwd, &temporary_index, ["write-tree"])?
@@ -214,6 +243,24 @@ fn capture_worktree_commit_from(
     let _ = fs::remove_file(&temporary_index);
     let _ = fs::remove_file(temporary_index.with_extension("lock"));
     result
+}
+
+/// Copies the worktree index to `destination` with its modification time.
+///
+/// Git's racy-clean check compares each entry's mtime against the index
+/// file's own; macOS Git stores whole seconds, so a copy stamped "now" would
+/// let an edit made in the index's last second pass as clean and vanish from
+/// the snapshot. Reading content and mtime through one handle keeps them
+/// consistent while Git atomically replaces the index underneath.
+fn seed_temporary_index(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let mut source = fs::File::open(source)?;
+    let modified = source.metadata()?.modified()?;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    std::io::copy(&mut source, &mut destination)?;
+    destination.set_modified(modified)
 }
 
 fn prepare_turn_diff_base(
@@ -813,6 +860,71 @@ mod tests {
         git_ok(&directory, &["add", "main-only.txt"]);
         git_ok(&directory, &["commit", "--quiet", "-m", "main"]);
         directory
+    }
+
+    fn set_mtime(path: &Path, time: std::time::SystemTime) {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    /// The seeded index must keep Git's racy-clean protection: an edit with
+    /// the indexed size and mtime, made in the second the index was written,
+    /// is only caught because the entry's mtime is not older than the index.
+    #[test]
+    fn seeded_snapshots_capture_racily_clean_edits() {
+        let directory = diverged_repository();
+        let file = directory.join("shared.txt");
+        let instant = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        fs::write(&file, "before\n").unwrap();
+        set_mtime(&file, instant);
+        git_ok(&directory, &["add", "shared.txt"]);
+        fs::write(&file, "after!\n").unwrap();
+        set_mtime(&file, instant);
+        set_mtime(&directory.join(".git/index"), instant);
+
+        let commit = capture_worktree_commit(&directory).unwrap();
+        assert_eq!(
+            git_text(&directory, &["show", &format!("{commit}:shared.txt")]),
+            "after!"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Seeding from the worktree index must capture the same worktree as a
+    /// fresh `read-tree HEAD` would: edits, deletions, and untracked files,
+    /// whatever is or is not staged.
+    #[test]
+    fn seeded_snapshots_capture_the_worktree_regardless_of_staging() {
+        let directory = diverged_repository();
+        fs::write(directory.join("shared.txt"), "staged\n").unwrap();
+        git_ok(&directory, &["add", "shared.txt"]);
+        fs::write(directory.join("shared.txt"), "unstaged\n").unwrap();
+        fs::remove_file(directory.join("main-only.txt")).unwrap();
+        fs::write(directory.join("untracked.txt"), "new\n").unwrap();
+
+        let commit = capture_worktree_commit(&directory).unwrap();
+        assert_eq!(
+            git_text(&directory, &["show", &format!("{commit}:shared.txt")]),
+            "unstaged"
+        );
+        assert_eq!(
+            git_text(&directory, &["ls-tree", "--name-only", &commit]),
+            "shared.txt\nuntracked.txt"
+        );
+        // The user's index is untouched by the snapshot.
+        assert_eq!(
+            git_text(&directory, &["show", ":shared.txt"]),
+            "staged"
+        );
+        assert_eq!(
+            git_text(&directory, &["status", "--porcelain"]),
+            "D main-only.txt\nMM shared.txt\n?? untracked.txt"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
