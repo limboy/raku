@@ -3,28 +3,19 @@ use gpui::{KeyBinding, actions};
 
 use super::*;
 
-actions!(waku_sidebar, [CancelSessionRename, ClearSidebarSearch]);
+actions!(waku_sidebar, [CancelSessionRename]);
 
 const SESSION_RENAME_PARENT_CONTEXT: &str = "SessionRename";
 const SESSION_RENAME_FIELD_CONTEXT: &str = "SessionRename > TextInput";
-const SIDEBAR_SEARCH_PARENT_CONTEXT: &str = "SidebarSearch";
-const SIDEBAR_SEARCH_FIELD_CONTEXT: &str = "SidebarSearch > TextInput";
 
-/// Keep Escape inside the focused inline editors so it cancels the rename or
-/// clears the filter, rather than falling through to the window-wide Stop.
+/// Keep Escape inside the focused inline rename editor so it cancels the
+/// rename rather than falling through to the window-wide Stop.
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new(
-            "escape",
-            CancelSessionRename,
-            Some(SESSION_RENAME_FIELD_CONTEXT),
-        ),
-        KeyBinding::new(
-            "escape",
-            ClearSidebarSearch,
-            Some(SIDEBAR_SEARCH_FIELD_CONTEXT),
-        ),
-    ]);
+    cx.bind_keys([KeyBinding::new(
+        "escape",
+        CancelSessionRename,
+        Some(SESSION_RENAME_FIELD_CONTEXT),
+    )]);
 }
 
 /// Height of a session card plus the separation reserved beneath it in the
@@ -155,20 +146,6 @@ fn selected_sidebar_sessions<'a>(
         .collect::<Vec<_>>();
     sort_sidebar_sessions(&mut sessions, ordering);
     sessions
-}
-
-/// Lowercased, whitespace-separated filter terms. Every term must appear in
-/// a session's title for it to stay listed.
-fn sidebar_search_terms(query: &str) -> Vec<String> {
-    query.split_whitespace().map(str::to_lowercase).collect()
-}
-
-fn sidebar_session_matches(session: &AgentSession, terms: &[String]) -> bool {
-    if terms.is_empty() {
-        return true;
-    }
-    let title = localized_session_title(session).to_lowercase();
-    terms.iter().all(|term| title.contains(term.as_str()))
 }
 
 fn sidebar_project_is_projectless(project: &Project, projectless_root: Option<&Path>) -> bool {
@@ -441,10 +418,11 @@ impl Waku {
             }))
     }
 
-    fn render_titlebar_new_session(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_titlebar_search(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::current(cx);
+        let open = self.command_palette.is_open();
         div()
-            .id("titlebar-new-session")
+            .id("titlebar-search")
             .tab_index(0)
             .size(px(TITLEBAR_BUTTON_SIZE))
             .flex_none()
@@ -454,20 +432,29 @@ impl Waku {
             .justify_center()
             .cursor_default()
             .focus_visible(|style| style.border_1().border_color(theme.accent))
+            .when(open, |element| element.bg(theme.overlay))
             .hover(|element| element.bg(theme.overlay))
             .active(|element| element.bg(theme.overlay_strong))
-            .tooltip(Tooltip::text(tr_cow!("menu.new_task")))
-            .child(icon("icons/compose.svg", 14.0, theme.text_tertiary))
+            .tooltip(Tooltip::text(tr_cow!("sidebar.search_tasks")))
+            .child(icon(
+                "icons/search.svg",
+                14.0,
+                if open {
+                    theme.text_secondary
+                } else {
+                    theme.text_tertiary
+                },
+            ))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();
-                this.new_session_action(&NewSession, window, cx);
+                this.toggle_command_palette_action(&ToggleCommandPalette, window, cx);
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    this.new_session_action(&NewSession, window, cx);
+                    this.toggle_command_palette_action(&ToggleCommandPalette, window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -513,73 +500,8 @@ impl Waku {
             )
             .child(self.render_sidebar_toggle(cx))
             .child(
-                self.render_titlebar_new_session(cx)
+                self.render_titlebar_search(cx)
                     .ml(px(TITLEBAR_NAVIGATION_GAP)),
-            )
-    }
-
-    /// Escape clears a live filter; on an empty field it hands focus back to
-    /// the composer.
-    fn clear_sidebar_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sidebar_search.read(cx).content().is_empty() {
-            let focus = self.composer_focus(cx);
-            window.focus(&focus, cx);
-            return;
-        }
-        self.sidebar_search.update(cx, |input, cx| input.clear(cx));
-    }
-
-    /// Enter in the filter opens its first result.
-    pub(super) fn open_first_sidebar_search_result(&mut self, cx: &mut Context<Self>) {
-        if self.sidebar_search_query.is_empty() {
-            return;
-        }
-        let first = self.sidebar_rows_cached().iter().find_map(|row| match row {
-            SidebarRow::Session(id) => Some(*id),
-            _ => None,
-        });
-        if let Some(session_id) = first {
-            self.select_session(session_id, cx);
-        }
-    }
-
-    fn render_sidebar_search(&self, cx: &mut Context<Self>) -> Div {
-        let theme = Theme::current(cx);
-        let has_query = !self.sidebar_search_query.is_empty();
-        div()
-            .flex_1()
-            .min_w_0()
-            .key_context(SIDEBAR_SEARCH_PARENT_CONTEXT)
-            .on_action(cx.listener(|this, _: &ClearSidebarSearch, window, cx| {
-                this.clear_sidebar_search(window, cx);
-            }))
-            .child(
-                TextField::new("sidebar-search-field", self.sidebar_search.clone())
-                    .icon("icons/search.svg", 12.0)
-                    .h(px(TITLEBAR_BUTTON_SIZE + 2.0))
-                    .pr(px(3.0))
-                    .when(has_query, |field| {
-                        field.child(
-                            icon_button("sidebar-search-clear", "icons/x.svg", theme)
-                                .size(px(20.0))
-                                .flex_none()
-                                .tab_index(0)
-                                .focus_visible(|style| style.border_1().border_color(theme.accent))
-                                .tooltip(Tooltip::text(tr_cow!("sidebar.clear_search")))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.clear_sidebar_search(window, cx);
-                                }))
-                                .on_key_down(cx.listener(
-                                    |this, event: &KeyDownEvent, window, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            this.clear_sidebar_search(window, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                )),
-                        )
-                    }),
             )
     }
 
@@ -709,17 +631,50 @@ impl Waku {
         self.render_project_picker(trigger, &handle, ProjectPickerSite::Sidebar, cx)
     }
 
-    fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> Div {
+    fn render_sidebar_new_task(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let theme = Theme::current(cx);
         div()
-            .flex_none()
-            .h(px(44.0))
-            .px(px(10.0))
+            .id("sidebar-new-task")
+            .tab_index(0)
+            .w_full()
+            .min_w_0()
+            .h(px(SIDEBAR_PROJECT_ROW_HEIGHT))
+            .px(px(4.0))
+            .rounded(px(7.0))
             .flex()
             .items_center()
-            .tab_index(0)
-            .tab_group()
-            .tab_stop(false)
-            .child(self.render_sidebar_search(cx))
+            .gap(px(10.0))
+            .cursor_default()
+            .focus_visible(|style| style.border_1().border_color(theme.accent))
+            .hover(|element| element.bg(theme.sidebar_item_background))
+            .active(|element| element.bg(theme.overlay_strong))
+            .child(
+                div()
+                    .size(px(20.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("icons/compose.svg", 14.0, theme.text_tertiary)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(sp(13.0))
+                    .text_color(theme.text_secondary)
+                    .child(tr!("sidebar.new_task")),
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.new_session_action(&NewSession, window, cx);
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.new_session_action(&NewSession, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
     }
 
     pub(super) fn render_sidebar(
@@ -763,7 +718,6 @@ impl Waku {
         }
         let history_scrolled =
             self.sidebar_list_state.scroll_px_offset_for_scrollbar().y < px(-0.5);
-        let no_search_results = !self.sidebar_search_query.is_empty() && rows.is_empty();
         let entity = cx.entity().downgrade();
 
         div()
@@ -802,15 +756,22 @@ impl Waku {
                     .px(px(10.0))
                     .pb(px(10.0))
                     .flex()
-                    .items_center()
-                    .gap(px(6.0))
+                    .flex_col()
+                    .gap(px(2.0))
                     .tab_index(0)
                     .tab_group()
                     .tab_stop(false)
-                    .child(self.render_sidebar_project_selector(cx))
-                    .when(!update_in_titlebar, |row| {
-                        row.children(self.render_sidebar_update(cx))
-                    }),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(self.render_sidebar_project_selector(cx))
+                            .when(!update_in_titlebar, |row| {
+                                row.children(self.render_sidebar_update(cx))
+                            }),
+                    )
+                    .child(self.render_sidebar_new_task(cx)),
             )
             .child(
                 div()
@@ -840,20 +801,6 @@ impl Waku {
                         &self.sidebar_list_state,
                         &self.sidebar_scrollbar,
                     ))
-                    .when(no_search_results, |scroll| {
-                        scroll.child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .w_full()
-                                .px(px(18.0))
-                                .pt(px(8.0))
-                                .text_size(sp(12.5))
-                                .text_color(theme.text_tertiary)
-                                .child(tr!("sidebar.no_matching_tasks")),
-                        )
-                    })
                     .when(history_scrolled, |scroll| {
                         scroll.child(
                             div()
@@ -866,7 +813,6 @@ impl Waku {
                         )
                     }),
             )
-            .child(self.render_sidebar_footer(cx))
     }
 
     /// Keep a newly selected task visible without disturbing the sidebar when
@@ -915,16 +861,6 @@ impl Waku {
         for session_id in &self.state.pinned_session_ids {
             fingerprint = mix_uuid(fingerprint, *session_id);
         }
-        // Titles only matter while a filter is active; an unfiltered
-        // streaming frame never hashes them.
-        if !self.sidebar_search_query.is_empty() {
-            fingerprint = mix_str(fingerprint, &self.sidebar_search_query);
-            for session in &self.state.sessions {
-                if session.has_started() {
-                    fingerprint = mix_str(fingerprint, session.display_title());
-                }
-            }
-        }
         for project in &self.state.projects {
             fingerprint = mix_uuid(fingerprint, project.id);
         }
@@ -937,15 +873,13 @@ impl Waku {
 
     fn sidebar_rows(&self) -> Vec<SidebarRow> {
         let projectless_root = crate::projectless::workspace_root();
-        let mut sessions = selected_sidebar_sessions(
+        let sessions = selected_sidebar_sessions(
             &self.state.sessions,
             &self.state.projects,
             self.state.selected_project,
             projectless_root.as_deref(),
             self.state.sidebar_ordering,
         );
-        let terms = sidebar_search_terms(&self.sidebar_search_query);
-        sessions.retain(|session| sidebar_session_matches(session, &terms));
         grouped_sidebar_rows(
             &sessions,
             self.sidebar_date_boundaries,
@@ -1833,25 +1767,6 @@ mod tests {
                 SidebarRow::Session(sessions[2].id),
             ]
         );
-    }
-
-    #[test]
-    fn sidebar_search_keeps_sessions_whose_titles_contain_every_term() {
-        let project_id = Uuid::new_v4();
-        let titled = |title: &str| {
-            let mut session = AgentSession::new(project_id, ProviderKind::Codex);
-            session.set_title(title);
-            session
-        };
-        let session = titled("Fix Sidebar search focus");
-        let matches = |query: &str| sidebar_session_matches(&session, &sidebar_search_terms(query));
-
-        assert!(matches(""));
-        assert!(matches("   "));
-        assert!(matches("sidebar"));
-        assert!(matches("  FOCUS   side "));
-        assert!(!matches("sidebar pinned"));
-        assert!(!matches("composer"));
     }
 
     #[test]

@@ -1090,11 +1090,6 @@ pub struct Waku {
     agent_settings: agent_settings::AgentSettings,
     settings_previous_focus: Option<FocusHandle>,
     settings_focus_generation: u64,
-    /// The sidebar's always-visible session filter; any content filters the
-    /// selected project's history.
-    sidebar_search: Entity<TextInput>,
-    /// Trimmed filter text, mirrored on edit so frames never read the field.
-    sidebar_search_query: String,
     sidebar_update_focus: FocusHandle,
     /// Updater events maintain this snapshot; frames never take its locks.
     update_status: crate::updater::UpdateStatus,
@@ -1951,8 +1946,6 @@ impl Waku {
                 .clear_on_escape()
                 .placeholder(tr!("input.search_projects"))
         });
-        let sidebar_search =
-            cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("sidebar.search_tasks")));
         let skills_search = cx.new(|cx| {
             TextInput::new(window, cx)
                 .clear_on_escape()
@@ -2474,23 +2467,6 @@ impl Waku {
                 },
             )
             .detach();
-            // Each keystroke re-filters the sidebar history from its top.
-            cx.subscribe(
-                &sidebar_search,
-                |this: &mut Self, search, event: &InputEvent, cx| match event {
-                    InputEvent::Edited => {
-                        let query = search.read(cx).content().trim();
-                        if this.sidebar_search_query != query {
-                            this.sidebar_search_query = query.to_owned();
-                            this.sidebar_list_state.scroll_to(ListOffset::default());
-                            cx.notify();
-                        }
-                    }
-                    InputEvent::Submit(_) => this.open_first_sidebar_search_result(cx),
-                    _ => {}
-                },
-            )
-            .detach();
             cx.subscribe(
                 &project_search,
                 |this: &mut Self, search, event: &InputEvent, cx| {
@@ -2682,8 +2658,6 @@ impl Waku {
                 agent_settings: agent_settings::AgentSettings::new(cx),
                 settings_previous_focus: None,
                 settings_focus_generation: 0,
-                sidebar_search,
-                sidebar_search_query: String::new(),
                 sidebar_update_focus: cx.focus_handle(),
                 update_status,
                 onboarding_add_project_focus,

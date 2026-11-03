@@ -161,9 +161,8 @@ common.rename: 重命名
 session.new_task: 新任务
 sidebar.today: 今天
 sidebar.pinned: 已置顶
+sidebar.new_task: 新建任务
 sidebar.search_tasks: 搜索任务
-sidebar.clear_search: 清除搜索
-sidebar.no_matching_tasks: 没有匹配的任务
 sidebar.options: 侧边栏选项
 sidebar.grouping: 分组
 sidebar.grouping_project: 项目
