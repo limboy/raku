@@ -384,7 +384,9 @@ impl Backend for WakuBackend {
                         .iter_mut()
                         .find(|existing| existing.id == session.id)
                     {
-                        if session_projection_precedes(
+                        if !session.detail_loaded {
+                            merge_skeleton_list_columns(existing, session);
+                        } else if session_projection_precedes(
                             existing,
                             &session,
                             active_runtimes.get(&session.id).copied(),
@@ -394,9 +396,11 @@ impl Backend for WakuBackend {
                             preserve_daemon_checkpoints(existing, &mut session);
                             *existing = session;
                         }
-                    } else {
+                    } else if session.detail_loaded {
                         state.sessions.push(session);
                     }
+                    // An unknown skeleton is a task this daemon no longer
+                    // has; it carries no history to adopt.
                 }
                 let used_project_ids = state
                     .sessions
@@ -924,6 +928,20 @@ fn session_projection_precedes(
         }
         (Some(_), None) if existing.is_busy() => true,
         _ => incoming.updated_at < existing.updated_at,
+    }
+}
+
+/// Folds a client skeleton's edits into the daemon's copy of a session.
+///
+/// A skeleton carries only the session-list columns, and its empty transcript
+/// means "not fetched", never "empty", so it must never replace the stored
+/// session. Only the list fields a user edits without opening the task are
+/// taken; everything else on a skeleton is a default, not a value.
+fn merge_skeleton_list_columns(existing: &mut AgentSession, incoming: AgentSession) {
+    if incoming.updated_at >= existing.updated_at {
+        existing.title = incoming.title;
+        existing.project_id = incoming.project_id;
+        existing.updated_at = incoming.updated_at;
     }
 }
 
@@ -2362,6 +2380,86 @@ struct TurnFinishedWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client saves unopened tasks as skeletons (for example after a
+    /// sidebar rename). The daemon must take the edit without treating the
+    /// skeleton's empty transcript as the conversation — it used to arrive as
+    /// an unstarted session and be deleted.
+    #[test]
+    fn saving_a_renamed_skeleton_keeps_the_stored_conversation() {
+        fn wire(session: &AgentSession) -> AgentSession {
+            serde_json::from_value(serde_json::to_value(session).unwrap()).unwrap()
+        }
+        fn call(backend: &WakuBackend, command: Command) -> ResponsePayload {
+            backend
+                .handle(
+                    Request {
+                        request_id: Uuid::new_v4(),
+                        session_id: Uuid::nil(),
+                        runtime_id: Uuid::nil(),
+                        command,
+                    },
+                    backend.hub.event_sink(Uuid::nil(), Uuid::nil()),
+                )
+                .unwrap()
+        }
+        let directory = std::env::temp_dir().join(format!("waku-skeleton-save-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let open = || {
+            WakuBackend::new(
+                DaemonSettingsStore::open(directory.join("settings.json")).unwrap(),
+                StateStore::daemon(directory.join("app.db")),
+            )
+            .unwrap()
+        };
+        let project = Project::from_path(directory.join("repo"));
+        let mut session = AgentSession::new(project.id, ProviderKind::Codex);
+        session.begin_turn("persist me");
+        let session_id = session.id;
+        let save = |backend: &WakuBackend, session: &AgentSession| {
+            call(
+                backend,
+                Command::SaveTaskState {
+                    projects: vec![project.clone()],
+                    live_session_ids: vec![session_id],
+                    sessions: vec![wire(session)],
+                },
+            )
+        };
+
+        save(&open(), &session);
+        let backend = open();
+        let ResponsePayload::TaskState { sessions, .. } = call(&backend, Command::LoadTaskState)
+        else {
+            panic!("expected task state");
+        };
+        let mut skeleton = sessions
+            .into_iter()
+            .find(|candidate| candidate.id == session_id)
+            .unwrap();
+        assert!(!skeleton.detail_loaded);
+        assert!(
+            !wire(&skeleton).detail_loaded,
+            "skeletons stay skeletons on the wire"
+        );
+        skeleton.title = "Renamed".into();
+        skeleton.updated_at += 100;
+        save(&backend, &skeleton);
+        drop(backend);
+
+        let backend = open();
+        let ResponsePayload::Session {
+            session: Some(stored),
+        } = call(&backend, Command::HydrateSession { session_id })
+        else {
+            panic!("the renamed task must still exist");
+        };
+        assert_eq!(stored.title, "Renamed");
+        assert_eq!(stored.messages.len(), session.messages.len());
+        assert_eq!(stored.turns.len(), session.turns.len());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(directory);
+    }
 
     #[test]
     fn unavailable_rewind_mode_preserves_files_refs_and_transcript() {

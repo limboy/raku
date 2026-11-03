@@ -2139,10 +2139,10 @@ mod tests {
             panic!("task state response changed shape");
         };
 
-        assert!(
-            !sessions[0].has_started(),
-            "serde cannot carry the process-local skeleton marker"
-        );
+        // The skeleton marker crosses the wire, so a skeleton the client saves
+        // back is still a skeleton to the daemon, not an empty session.
+        assert!(!sessions[0].detail_loaded);
+        assert!(sessions[0].has_started());
         restore_task_state_skeletons(&mut sessions);
         assert!(!sessions[0].detail_loaded);
         assert!(sessions[0].has_started());

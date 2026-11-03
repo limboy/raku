@@ -838,13 +838,26 @@ pub struct AgentSession {
     /// `turns`. Those are empty because nothing fetched them, not because the
     /// session is empty — never persist a skeleton, and never conclude from one
     /// that a session has no history.
-    #[serde(skip, default = "detail_loaded_default")]
+    ///
+    /// Serialized only when `false`, so a skeleton a client saves is still a
+    /// skeleton when the daemon reads it. Skipping it outright made every
+    /// saved skeleton arrive as a loaded session with no turns — which the
+    /// store treats as never started and drops: renaming an unopened task
+    /// deleted it.
+    #[serde(
+        default = "detail_loaded_default",
+        skip_serializing_if = "is_detail_loaded"
+    )]
     pub detail_loaded: bool,
 }
 
 /// Anything deserialized from a `data` blob carries its full detail.
 fn detail_loaded_default() -> bool {
     true
+}
+
+fn is_detail_loaded(detail_loaded: &bool) -> bool {
+    *detail_loaded
 }
 
 impl AgentSession {
