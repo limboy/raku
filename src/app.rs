@@ -1293,6 +1293,14 @@ pub struct Waku {
     pending_queue_drains: Vec<Uuid>,
     stream_state_dirty: bool,
     last_stream_save: Instant,
+    /// `app.json`/`state.json` land here rather than on the UI thread: a save
+    /// runs every second while streaming and each atomic write ends in a
+    /// full fsync. Holding the latest write lets the quit hook await it;
+    /// replacing it only cancels a capture this newer one supersedes.
+    background_executor: gpui::BackgroundExecutor,
+    desktop_document_write: Option<gpui::Task<()>>,
+    /// A failure from the background write, reported by the next save.
+    desktop_document_error: Arc<parking_lot::Mutex<Option<String>>>,
     /// User expansion overrides keyed by persisted transcript block index.
     activities_expanded: HashMap<usize, bool>,
     /// Per-item disclosure overrides. Reasoning starts open while live; tool
@@ -2380,10 +2388,17 @@ impl Waku {
             // Window-frame changes are only mirrored in memory; the quit save
             // is what lands the final position and size on disk.
             cx.on_app_quit(|this, _| {
-                if !this.backup_settings.is_restoring() {
-                    this.save();
+                let write = (!this.backup_settings.is_restoring())
+                    .then(|| {
+                        this.save();
+                        this.desktop_document_write.take()
+                    })
+                    .flatten();
+                async move {
+                    if let Some(write) = write {
+                        write.await;
+                    }
                 }
-                async {}
             })
             .detach();
 
@@ -2720,6 +2735,9 @@ impl Waku {
                 pending_queue_drains: Vec::new(),
                 stream_state_dirty: false,
                 last_stream_save: Instant::now(),
+                background_executor: cx.background_executor().clone(),
+                desktop_document_write: None,
+                desktop_document_error: Arc::default(),
                 activities_expanded: HashMap::new(),
                 expanded_activity_items: HashMap::new(),
                 expanded_turns: HashSet::new(),

@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -1084,11 +1084,84 @@ pub fn load_or_create_app_settings() -> io::Result<AppSettings> {
     Ok(settings)
 }
 
+/// `app.json` and `state.json`, serialized on the UI thread at one save.
+///
+/// Capturing is cheap (a few KiB of JSON); landing them is not. An atomic
+/// write ends in `File::sync_all`, which is `F_FULLFSYNC` on Apple targets
+/// and measured ~5 ms per file on an idle SSD, so the bytes are written by
+/// [`DesktopDocumentWriter`] on the background executor instead.
+pub struct DesktopDocuments {
+    generation: u64,
+    settings: Vec<u8>,
+    state: Vec<u8>,
+}
+
+/// Writes captured [`DesktopDocuments`] off the UI thread.
+///
+/// Saves run once a second while a provider streams and almost never change
+/// either document, so a file whose bytes match the last successful write is
+/// skipped. Writes are serialized by the lock and stamped with a capture
+/// generation: a superseded capture that runs late is dropped instead of
+/// overwriting newer state. A failed write leaves the remembered bytes alone,
+/// so the next save retries it.
+pub struct DesktopDocumentWriter {
+    app_settings_path: PathBuf,
+    app_state_path: PathBuf,
+    next_generation: AtomicU64,
+    written: Mutex<WrittenDesktopDocuments>,
+}
+
+#[derive(Default)]
+struct WrittenDesktopDocuments {
+    generation: u64,
+    settings: Option<Vec<u8>>,
+    state: Option<Vec<u8>>,
+}
+
+impl DesktopDocumentWriter {
+    fn new(app_settings_path: PathBuf, app_state_path: PathBuf) -> Self {
+        Self {
+            app_settings_path,
+            app_state_path,
+            next_generation: AtomicU64::new(0),
+            written: Mutex::new(WrittenDesktopDocuments::default()),
+        }
+    }
+
+    fn capture(&self, state: &PersistedState) -> io::Result<DesktopDocuments> {
+        Ok(DesktopDocuments {
+            generation: self.next_generation.fetch_add(1, Ordering::AcqRel) + 1,
+            settings: serde_json::to_vec_pretty(&state.app_settings()).map_err(to_io_error)?,
+            state: serde_json::to_vec_pretty(&state.app_state()).map_err(to_io_error)?,
+        })
+    }
+
+    /// Lands `documents` unless a newer capture already has. Blocking file
+    /// I/O: call it from a background thread.
+    pub fn write(&self, documents: DesktopDocuments) -> io::Result<()> {
+        let mut written = self.written.lock();
+        if documents.generation <= written.generation {
+            return Ok(());
+        }
+        if written.settings.as_ref() != Some(&documents.settings) {
+            write_bytes_atomically(&self.app_settings_path, &documents.settings)?;
+            written.settings = Some(documents.settings);
+        }
+        if written.state.as_ref() != Some(&documents.state) {
+            write_bytes_atomically(&self.app_state_path, &documents.state)?;
+            written.state = Some(documents.state);
+        }
+        written.generation = documents.generation;
+        Ok(())
+    }
+}
+
 /// Desktop state store: app files stay local, task data crosses RPC.
 pub struct StateStore {
     path: PathBuf,
     app_state_path: PathBuf,
     app_settings_path: PathBuf,
+    documents: Arc<DesktopDocumentWriter>,
     legacy_settings_paths: Vec<PathBuf>,
     daemon: DaemonSupervisor,
     remote_default_cwd: Mutex<Option<PathBuf>>,
@@ -1133,6 +1206,10 @@ impl StateStore {
         Self {
             app_state_path: default_app_state_path(),
             app_settings_path: default_app_settings_path(),
+            documents: Arc::new(DesktopDocumentWriter::new(
+                default_app_settings_path(),
+                default_app_state_path(),
+            )),
             legacy_settings_paths: default_legacy_settings_paths(),
             path: Self::default_path(),
             daemon,
@@ -1302,9 +1379,25 @@ impl StateStore {
         }
     }
 
+    /// Synchronous save of everything: desktop documents, then task state.
+    /// For one-shot paths only — frames use [`Self::capture_desktop_documents`]
+    /// plus a background [`DesktopDocumentWriter::write`], then
+    /// [`Self::save_task_state`].
     pub fn save(&self, state: &mut PersistedState) -> io::Result<()> {
-        self.write_app_settings(&state.app_settings())?;
-        self.write_app_state(&state.app_state())?;
+        self.documents.write(self.capture_desktop_documents(state)?)?;
+        self.save_task_state(state)
+    }
+
+    pub fn capture_desktop_documents(&self, state: &PersistedState) -> io::Result<DesktopDocuments> {
+        self.documents.capture(state)
+    }
+
+    pub fn desktop_document_writer(&self) -> Arc<DesktopDocumentWriter> {
+        self.documents.clone()
+    }
+
+    /// Queues the dirty sessions for the daemon. A channel send; no I/O.
+    pub fn save_task_state(&self, state: &mut PersistedState) -> io::Result<()> {
         if !self.task_state_loaded.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -1396,17 +1489,21 @@ pub fn hydrate_session(
 }
 
 fn write_json_atomically(path: &Path, value: &impl Serialize) -> io::Result<()> {
+    let data = serde_json::to_vec_pretty(value).map_err(to_io_error)?;
+    write_bytes_atomically(path, &data)
+}
+
+fn write_bytes_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let data = serde_json::to_vec_pretty(value).map_err(to_io_error)?;
     let temporary = path.with_extension("json.tmp");
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     options.mode(0o600);
     let mut file = options.open(&temporary)?;
-    file.write_all(&data)?;
+    file.write_all(data)?;
     file.sync_all()?;
     fs::rename(&temporary, path)?;
     #[cfg(unix)]
@@ -1459,6 +1556,43 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn desktop_document_writes_skip_superseded_and_unchanged_captures() {
+        let directory = std::env::temp_dir().join(format!("waku-documents-{}", Uuid::new_v4()));
+        let settings_path = directory.join("app.json");
+        let state_path = directory.join("state.json");
+        let writer = DesktopDocumentWriter::new(settings_path.clone(), state_path.clone());
+        let documents = |generation, settings: &str, state: &str| DesktopDocuments {
+            generation,
+            settings: settings.as_bytes().to_vec(),
+            state: state.as_bytes().to_vec(),
+        };
+
+        writer.write(documents(2, "settings-2", "state-2")).unwrap();
+        assert_eq!(fs::read_to_string(&settings_path).unwrap(), "settings-2");
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), "state-2");
+
+        // A capture taken before the one already on disk must not regress it.
+        writer.write(documents(1, "settings-1", "state-1")).unwrap();
+        assert_eq!(fs::read_to_string(&settings_path).unwrap(), "settings-2");
+
+        // Unchanged bytes are not rewritten: an external edit survives.
+        fs::write(&settings_path, "external").unwrap();
+        writer.write(documents(3, "settings-2", "state-3")).unwrap();
+        assert_eq!(fs::read_to_string(&settings_path).unwrap(), "external");
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), "state-3");
+
+        // A failed write is retried by the next capture.
+        fs::remove_file(&state_path).unwrap();
+        fs::create_dir(&state_path).unwrap();
+        assert!(writer.write(documents(4, "settings-2", "state-4")).is_err());
+        fs::remove_dir(&state_path).unwrap();
+        writer.write(documents(5, "settings-2", "state-4")).unwrap();
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), "state-4");
+
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

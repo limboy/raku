@@ -1455,16 +1455,36 @@ impl Waku {
             .update_settings(self.state.daemon_settings())
             .err()
             .map(|error| error.to_string());
+        let document_error = self.write_desktop_documents();
         let app_error = self
             .store
-            .save(&mut self.state)
+            .save_task_state(&mut self.state)
             .err()
             .map(|error| error.to_string());
-        if let Some(error) = daemon_error.or(app_error) {
+        if let Some(error) = daemon_error.or(document_error).or(app_error) {
             self.show_toast(tr!("errors.save_local_state", error = error));
         } else {
             self.stream_state_dirty = false;
         }
+    }
+
+    /// Captures the desktop documents now and writes them on the background
+    /// executor. Returns a capture error, or a failure left by an earlier
+    /// background write, so it still reaches the user on this save.
+    fn write_desktop_documents(&mut self) -> Option<String> {
+        let previous_error = self.desktop_document_error.lock().take();
+        let documents = match self.store.capture_desktop_documents(&self.state) {
+            Ok(documents) => documents,
+            Err(error) => return Some(error.to_string()),
+        };
+        let writer = self.store.desktop_document_writer();
+        let errors = self.desktop_document_error.clone();
+        self.desktop_document_write = Some(self.background_executor.spawn(async move {
+            if let Err(error) = writer.write(documents) {
+                *errors.lock() = Some(error.to_string());
+            }
+        }));
+        previous_error
     }
 
     fn checkpoint_capture_pending(&self, session_id: Uuid, turn_count: usize) -> bool {
