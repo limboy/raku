@@ -98,7 +98,7 @@ impl ProviderKind {
                     summary: false,
                 },
                 delegation: DelegationCapabilities {
-                    parent: false,
+                    parent: true,
                     review_subtask: true,
                 },
                 model_discovery: true,

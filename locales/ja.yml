@@ -559,7 +559,7 @@ composer.show_in_text_field: 入力欄に表示
 composer.pasted_text: 貼り付けたテキスト
 composer.remove_target: 委譲先を削除
 composer.delegation_target_added: 委譲先を追加しました
-composer.delegation_unavailable: この Agent は委譲できません。Codex、Pi に切り替えてください
+composer.delegation_unavailable: この Agent は委譲できません。Claude、Codex、Pi に切り替えてください
 composer.invalid_model_reference: "モデルの参照が曖昧か利用できません。選択し直してください：%{label}"
 composer.queued_message_actions: フォローアップの操作
 

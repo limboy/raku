@@ -1095,7 +1095,7 @@ composer.remove_target:
 composer.delegation_target_added:
   en: Delegation target added
 composer.delegation_unavailable:
-  en: This agent cannot delegate; switch to Codex or Pi to use ^
+  en: This agent cannot delegate; switch to Claude, Codex, or Pi to use ^
 composer.invalid_model_reference:
   en: "Select this model again; its reference is ambiguous or unavailable: %{label}"
 

@@ -188,6 +188,40 @@ fn start_claude_title_refresh(
     );
 }
 
+/// The server name Waku's delegation tools are registered under. Claude
+/// addresses MCP tools as `mcp__<server>__<tool>`, the same name Codex sees.
+const DELEGATION_MCP_SERVER: &str = "waku_agent_tools";
+
+/// Register Waku's delegation tools for a parent session.
+///
+/// `--mcp-config` adds the server for this process only, beside the user's own
+/// MCP configuration (no `--strict-mcp-config`). The tools are pre-approved:
+/// they only start and await read-only subtasks the user asked for with `^`,
+/// so a Supervised session must not stop for a permission prompt per call.
+fn configure_delegation_tools(command: &mut Command, daemon_binary: &Path, session_path: &Path) {
+    let config = json!({
+        "mcpServers": {
+            DELEGATION_MCP_SERVER: {
+                "type": "stdio",
+                "command": daemon_binary.display().to_string(),
+                "args": ["mcp-agent-tools"],
+                "env": {
+                    "WAKU_DELEGATION_SESSION_PATH": session_path.display().to_string(),
+                },
+            }
+        }
+    });
+    command.args(["--mcp-config", &config.to_string()]);
+    // One comma-separated value: the flag is variadic and would otherwise
+    // swallow whatever argument follows it.
+    command.args([
+        "--allowedTools",
+        &format!(
+            "mcp__{DELEGATION_MCP_SERVER}__delegate_batch,mcp__{DELEGATION_MCP_SERVER}__wait_delegates"
+        ),
+    ]);
+}
+
 fn configure_stream_command(command: &mut Command, mode: RuntimeMode) {
     command.args([
         "-p",
@@ -230,6 +264,7 @@ impl ClaudeDriver {
             context_window,
             agent_preset: _,
             provider_cursor,
+            delegation_session_path,
             ..
         } = options;
         let (resume_session_id, resume_at) = match provider_cursor {
@@ -267,6 +302,15 @@ impl ClaudeDriver {
             command.args(["--resume", &session_id]);
         } else {
             command.args(["--session-id", &session_id]);
+        }
+        // Only a parent session gets the bridge; subtasks are started without
+        // a session path, so they can never delegate in turn.
+        if let Some(session_path) = delegation_session_path.as_deref()
+            && execution_policy == ExecutionPolicy::Interactive
+        {
+            let daemon_binary =
+                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
+            configure_delegation_tools(&mut command, &daemon_binary, session_path);
         }
 
         let command = command
@@ -2000,6 +2044,41 @@ fn request_permission(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_parent_session_gets_the_preapproved_delegation_tools() {
+        let mut command = Command::new("/usr/bin/true");
+        configure_delegation_tools(
+            &mut command,
+            Path::new("/opt/waku/waku-daemon"),
+            Path::new("/tmp/waku/session.json"),
+        );
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let config_at = arguments
+            .iter()
+            .position(|argument| argument == "--mcp-config")
+            .expect("the bridge is registered");
+        let config: Value = serde_json::from_str(&arguments[config_at + 1]).unwrap();
+        let server = &config["mcpServers"]["waku_agent_tools"];
+        assert_eq!(server["command"], "/opt/waku/waku-daemon");
+        assert_eq!(server["args"], json!(["mcp-agent-tools"]));
+        assert_eq!(
+            server["env"]["WAKU_DELEGATION_SESSION_PATH"],
+            "/tmp/waku/session.json"
+        );
+        assert!(!arguments.iter().any(|argument| argument == "--strict-mcp-config"));
+        let allowed_at = arguments
+            .iter()
+            .position(|argument| argument == "--allowedTools")
+            .expect("the tools are pre-approved");
+        assert_eq!(
+            arguments[allowed_at + 1],
+            "mcp__waku_agent_tools__delegate_batch,mcp__waku_agent_tools__wait_delegates"
+        );
+    }
 
     #[test]
     fn streaming_command_requests_readable_reasoning_summary() {
