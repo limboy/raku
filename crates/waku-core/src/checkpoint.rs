@@ -205,9 +205,9 @@ fn capture_worktree_commit_from(
         // `add -A -- .` leaves paths outside it as seeded, and those must stay
         // at HEAD rather than pick up whatever happens to be staged.
         let seeded = at_worktree_root
-            && worktree_index.as_deref().is_some_and(|source| {
-                seed_temporary_index(source, &temporary_index).is_ok()
-            });
+            && worktree_index
+                .as_deref()
+                .is_some_and(|source| seed_temporary_index(source, &temporary_index).is_ok());
         if !seeded {
             let _ = fs::remove_file(&temporary_index);
             if let Some(head) = head {
@@ -916,10 +916,7 @@ mod tests {
             "shared.txt\nuntracked.txt"
         );
         // The user's index is untouched by the snapshot.
-        assert_eq!(
-            git_text(&directory, &["show", ":shared.txt"]),
-            "staged"
-        );
+        assert_eq!(git_text(&directory, &["show", ":shared.txt"]), "staged");
         assert_eq!(
             git_text(&directory, &["status", "--porcelain"]),
             "D main-only.txt\nMM shared.txt\n?? untracked.txt"
