@@ -16,7 +16,7 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
-## [2.2.1] - 2026-11-03
+## [2.2.2] - 2026-11-03
 
 - Add a titlebar search button that opens task search (⌘K) over titles and message content, replacing the sidebar title filter
 - Move New task to a compose button in the sidebar titlebar (⌘N) and widen the sidebar's minimum width to fit it
