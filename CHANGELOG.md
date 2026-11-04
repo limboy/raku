@@ -16,6 +16,9 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.4] - 2026-11-04
+
+- Fix Codex questions never appearing, and answer or dismiss them from the question sheet
 - Remove Antigravity CLI support
 
 ## [2.2.3] - 2026-11-04
