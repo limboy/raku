@@ -16,11 +16,15 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.7] - 2026-11-04
+
 - Add plan mode for Claude and Codex tasks: the agent investigates and proposes a plan, then implements it once you approve, or revises it from your reply. Toggle it in the composer or with ⌘⇧P
 - Name new Pi tasks automatically with a short title in the language of your first message
 - Fix rewinding and editing earlier messages in Codex sessions with Codex 0.166 and later
 - Show when Claude or Codex retries a request, switches models, or reports a warning, instead of an unexplained spinner
 - Show Codex task checklists in the transcript when the plan tool is enabled in your Codex config
+- Update built-in Claude and Codex model choices for first-run and offline use
+- Simplify the task info popover and show clearer Git actions and repository status
 
 ## [2.2.6] - 2026-11-04
 
