@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.6] - 2026-11-04
+
+- Separate consecutive Codex messages with paragraph breaks so progress updates and final answers do not run together
+- Hide OpenCode models disabled in the Console from Pi's model picker
+
 ## [2.2.5] - 2026-11-04
 
 - Show OpenCode Go and Go Plus plan usage limits for Pi tasks using OpenCode Go models
