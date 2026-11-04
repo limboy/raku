@@ -143,6 +143,11 @@ try {
     join(projectRoot, "resources", "delegation", "pi-extension.ts"),
     join(resourcesDirectory, "delegation", "pi-extension.ts"),
   );
+  await mkdir(join(resourcesDirectory, "pi"), { recursive: true });
+  await copyFile(
+    join(projectRoot, "resources", "pi", "session-title.ts"),
+    join(resourcesDirectory, "pi", "session-title.ts"),
+  );
   await copyFile(
     join(projectRoot, "LICENSE"),
     join(packageDirectory, "LICENSE"),

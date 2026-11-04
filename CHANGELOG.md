@@ -16,6 +16,8 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Name new Pi tasks automatically with a short title in the language of your first message
+
 ## [2.2.6] - 2026-11-04
 
 - Separate consecutive Codex messages with paragraph breaks so progress updates and final answers do not run together

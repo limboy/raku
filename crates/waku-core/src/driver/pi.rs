@@ -192,6 +192,44 @@ fn configure_pi_delegation_command(
     }
 }
 
+/// The extension that gives Pi sessions automatic titles.
+///
+/// Pi names a session only when something calls `setSessionName`; Claude and
+/// Codex title their own sessions. The bundled extension generates a short
+/// title from the first request in the background and reports it through
+/// `session_info_changed`, which already feeds `AutoTitleUpdated`.
+pub(crate) fn pi_title_extension_path() -> anyhow::Result<PathBuf> {
+    let path = crate::resources::resources_directory(
+        &crate::resources::host_executable_path()?,
+        std::env::consts::OS,
+    )?
+    .join("pi/session-title.ts");
+    crate::resources::packaged_file(&path, "Waku Pi session title extension")
+}
+
+/// Interactive sessions get automatic titles. Review subtasks never request a
+/// session title, matching the title-language context. A missing asset only
+/// costs the generated title, so it is reported and skipped.
+fn configure_pi_title_command(
+    command: &mut std::process::Command,
+    flavor: PiFlavor,
+    execution_policy: ExecutionPolicy,
+    extension: impl FnOnce() -> anyhow::Result<PathBuf>,
+) {
+    if execution_policy == ExecutionPolicy::ReviewReadOnly {
+        return;
+    }
+    match extension() {
+        Ok(extension) => {
+            command.arg("--extension").arg(extension);
+        }
+        Err(error) => eprintln!(
+            "{} sessions will not get generated titles: {error:#}",
+            flavor.display_name()
+        ),
+    }
+}
+
 impl PiDriver {
     pub fn start(
         options: DriverStartOptions,
@@ -260,6 +298,12 @@ impl PiDriver {
             flavor,
             delegation_session_path.as_deref(),
             crate::delegation::pi_extension_path,
+        );
+        configure_pi_title_command(
+            &mut command,
+            flavor,
+            execution_policy,
+            pi_title_extension_path,
         );
         let command = command
             .current_dir(&cwd)
@@ -2969,6 +3013,54 @@ mod delegation_tests {
         });
         assert!(args(&command).is_empty());
         assert!(env(&command, "WAKU_AGENT_TOOLS_SERVER").is_none());
+    }
+
+    #[test]
+    fn an_interactive_session_gets_the_title_extension() {
+        let mut command = command();
+        configure_pi_title_command(
+            &mut command,
+            PiFlavor::Pi,
+            ExecutionPolicy::Interactive,
+            || Ok(PathBuf::from("/bundle/pi/session-title.ts")),
+        );
+        assert_eq!(
+            args(&command),
+            ["--extension", "/bundle/pi/session-title.ts"]
+        );
+    }
+
+    #[test]
+    fn a_review_subtask_never_gets_the_title_extension() {
+        let mut command = command();
+        configure_pi_title_command(
+            &mut command,
+            PiFlavor::Pi,
+            ExecutionPolicy::ReviewReadOnly,
+            || panic!("a review subtask must not probe the title extension"),
+        );
+        assert!(args(&command).is_empty());
+    }
+
+    /// The extension strips Waku's title-language note before the agent sees
+    /// the request, so it must recognize exactly what Rust appends.
+    #[test]
+    fn the_title_extension_recognizes_the_title_language_context() {
+        let source = include_str!("../../../../resources/pi/session-title.ts");
+        let prepared = super::super::title_language::TitleLanguageContext::new(
+            crate::model::ProviderKind::Pi,
+            ExecutionPolicy::Interactive,
+        )
+        .prepare("修复侧边栏的标题更新问题".into());
+        let suffix = prepared
+            .strip_prefix("修复侧边栏的标题更新问题")
+            .expect("the note is appended");
+        assert!(suffix.starts_with("\n\n[[waku-session-title-language=cmn]]\n"));
+        assert!(suffix.contains("\nAutomatic session titles MUST use Chinese, unless "));
+        assert!(suffix.ends_with(".\n[[/waku-session-title-language]]"));
+        assert_eq!(suffix.matches('\n').count(), 4);
+        let pattern = r"\n\n\[\[waku-session-title-language=[a-z]{3}\]\]\nAutomatic session titles MUST use ([^,\n]+), unless [^\n]*\n\[\[\/waku-session-title-language\]\]$";
+        assert!(source.contains(pattern), "the extension's pattern drifted");
     }
 
     /// The subtask launch must not carry the full-access flag: `--approve` /

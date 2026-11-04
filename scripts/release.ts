@@ -425,6 +425,7 @@ try {
       "delegation",
       "pi-extension.ts",
     ),
+    join(mountedContents, "Resources", "pi", "session-title.ts"),
     join(mountedSparkleFramework, "Sparkle"),
   ]) {
     await access(artifact);
