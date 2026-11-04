@@ -43,10 +43,10 @@ use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
 use crate::model::{
-    ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey, BackgroundWorkKind,
-    BackgroundWorkStatus, DriverEvent, ExecutionPolicy, PermissionOption, ProviderResumeCursor,
-    RuntimeMode, UserInputAnswer, UserInputDelivery, UserInputOption, UserInputQuestion,
-    unix_time_millis,
+    ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
+    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, ExecutionPolicy, PermissionOption,
+    ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputDelivery, UserInputOption,
+    UserInputQuestion, unix_time_millis,
 };
 
 enum CommandMessage {
@@ -744,6 +744,8 @@ fn write_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()> {
 #[derive(Default)]
 struct ClaudeStreamState {
     compaction: CompactionTracker,
+    /// The open `api_retry` streak, settled when model output resumes.
+    retry: activity::RetryNotice,
     manual_compaction: Arc<Mutex<Option<ContextCompaction>>>,
     compaction_cancelled: Arc<AtomicBool>,
     saw_text_delta: bool,
@@ -1212,6 +1214,10 @@ fn handle_claude_system(
     state: &mut ClaudeStreamState,
 ) {
     let subtype = value.get("subtype").and_then(Value::as_str);
+    if let Some(item) = claude_notice(subtype, value, state) {
+        let _ = events.send(DriverEvent::RichActivity(item));
+        return;
+    }
     if subtype == Some("status")
         && value.get("status").and_then(Value::as_str) == Some("compacting")
     {
@@ -1387,6 +1393,68 @@ fn handle_claude_system(
             stop.store(true, Ordering::Release);
         }
     }
+}
+
+/// Provider notices worth a transcript row. Only the main thread's: a
+/// subagent's retries and fallbacks belong to its own task, not this turn.
+fn claude_notice(
+    subtype: Option<&str>,
+    value: &Value,
+    state: &mut ClaudeStreamState,
+) -> Option<ActivityItem> {
+    if value
+        .get("parent_tool_use_id")
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        return None;
+    }
+    let content = value.get("content").and_then(Value::as_str);
+    match subtype? {
+        "api_retry" => Some(state.retry.retrying(Some(&claude_retry_detail(value)))),
+        "model_fallback" | "model_refusal_fallback" | "model_consent_fallback" => {
+            let switched = claude_model_switch(value);
+            Some(activity::notice(
+                tr!("activity.model_switched"),
+                content.or(switched.as_deref()),
+            ))
+        }
+        "model_refusal_no_fallback" => {
+            Some(activity::notice(tr!("activity.model_declined"), content))
+        }
+        "informational" if value.get("level").and_then(Value::as_str) == Some("warning") => {
+            Some(activity::notice(tr!("activity.provider_warning"), content))
+        }
+        _ => None,
+    }
+}
+
+/// `Attempt 2 of 10 · overloaded (529)` from an `api_retry` system message.
+fn claude_retry_detail(value: &Value) -> String {
+    let attempt = value.get("attempt").and_then(Value::as_u64).unwrap_or(1);
+    let mut detail = match value.get("max_retries").and_then(Value::as_u64) {
+        Some(max) => tr!("activity.retry_attempt_of", attempt = attempt, max = max),
+        None => tr!("activity.retry_attempt", attempt = attempt),
+    };
+    let reason = value
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.is_empty())
+        .map(|reason| reason.replace('_', " "));
+    let status = value.get("error_status").and_then(Value::as_u64);
+    match (reason, status) {
+        (Some(reason), Some(status)) => detail.push_str(&format!(" · {reason} ({status})")),
+        (Some(reason), None) => detail.push_str(&format!(" · {reason}")),
+        (None, Some(status)) => detail.push_str(&format!(" · {status}")),
+        (None, None) => {}
+    }
+    detail
+}
+
+fn claude_model_switch(value: &Value) -> Option<String> {
+    let from = value.get("original_model").and_then(Value::as_str)?;
+    let to = value.get("fallback_model").and_then(Value::as_str)?;
+    Some(format!("{from} → {to}"))
 }
 
 /// Renders a subagent message into its task's output pane: narrative text
@@ -1596,6 +1664,9 @@ fn handle_message(
                 return;
             }
             begin_unprompted_turn(turn_active, state, events);
+            if let Some(item) = state.retry.settle(false) {
+                let _ = events.send(DriverEvent::RichActivity(item));
+            }
             let event = value.get("event").unwrap_or(&Value::Null);
             // Each assistant message re-arms the delta fallback.
             if event.get("type").and_then(Value::as_str) == Some("message_start") {
@@ -1781,6 +1852,9 @@ fn handle_message(
         }
         Some("result") => {
             let failed = value.get("is_error").and_then(Value::as_bool) == Some(true);
+            if let Some(item) = state.retry.settle(failed) {
+                let _ = events.send(DriverEvent::RichActivity(item));
+            }
             let cancellation_requested = state.compaction_cancelled.swap(false, Ordering::AcqRel);
             let manual = state.manual_compaction.lock().take();
             let cancelled = cancellation_requested
@@ -3072,6 +3146,68 @@ mod tests {
         assert!(matches!(&seen[3], DriverEvent::RichActivity(item)
                 if item.complete && item.output.as_deref() == Some("hi")));
         assert_eq!(seen.len(), 4, "replayed prompt or control noise leaked");
+    }
+
+    #[test]
+    fn retries_and_fallbacks_surface_as_notices() {
+        let (events, event_rx, commands, _command_rx, turn, mut state) = harness();
+        // Shapes from Claude Code 2.1.316's SDK output.
+        let wire = [
+            json!({"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,
+                "retry_delay_ms":1000,"error_status":529,"error":"overloaded","uuid":"a"}),
+            json!({"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,
+                "retry_delay_ms":2000,"error_status":529,"error":"overloaded","uuid":"b"}),
+            json!({"type":"stream_event","event":{"type":"message_start","message":{"role":"assistant"}}}),
+            json!({"type":"system","subtype":"model_fallback","trigger":"overloaded",
+                "original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5",
+                "content":"Opus 5.5 is overloaded, so this turn uses Sonnet 5.5.","uuid":"c"}),
+            json!({"type":"system","subtype":"model_refusal_fallback",
+                "original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5","uuid":"d"}),
+            // A subagent's retry belongs to its task, not this turn.
+            json!({"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,
+                "parent_tool_use_id":"toolu_9","uuid":"e"}),
+            json!({"type":"system","subtype":"informational","level":"info","content":"fyi"}),
+            json!({"type":"system","subtype":"informational","level":"warning",
+                "content":"Git Bash wasn't found."}),
+        ];
+        for message in wire {
+            handle_message(
+                &message,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
+        }
+        let notices = event_rx
+            .try_iter()
+            .filter_map(|event| match event {
+                DriverEvent::RichActivity(item) if item.kind == ActivityKind::Notice => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(notices.len(), 6);
+        assert!(!notices[0].complete);
+        assert_eq!(
+            notices[1].detail.as_deref(),
+            Some("Attempt 2 of 10 · overloaded (529)")
+        );
+        assert_eq!(notices[1].source_id, notices[0].source_id);
+        assert_eq!(notices[2].source_id, notices[0].source_id);
+        assert!(notices[2].complete && !notices[2].failed);
+        assert_eq!(notices[3].title, "Switched model");
+        assert_eq!(
+            notices[3].detail.as_deref(),
+            Some("Opus 5.5 is overloaded, so this turn uses Sonnet 5.5.")
+        );
+        assert_eq!(
+            notices[4].detail.as_deref(),
+            Some("claude-opus-5-5 → claude-sonnet-5-5")
+        );
+        assert_eq!(notices[5].title, "Warning");
+        assert_eq!(notices[5].detail.as_deref(), Some("Git Bash wasn't found."));
     }
 
     #[test]

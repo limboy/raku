@@ -18,6 +18,8 @@ the original feature bullet instead of adding separate entries for them.
 
 - Name new Pi tasks automatically with a short title in the language of your first message
 - Fix rewinding and editing earlier messages in Codex sessions with Codex 0.166 and later
+- Show when Claude or Codex retries a request, switches models, or reports a warning, instead of an unexplained spinner
+- Show Codex task checklists in the transcript when the plan tool is enabled in your Codex config
 
 ## [2.2.6] - 2026-11-04
 

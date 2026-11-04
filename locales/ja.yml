@@ -366,6 +366,19 @@ activity.plan_update_failed: プランの更新に失敗しました
 activity.activity: アクティビティ
 activity.tool: ツール
 activity.plan_updated: プランを更新しました
+activity.plan_completed: "%{count} 件のステップをすべて完了"
+activity.plan_progress: "%{total} 件中 %{completed} 件完了"
+activity.notice: "通知"
+activity.notices: "通知"
+activity.retrying_request: "リクエストを再試行中"
+activity.retried_request: "リクエストを再試行しました"
+activity.retry_failed: "再試行後もリクエストに失敗しました"
+activity.retry_attempt: "%{attempt} 回目"
+activity.retry_attempt_of: "%{attempt} / %{max} 回目"
+activity.model_switched: "モデルを切り替えました"
+activity.model_declined: "モデルがリクエストを拒否しました"
+activity.provider_warning: "警告"
+activity.reroute_reason_cyber: "高リスクのサイバー活動として検出"
 activity.compacting_context: コンテキストを圧縮しています
 activity.compacted_context: コンテキストを圧縮しました
 activity.compaction_failed: コンテキストの圧縮に失敗しました

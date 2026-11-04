@@ -63,6 +63,69 @@ pub(super) fn tool_activity(
         .with_failed(failed)
 }
 
+/// A settled provider notice — a model switch or a warning — as its own
+/// transcript row. The provider's wording travels as the detail.
+pub(super) fn notice(title: String, detail: Option<&str>) -> ActivityItem {
+    ActivityItem::new(
+        Some(format!("notice-{}", uuid::Uuid::new_v4())),
+        ActivityKind::Notice,
+        title,
+        notice_detail(detail),
+        true,
+    )
+}
+
+fn notice_detail(text: Option<&str>) -> Option<String> {
+    const MAX_NOTICE_CHARS: usize = 600;
+    let text = text.map(str::trim).filter(|text| !text.is_empty())?;
+    let mut detail = text.chars().take(MAX_NOTICE_CHARS).collect::<String>();
+    if detail.len() < text.len() {
+        detail.push('…');
+    }
+    Some(detail)
+}
+
+/// Automatic request retries, one row per streak: the row stays running
+/// while the provider keeps retrying and settles once output resumes or the
+/// turn ends, so a stalled spinner always says why it is waiting.
+#[derive(Debug, Default)]
+pub(super) struct RetryNotice {
+    id: Option<String>,
+    detail: Option<String>,
+}
+
+impl RetryNotice {
+    pub(super) fn retrying(&mut self, detail: Option<&str>) -> ActivityItem {
+        let id = self
+            .id
+            .get_or_insert_with(|| format!("retry-{}", uuid::Uuid::new_v4()))
+            .clone();
+        self.detail = notice_detail(detail);
+        ActivityItem::new(
+            Some(id),
+            ActivityKind::Notice,
+            tr!("activity.retrying_request"),
+            self.detail.clone(),
+            false,
+        )
+    }
+
+    /// Closes the open streak, if any. `failed` when the turn ended without
+    /// the request ever getting through.
+    pub(super) fn settle(&mut self, failed: bool) -> Option<ActivityItem> {
+        let id = self.id.take()?;
+        let title = if failed {
+            tr!("activity.retry_failed")
+        } else {
+            tr!("activity.retried_request")
+        };
+        Some(
+            ActivityItem::new(Some(id), ActivityKind::Notice, title, self.detail.take(), true)
+                .with_failed(failed),
+        )
+    }
+}
+
 pub(super) fn input_title(value: Option<&Value>) -> Option<String> {
     let value = value?;
     value
@@ -79,6 +142,35 @@ pub(super) fn input_title(value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_streaks_share_one_row_until_settled() {
+        let mut retry = RetryNotice::default();
+        assert!(retry.settle(false).is_none());
+        let first = retry.retrying(Some("Attempt 1 of 10"));
+        let second = retry.retrying(Some("Attempt 2 of 10"));
+        assert_eq!(first.source_id, second.source_id);
+        assert!(!second.complete);
+        assert_eq!(second.detail.as_deref(), Some("Attempt 2 of 10"));
+        let settled = retry.settle(false).unwrap();
+        assert_eq!(settled.source_id, first.source_id);
+        assert!(settled.complete && !settled.failed);
+        assert_eq!(settled.detail.as_deref(), Some("Attempt 2 of 10"));
+        let next = retry.retrying(None);
+        assert_ne!(next.source_id, first.source_id);
+        assert!(retry.settle(true).unwrap().failed);
+    }
+
+    #[test]
+    fn notices_trim_and_bound_provider_text() {
+        let item = notice("Warning".into(), Some("  disk is full \n"));
+        assert_eq!(item.kind, ActivityKind::Notice);
+        assert!(item.complete);
+        assert_eq!(item.detail.as_deref(), Some("disk is full"));
+        assert!(notice("Warning".into(), Some("   ")).detail.is_none());
+        let long = "x".repeat(2_000);
+        assert!(notice("Warning".into(), Some(&long)).detail.unwrap().ends_with('…'));
+    }
 
     #[test]
     fn title_supports_direct_and_provider_wrapped_arguments() {

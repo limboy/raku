@@ -2282,6 +2282,11 @@ impl Waku {
         {
             return self.render_compaction_row(activity, &surface, theme, cx);
         }
+        if let [activity] = activities
+            && activity.kind == ActivityKind::Notice
+        {
+            return render_notice_row(activity, &surface, theme);
+        }
         let ActivityRenderContext {
             live_group,
             live_reasoning_id,
@@ -3493,4 +3498,63 @@ mod live_reasoning_window_tests {
         let content = "a".repeat(LIVE_REASONING_WINDOW_MAX);
         assert_eq!(live_reasoning_window_anchor(7, &content), 7);
     }
+}
+
+/// A provider notice — a retried request, a model switch, a warning — as a
+/// quiet line of its own. It has nothing to expand, so it takes no focus: the
+/// whole message wraps in place and the icon is never its only signal.
+fn render_notice_row(
+    activity: &ActivityItem,
+    surface: &ActivityRenderContext<'_>,
+    theme: &Theme,
+) -> AnyElement {
+    if surface.part == ActivityClusterPart::Item {
+        return div().into_any_element();
+    }
+    let color = if activity.failed {
+        theme.danger
+    } else {
+        theme.warning
+    };
+    let status_icon = if activity.complete {
+        icon(
+            if activity.failed {
+                "icons/x.svg"
+            } else {
+                "icons/alert.svg"
+            },
+            13.0,
+            color,
+        )
+        .into_any_element()
+    } else {
+        crate::ui::motion::spin_slow(icon("icons/loader-circle.svg", 13.0, theme.text_secondary))
+    };
+    div()
+        .w_full()
+        .min_w_0()
+        .my(px(4.0))
+        .px(px(6.0))
+        .py(px(4.0))
+        .flex()
+        .items_start()
+        .gap(px(8.0))
+        .text_size(sp(12.0))
+        .child(div().flex_none().pt(px(2.0)).child(status_icon))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .text_color(theme.text_tertiary)
+                .child(
+                    div()
+                        .text_color(theme.text_secondary)
+                        .child(activity.title.clone()),
+                )
+                .when_some(
+                    activity.detail.clone().filter(|detail| !detail.is_empty()),
+                    |row, detail| row.child(detail),
+                ),
+        )
+        .into_any_element()
 }

@@ -716,6 +716,32 @@ activity.tool:
   en: Tool
 activity.plan_updated:
   en: Plan updated
+activity.plan_completed:
+  en: "All %{count} steps completed"
+activity.plan_progress:
+  en: "%{completed} of %{total} done"
+activity.notice:
+  en: notice
+activity.notices:
+  en: notices
+activity.retrying_request:
+  en: Retrying request
+activity.retried_request:
+  en: Retried request
+activity.retry_failed:
+  en: Request failed after retrying
+activity.retry_attempt:
+  en: "Attempt %{attempt}"
+activity.retry_attempt_of:
+  en: "Attempt %{attempt} of %{max}"
+activity.model_switched:
+  en: Switched model
+activity.model_declined:
+  en: Model declined the request
+activity.provider_warning:
+  en: Warning
+activity.reroute_reason_cyber:
+  en: flagged as high-risk cyber activity
 activity.compacting_context:
   en: Compacting context
 activity.compacted_context:

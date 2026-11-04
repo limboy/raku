@@ -1465,7 +1465,7 @@ pub(super) fn activity_display_title(activity: &ActivityItem) -> String {
             "activity.generating_image"
         }),
         ActivityKind::Tool | ActivityKind::Compaction => activity_tool_display_name(activity),
-        ActivityKind::Reasoning => activity.title.clone(),
+        ActivityKind::Reasoning | ActivityKind::Notice => activity.title.clone(),
     }
 }
 
@@ -1481,6 +1481,7 @@ pub(super) fn activity_action_label(activity: &ActivityItem) -> String {
         ActivityKind::FileList => tr!("activity.action_list"),
         ActivityKind::Plan => tr!("activity.action_plan"),
         ActivityKind::ImageGeneration => tr!("activity.generating_image"),
+        ActivityKind::Notice => activity.title.clone(),
         ActivityKind::Tool if is_ask_user_question(activity) => tr!("activity.ask_questions"),
         ActivityKind::Tool | ActivityKind::Compaction => tr!("activity.tool"),
     }
@@ -1536,6 +1537,7 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
             .unwrap_or_default(),
         ActivityKind::Plan => custom_title().unwrap_or_default(),
         ActivityKind::ImageGeneration => String::new(),
+        ActivityKind::Notice => activity.detail.clone().unwrap_or_default(),
         ActivityKind::Tool if is_ask_user_question(activity) => String::new(),
         ActivityKind::Tool | ActivityKind::Compaction => {
             let has_name = activity

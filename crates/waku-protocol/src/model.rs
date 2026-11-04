@@ -1547,6 +1547,10 @@ pub enum ActivityKind {
     Tool,
     Compaction,
     ImageGeneration,
+    /// Something the provider reported about the turn rather than work it
+    /// did: a retried request, a model switch, a warning. `title` names the
+    /// event and `detail` carries the provider's own wording.
+    Notice,
 }
 
 impl ActivityKind {
@@ -2245,7 +2249,11 @@ pub struct ActivityItem {
 impl ActivityItem {
     /// Content that keeps its own ordered row, including after ordinary work folds.
     pub fn is_standalone(&self) -> bool {
-        self.compaction.is_some() || self.kind == ActivityKind::ImageGeneration
+        self.compaction.is_some()
+            || matches!(
+                self.kind,
+                ActivityKind::ImageGeneration | ActivityKind::Notice
+            )
     }
 
     pub fn from_compaction(compaction: crate::compaction::ContextCompaction) -> Self {

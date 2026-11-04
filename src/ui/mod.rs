@@ -226,6 +226,7 @@ pub fn activity_icon(kind: ActivityKind) -> &'static str {
         ActivityKind::Search => "icons/search.svg",
         ActivityKind::Plan => "icons/list.svg",
         ActivityKind::ImageGeneration => "icons/file-types/image.svg",
+        ActivityKind::Notice => "icons/alert.svg",
         ActivityKind::Tool | ActivityKind::Compaction => "icons/wrench.svg",
     }
 }
@@ -244,6 +245,7 @@ pub fn activity_noun(kind: ActivityKind) -> (String, String) {
             tr!("activity.generated_image"),
             tr!("activity.generated_images"),
         ),
+        ActivityKind::Notice => (tr!("activity.notice"), tr!("activity.notices")),
         ActivityKind::Tool | ActivityKind::Compaction => {
             (tr!("activity.tool_call"), tr!("activity.tool_calls"))
         }
@@ -543,6 +545,7 @@ mod tests {
             ActivityKind::Search,
             ActivityKind::Plan,
             ActivityKind::Tool,
+            ActivityKind::Notice,
         ] {
             paths.push(activity_icon(kind));
         }

@@ -349,6 +349,19 @@ activity.plan_update_failed: 更新计划失败
 activity.activity: 操作
 activity.tool: 工具
 activity.plan_updated: 计划已更新
+activity.plan_completed: "全部 %{count} 个步骤已完成"
+activity.plan_progress: "已完成 %{completed}/%{total}"
+activity.notice: "通知"
+activity.notices: "通知"
+activity.retrying_request: "正在重试请求"
+activity.retried_request: "已重试请求"
+activity.retry_failed: "重试后请求仍失败"
+activity.retry_attempt: "第 %{attempt} 次尝试"
+activity.retry_attempt_of: "第 %{attempt}/%{max} 次尝试"
+activity.model_switched: "已切换模型"
+activity.model_declined: "模型拒绝了该请求"
+activity.provider_warning: "警告"
+activity.reroute_reason_cyber: "被标记为高风险网络安全活动"
 activity.compacting_context: 正在压缩上下文
 activity.compacted_context: 已压缩上下文
 activity.compaction_failed: 上下文压缩失败

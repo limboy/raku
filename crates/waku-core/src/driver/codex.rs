@@ -1302,6 +1302,69 @@ fn rollback_native_turn_count(
         .map_or(turn_ids.len(), |(index, _)| turn_ids.len() - index)
 }
 
+/// One row per `turn/plan/updated`, like each Claude `TodoWrite` call: the
+/// row names the step in progress and its detail holds the whole checklist,
+/// each status spelled out by a marker rather than color alone.
+///
+/// Codex 0.166 only offers the `update_plan` tool when the user's config sets
+/// `tools.update_plan.enabled`; without it this never fires.
+fn codex_plan_activity(params: &Value) -> Option<ActivityItem> {
+    let steps = params
+        .get("plan")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|entry| {
+            let step = entry.get("step").and_then(Value::as_str)?.trim();
+            (!step.is_empty()).then(|| (step, entry.get("status").and_then(Value::as_str)))
+        })
+        .collect::<Vec<_>>();
+    if steps.is_empty() {
+        return None;
+    }
+    let completed = steps
+        .iter()
+        .filter(|(_, status)| *status == Some("completed"))
+        .count();
+    let title = steps
+        .iter()
+        .find(|(_, status)| *status == Some("inProgress"))
+        .map(|(step, _)| (*step).to_owned())
+        .unwrap_or_else(|| {
+            if completed == steps.len() {
+                tr!("activity.plan_completed", count = steps.len())
+            } else {
+                tr!("activity.plan_updated")
+            }
+        });
+    let mut checklist = params
+        .get("explanation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| format!("{text}\n\n"))
+        .unwrap_or_default();
+    for (step, status) in &steps {
+        let marker = match *status {
+            Some("completed") => "✓",
+            Some("inProgress") => "→",
+            _ => "○",
+        };
+        checklist.push_str(&format!("{marker} {step}\n"));
+    }
+    checklist.push_str(&tr!(
+        "activity.plan_progress",
+        completed = completed,
+        total = steps.len()
+    ));
+    Some(ActivityItem::new(
+        Some(format!("plan-{}", uuid::Uuid::new_v4())),
+        ActivityKind::Plan,
+        title,
+        Some(checklist),
+        true,
+    ))
+}
+
 /// The native turn count to drop and the first turn `thread/revert` removes.
 ///
 /// Codex replaced `thread/rollback { numTurns }` with
@@ -1324,6 +1387,9 @@ const CODEX_CITATION_SEPARATOR: char = '\u{e202}';
 #[derive(Default)]
 struct CodexStreamState {
     compaction: CompactionTracker,
+    /// The open retry streak from `error` notifications with `willRetry`,
+    /// settled by the next item or the turn's end.
+    retry: super::activity::RetryNotice,
     maintenance_turn: bool,
     citations: HashMap<String, String>,
     citation_numbers: HashMap<String, usize>,
@@ -1851,6 +1917,12 @@ fn handle_codex_message(
     };
     let params = value.get("params").cloned().unwrap_or(Value::Null);
 
+    if method.starts_with("item/")
+        && let Some(item) = stream_state.retry.settle(false)
+    {
+        let _ = events.send(DriverEvent::RichActivity(item));
+    }
+
     match method {
         "turn/started" => {
             stream_state.begin_turn();
@@ -2095,6 +2167,9 @@ fn handle_codex_message(
                 .pointer("/turn/status")
                 .and_then(Value::as_str)
                 .unwrap_or("completed");
+            if let Some(item) = stream_state.retry.settle(status == "failed") {
+                let _ = events.send(DriverEvent::RichActivity(item));
+            }
             let error = params
                 .pointer("/turn/error/message")
                 .and_then(Value::as_str)
@@ -2174,9 +2249,50 @@ fn handle_codex_message(
                 let _ = events.send(DriverEvent::GoalUpdated(None));
             }
         }
+        // `{error: TurnError, willRetry}`. A retry is progress, not failure;
+        // a final error also fails the turn, and `turn/completed` reports it.
         "error" => {
-            if let Some(message) = params.get("message").and_then(Value::as_str) {
+            if params.get("willRetry").and_then(Value::as_bool) == Some(true) {
+                let message = params.pointer("/error/message").and_then(Value::as_str);
+                let item = stream_state.retry.retrying(message);
+                let _ = events.send(DriverEvent::RichActivity(item));
+            } else if let Some(message) = params.get("message").and_then(Value::as_str) {
+                // Older app-servers sent a bare message.
                 let _ = events.send(DriverEvent::Error(message.to_owned()));
+            }
+        }
+        "turn/plan/updated" => {
+            if !stream_state.maintenance_turn
+                && let Some(item) = codex_plan_activity(&params)
+            {
+                let _ = events.send(DriverEvent::RichActivity(item));
+            }
+        }
+        "model/rerouted" => {
+            let reason = params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(|reason| match reason {
+                    "highRiskCyberActivity" => tr!("activity.reroute_reason_cyber"),
+                    other => other.to_owned(),
+                });
+            let detail = match (
+                params.get("fromModel").and_then(Value::as_str),
+                params.get("toModel").and_then(Value::as_str),
+            ) {
+                (Some(from), Some(to)) => Some(match reason {
+                    Some(reason) => format!("{from} → {to} · {reason}"),
+                    None => format!("{from} → {to}"),
+                }),
+                _ => reason,
+            };
+            let item = super::activity::notice(tr!("activity.model_switched"), detail.as_deref());
+            let _ = events.send(DriverEvent::RichActivity(item));
+        }
+        "warning" => {
+            if let Some(message) = params.get("message").and_then(Value::as_str) {
+                let item = super::activity::notice(tr!("activity.provider_warning"), Some(message));
+                let _ = events.send(DriverEvent::RichActivity(item));
             }
         }
         "mcpServer/startupStatus/updated"
@@ -4294,6 +4410,104 @@ mod tests {
 
         assert!(codex_plan_usage(Some(&json!({"planType": "plus"}))).is_none());
         assert!(codex_plan_usage(None).is_none());
+    }
+
+    fn activities(events: Vec<DriverEvent>) -> Vec<ActivityItem> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                DriverEvent::RichActivity(item) => Some(item),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plan_updates_become_checklist_rows() {
+        // Payloads from a live Codex 0.166 turn with `tools.update_plan` on.
+        let plan = |statuses: [&str; 3]| {
+            json!({"method":"turn/plan/updated","params":{
+                "threadId":"thread-1","turnId":"turn-1","explanation":null,
+                "plan":[
+                    {"step":"Choose a quiet natural image","status":statuses[0]},
+                    {"step":"Shape it into 5–7–5 syllables","status":statuses[1]},
+                    {"step":"Polish the haiku’s final wording","status":statuses[2]}
+                ]}})
+        };
+        let rows = activities(feed_codex_messages(vec![
+            plan(["completed", "inProgress", "pending"]),
+            plan(["completed", "completed", "completed"]),
+            json!({"method":"turn/plan/updated","params":{"threadId":"thread-1","turnId":"turn-1","plan":[]}}),
+        ]));
+        assert_eq!(rows.len(), 2, "an empty plan adds no row");
+        assert!(rows.iter().all(|row| row.kind == ActivityKind::Plan && row.complete));
+        assert_ne!(rows[0].source_id, rows[1].source_id);
+        assert_eq!(rows[0].title, "Shape it into 5–7–5 syllables");
+        assert_eq!(
+            rows[0].detail.as_deref(),
+            Some(
+                "✓ Choose a quiet natural image\n→ Shape it into 5–7–5 syllables\n\
+                 ○ Polish the haiku’s final wording\n1 of 3 done"
+            )
+        );
+        assert_eq!(rows[1].title, "All 3 steps completed");
+    }
+
+    #[test]
+    fn retries_hold_one_running_row_until_output_resumes() {
+        let retry = |message: &str| {
+            json!({"method":"error","params":{"threadId":"thread-1","turnId":"turn-1",
+                "willRetry":true,"error":{"message":message}}})
+        };
+        let events = feed_codex_messages(vec![
+            retry("Reconnecting... 1/5"),
+            retry("Reconnecting... 2/5"),
+            json!({"method":"item/started","params":{"item":{"id":"r1","type":"reasoning"}}}),
+        ]);
+        assert!(
+            !events.iter().any(|event| matches!(event, DriverEvent::Error(_))),
+            "a retry is not an error"
+        );
+        let rows = activities(events)
+            .into_iter()
+            .filter(|row| row.kind == ActivityKind::Notice)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.source_id == rows[0].source_id));
+        assert!(!rows[1].complete);
+        assert_eq!(rows[1].detail.as_deref(), Some("Reconnecting... 2/5"));
+        assert!(rows[2].complete && !rows[2].failed);
+        assert_eq!(rows[2].title, "Retried request");
+
+        let failed = activities(feed_codex_messages(vec![
+            retry("Reconnecting... 5/5"),
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"failed",
+                "error":{"message":"stream disconnected"}}}}),
+        ]));
+        let settled = failed.last().unwrap();
+        assert!(settled.complete && settled.failed);
+        assert_eq!(settled.title, "Request failed after retrying");
+    }
+
+    #[test]
+    fn reroutes_and_warnings_become_notices() {
+        let rows = activities(feed_codex_messages(vec![
+            json!({"method":"model/rerouted","params":{"threadId":"thread-1","turnId":"turn-1",
+                "fromModel":"gpt-6.1-sol","toModel":"gpt-6-sol","reason":"highRiskCyberActivity"}}),
+            json!({"method":"warning","params":{"threadId":"thread-1","message":"Sandbox fell back to read-only"}}),
+            // A final error is left to `turn/completed`, which fails the turn.
+            json!({"method":"error","params":{"threadId":"thread-1","turnId":"turn-1",
+                "willRetry":false,"error":{"message":"boom"}}}),
+        ]));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, ActivityKind::Notice);
+        assert_eq!(rows[0].title, "Switched model");
+        assert_eq!(
+            rows[0].detail.as_deref(),
+            Some("gpt-6.1-sol → gpt-6-sol · flagged as high-risk cyber activity")
+        );
+        assert_eq!(rows[1].title, "Warning");
+        assert_eq!(rows[1].detail.as_deref(), Some("Sandbox fell back to read-only"));
     }
 
     fn feed_codex_messages(messages: Vec<Value>) -> Vec<DriverEvent> {
