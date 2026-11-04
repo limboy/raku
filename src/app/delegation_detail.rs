@@ -2289,32 +2289,23 @@ mod real_replay_smoke {
             "REAL INFO LAYOUT: 200 settled + 1 running, 5 production layout frames {:?}",
             start.elapsed()
         );
-        let (session, copy_focus, last_row, last_stop, first_action, second_action) =
-            cx.update(|_, cx| {
-                waku.update(cx, |waku, cx| {
-                    let session = waku.state.selected_session.unwrap();
-                    let group = &waku.session_delegations[&session][0];
-                    let target = format!(
-                        "delegated-{}-{}",
-                        group.id,
-                        group.tasks.last().unwrap().task_id
-                    );
-                    (
-                        session,
-                        waku.transcript_control_focus("background-summary-copy-task-id", cx),
-                        waku.transcript_control_focus(
-                            format!("background-summary-row-{target}"),
-                            cx,
-                        ),
-                        waku.transcript_control_focus(
-                            format!("background-summary-stop-{target}"),
-                            cx,
-                        ),
-                        waku.transcript_control_focus("environment-summary-commit", cx),
-                        waku.transcript_control_focus("environment-summary-compare", cx),
-                    )
-                })
-            });
+        let (last_row, last_stop, first_action, second_action) = cx.update(|_, cx| {
+            waku.update(cx, |waku, cx| {
+                let session = waku.state.selected_session.unwrap();
+                let group = &waku.session_delegations[&session][0];
+                let target = format!(
+                    "delegated-{}-{}",
+                    group.id,
+                    group.tasks.last().unwrap().task_id
+                );
+                (
+                    waku.transcript_control_focus(format!("background-summary-row-{target}"), cx),
+                    waku.transcript_control_focus(format!("background-summary-stop-{target}"), cx),
+                    waku.transcript_control_focus("environment-summary-commit", cx),
+                    waku.transcript_control_focus("environment-summary-compare", cx),
+                )
+            })
+        });
         let frame = |cx: &mut gpui::VisualTestContext| {
             for _ in 0..3 {
                 cx.update(|window, cx| {
@@ -2335,22 +2326,7 @@ mod real_replay_smoke {
         frame(cx);
         cx.update(|window, _| {
             assert!(handle.is_open(), "offscreen focus did not dismiss the menu");
-            assert!(copy_focus.is_focused(window), "End revealed task-ID copy");
-        });
-        cx.simulate_keystrokes("space");
-        frame(cx);
-        assert_eq!(
-            cx.read_from_clipboard().and_then(|item| item.text()),
-            Some(session.to_string()),
-            "keyboard copied the actual selected task ID"
-        );
-        cx.simulate_keystrokes("shift-tab");
-        frame(cx);
-        cx.update(|window, _| {
-            assert!(
-                last_stop.is_focused(window),
-                "reverse Tab reached offscreen stop"
-            );
+            assert!(last_stop.is_focused(window), "End revealed offscreen stop");
         });
         cx.simulate_keystrokes("shift-tab");
         frame(cx);
@@ -2373,7 +2349,7 @@ mod real_replay_smoke {
                 "Tab reached next environment action"
             );
         });
-        eprintln!("REAL INFO KEYBOARD: End/copy/Shift-Tab/Home/Tab passed across virtual rows");
+        eprintln!("REAL INFO KEYBOARD: End/Shift-Tab/Home/Tab passed across virtual rows");
         cx.update(|window, cx| handle.close(window, cx));
     }
 }

@@ -9,8 +9,6 @@ const OUTPUT_CACHE_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const BACKGROUND_RESUME_GRACE: Duration = Duration::from_secs(30);
 const BACKGROUND_SUMMARY_MENU_ID: &str = "background-work-summary";
 const OPEN_IN_MENU_ID: &str = "open-in-app";
-const TASK_ID_COPY_CONTROL_ID: &str = "background-summary-copy-task-id";
-const AGENT_THREAD_ID_COPY_CONTROL_ID: &str = "background-summary-copy-agent-thread-id";
 
 #[derive(Default)]
 pub(super) struct BackgroundWorkRegistry {
@@ -57,7 +55,6 @@ struct BackgroundSummaryListState {
     scrollbar: Rc<ScrollbarState>,
     row_keys: Vec<String>,
     environment_focus: FocusHandle,
-    identifiers_focus: FocusHandle,
     navigation_focus: Option<FocusHandle>,
     navigation_generation: u64,
 }
@@ -67,7 +64,6 @@ enum BackgroundSummaryRow {
     Separator(&'static str),
     Heading(&'static str, String),
     Work(BackgroundSummaryEntry),
-    Identifiers(TaskIdentifierSection),
 }
 
 impl BackgroundSummaryRow {
@@ -76,12 +72,6 @@ impl BackgroundSummaryRow {
             Self::Environment(_) => "environment".into(),
             Self::Separator(key) | Self::Heading(key, _) => (*key).into(),
             Self::Work(entry) => entry.target.control_id(),
-            Self::Identifiers(section) => {
-                format!(
-                    "identifiers-{}",
-                    section.values.agent_cli_thread_id.is_some()
-                )
-            }
         }
     }
 
@@ -91,24 +81,12 @@ impl BackgroundSummaryRow {
             Self::Separator(_) => 17.0,
             Self::Heading(_, _) => 26.0,
             Self::Work(_) => 34.0,
-            Self::Identifiers(section) => {
-                if section.values.agent_cli_thread_id.is_some() {
-                    109.0
-                } else {
-                    51.0
-                }
-            }
         }
     }
 
-    fn list_focus(
-        &self,
-        environment_focus: &FocusHandle,
-        identifiers_focus: &FocusHandle,
-    ) -> Option<FocusHandle> {
+    fn list_focus(&self, environment_focus: &FocusHandle) -> Option<FocusHandle> {
         match self {
             Self::Environment(_) => Some(environment_focus.clone()),
-            Self::Identifiers(_) => Some(identifiers_focus.clone()),
             Self::Work(entry) => Some(entry.row_focus.clone()),
             Self::Separator(_) | Self::Heading(_, _) => None,
         }
@@ -126,12 +104,6 @@ impl BackgroundSummaryRow {
                 targets.push((row, entry.row_focus.clone()));
                 if entry.can_stop && entry.status.is_stoppable() {
                     targets.push((row, entry.stop_focus.clone()));
-                }
-            }
-            Self::Identifiers(section) => {
-                targets.push((row, section.task_id_copy_focus.clone()));
-                if section.values.agent_cli_thread_id.is_some() {
-                    targets.push((row, section.agent_cli_thread_id_copy_focus.clone()));
                 }
             }
             Self::Separator(_) | Self::Heading(_, _) => {}
@@ -244,30 +216,6 @@ struct EnvironmentSummary {
     commit_status: Option<String>,
     commit_focus: FocusHandle,
     compare_focus: FocusHandle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct TaskIdentifiers {
-    task_id: Uuid,
-    agent_cli_thread_id: Option<String>,
-}
-
-#[derive(Clone)]
-struct TaskIdentifierSection {
-    values: TaskIdentifiers,
-    task_id_copy_focus: FocusHandle,
-    agent_cli_thread_id_copy_focus: FocusHandle,
-    task_id_copied: bool,
-    agent_cli_thread_id_copied: bool,
-}
-
-impl From<&AgentSession> for TaskIdentifiers {
-    fn from(session: &AgentSession) -> Self {
-        Self {
-            task_id: session.id,
-            agent_cli_thread_id: session.provider_native_id().map(str::to_owned),
-        }
-    }
 }
 
 impl BackgroundWorkRegistry {
@@ -943,14 +891,6 @@ impl Waku {
     ) -> AnyElement {
         let session = self.selected_session();
         let session_id = session.map(|session| session.id).unwrap_or_else(Uuid::nil);
-        let identifiers = session.map(|session| TaskIdentifierSection {
-            values: TaskIdentifiers::from(session),
-            task_id_copy_focus: self.transcript_control_focus(TASK_ID_COPY_CONTROL_ID, cx),
-            agent_cli_thread_id_copy_focus: self
-                .transcript_control_focus(AGENT_THREAD_ID_COPY_CONTROL_ID, cx),
-            task_id_copied: self.control_was_copied(TASK_ID_COPY_CONTROL_ID),
-            agent_cli_thread_id_copied: self.control_was_copied(AGENT_THREAD_ID_COPY_CONTROL_ID),
-        });
         let mut entries = Vec::new();
         if let Some(registry) = self.background_work.get(&session_id) {
             for item in registry.ordered_items() {
@@ -1027,7 +967,6 @@ impl Waku {
         render_background_summary_card(
             handle,
             session_id,
-            identifiers,
             environment,
             entries,
             cx.entity().downgrade(),
@@ -1734,11 +1673,9 @@ fn background_summary_navigation_index(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_background_summary_card(
     handle: &ContextMenuHandle,
     session_id: Uuid,
-    identifiers: Option<TaskIdentifierSection>,
     environment: Option<EnvironmentSummary>,
     entries: Vec<BackgroundSummaryEntry>,
     weak: WeakEntity<Waku>,
@@ -1765,12 +1702,6 @@ fn render_background_summary_card(
             rows.extend(entries.into_iter().map(BackgroundSummaryRow::Work));
         }
     }
-    if let Some(identifiers) = identifiers {
-        if !rows.is_empty() {
-            rows.push(BackgroundSummaryRow::Separator("identifiers-separator"));
-        }
-        rows.push(BackgroundSummaryRow::Identifiers(identifiers));
-    }
     let height = rows.iter().map(BackgroundSummaryRow::height).sum::<f32>();
     let keys = rows
         .iter()
@@ -1791,53 +1722,50 @@ fn render_background_summary_card(
                 scrollbar: ScrollbarState::new(),
                 row_keys: Vec::new(),
                 environment_focus: cx.focus_handle(),
-                identifiers_focus: cx.focus_handle(),
                 navigation_focus: None,
                 navigation_generation: 0,
             }
         },
     );
-    let (list_state, scrollbar_state, environment_focus, identifiers_focus) =
-        state.update(cx, |state, _| {
-            if state.row_keys != keys {
-                let prefix = state
-                    .row_keys
+    let (list_state, scrollbar_state, environment_focus) = state.update(cx, |state, _| {
+        if state.row_keys != keys {
+            let prefix = state
+                .row_keys
+                .iter()
+                .zip(&keys)
+                .take_while(|(old, new)| old == new)
+                .count();
+            let suffix = state.row_keys[prefix..]
+                .iter()
+                .rev()
+                .zip(keys[prefix..].iter().rev())
+                .take_while(|(old, new)| old == new)
+                .count();
+            state.list.splice_focusable(
+                prefix..state.row_keys.len() - suffix,
+                rows[prefix..rows.len() - suffix]
                     .iter()
-                    .zip(&keys)
-                    .take_while(|(old, new)| old == new)
-                    .count();
-                let suffix = state.row_keys[prefix..]
-                    .iter()
-                    .rev()
-                    .zip(keys[prefix..].iter().rev())
-                    .take_while(|(old, new)| old == new)
-                    .count();
-                state.list.splice_focusable(
-                    prefix..state.row_keys.len() - suffix,
-                    rows[prefix..rows.len() - suffix].iter().map(|row| {
-                        row.list_focus(&state.environment_focus, &state.identifiers_focus)
-                    }),
-                );
-                state.list = state.list.clone().with_uniform_item_height(px(34.0));
-                state.row_keys = keys;
-                state.navigation_focus = None;
-                state.navigation_generation = state.navigation_generation.wrapping_add(1);
-            }
-            if state
-                .navigation_focus
-                .as_ref()
-                .is_some_and(|focus| !targets.iter().any(|(_, candidate)| candidate == focus))
-            {
-                state.navigation_focus = None;
-                state.navigation_generation = state.navigation_generation.wrapping_add(1);
-            }
-            (
-                state.list.clone(),
-                state.scrollbar.clone(),
-                state.environment_focus.clone(),
-                state.identifiers_focus.clone(),
-            )
-        });
+                    .map(|row| row.list_focus(&state.environment_focus)),
+            );
+            state.list = state.list.clone().with_uniform_item_height(px(34.0));
+            state.row_keys = keys;
+            state.navigation_focus = None;
+            state.navigation_generation = state.navigation_generation.wrapping_add(1);
+        }
+        if state
+            .navigation_focus
+            .as_ref()
+            .is_some_and(|focus| !targets.iter().any(|(_, candidate)| candidate == focus))
+        {
+            state.navigation_focus = None;
+            state.navigation_generation = state.navigation_generation.wrapping_add(1);
+        }
+        (
+            state.list.clone(),
+            state.scrollbar.clone(),
+            state.environment_focus.clone(),
+        )
+    });
     let targets = Rc::new(targets);
     let rows = Rc::new(rows);
     let row_handle = handle.clone();
@@ -1883,10 +1811,6 @@ fn render_background_summary_card(
                         &theme,
                     )
                     .into_any_element(),
-                    BackgroundSummaryRow::Identifiers(identifiers) => {
-                        render_task_identifiers_section(identifiers.clone(), weak.clone(), &theme)
-                            .into_any_element()
-                    }
                 };
                 div()
                     .id(SharedString::from(row.key()))
@@ -1894,9 +1818,6 @@ fn render_background_summary_card(
                     .h(px(row.height()))
                     .when(matches!(row, BackgroundSummaryRow::Environment(_)), |row| {
                         row.track_focus(&environment_focus)
-                    })
-                    .when(matches!(row, BackgroundSummaryRow::Identifiers(_)), |row| {
-                        row.track_focus(&identifiers_focus)
                     })
                     .child(child)
                     .into_any_element()
@@ -1990,144 +1911,6 @@ fn render_background_summary_card(
             cx.stop_propagation();
         })
         .into_any_element()
-}
-
-fn render_task_identifiers_section(
-    section: TaskIdentifierSection,
-    weak: WeakEntity<Waku>,
-    theme: &Theme,
-) -> Div {
-    let mut rows = vec![render_task_identifier_row(
-        tr!("environment.task_id"),
-        section.values.task_id.to_string(),
-        TASK_ID_COPY_CONTROL_ID,
-        &section.task_id_copy_focus,
-        section.task_id_copied,
-        weak.clone(),
-        theme,
-    )];
-    if let Some(thread_id) = section.values.agent_cli_thread_id {
-        rows.push(render_task_identifier_row(
-            tr!("environment.agent_cli_thread_id"),
-            thread_id,
-            AGENT_THREAD_ID_COPY_CONTROL_ID,
-            &section.agent_cli_thread_id_copy_focus,
-            section.agent_cli_thread_id_copied,
-            weak,
-            theme,
-        ));
-    }
-
-    div()
-        .w_full()
-        .tab_group()
-        .tab_stop(false)
-        .flex()
-        .flex_col()
-        .gap(px(7.0))
-        .children(rows)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_task_identifier_row(
-    label: String,
-    value: String,
-    control_id: &'static str,
-    focus: &FocusHandle,
-    copied: bool,
-    weak: WeakEntity<Waku>,
-    theme: &Theme,
-) -> Div {
-    let tooltip = Tooltip::text(if copied {
-        tr!("common.copied")
-    } else {
-        tr!("common.copy_named", name = label.clone())
-    });
-    let copy_value = value.clone();
-    let copy_action = Rc::new(move |cx: &mut App| {
-        cx.write_to_clipboard(ClipboardItem::new_string(copy_value.clone()));
-        let _ = weak.update(cx, |this, cx| {
-            this.show_control_copied(control_id, cx);
-        });
-    });
-    let key_copy_action = copy_action.clone();
-    let copy_button = div()
-        .id(control_id)
-        .track_focus(focus)
-        .tab_index(0)
-        .size(px(24.0))
-        .rounded(px(6.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_default()
-        .focus_visible(|style| {
-            style
-                .bg(theme.overlay)
-                .border_1()
-                .border_color(theme.accent)
-        })
-        .hover(|style| style.bg(theme.overlay_strong))
-        .active(|style| style.bg(theme.overlay))
-        .tooltip(tooltip)
-        .child(icon(
-            if copied {
-                "icons/check.svg"
-            } else {
-                "icons/copy.svg"
-            },
-            12.0,
-            theme.text_tertiary,
-        ))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(move |_, _, cx| {
-            copy_action(cx);
-            cx.stop_propagation();
-        })
-        .on_key_down(move |event: &KeyDownEvent, _, cx| {
-            if !event.keystroke.modifiers.modified()
-                && matches!(event.keystroke.key.as_str(), "enter" | "space")
-            {
-                key_copy_action(cx);
-                cx.stop_propagation();
-            }
-        });
-
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap(px(3.0))
-        .child(
-            div().h(px(20.0)).px(px(8.0)).flex().items_center().child(
-                div()
-                    .text_size(sp(12.0))
-                    .text_color(theme.text_tertiary)
-                    .child(label),
-            ),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(28.0))
-                .pl(px(8.0))
-                .rounded(px(6.0))
-                .bg(theme.inset)
-                .flex()
-                .items_center()
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_size(sp(11.5))
-                        .font_family(md::render::MONO_FAMILY)
-                        .text_color(theme.text_secondary)
-                        .child(value),
-                )
-                .child(copy_button),
-        )
 }
 
 fn render_environment_summary_section(
@@ -2499,24 +2282,6 @@ mod tests {
         assert_eq!(
             background_summary_counts((1, 2), std::iter::empty()),
             (1, 2),
-        );
-    }
-
-    #[test]
-    fn info_popover_uses_waku_task_and_native_agent_ids() {
-        let task_id = Uuid::parse_str("ed28ee51-43cf-4a83-a52f-04c509ca2c09").unwrap();
-        let mut session = AgentSession::new(Uuid::nil(), ProviderKind::Codex);
-        session.id = task_id;
-        session.provider_cursor = Some(ProviderResumeCursor::Codex {
-            thread_id: "019cfd7a-6942-78b1-9d47-30576c562321".into(),
-        });
-
-        assert_eq!(
-            TaskIdentifiers::from(&session),
-            TaskIdentifiers {
-                task_id,
-                agent_cli_thread_id: Some("019cfd7a-6942-78b1-9d47-30576c562321".into()),
-            }
         );
     }
 

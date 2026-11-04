@@ -1418,10 +1418,6 @@ environment.commit_or_push:
   en: Commit or push
 environment.compare_branch:
   en: Compare branch
-environment.task_id:
-  en: Task ID
-environment.agent_cli_thread_id:
-  en: Agent CLI thread ID
 
 commit.message_placeholder:
   en: Commit message (leave blank to generate)…

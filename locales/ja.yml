@@ -727,8 +727,6 @@ environment.summary: 環境とバックグラウンド作業
 environment.changes: 変更
 environment.commit_or_push: コミットまたはプッシュ
 environment.compare_branch: ブランチを比較
-environment.task_id: タスク ID
-environment.agent_cli_thread_id: エージェント CLI スレッド ID
 
 commit.message_placeholder: コミットメッセージ（空欄の場合は自動生成）…
 commit.message: コミットメッセージ
