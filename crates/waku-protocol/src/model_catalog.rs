@@ -4,36 +4,60 @@ use crate::model::{ProviderKind, ProviderModel, ProviderModelOption};
 
 pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
     match provider {
+        // Mirrors Codex 0.166's `model/list`: `ultra` only where the model
+        // advertises it, and the fast tier under its canonical `priority` id.
         ProviderKind::Codex => [
-            ProviderModel::new("gpt-5.6-sol", "GPT-5.6-Sol").default(),
-            ProviderModel::new("gpt-5.6-terra", "GPT-5.6-Terra"),
-            ProviderModel::new("gpt-5.6-luna", "GPT-5.6-Luna"),
-            ProviderModel::new("gpt-5.5", "GPT-5.5"),
-            ProviderModel::new("gpt-5.4", "GPT-5.4"),
+            ("gpt-6.1-sol", "GPT-6.1-Sol", true, "low"),
+            ("gpt-6-astra", "GPT-6-Astra", true, "low"),
+            ("gpt-6.1-terra", "GPT-6.1-Terra", true, "low"),
+            ("gpt-6-sol", "GPT-6-Sol", true, "medium"),
+            ("gpt-6-luna", "GPT-6-Luna", false, "medium"),
+            ("gpt-5.6-sol", "GPT-5.6-Sol", true, "low"),
+            ("gpt-5.6-terra", "GPT-5.6-Terra", true, "medium"),
+            ("gpt-5.6-luna", "GPT-5.6-Luna", false, "medium"),
         ]
         .into_iter()
-        .map(|model| {
-            model
-                .reasoning(
-                    reasoning_options(["low", "medium", "high", "xhigh"]),
-                    "medium",
-                )
+        .enumerate()
+        .map(|(index, (id, name, ultra, default_effort))| {
+            let efforts = if ultra {
+                reasoning_options(["low", "medium", "high", "xhigh", "max", "ultra"])
+            } else {
+                reasoning_options(["low", "medium", "high", "xhigh", "max"])
+            };
+            let model = ProviderModel::new(id, name)
+                .reasoning(efforts, default_effort)
                 .service_tiers(
-                    [ProviderModelOption::new("fast", tr!("model_option.fast"))
-                        .description(tr!("model_option.fast_description"))],
+                    [
+                        ProviderModelOption::new("priority", tr!("model_option.fast"))
+                            .description(tr!("model_option.fast_description")),
+                    ],
                     "default",
-                )
+                );
+            if index == 0 { model.default() } else { model }
         })
         .collect(),
         ProviderKind::Claude => vec![
+            claude_long_context(claude_ultracode_model(
+                "claude-fable-5-1",
+                "Claude Fable 5.1",
+            )),
+            claude_long_context(claude_ultracode_model("claude-opus-5-5", "Claude Opus 5.5")),
+            claude_long_context(claude_ultracode_model(
+                "claude-sonnet-5-5",
+                "Claude Sonnet 5.5",
+            ))
+            .default(),
+            claude_long_context(claude_ultracode_model(
+                "claude-haiku-5-5",
+                "Claude Haiku 5.5",
+            )),
             claude_long_context(claude_ultracode_model("claude-fable-5", "Claude Fable 5")),
             claude_long_context(claude_ultracode_model("claude-opus-5", "Claude Opus 5")),
             claude_long_context(claude_ultracode_model("claude-opus-4-8", "Claude Opus 4.8")),
             claude_long_context(claude_ultracode_model("claude-opus-4-7", "Claude Opus 4.7")),
             claude_long_context(claude_reasoning_model("claude-opus-4-6", "Claude Opus 4.6")),
             claude_reasoning_model("claude-opus-4-5", "Claude Opus 4.5"),
-            claude_long_context(claude_ultracode_model("claude-sonnet-5", "Claude Sonnet 5"))
-                .default(),
+            claude_long_context(claude_ultracode_model("claude-sonnet-5", "Claude Sonnet 5")),
             claude_long_context(claude_reasoning_model(
                 "claude-sonnet-4-6",
                 "Claude Sonnet 4.6",

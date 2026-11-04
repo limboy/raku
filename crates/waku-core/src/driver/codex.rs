@@ -466,22 +466,26 @@ impl CodexDriver {
                                     .send(Err("Codex did not finish opening its thread.".into()));
                                 continue;
                             };
-                            next_request_id += 1;
-                            let request_id = next_request_id;
-                            let turns = rollback_native_turn_count(
+                            let Some((turns, before_turn_id)) = revert_before_turn(
                                 &writer_turn_ids.lock(),
                                 &writer_background_rpcs.lock().compaction_turn_ids,
                                 turns,
-                            );
+                            ) else {
+                                let _ = response
+                                    .send(Err("Codex has no turn to roll back.".into()));
+                                continue;
+                            };
+                            next_request_id += 1;
+                            let request_id = next_request_id;
                             writer_pending_rollbacks
                                 .lock()
                                 .insert(request_id, (turns, response));
                             let message = json!({
-                                "method": "thread/rollback",
+                                "method": "thread/revert",
                                 "id": request_id,
                                 "params": {
                                     "threadId": thread_id,
-                                    "numTurns": turns
+                                    "beforeTurnId": before_turn_id
                                 }
                             });
                             if let Err(error) = write_json_line(&mut stdin, &message)
@@ -1296,6 +1300,21 @@ fn rollback_native_turn_count(
         .filter(|(_, id)| !compaction_turn_ids.contains(*id))
         .nth(visible_turns - 1)
         .map_or(turn_ids.len(), |(index, _)| turn_ids.len() - index)
+}
+
+/// The native turn count to drop and the first turn `thread/revert` removes.
+///
+/// Codex replaced `thread/rollback { numTurns }` with
+/// `thread/revert { beforeTurnId }`, which drops that turn and every later
+/// one. `None` when Waku knows no native turn to cut at.
+fn revert_before_turn(
+    turn_ids: &[String],
+    compaction_turn_ids: &HashSet<String>,
+    visible_turns: usize,
+) -> Option<(usize, String)> {
+    let turns = rollback_native_turn_count(turn_ids, compaction_turn_ids, visible_turns);
+    let before_turn_id = turn_ids.get(turn_ids.len().checked_sub(turns)?)?;
+    (turns > 0).then(|| (turns, before_turn_id.clone()))
 }
 
 const CODEX_CITATION_START: char = '\u{e200}';
@@ -2911,6 +2930,16 @@ mod tests {
         assert_eq!(rollback_native_turn_count(&turns, &hidden, 1), 2);
         assert_eq!(rollback_native_turn_count(&turns, &hidden, 2), 4);
         assert_eq!(rollback_native_turn_count(&turns, &hidden, 3), 6);
+        assert_eq!(revert_before_turn(&turns, &hidden, 0), None);
+        assert_eq!(
+            revert_before_turn(&turns, &hidden, 1),
+            Some((2, "third".into()))
+        );
+        assert_eq!(
+            revert_before_turn(&turns, &hidden, 3),
+            Some((6, "first".into()))
+        );
+        assert_eq!(revert_before_turn(&[], &hidden, 1), None);
     }
 
     #[cfg(unix)]

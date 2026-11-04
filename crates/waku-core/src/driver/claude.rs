@@ -150,6 +150,9 @@ fn is_read_only_tool(tool: &str) -> bool {
 /// The permission posture Claude is launched with.
 fn permission_mode(mode: RuntimeMode) -> &'static str {
     match mode {
+        // Newer Claude Code advertises this mode as `manual` but still accepts
+        // `default` as a hidden alias (verified on 2.1.316). Keep `default`:
+        // older CLIs predate the rename and would reject `manual`.
         RuntimeMode::Ask => "default",
         RuntimeMode::AutoAcceptEdits => "acceptEdits",
         RuntimeMode::Auto => "auto",

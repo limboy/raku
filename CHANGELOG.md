@@ -17,6 +17,7 @@ the original feature bullet instead of adding separate entries for them.
 ## [unreleased]
 
 - Name new Pi tasks automatically with a short title in the language of your first message
+- Fix rewinding and editing earlier messages in Codex sessions with Codex 0.166 and later
 
 ## [2.2.6] - 2026-11-04
 
