@@ -294,10 +294,19 @@ impl Backend for WakuBackend {
                 provider,
                 binary_override: _,
                 cli_version,
-                model: _,
+                model,
                 session_file: _,
             } => {
                 let usage = match provider {
+                    crate::model::ProviderKind::Pi
+                        if model.as_deref().is_some_and(|model| {
+                            model.split_once('/').is_some_and(|(upstream, _)| {
+                                upstream == crate::usage::PI_OPENCODE_GO_PROVIDER
+                            })
+                        }) =>
+                    {
+                        crate::usage::fetch_pi_opencode_go_plan_usage()?
+                    }
                     crate::model::ProviderKind::Claude => Some(
                         crate::usage::fetch_claude_plan_usage(cli_version.as_deref())?,
                     ),

@@ -1,6 +1,10 @@
 use chrono::Datelike as _;
 use serde::{Deserialize, Serialize};
 
+/// Pi's provider id for OpenCode Go — Go and Go Plus share it and the
+/// usage endpoint — and the prefix of its `provider/model` ids.
+pub const PI_OPENCODE_GO_PROVIDER: &str = "opencode-go";
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanUsage {

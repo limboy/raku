@@ -1,8 +1,10 @@
 //! Account plan-usage limits per provider, read the way CodexBar reads them:
 //! Claude's OAuth credential (macOS keychain first, then
-//! `~/.claude/.credentials.json`) calls `api.anthropic.com/api/oauth/usage`; and Codex's
-//! `~/.codex/auth.json` token calls the ChatGPT backend's usage endpoint. Payload shapes were verified against
-//! live responses or the providers' own schemas, not guessed.
+//! `~/.claude/.credentials.json`) calls `api.anthropic.com/api/oauth/usage`; Codex's
+//! `~/.codex/auth.json` token calls the ChatGPT backend's usage endpoint; and
+//! Pi's OpenCode Go API key (`~/.pi/agent/auth.json`) calls
+//! `opencode.ai/zen/go/v1/usage`. Payload shapes were verified against live
+//! responses or the providers' own schemas, not guessed.
 //!
 //! Everything in this module blocks on subprocesses and the network and must
 //! run on the background executor. Render reads only the parsed snapshot the
@@ -34,8 +36,11 @@ const CURL_PATH: &str = "/usr/bin/curl";
 const CURL_PATH: &str = r"C:\Windows\System32\curl.exe";
 
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const OPENCODE_GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 
-pub use waku_protocol::usage::{PlanUsage, PlanWindow, format_tokens, reset_label};
+pub use waku_protocol::usage::{
+    PI_OPENCODE_GO_PROVIDER, PlanUsage, PlanWindow, format_tokens, reset_label,
+};
 
 struct OauthCredentials {
     access_token: String,
@@ -154,6 +159,184 @@ pub fn fetch_codex_plan_usage() -> anyhow::Result<PlanUsage> {
     }
     let body: Value = serde_json::from_str(&body).context(tr!("usage_error.invalid_json"))?;
     parse_codex_plan_usage(&body).ok_or_else(|| anyhow!(tr!("usage_error.no_rate_limit_windows")))
+}
+
+/// Fetch the OpenCode Go (or Go Plus) subscription's rolling, weekly, and
+/// monthly limits with the API key Pi itself uses. `None` means Pi has no Go
+/// key, which hides the plan section instead of reporting an error. Blocking.
+pub fn fetch_pi_opencode_go_plan_usage() -> anyhow::Result<Option<PlanUsage>> {
+    let Some(api_key) = pi_opencode_go_api_key() else {
+        return Ok(None);
+    };
+    let (status, body) = http_get(
+        OPENCODE_GO_USAGE_URL,
+        &[
+            format!("Authorization: Bearer {api_key}"),
+            "Accept: application/json".to_owned(),
+            "User-Agent: waku".to_owned(),
+        ],
+    )?;
+    match status {
+        200 => {}
+        // 401 and 403 lead to different fixes: only 401 rejects the key; a
+        // 403 is a valid key on an account without the subscription.
+        401 => {
+            return Err(anyhow!(tr!(
+                "usage_error.opencode_go_key_rejected",
+                status = status
+            )));
+        }
+        403 => {
+            return Err(anyhow!(
+                usage_error_detail(&body)
+                    .unwrap_or_else(|| tr!("usage_error.opencode_go_not_entitled"))
+            ));
+        }
+        429 => return Err(anyhow!(tr!("usage_error.rate_limited"))),
+        other => return Err(anyhow!(tr!("usage_error.http_status", status = other))),
+    }
+    let body: Value = serde_json::from_str(&body).context(tr!("usage_error.invalid_json"))?;
+    parse_opencode_go_plan_usage(&body)
+        .map(Some)
+        .ok_or_else(|| anyhow!(tr!("usage_error.no_rate_limit_windows")))
+}
+
+/// The endpoint's own sentence, when it sent one: bodies are
+/// `{"type":"error","error":{"type":..,"message":..}}`, and the message is
+/// the only part that tells an `EntitlementError` from a revoked key.
+fn usage_error_detail(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()?
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_owned)
+}
+
+/// Pi's credential precedence for `opencode-go`: the `auth.json` entry in
+/// `$PI_CODING_AGENT_DIR` (default `~/.pi/agent`), then `OPENCODE_API_KEY`.
+fn pi_opencode_go_api_key() -> Option<String> {
+    let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".pi/agent")))?;
+    std::fs::read_to_string(agent_dir.join("auth.json"))
+        .ok()
+        .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+        .and_then(|auth| pi_opencode_go_api_key_from_auth(&auth, |name| std::env::var(name).ok()))
+        .or_else(|| non_empty(std::env::var("OPENCODE_API_KEY").ok()?))
+}
+
+/// Resolve Pi's `{"type":"api_key","key":..,"env":{..}}` entry. A key may be
+/// a literal or reference variables as `$NAME`/`${NAME}` (`$$` and `$!`
+/// escape), looked up in the entry's own `env` map first. A `!command` key
+/// would mean running the user's shell on every refresh, so it is left to
+/// the `OPENCODE_API_KEY` fallback.
+fn pi_opencode_go_api_key_from_auth(
+    auth: &Value,
+    process_env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let entry = auth.get(PI_OPENCODE_GO_PROVIDER)?;
+    if entry.get("type").and_then(Value::as_str) != Some("api_key") {
+        return None;
+    }
+    let key = entry.get("key").and_then(Value::as_str)?.trim();
+    if key.starts_with('!') {
+        return None;
+    }
+    let lookup = |name: &str| {
+        entry
+            .pointer(&format!("/env/{name}"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .or_else(|| process_env(name).filter(|value| !value.is_empty()))
+    };
+    non_empty(resolve_pi_config_template(key, lookup)?)
+}
+
+fn resolve_pi_config_template(
+    template: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let is_name_start = |c: char| c.is_ascii_alphabetic() || c == '_';
+    let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut resolved = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(dollar) = rest.find('$') {
+        resolved.push_str(&rest[..dollar]);
+        rest = &rest[dollar + 1..];
+        match rest.chars().next() {
+            Some(escaped @ ('$' | '!')) => {
+                resolved.push(escaped);
+                rest = &rest[1..];
+            }
+            Some('{') => match rest.find('}') {
+                Some(end)
+                    if rest[1..end].starts_with(is_name_start)
+                        && rest[1..end].chars().all(is_name) =>
+                {
+                    resolved.push_str(&lookup(&rest[1..end])?);
+                    rest = &rest[end + 1..];
+                }
+                Some(end) => {
+                    resolved.push('$');
+                    resolved.push_str(&rest[..=end]);
+                    rest = &rest[end + 1..];
+                }
+                None => resolved.push('$'),
+            },
+            Some(c) if is_name_start(c) => {
+                let end = rest.find(|c: char| !is_name(c)).unwrap_or(rest.len());
+                resolved.push_str(&lookup(&rest[..end])?);
+                rest = &rest[end..];
+            }
+            _ => resolved.push('$'),
+        }
+    }
+    resolved.push_str(rest);
+    Some(resolved)
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+/// Live shape verified on 2026-11-04. The response does not name the tier,
+/// so Go and Go Plus share one label.
+fn parse_opencode_go_plan_usage(body: &Value) -> Option<PlanUsage> {
+    let usage = body.get("usage")?;
+    let windows = [
+        ("rolling", tr!("usage.hour_limit", count = 5)),
+        ("weekly", tr!("usage.weekly_limit")),
+        ("monthly", tr!("usage.monthly_limit")),
+    ]
+    .into_iter()
+    .filter_map(|(key, label)| {
+        let window = usage.get(key)?;
+        Some(PlanWindow {
+            label,
+            percent: window
+                .get("percent")
+                .and_then(Value::as_f64)?
+                .clamp(0.0, 100.0),
+            resets_at: window
+                .get("resetsAt")
+                .and_then(Value::as_str)
+                .and_then(|reset| chrono::DateTime::parse_from_rfc3339(reset).ok())
+                .map(|date| date.timestamp()),
+        })
+    })
+    .collect::<Vec<_>>();
+    if windows.is_empty() {
+        return None;
+    }
+    Some(PlanUsage {
+        plan_label: Some("OpenCode Go".to_owned()),
+        windows,
+    })
 }
 
 /// Map the ChatGPT backend's usage response (primary/secondary windows in
@@ -538,6 +721,101 @@ mod tests {
             subscription_type: subscription.map(str::to_owned),
             rate_limit_tier: tier.map(str::to_owned),
         }
+    }
+
+    #[test]
+    fn opencode_go_usage_maps_live_subscription_windows() {
+        // Response shape captured from the live Go endpoint on 2026-11-04.
+        let body: Value = serde_json::from_str(
+            r#"{"usage":{
+                "rolling":{"status":"ok","percent":5,"resetsAt":"2026-11-04T11:51:56.000Z"},
+                "weekly":{"status":"ok","percent":2,"resetsAt":"2026-11-09T00:00:00.000Z"},
+                "monthly":{"status":"ok","percent":1,"resetsAt":"2026-12-04T06:08:39.000Z"}
+            }}"#,
+        )
+        .unwrap();
+        let usage = parse_opencode_go_plan_usage(&body).expect("all Go windows should map");
+        assert_eq!(usage.plan_label.as_deref(), Some("OpenCode Go"));
+        assert_eq!(
+            usage
+                .windows
+                .iter()
+                .map(|window| (window.label.as_str(), window.percent))
+                .collect::<Vec<_>>(),
+            [
+                ("5-hour limit", 5.0),
+                ("Weekly limit", 2.0),
+                ("Monthly limit", 1.0),
+            ]
+        );
+        assert!(
+            usage
+                .windows
+                .iter()
+                .all(|window| window.resets_at.is_some())
+        );
+        assert!(parse_opencode_go_plan_usage(&serde_json::json!({"usage": {}})).is_none());
+    }
+
+    #[test]
+    #[ignore = "requires Pi logged in to OpenCode Go"]
+    fn pi_opencode_go_usage_against_the_live_endpoint() {
+        let usage = fetch_pi_opencode_go_plan_usage()
+            .expect("the Go endpoint should answer")
+            .expect("Pi should have an opencode-go key");
+        assert_eq!(usage.windows.len(), 3);
+    }
+
+    #[test]
+    fn opencode_go_error_detail_reads_the_endpoints_sentence() {
+        let body = r#"{"type":"error","error":{"type":"EntitlementError","message":"OpenCode Go subscription required."}}"#;
+        assert_eq!(
+            usage_error_detail(body).as_deref(),
+            Some("OpenCode Go subscription required.")
+        );
+        assert_eq!(usage_error_detail("not json"), None);
+        assert_eq!(usage_error_detail(r#"{"error":{"message":"  "}}"#), None);
+    }
+
+    #[test]
+    fn pi_auth_resolves_only_the_opencode_go_api_key() {
+        let no_env = |_: &str| None;
+        let auth = serde_json::json!({
+            "opencode": {"type": "api_key", "key": "zen-key"},
+            "opencode-go": {"type": "api_key", "key": " go-key "}
+        });
+        assert_eq!(
+            pi_opencode_go_api_key_from_auth(&auth, no_env).as_deref(),
+            Some("go-key")
+        );
+        assert_eq!(
+            pi_opencode_go_api_key_from_auth(
+                &serde_json::json!({"opencode": {"type": "api_key", "key": "zen-key"}}),
+                no_env
+            ),
+            None
+        );
+        assert_eq!(
+            pi_opencode_go_api_key_from_auth(
+                &serde_json::json!({"opencode-go": {"type": "api_key", "key": "!op read x"}}),
+                no_env
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn pi_auth_key_templates_resolve_like_pi() {
+        let auth = serde_json::json!({
+            "opencode-go": {"type": "api_key", "key": "${GO_KEY}-$SUFFIX$$", "env": {"SUFFIX": "b"}}
+        });
+        let env = |name: &str| (name == "GO_KEY").then(|| "a".to_owned());
+        assert_eq!(
+            pi_opencode_go_api_key_from_auth(&auth, env).as_deref(),
+            Some("a-b$")
+        );
+        // A missing variable leaves the key unresolved, as in Pi.
+        assert_eq!(pi_opencode_go_api_key_from_auth(&auth, |_| None), None);
     }
 
     #[test]

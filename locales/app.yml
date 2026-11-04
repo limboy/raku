@@ -1853,6 +1853,10 @@ usage_error.rate_limited:
   en: The usage endpoint is rate limited right now
 usage_error.http_status:
   en: The usage endpoint answered HTTP %{status}
+usage_error.opencode_go_key_rejected:
+  en: OpenCode Go API key can't read usage (HTTP %{status}); log in to OpenCode Go again in Pi
+usage_error.opencode_go_not_entitled:
+  en: OpenCode Go usage needs an active OpenCode Go subscription
 usage_error.invalid_json:
   en: The usage endpoint returned invalid JSON
 usage_error.no_home_directory:

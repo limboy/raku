@@ -2,9 +2,10 @@
 //! opens a panel with the session's context occupancy and the account's
 //! rate-limit lanes, mirroring Claude Code's `/usage` rows. Context numbers
 //! stream in from every provider transport that reports them; plan lanes come
-//! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`])
-//! and Codex's own rate-limit notifications.
-//! Frames read only snapshots stored on the entity.
+//! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`]),
+//! Codex's own rate-limit notifications, and OpenCode Go's usage endpoint for
+//! Pi tasks on an `opencode-go/*` model. Frames read only snapshots stored on
+//! the entity.
 
 use gpui::{PathBuilder, relative};
 
@@ -19,19 +20,31 @@ pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 2] =
     [ProviderKind::Claude, ProviderKind::Codex];
 
 /// Cache key for an account-level plan snapshot. Top-level providers hold one
-/// account per binary.
+/// account per binary; Pi routes to many upstreams, and only its OpenCode Go
+/// key (Go or Go Plus) has a quota endpoint, shared by every Go model.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlanUsageKey {
     Provider(ProviderKind),
+    PiOpenCodeGo,
 }
 
 impl PlanUsageKey {
     pub(super) fn provider(&self) -> ProviderKind {
         match self {
             Self::Provider(provider) => *provider,
+            Self::PiOpenCodeGo => ProviderKind::Pi,
         }
     }
 }
+
+/// Whether a Pi `provider/model` id routes through OpenCode Go.
+fn is_pi_opencode_go_model(model: &str) -> bool {
+    model
+        .trim()
+        .split_once('/')
+        .is_some_and(|(upstream, _)| upstream == crate::usage::PI_OPENCODE_GO_PROVIDER)
+}
+
 /// Refresh cadences for the plan snapshots. Quota moves only when turns run,
 /// so idle refreshes stay rare; a settled turn or a just-opened panel asks
 /// sooner.
@@ -48,6 +61,13 @@ impl Waku {
             provider if PLAN_USAGE_PROVIDERS.contains(&provider) => {
                 Some(PlanUsageKey::Provider(provider))
             }
+            ProviderKind::Pi
+                if self
+                    .model_for_session(session)
+                    .is_some_and(is_pi_opencode_go_model) =>
+            {
+                Some(PlanUsageKey::PiOpenCodeGo)
+            }
             _ => None,
         }
     }
@@ -62,11 +82,19 @@ impl Waku {
         // would show its loading skeleton forever: fetchable provider, no
         // snapshot, and no fetch ever allowed to start.
         let selected_provider = self.selected_session().map(|session| session.provider);
-        let mut keys = Vec::with_capacity(PLAN_USAGE_PROVIDERS.len());
+        let mut keys = Vec::with_capacity(PLAN_USAGE_PROVIDERS.len() + 1);
         for provider in PLAN_USAGE_PROVIDERS {
             if self.provider_enabled(provider) || selected_provider == Some(provider) {
                 keys.push(PlanUsageKey::Provider(provider));
             }
+        }
+        // Pi's upstream is per task, so its quota is fetched only while a task
+        // that spends it is selected.
+        if let Some(key @ PlanUsageKey::PiOpenCodeGo) = self
+            .selected_session()
+            .and_then(|session| self.plan_usage_key_for_session(session))
+        {
+            keys.push(key);
         }
 
         for key in keys {
@@ -97,6 +125,13 @@ impl Waku {
                 .cloned()
                 .flatten();
             let binary_override = self.state.provider_binary_overrides.get(&provider).cloned();
+            // The daemon routes Pi by upstream; any Go model id selects it.
+            let model = match key {
+                PlanUsageKey::Provider(_) => None,
+                PlanUsageKey::PiOpenCodeGo => {
+                    Some(format!("{}/", crate::usage::PI_OPENCODE_GO_PROVIDER))
+                }
+            };
             let daemon = self.daemon.client();
             cx.background_executor()
                 .spawn(async move {
@@ -107,7 +142,7 @@ impl Waku {
                             provider,
                             binary_override,
                             cli_version: claude_version,
-                            model: None,
+                            model,
                             session_file: None,
                         },
                     ) {
@@ -740,6 +775,15 @@ fn meter_bar(theme: &Theme, percent: f64) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_opencode_go_pi_models_select_the_go_quota() {
+        assert!(is_pi_opencode_go_model("opencode-go/kimi-k2.6"));
+        assert!(is_pi_opencode_go_model(" opencode-go/glm-5 "));
+        assert!(!is_pi_opencode_go_model("opencode/claude-sonnet-4-5"));
+        assert!(!is_pi_opencode_go_model("anthropic/opencode-go"));
+        assert!(!is_pi_opencode_go_model("opencode-go"));
+    }
 
     #[test]
     fn context_percent_caps_at_full_when_provider_over_reports() {
