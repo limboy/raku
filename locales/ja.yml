@@ -98,9 +98,9 @@ settings.appearance: 外観
 settings.providers: プロバイダー
 settings.general_keywords: 一般 ローカル プロジェクト 会話 プライバシー 分析 テレメトリ 匿名 共有 アップデート 自動 バージョン 数学 数式 math latex
 settings.appearance_keywords: 外観 テーマ システム ライト ダーク 言語 英語 中国語 簡体字 日本語 フォント サイズ 文字 エディタ
-settings.providers_keywords: プロバイダー エージェント モデル CLI バージョン インストール 検出 claude codex pi antigravity agy
+settings.providers_keywords: プロバイダー エージェント モデル CLI バージョン インストール 検出 claude codex pi
 settings.skills: スキル
-settings.skills_keywords: スキル ライブラリ エージェント 無効 有効 削除 claude codex pi antigravity agy 共有
+settings.skills_keywords: スキル ライブラリ エージェント 無効 有効 削除 claude codex pi 共有
 settings.back: 戻る
 settings.close: 設定を閉じる
 settings.search: 設定を検索

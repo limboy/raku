@@ -1,7 +1,6 @@
 //! Local provider runtime owned by `waku-daemon`.
 
 mod activity;
-mod antigravity;
 mod claude;
 mod codex;
 mod compaction;
@@ -212,9 +211,6 @@ pub(crate) fn start_local(
         options.execution_policy,
     ));
     let inner: Arc<dyn DriverControl> = match provider {
-        ProviderKind::Antigravity => {
-            Arc::new(antigravity::AntigravityDriver::start(options, events)?)
-        }
         ProviderKind::Codex => Arc::new(codex::CodexDriver::start(options, events)?),
         ProviderKind::Pi => Arc::new(pi::PiDriver::start(options, events)?),
         // Claude serves a realtime stream of user messages on stdin — the same
@@ -261,11 +257,6 @@ mod tests {
                 ProviderKind::Pi,
                 RuntimeMode::Auto,
                 ExecutionPolicy::Interactive,
-            ),
-            (
-                ProviderKind::Antigravity,
-                RuntimeMode::FullAccess,
-                ExecutionPolicy::ReviewReadOnly,
             ),
         ] {
             let (wake, _) = smol::channel::bounded(1);

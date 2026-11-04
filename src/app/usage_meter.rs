@@ -2,8 +2,8 @@
 //! opens a panel with the session's context occupancy and the account's
 //! rate-limit lanes, mirroring Claude Code's `/usage` rows. Context numbers
 //! stream in from every provider transport that reports them; plan lanes come
-//! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`]),
-//! Codex's own rate-limit notifications, and Antigravity's billing probe.
+//! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`])
+//! and Codex's own rate-limit notifications.
 //! Frames read only snapshots stored on the entity.
 
 use gpui::{PathBuilder, relative};
@@ -15,26 +15,20 @@ const USAGE_METER_MENU_ID: &str = "usage-meter";
 
 /// Top-level providers with a single account-wide plan fetcher. Codex
 /// additionally refreshes live from its own stream notifications.
-pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 2] = [
-    ProviderKind::Claude,
-    ProviderKind::Codex,
-];
+pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 2] =
+    [ProviderKind::Claude, ProviderKind::Codex];
 
 /// Cache key for an account-level plan snapshot. Top-level providers hold one
 /// account per binary.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PlanUsageKey {
     Provider(ProviderKind),
-    Antigravity {
-        model: Option<String>,
-    },
 }
 
 impl PlanUsageKey {
     pub(super) fn provider(&self) -> ProviderKind {
         match self {
             Self::Provider(provider) => *provider,
-            Self::Antigravity { .. } => ProviderKind::Antigravity,
         }
     }
 }
@@ -54,14 +48,6 @@ impl Waku {
             provider if PLAN_USAGE_PROVIDERS.contains(&provider) => {
                 Some(PlanUsageKey::Provider(provider))
             }
-            ProviderKind::Antigravity => {
-                let model = self
-                    .model_for_session(session)
-                    .map(str::trim)
-                    .filter(|m| !m.is_empty())
-                    .map(str::to_owned);
-                Some(PlanUsageKey::Antigravity { model })
-            }
             _ => None,
         }
     }
@@ -76,17 +62,11 @@ impl Waku {
         // would show its loading skeleton forever: fetchable provider, no
         // snapshot, and no fetch ever allowed to start.
         let selected_provider = self.selected_session().map(|session| session.provider);
-        let mut keys = Vec::with_capacity(PLAN_USAGE_PROVIDERS.len() + 1);
+        let mut keys = Vec::with_capacity(PLAN_USAGE_PROVIDERS.len());
         for provider in PLAN_USAGE_PROVIDERS {
             if self.provider_enabled(provider) || selected_provider == Some(provider) {
                 keys.push(PlanUsageKey::Provider(provider));
             }
-        }
-        if let Some(session) = self.selected_session().filter(|session| {
-            session.provider == ProviderKind::Antigravity
-        }) && let Some(key) = self.plan_usage_key_for_session(session)
-        {
-            keys.push(key);
         }
 
         for key in keys {
@@ -117,10 +97,6 @@ impl Waku {
                 .cloned()
                 .flatten();
             let binary_override = self.state.provider_binary_overrides.get(&provider).cloned();
-            let (model, session_file) = match &key {
-                PlanUsageKey::Provider(_) => (None, None),
-                PlanUsageKey::Antigravity { model } => (model.clone(), None),
-            };
             let daemon = self.daemon.client();
             cx.background_executor()
                 .spawn(async move {
@@ -131,8 +107,8 @@ impl Waku {
                             provider,
                             binary_override,
                             cli_version: claude_version,
-                            model,
-                            session_file,
+                            model: None,
+                            session_file: None,
                         },
                     ) {
                         Ok(waku_client::ResponsePayload::PlanUsage { usage }) => Ok(usage),
@@ -157,7 +133,8 @@ impl Waku {
         while let Ok((key, result)) = self.plan_usage_events.try_recv() {
             self.plan_usage_pending.remove(&key);
             self.plan_usage_stale.remove(&key);
-            self.plan_usage_checked_at.insert(key.clone(), Instant::now());
+            self.plan_usage_checked_at
+                .insert(key.clone(), Instant::now());
             match result {
                 Ok(Some(usage)) => {
                     changed |= self.plan_usage.get(&key) != Some(&usage)
@@ -175,8 +152,7 @@ impl Waku {
                 }
                 Err(error) => {
                     let was_unconfigured = self.plan_usage_unconfigured.remove(&key);
-                    changed |=
-                        self.plan_usage_error.get(&key) != Some(&error) || was_unconfigured;
+                    changed |= self.plan_usage_error.get(&key) != Some(&error) || was_unconfigured;
                     // Keep any previous snapshot; stale meters with reset
                     // times still self-correct visually.
                     self.plan_usage_error.insert(key, error);

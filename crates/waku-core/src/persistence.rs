@@ -1878,69 +1878,75 @@ mod tests {
 
     #[test]
     fn retired_provider_sessions_stay_on_disk_without_blocking_active_sessions() {
-        let directory = temporary_directory();
-        let store = store_in(&directory);
-        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
-        state.sessions[0].begin_turn("Keep this supported task");
-        state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
-        let active_id = state.sessions[0].id;
-        let mut retired = state.new_session(state.projects[0].id, ProviderKind::Codex);
-        retired.begin_turn("Keep this retired task's history");
-        retired.finish_active_turn(crate::model::TurnStatus::Completed);
-        let retired_id = retired.id;
-        state.sessions.push(retired);
-        store.save(&mut state).unwrap();
-        let connection = Connection::open(directory.join("app.db")).unwrap();
-        connection
-            .execute(
-                "UPDATE sessions SET provider = 'deepSeek' WHERE id = ?1",
-                params![retired_id.to_string()],
+        for provider in ["deepSeek", "antigravity", "agy"] {
+            let directory = temporary_directory();
+            let store = store_in(&directory);
+            let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+            state.sessions[0].begin_turn("Keep this supported task");
+            state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
+            let active_id = state.sessions[0].id;
+            let mut retired = state.new_session(state.projects[0].id, ProviderKind::Codex);
+            retired.begin_turn("Keep this retired task's history");
+            retired.finish_active_turn(crate::model::TurnStatus::Completed);
+            let retired_id = retired.id;
+            state.sessions.push(retired);
+            store.save(&mut state).unwrap();
+            let connection = Connection::open(directory.join("app.db")).unwrap();
+            connection
+                .execute(
+                    "UPDATE sessions SET provider = ?1 WHERE id = ?2",
+                    params![provider, retired_id.to_string()],
+                )
+                .unwrap();
+            fs::write(
+                directory.join("app.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "theme": "dark",
+                    "favorite_models": [
+                        {"provider": provider, "model": "retired"},
+                        {"provider": "pi", "model": "deepseek/deepseek-flash"}
+                    ]
+                }))
+                .unwrap(),
             )
             .unwrap();
-        fs::write(
-            directory.join("app.json"),
-            br#"{"theme":"dark","favorite_models":[
-                {"provider":"deepSeek","model":"retired"},
-                {"provider":"pi","model":"deepseek/deepseek-flash"}
-            ]}"#,
-        )
-        .unwrap();
 
-        let reopened = store_in(&directory);
-        let mut restored = reopened.load().unwrap();
-        assert_eq!(
-            restored
-                .sessions
-                .iter()
-                .map(|session| session.id)
-                .collect::<Vec<_>>(),
-            vec![active_id]
-        );
-        assert_eq!(restored.theme, ThemePreference::Dark);
-        assert_eq!(
-            restored.favorite_models,
-            vec![FavoriteModel {
-                provider: ProviderKind::Pi,
-                model: "deepseek/deepseek-flash".into(),
-            }]
-        );
-        reopened
-            .hydrate(restored.session_mut(active_id).unwrap())
-            .unwrap();
-        assert_eq!(
-            restored.sessions[0].messages[0].content,
-            "Keep this supported task"
-        );
-        reopened.save(&mut restored).unwrap();
-        let provider: String = connection
-            .query_row(
-                "SELECT provider FROM sessions WHERE id = ?1",
-                params![retired_id.to_string()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(provider, "deepSeek");
-        fs::remove_dir_all(directory).unwrap();
+            let reopened = store_in(&directory);
+            let mut restored = reopened.load().unwrap();
+            assert_eq!(
+                restored
+                    .sessions
+                    .iter()
+                    .map(|session| session.id)
+                    .collect::<Vec<_>>(),
+                vec![active_id]
+            );
+            assert_eq!(restored.theme, ThemePreference::Dark);
+            assert_eq!(
+                restored.favorite_models,
+                vec![FavoriteModel {
+                    provider: ProviderKind::Pi,
+                    model: "deepseek/deepseek-flash".into(),
+                }]
+            );
+            reopened
+                .hydrate(restored.session_mut(active_id).unwrap())
+                .unwrap();
+            assert_eq!(
+                restored.sessions[0].messages[0].content,
+                "Keep this supported task"
+            );
+            reopened.save(&mut restored).unwrap();
+            let stored_provider: String = connection
+                .query_row(
+                    "SELECT provider FROM sessions WHERE id = ?1",
+                    params![retired_id.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored_provider, provider);
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]
@@ -2865,11 +2871,7 @@ mod tests {
     #[test]
     fn hydration_removes_deepseek_tool_periods_and_preserves_activity_order() {
         for (provider, model, removes_periods) in [
-            (
-                ProviderKind::Pi,
-                "deepseek/deepseek-flash",
-                true,
-            ),
+            (ProviderKind::Pi, "deepseek/deepseek-flash", true),
             (
                 ProviderKind::Pi,
                 "openrouter/deepseek/deepseek-v4-flash",

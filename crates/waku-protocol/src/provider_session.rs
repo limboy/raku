@@ -8,11 +8,6 @@ use crate::model::ProviderResumeCursor;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "provider", rename_all = "camelCase")]
 pub enum ProviderSessionForkRequest {
-    Antigravity {
-        session_id: String,
-        turn_count: usize,
-        title: String,
-    },
     Claude {
         session_id: String,
         resume_at: Option<String>,

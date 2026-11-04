@@ -65,9 +65,10 @@ impl Waku {
             let image_changed = item.kind == ActivityKind::ImageGeneration;
             let (id, inserted) = update_session_activity(session, runtime.stream_phase, item);
             if image_changed {
-                image_block = session.transcript_blocks.iter().position(|block| {
-                    block.activities.iter().any(|activity| activity.id == id)
-                });
+                image_block = session
+                    .transcript_blocks
+                    .iter()
+                    .position(|block| block.activities.iter().any(|activity| activity.id == id));
             }
             if inserted {
                 runtime.stream_phase = Some(StreamPhase::Activity);
@@ -82,7 +83,10 @@ impl Waku {
             && let Some(block) = image_block
         {
             self.sync_transcript_rows();
-            if let Some(row) = self.transcript_row_kinds.borrow().iter()
+            if let Some(row) = self
+                .transcript_row_kinds
+                .borrow()
+                .iter()
                 .position(|row| *row == TranscriptRowKind::TurnBlock(block))
             {
                 self.remeasure_transcript_rows(row..row + 1);
@@ -215,12 +219,8 @@ impl Waku {
                         // a `/goal` began: the provider's start confirms it.
                         session.mark_active_turn_provider_started();
                         session.status = SessionStatus::Working;
-                    } else if matches!(
-                        session.provider,
-                        ProviderKind::Codex
-                            | ProviderKind::Claude
-                            | ProviderKind::Antigravity
-                    ) {
+                    } else if matches!(session.provider, ProviderKind::Codex | ProviderKind::Claude)
+                    {
                         // Some providers start turns on their own: Codex goal
                         // continuation pursues an active goal whenever the
                         // thread is idle, Claude Code re-enters the model
@@ -827,7 +827,6 @@ impl Waku {
         }
         true
     }
-
 }
 
 /// Foreground output is stronger evidence of a started provider turn than a

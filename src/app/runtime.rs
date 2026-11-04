@@ -400,10 +400,7 @@ fn prepared_message_rewind(
         prepared_driver,
         reset_native_session: request.rollback_turns > 0
             && request.provider_turn_count == 0
-            && matches!(
-                request.provider,
-                ProviderKind::Antigravity | ProviderKind::Claude
-            ),
+            && request.provider == ProviderKind::Claude,
         cleanup_error,
     }
 }
@@ -420,35 +417,12 @@ fn perform_provider_rewind(
     let provider = request.provider;
     let reset_native_session = request.rollback_turns > 0
         && request.provider_turn_count == 0
-        && matches!(provider, ProviderKind::Antigravity | ProviderKind::Claude);
+        && provider == ProviderKind::Claude;
     if request.rollback_turns == 0 || reset_native_session {
         return Ok((None, None, None));
     }
 
     match provider {
-        ProviderKind::Antigravity => {
-            let Some(ProviderResumeCursor::Antigravity {
-                session_id: native_session_id,
-                ..
-            }) = request.provider_cursor.as_ref()
-            else {
-                anyhow::bail!(tr!(
-                    "errors.provider_native_cursor_unavailable",
-                    provider = "Antigravity"
-                ));
-            };
-            let fork = request.workspace_client.fork_provider_session(
-                waku_client::provider_session::ProviderSessionForkRequest::Antigravity {
-                    session_id: native_session_id.clone(),
-                    turn_count: request.provider_turn_count,
-                    title: tr!(
-                        "session.rewind_title",
-                        title = request.session_title.as_str()
-                    ),
-                },
-            )?;
-            Ok((Some(fork.cursor), None, None))
-        }
         ProviderKind::Claude => {
             let Some(ProviderResumeCursor::Claude {
                 session_id: native_session_id,
@@ -640,31 +614,6 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                     ));
                 }
                 Ok((fork_response_with_driver(&mut request)?, None))
-            }
-            ProviderKind::Antigravity => {
-                let Some(ProviderResumeCursor::Antigravity {
-                    session_id: native_session_id,
-                    ..
-                }) = request.source.provider_cursor.as_ref()
-                else {
-                    anyhow::bail!(tr!(
-                        "errors.provider_native_session_unavailable",
-                        provider = "Antigravity"
-                    ));
-                };
-                Ok((
-                    request
-                        .workspace_client
-                        .fork_provider_session(
-                            waku_client::provider_session::ProviderSessionForkRequest::Antigravity {
-                                session_id: native_session_id.clone(),
-                                turn_count: request.provider_turn_count,
-                                title: request.fork_title.clone(),
-                            },
-                        )?
-                        .cursor,
-                    None,
-                ))
             }
         }
     })();
@@ -1743,10 +1692,8 @@ impl Waku {
             .runtimes
             .get(&session_id)
             .map(|runtime| runtime.driver.clone());
-        let driver_start = if matches!(
-            provider,
-            ProviderKind::Codex | ProviderKind::Pi
-        ) && driver.is_none()
+        let driver_start = if matches!(provider, ProviderKind::Codex | ProviderKind::Pi)
+            && driver.is_none()
         {
             match self.driver_start_request_for_history(&source, source_workspace_path.clone()) {
                 Ok(request) => Some(request),
@@ -2120,10 +2067,7 @@ impl Waku {
             .get(&session_id)
             .map(|runtime| runtime.driver.clone());
         let driver_start = if rollback_turns > 0
-            && matches!(
-                source.provider,
-                ProviderKind::Codex | ProviderKind::Pi
-            )
+            && matches!(source.provider, ProviderKind::Codex | ProviderKind::Pi)
             && driver.is_none()
         {
             match self.driver_start_request_for_session(&source, project_path.clone()) {
@@ -2335,11 +2279,7 @@ impl Waku {
         if let Some(prepared) = prepared_driver {
             self.install_prepared_driver(session_id, prepared);
         }
-        if claude_fork.is_some()
-            || reset_native_session
-            || (provider == ProviderKind::Antigravity
-                && provider_rewind_cursor.is_some())
-        {
+        if claude_fork.is_some() || reset_native_session {
             // Headless drivers retain their original native session ID. Recreate
             // them lazily so the next prompt resumes the fork instead.
             if let Some(runtime) = self.runtimes.remove(&session_id) {

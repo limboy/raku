@@ -9,8 +9,6 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderKind {
-    #[serde(alias = "agy")]
-    Antigravity,
     Claude,
     #[default]
     Codex,
@@ -18,16 +16,10 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 4] = [
-        Self::Claude,
-        Self::Codex,
-        Self::Pi,
-        Self::Antigravity,
-    ];
+    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Pi];
 
     pub fn id(self) -> &'static str {
         match self {
-            Self::Antigravity => "antigravity",
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
@@ -36,7 +28,6 @@ impl ProviderKind {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Antigravity => "Antigravity CLI",
             Self::Claude => "Claude Code",
             Self::Codex => "Codex CLI",
             Self::Pi => "Pi",
@@ -45,7 +36,6 @@ impl ProviderKind {
 
     pub fn short_name(self) -> &'static str {
         match self {
-            Self::Antigravity => "Antigravity",
             Self::Claude => "Claude",
             Self::Codex => "Codex",
             Self::Pi => "Pi",
@@ -54,7 +44,6 @@ impl ProviderKind {
 
     pub fn command(self) -> &'static str {
         match self {
-            Self::Antigravity => "agy",
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
@@ -69,10 +58,6 @@ impl ProviderKind {
     tag = "provider"
 )]
 pub enum ProviderResumeCursor {
-    #[serde(alias = "agy")]
-    Antigravity {
-        session_id: String,
-    },
     Claude {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,7 +76,6 @@ pub enum ProviderResumeCursor {
 impl ProviderResumeCursor {
     pub fn from_session_id(provider: ProviderKind, id: String) -> Self {
         match provider {
-            ProviderKind::Antigravity => Self::Antigravity { session_id: id },
             ProviderKind::Claude => Self::Claude {
                 session_id: id,
                 resume_at: None,
@@ -106,7 +90,6 @@ impl ProviderResumeCursor {
 
     pub fn provider(&self) -> ProviderKind {
         match self {
-            Self::Antigravity { .. } => ProviderKind::Antigravity,
             Self::Claude { .. } => ProviderKind::Claude,
             Self::Codex { .. } => ProviderKind::Codex,
             Self::Pi { .. } => ProviderKind::Pi,
@@ -115,9 +98,7 @@ impl ProviderResumeCursor {
 
     pub fn native_id(&self) -> &str {
         match self {
-            Self::Antigravity { session_id }
-            | Self::Claude { session_id, .. }
-            | Self::Pi { session_id, .. } => session_id,
+            Self::Claude { session_id, .. } | Self::Pi { session_id, .. } => session_id,
             Self::Codex { thread_id } => thread_id,
         }
     }
@@ -4378,8 +4359,6 @@ mod tests {
 
     #[test]
     fn provider_ids_are_stable() {
-        assert_eq!(ProviderKind::Antigravity.id(), "antigravity");
-        assert_eq!(ProviderKind::Antigravity.command(), "agy");
         assert_eq!(ProviderKind::Claude.id(), "claude");
         assert_eq!(ProviderKind::Codex.command(), "codex");
         assert_eq!(ProviderKind::Pi.command(), "pi");
@@ -4387,12 +4366,7 @@ mod tests {
 
     #[test]
     fn native_conversation_actions_include_every_provider() {
-        for provider in [
-            ProviderKind::Antigravity,
-            ProviderKind::Claude,
-            ProviderKind::Codex,
-            ProviderKind::Pi,
-        ] {
+        for provider in [ProviderKind::Claude, ProviderKind::Codex, ProviderKind::Pi] {
             assert!(provider.capabilities().conversation.fork);
             assert!(provider.capabilities().conversation.rollback);
         }
@@ -4400,7 +4374,6 @@ mod tests {
 
     #[test]
     fn only_dynamic_provider_catalogs_are_discovered() {
-        assert!(ProviderKind::Antigravity.capabilities().model_discovery);
         assert!(ProviderKind::Claude.capabilities().model_discovery);
         assert!(ProviderKind::Codex.capabilities().model_discovery);
         assert!(ProviderKind::Pi.capabilities().model_discovery);
@@ -4408,7 +4381,7 @@ mod tests {
 
     #[test]
     fn all_contains_every_provider_kind() {
-        assert_eq!(ProviderKind::ALL.len(), 4);
+        assert_eq!(ProviderKind::ALL.len(), 3);
         let ids: std::collections::HashSet<_> =
             ProviderKind::ALL.iter().map(|kind| kind.id()).collect();
         assert_eq!(
@@ -5106,18 +5079,5 @@ mod review_subtask_tests {
                 provider.display_name()
             );
         }
-        assert!(
-            !ProviderKind::Antigravity
-                .capabilities()
-                .delegation
-                .review_subtask
-        );
-        assert!(ProviderKind::Antigravity.capabilities().conversation.fork);
-        assert!(
-            ProviderKind::Antigravity
-                .capabilities()
-                .conversation
-                .rollback
-        );
     }
 }

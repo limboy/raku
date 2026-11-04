@@ -1853,7 +1853,7 @@ mod tests {
     #[test]
     fn sidebar_places_new_response_forks_above_their_source() {
         let project_id = Uuid::new_v4();
-        let mut source = AgentSession::new(project_id, ProviderKind::Antigravity);
+        let mut source = AgentSession::new(project_id, ProviderKind::Codex);
         source.begin_turn("Check network connectivity");
         source.mark_active_turn_provider_started();
         source.finish_active_turn(TurnStatus::Completed);
@@ -1864,8 +1864,8 @@ mod tests {
             source
                 .fork_through_turn(
                     1,
-                    ProviderResumeCursor::Antigravity {
-                        session_id: Uuid::new_v4().to_string(),
+                    ProviderResumeCursor::Codex {
+                        thread_id: Uuid::new_v4().to_string(),
                     },
                     title,
                 )

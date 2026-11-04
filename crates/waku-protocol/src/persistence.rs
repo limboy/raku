@@ -8,7 +8,14 @@ use crate::model::{AgentSession, MessageRole};
 
 // Persisted provider tags (including OpenCode's old beta alias) must stay
 // recognizable after their variants are removed from ProviderKind.
-const RETIRED_PROVIDERS: &[&str] = &["deepSeek", "ohMyPi", "openCode", "openCode2"];
+const RETIRED_PROVIDERS: &[&str] = &[
+    "deepSeek",
+    "ohMyPi",
+    "openCode",
+    "openCode2",
+    "antigravity",
+    "agy",
+];
 
 fn is_retired_provider(value: &serde_json::Value) -> bool {
     value
@@ -78,7 +85,8 @@ pub fn migrate_retired_provider_references(value: &mut serde_json::Value) -> boo
                     "favorite_models"
                     | "remembered_model_traits"
                     | "model_references"
-                    | "modelReferences" => {
+                    | "modelReferences"
+                    | "sub_agents" => {
                         if let Some(entries) = value.as_array_mut() {
                             let previous = entries.len();
                             entries.retain(|entry| {
@@ -289,6 +297,10 @@ mod tests {
                          "modelId": "retired", "displayLabel": "OpenCode"},
                         {"referenceId": "opencode2", "provider": "openCode2",
                          "modelId": "retired", "displayLabel": "OpenCode 2"},
+                        {"referenceId": "antigravity", "provider": "antigravity",
+                         "modelId": "retired", "displayLabel": "Antigravity"},
+                        {"referenceId": "agy", "provider": "agy",
+                         "modelId": "retired", "displayLabel": "Antigravity alias"},
                         {"referenceId": "active", "provider": "pi",
                          "modelId": "deepseek/deepseek-flash", "displayLabel": "DeepSeek"}
                     ]

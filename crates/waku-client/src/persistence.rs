@@ -21,8 +21,8 @@ use waku_protocol::model::{
     AgentSession, FavoriteModel, Project, ProviderKind, ProviderResumeCursor,
     ProviderSessionHistory, ProviderSessionSummary, RuntimeMode,
 };
-use waku_protocol::theme::ThemePreference;
 use waku_protocol::persistence::{from_persisted_json, migrate_retired_provider_references};
+use waku_protocol::theme::ThemePreference;
 
 pub use waku_protocol::persistence::{
     ComposerDraft, ComposerDraftAttachment, ComposerDraftChange, ComposerDraftKey,
@@ -921,21 +921,22 @@ impl PersistedState {
             // Startup list projections omit model options. Recover the old
             // defaults without hydrating any transcripts just for migration.
             if !session.detail_loaded {
-                let (reasoning_effort, service_tier, context_window) =
-                    if selection.provider == self.last_provider && selection.model == self.last_model
-                    {
-                        (
-                            self.last_reasoning_effort.clone(),
-                            self.last_service_tier.clone(),
-                            self.last_context_window.clone(),
-                        )
-                    } else {
-                        selection
-                            .model
-                            .as_deref()
-                            .map(|model| self.model_traits_for(selection.provider, model))
-                            .unwrap_or_default()
-                    };
+                let (reasoning_effort, service_tier, context_window) = if selection.provider
+                    == self.last_provider
+                    && selection.model == self.last_model
+                {
+                    (
+                        self.last_reasoning_effort.clone(),
+                        self.last_service_tier.clone(),
+                        self.last_context_window.clone(),
+                    )
+                } else {
+                    selection
+                        .model
+                        .as_deref()
+                        .map(|model| self.model_traits_for(selection.provider, model))
+                        .unwrap_or_default()
+                };
                 selection.reasoning_effort = reasoning_effort;
                 selection.service_tier = service_tier;
                 selection.context_window = context_window;
@@ -1579,8 +1580,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retired_provider_favorites_do_not_block_launch_settings() {
-        for provider in ["deepSeek", "ohMyPi", "openCode", "openCode2"] {
+    fn retired_provider_settings_do_not_block_launch_settings() {
+        for provider in [
+            "deepSeek",
+            "ohMyPi",
+            "openCode",
+            "openCode2",
+            "antigravity",
+            "agy",
+        ] {
+            let active_agent_id = Uuid::new_v4();
             let document = serde_json::to_vec(&serde_json::json!({
                 "theme": "dark",
                 "language": "simplified-chinese",
@@ -1590,6 +1599,12 @@ mod tests {
                     {"provider": provider, "model": "retired"},
                     {"provider": "codex", "model": "gpt-5.4"},
                     {"provider": "pi", "model": "deepseek/deepseek-flash"}
+                ],
+                "sub_agents": [
+                    {"id": Uuid::new_v4(), "name": "retired", "provider": provider,
+                     "modelId": "retired"},
+                    {"id": active_agent_id, "name": "reviewer", "provider": "claude",
+                     "modelId": "sonnet", "instructions": "Review the diff"}
                 ]
             }))
             .unwrap();
@@ -1599,6 +1614,10 @@ mod tests {
             assert_eq!(settings.language, AppLanguage::SimplifiedChinese);
             assert_eq!(settings.ui_font_size, 17.0);
             assert!(settings.model_picker_favorites_only);
+            assert_eq!(settings.sub_agents.len(), 1);
+            assert_eq!(settings.sub_agents[0].id, active_agent_id);
+            assert_eq!(settings.sub_agents[0].provider, ProviderKind::Claude);
+            assert_eq!(settings.sub_agents[0].instructions, "Review the diff");
             assert_eq!(
                 settings.favorite_models,
                 vec![
@@ -1656,7 +1675,14 @@ mod tests {
     fn retired_project_model_selections_preserve_other_desktop_state() {
         let retired_project = Uuid::new_v4();
         let active_project = Uuid::new_v4();
-        for provider in ["deepSeek", "ohMyPi", "openCode", "openCode2"] {
+        for provider in [
+            "deepSeek",
+            "ohMyPi",
+            "openCode",
+            "openCode2",
+            "antigravity",
+            "agy",
+        ] {
             let document = serde_json::to_vec(&serde_json::json!({
                 "app_state_version": 1,
                 "selected_project": active_project,
@@ -1700,44 +1726,48 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("state.json");
         let project_id = Uuid::new_v4();
-        fs::write(
-            &path,
-            serde_json::to_vec(&serde_json::json!({
-                "app_state_version": 1,
-                "selected_project": project_id,
-                "last_provider": "ohMyPi",
-                "last_model": "deepseek-official/deepseek-chat",
-                "last_reasoning_effort": "high",
-                "last_service_tier": "fast",
-                "last_context_window": "1m",
-                "sidebar_width": 318.0,
-                "remembered_model_traits": [
-                    {"provider": "deepSeek", "model": "retired"},
-                    {"provider": "ohMyPi", "model": "retired"},
-                    {"provider": "openCode", "model": "retired"},
-                    {"provider": "openCode2", "model": "retired"},
-                    {"provider": "pi", "model": "deepseek/deepseek-flash",
-                     "reasoning_effort": "low"}
-                ]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        for provider in ["ohMyPi", "antigravity", "agy"] {
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "app_state_version": 1,
+                    "selected_project": project_id,
+                    "last_provider": provider,
+                    "last_model": "deepseek-official/deepseek-chat",
+                    "last_reasoning_effort": "high",
+                    "last_service_tier": "fast",
+                    "last_context_window": "1m",
+                    "sidebar_width": 318.0,
+                    "remembered_model_traits": [
+                        {"provider": "deepSeek", "model": "retired"},
+                        {"provider": "ohMyPi", "model": "retired"},
+                        {"provider": "openCode", "model": "retired"},
+                        {"provider": "openCode2", "model": "retired"},
+                        {"provider": "antigravity", "model": "retired"},
+                        {"provider": "agy", "model": "retired"},
+                        {"provider": "pi", "model": "deepseek/deepseek-flash",
+                         "reasoning_effort": "low"}
+                    ]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
 
-        let mut state = PersistedState::empty();
-        state.apply_app_state(read_app_state_file(&path).unwrap());
-        assert_eq!(state.selected_project, Some(project_id));
-        assert_eq!(state.sidebar_width, 318.0);
-        let draft = state.new_session(project_id);
-        assert_eq!(draft.provider, ProviderKind::Codex);
-        assert_eq!(draft.model, None);
-        assert_eq!(draft.reasoning_effort, None);
-        assert_eq!(draft.service_tier, None);
-        assert_eq!(draft.context_window, None);
-        assert_eq!(
-            state.model_traits_for(ProviderKind::Pi, "deepseek/deepseek-flash"),
-            (Some("low".into()), None, None)
-        );
+            let mut state = PersistedState::empty();
+            state.apply_app_state(read_app_state_file(&path).unwrap());
+            assert_eq!(state.selected_project, Some(project_id));
+            assert_eq!(state.sidebar_width, 318.0);
+            let draft = state.new_session(project_id);
+            assert_eq!(draft.provider, ProviderKind::Codex);
+            assert_eq!(draft.model, None);
+            assert_eq!(draft.reasoning_effort, None);
+            assert_eq!(draft.service_tier, None);
+            assert_eq!(draft.context_window, None);
+            assert_eq!(
+                state.model_traits_for(ProviderKind::Pi, "deepseek/deepseek-flash"),
+                (Some("low".into()), None, None)
+            );
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2083,7 +2113,7 @@ mod tests {
         );
         for (index, provider) in [
             ProviderKind::Claude,
-            ProviderKind::Antigravity,
+            ProviderKind::Codex,
             ProviderKind::Codex,
             ProviderKind::Pi,
             ProviderKind::Claude,
@@ -2106,7 +2136,7 @@ mod tests {
         assert_eq!(first.service_tier.as_deref(), Some("fast"));
         assert_eq!(first.context_window.as_deref(), Some("1m"));
         let second = state.new_session(state.projects[1].id);
-        assert_eq!(second.provider, ProviderKind::Antigravity);
+        assert_eq!(second.provider, ProviderKind::Codex);
         assert_eq!(second.model.as_deref(), Some("model-1"));
         for project in &state.projects[2..] {
             let next = state.new_session(project.id);

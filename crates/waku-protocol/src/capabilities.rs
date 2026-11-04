@@ -72,22 +72,6 @@ impl ProviderKind {
     /// for every feature instead of inheriting another provider's defaults.
     pub const fn capabilities(self) -> ProviderCapabilities {
         match self {
-            Self::Antigravity => ProviderCapabilities {
-                access_modes: &RuntimeMode::ACCESS_OPTIONS,
-                conversation: CONVERSATION,
-                compaction: CompactionCapabilities {
-                    manual: true,
-                    instructions: false,
-                    lifecycle: true,
-                    summary: false,
-                },
-                delegation: DelegationCapabilities {
-                    parent: false,
-                    review_subtask: false,
-                },
-                model_discovery: true,
-                goals: false,
-            },
             Self::Claude => ProviderCapabilities {
                 access_modes: &RuntimeMode::ACCESS_OPTIONS,
                 conversation: CONVERSATION,

@@ -26,7 +26,6 @@ Updates use Sparkle. Development builds keep automatic updates disabled.
 
 Waku works with:
 
-- Antigravity CLI
 - Claude Code
 - Codex CLI
 - Pi

@@ -292,19 +292,12 @@ impl Backend for WakuBackend {
             }
             Command::FetchPlanUsage {
                 provider,
-                binary_override,
+                binary_override: _,
                 cli_version,
-                model,
+                model: _,
                 session_file: _,
             } => {
                 let usage = match provider {
-                    crate::model::ProviderKind::Antigravity => {
-                        ensure_shell_environment();
-                        let probe =
-                            crate::model::provider_probe(provider, binary_override.as_deref());
-                        let binary = probe.path.ok_or_else(|| anyhow!("agy is not installed"))?;
-                        crate::usage::fetch_antigravity_plan_usage(&binary, model.as_deref())?
-                    }
                     crate::model::ProviderKind::Claude => Some(
                         crate::usage::fetch_claude_plan_usage(cli_version.as_deref())?,
                     ),
@@ -517,16 +510,11 @@ impl Backend for WakuBackend {
                 // must not start every installed agent CLI, and another
                 // provider is queried only after the user explicitly picks it.
                 let mut sessions = match provider {
-                    ProviderKind::Antigravity => {
-                        crate::antigravity_session::list_provider_sessions(limit)?
-                    }
                     ProviderKind::Claude => crate::claude_session::list_provider_sessions(limit)?,
                     ProviderKind::Codex => {
                         crate::codex_session::list_provider_sessions(&binary, limit)?
                     }
-                    ProviderKind::Pi => {
-                        crate::pi_session::list_provider_sessions(provider, limit)?
-                    }
+                    ProviderKind::Pi => crate::pi_session::list_provider_sessions(provider, limit)?,
                 };
                 sessions.sort_by(|a, b| {
                     b.updated_at
@@ -553,13 +541,6 @@ impl Backend for WakuBackend {
                 // numbering, but bound imported display text to recent turns.
                 const VISIBLE_TURN_LIMIT: usize = 100;
                 let mut history = match &cursor {
-                    ProviderResumeCursor::Antigravity { session_id } => {
-                        self.provider_binary(ProviderKind::Antigravity)?;
-                        crate::antigravity_session::provider_session_history(
-                            session_id,
-                            VISIBLE_TURN_LIMIT,
-                        )?
-                    }
                     ProviderResumeCursor::Claude { session_id, .. } => {
                         self.provider_binary(ProviderKind::Claude)?;
                         crate::claude_session::provider_session_history(
@@ -1242,19 +1223,6 @@ impl WakuBackend {
         turns_to_remove: usize,
     ) -> anyhow::Result<(ProviderResumeCursor, HashMap<String, String>)> {
         match source.provider {
-            ProviderKind::Antigravity => {
-                let Some(ProviderResumeCursor::Antigravity { session_id, .. }) =
-                    source.provider_cursor.as_ref()
-                else {
-                    bail!("Antigravity CLI's native session is unavailable");
-                };
-                let fork = fork_provider_session(ProviderSessionForkRequest::Antigravity {
-                    session_id: session_id.clone(),
-                    turn_count: provider_turn_count,
-                    title: fork_title.to_owned(),
-                })?;
-                Ok((fork.cursor, HashMap::new()))
-            }
             ProviderKind::Claude => {
                 let Some(ProviderResumeCursor::Claude { session_id, .. }) =
                     source.provider_cursor.as_ref()
@@ -1360,29 +1328,13 @@ impl WakuBackend {
         if rollback_turns == 0 {
             return Ok((None, HashMap::new(), false));
         }
-        let reset_native_session = provider_turn_count == 0
-            && matches!(
-                source.provider,
-                ProviderKind::Antigravity | ProviderKind::Claude
-            );
+        let reset_native_session =
+            provider_turn_count == 0 && source.provider == ProviderKind::Claude;
         if reset_native_session {
             return Ok((None, HashMap::new(), true));
         }
 
         match source.provider {
-            ProviderKind::Antigravity => {
-                let Some(ProviderResumeCursor::Antigravity { session_id, .. }) =
-                    source.provider_cursor.as_ref()
-                else {
-                    bail!("Antigravity CLI's native session is unavailable");
-                };
-                let fork = fork_provider_session(ProviderSessionForkRequest::Antigravity {
-                    session_id: session_id.clone(),
-                    turn_count: provider_turn_count,
-                    title: format!("{} (rewind)", source.display_title()),
-                })?;
-                Ok((Some(fork.cursor), HashMap::new(), false))
-            }
             ProviderKind::Claude => {
                 let Some(ProviderResumeCursor::Claude { session_id, .. }) =
                     source.provider_cursor.as_ref()
@@ -1563,21 +1515,6 @@ fn fork_provider_session(
     use crate::model::ProviderResumeCursor;
 
     let (cursor, message_ids, source_resume_at) = match request {
-        ProviderSessionForkRequest::Antigravity {
-            session_id,
-            turn_count,
-            title,
-        } => (
-            ProviderResumeCursor::Antigravity {
-                session_id: crate::antigravity_session::fork_session_at_turn(
-                    &session_id,
-                    turn_count,
-                    &title,
-                )?,
-            },
-            HashMap::new(),
-            None,
-        ),
         ProviderSessionForkRequest::Claude {
             session_id,
             resume_at,
@@ -2759,15 +2696,10 @@ mod tests {
         let backend =
             WakuBackend::new(settings, StateStore::daemon(directory.join("app.db"))).unwrap();
 
-        for cursor in [
-            ProviderResumeCursor::Antigravity {
-                session_id: Uuid::new_v4().to_string(),
-            },
-            ProviderResumeCursor::Claude {
-                session_id: Uuid::new_v4().to_string(),
-                resume_at: None,
-            },
-        ] {
+        for cursor in [ProviderResumeCursor::Claude {
+            session_id: Uuid::new_v4().to_string(),
+            resume_at: None,
+        }] {
             let mut session = AgentSession::new(Uuid::new_v4(), cursor.provider());
             session.begin_turn("failed before provider startup");
             session.finish_active_turn(crate::model::TurnStatus::Failed);

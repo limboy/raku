@@ -120,12 +120,14 @@ mod tests {
             &path,
             r#"{
                 "computer_use_enabled": true,
-                "disabled_providers": ["deepSeek", "ohMyPi", "openCode", "openCode2", "claude"],
+                "disabled_providers": ["deepSeek", "ohMyPi", "openCode", "openCode2", "antigravity", "agy", "claude"],
                 "provider_binary_overrides": {
                     "deepSeek": "/old/dsh",
                     "ohMyPi": "/old/omp",
                     "openCode": "/old/opencode",
                     "openCode2": "/old/opencode2",
+                    "antigravity": "/old/antigravity",
+                    "agy": "/old/agy",
                     "pi": "/custom/pi"
                 },
                 "future": 42

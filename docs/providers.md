@@ -9,8 +9,8 @@ polled off disk, and the one Waku generates itself — is in
 [titles.md](titles.md).
 
 Every provider is reached through the same driver abstraction in
-[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are four
-transport implementations behind four providers, and **every one of them holds a
+[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are three
+transport implementations behind three providers, and **every one of them holds a
 session that spans the whole conversation**:
 
 | Transport | File | Providers |
@@ -18,7 +18,6 @@ session that spans the whole conversation**:
 | Codex app-server (JSON-RPC over stdio) | [driver/codex.rs](../crates/waku-core/src/driver/codex.rs) | Codex CLI |
 | Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/waku-core/src/driver/pi.rs) | Pi |
 | Claude streaming-input session (NDJSON over stdio) | [driver/claude.rs](../crates/waku-core/src/driver/claude.rs) | Claude Code |
-| Antigravity streaming-input session (NDJSON over stdio) | [driver/antigravity.rs](../crates/waku-core/src/driver/antigravity.rs) | Antigravity CLI |
 
 ## The driver contract
 
@@ -93,10 +92,8 @@ the source and forked tasks keep their selected interactive mode.
 
 Compaction belongs to the provider's native session. Waku offers a manual
 `/compact` command, a usage-panel action, and a command-palette action for
-Codex, Claude Code, Antigravity CLI, and Pi. Pi
-and Claude accept optional focus instructions; Codex and Antigravity CLI
-reject that argument instead of silently discarding it. Other
-providers keep their native command handling.
+Codex, Claude Code, and Pi. Pi and Claude accept optional focus instructions;
+Codex rejects that argument instead of silently discarding it.
 
 The driver contract carries `CompactionRequest` and complete
 `CompactionUpdated` snapshots. Manual requests use Codex's
@@ -142,7 +139,7 @@ A runtime — and with it that session's provider process — is dropped when:
 
 | Trigger | Where |
 | --- | --- |
-| The user stops a turn, **Codex and Antigravity** | [src/app/sessions.rs:3](../src/app/sessions.rs#L3) |
+| The user stops a turn, **Codex** | [src/app/sessions.rs:3](../src/app/sessions.rs#L3) |
 | The provider changes, or an option changes that the transport cannot apply in session | `apply_session_options`, [src/app/runtime.rs](../src/app/runtime.rs) |
 | The session is deleted | [src/app/sessions.rs:178](../src/app/sessions.rs#L178) |
 | A rewind or branch leaves the driver on a stale native session | [src/app/runtime.rs](../src/app/runtime.rs) |
@@ -150,20 +147,19 @@ A runtime — and with it that session's provider process — is dropped when:
 | Nobody has touched the session for 30 minutes | `reap_idle_sessions`, [src/app/runtime.rs](../src/app/runtime.rs) |
 | Waku quits | `cx.quit()` |
 
-Stop drops the runtime for Codex (whose app-server owns its provider process
-tree) and Antigravity CLI (whose `stream-json` loop flushes an `interrupted`
-result and exits on `SIGINT`); the next prompt resumes the native thread or
-conversation (`thread/resume` / `--conversation <id>`). Every other provider has
-a protocol interrupt and keeps its runtime (`retain_runtime_after_cancel`).
+Stop drops the runtime for Codex, whose app-server owns its provider process
+tree; the next prompt resumes the native thread (`thread/resume`). Every other
+provider has a protocol interrupt and keeps its runtime
+(`retain_runtime_after_cancel`).
 
 Option changes go through `DriverControl::apply_options`, which returns whether
 the transport absorbed the change or wants to be restarted:
 
-| Change | Codex | Pi | Claude | Antigravity |
-| --- | --- | --- | --- | --- |
-| Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — a `set_model` control request | restart (`--conversation <id>`) |
-| Access mode | restart | restart | restart | restart (`--conversation <id>`) |
-| Provider | restart | restart | restart | restart |
+| Change | Codex | Pi | Claude |
+| --- | --- | --- | --- |
+| Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — a `set_model` control request |
+| Access mode | restart | restart | restart |
+| Provider | restart | restart | restart |
 
 The permission policy is deliberately excluded even for Codex, which does carry
 `approvalPolicy` and `sandboxPolicy` on every `turn/start`: loosening or
@@ -207,19 +203,19 @@ of the app — which Pi did until it was given one.
 
 ## At a glance
 
-| | Codex CLI | Pi | Claude Code | Antigravity CLI |
-| --- | --- | --- | --- | --- |
-| Binary | `codex` | `pi` | `claude` | `agy` |
-| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | stream-json over stdio | stream-json over stdio |
-| Process spans the whole session | yes | yes | yes | yes |
-| Process spawned per turn | no | no | no | no |
-| Bidirectional | yes | yes | yes | prompts only |
-| Reasoning stream | yes | yes | yes | token count only |
-| Interactive approvals | yes | no | yes | no (headless policy) |
-| Mid-turn steering | yes | yes | yes | no (follow-up queue) |
-| Model discovery | yes | yes | yes | yes |
-| Restricted to Full access | no | yes | no | no |
-| Rewind and branch at a turn | yes | yes | yes | no |
+| | Codex CLI | Pi | Claude Code |
+| --- | --- | --- | --- |
+| Binary | `codex` | `pi` | `claude` |
+| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | stream-json over stdio |
+| Process spans the whole session | yes | yes | yes |
+| Process spawned per turn | no | no | no |
+| Bidirectional | yes | yes | yes |
+| Reasoning stream | yes | yes | yes |
+| Interactive approvals | yes | no | yes |
+| Mid-turn steering | yes | yes | yes |
+| Model discovery | yes | yes | yes |
+| Restricted to Full access | no | yes | no |
+| Rewind and branch at a turn | yes | yes | yes |
 
 Every provider now holds a session across turns. That was not true when this
 document was first written: five of the seven spawned a process per prompt, and
@@ -454,46 +450,6 @@ fallback ([model_catalog.rs](../crates/waku-core/src/model_catalog.rs)).
 
 ---
 
-## Antigravity CLI
-
-**Launch** — `agy --input-format stream-json --output-format stream-json
---print-timeout 0` ([driver/antigravity.rs](../crates/waku-core/src/driver/antigravity.rs)),
-plus `--dangerously-skip-permissions` (`FullAccess`), `--mode auto` (`Auto`), or
-`--mode accept-edits` (`AutoAcceptEdits`), resolved `--model` and `--effort`,
-optional `--agent`, and `--conversation <id>` when resuming.
-
-**Lifetime** — long-lived across normal turns and manual `/compact` runs; ends
-by closing `stdin` (EOF exits `0`).
-
-**Per turn** — write `{"event":"user","message":{"content":"…"}}` on `stdin`;
-the stream emits one `init` frame per process, any number of `step_update`
-frames (`user_input`, `agent_response`, `tool`, `checkpoint`), and one `result`
-frame per turn. Context occupancy comes from the active `agent_response` step's
-`input_tokens + cache_read_tokens + output_tokens` rather than `result.usage`,
-which accumulates across the whole session.
-
-**Approvals and option changes** — `agy` rejects `control_request` and `/model`
-inside `--input-format stream-json` (exit code `2`), and unapproved tools in
-headless mode are soft-denied rather than prompted. `apply_options` therefore
-requests a runtime restart on mode, model, or effort changes and resumes via
-`--conversation <id>`.
-
-**Cancel** — `SIGINT` to the isolated process group, which makes `agy` flush the
-partial turn with `finished_reason: "interrupted"` and exit; Waku drops the
-runtime and resumes `--conversation <id>` on the next prompt.
-
-**Models, skills, plan usage, and native history** — `agy --output-format json
-models` and `--print /model` populate the model catalog (collapsing multi-effort
-`-<effort>` slugs while preserving singletons so `--model` and `--effort` never
-conflict); `--print /skills` populates skill autocomplete; `--print /usage`
-supplies 5-hour and weekly plan quotas scoped to the active model family; and
-[antigravity_session.rs](../crates/waku-core/src/antigravity_session.rs) reads
-`~/.gemini/antigravity-cli/conversation_summaries.db` and
-`conversations/<id>.db` in read-only SQLite mode for `/resume` discovery, cold
-turn import, and background title polling.
-
----
-
 ## Access modes across providers
 
 Waku's `RuntimeMode` (Supervised / Auto-accept edits / Auto / Full access)
@@ -508,10 +464,8 @@ maps into each CLI's own vocabulary.
 
 Pi accepts Full access only and always runs wide open (`--approve`).
 
-Codex and Claude can route Supervised permission requests to Waku.
-Antigravity selects its mode through launch flags but cannot prompt through its
-headless stream-json transport; unapproved tools are soft-denied instead. Pi
-has no permission system.
+Codex and Claude can route Supervised permission requests to Waku. Pi has no
+permission system.
 
 ## Resume cursors
 

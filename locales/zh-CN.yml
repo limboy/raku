@@ -94,9 +94,9 @@ settings.appearance: 外观
 settings.providers: 服务商
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本 数学 公式 表达式 math latex
 settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
-settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex pi antigravity agy
+settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex pi
 settings.skills: 技能
-settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex pi antigravity agy 共享
+settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex pi 共享
 settings.back: 返回
 settings.close: 关闭设置
 settings.search: 搜索设置

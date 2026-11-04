@@ -1,10 +1,9 @@
 use super::*;
 
 fn retain_runtime_after_cancel(provider: ProviderKind) -> bool {
-    // Codex's app-server owns its provider process tree, and Antigravity's
-    // stream-json mode terminates on SIGINT; both resume their native session
-    // on the next prompt.
-    !matches!(provider, ProviderKind::Codex | ProviderKind::Antigravity)
+    // Codex's app-server owns its provider process tree and resumes its native
+    // session on the next prompt.
+    provider != ProviderKind::Codex
 }
 
 fn new_task_runtime_mode(current: Option<&AgentSession>, remembered: RuntimeMode) -> RuntimeMode {
@@ -1600,9 +1599,8 @@ mod tests {
     #[test]
     fn stopping_releases_the_runtimes_that_cannot_be_interrupted_in_place() {
         assert!(!retain_runtime_after_cancel(ProviderKind::Codex));
-        assert!(!retain_runtime_after_cancel(ProviderKind::Antigravity));
         for provider in ProviderKind::ALL {
-            if !matches!(provider, ProviderKind::Codex | ProviderKind::Antigravity) {
+            if provider != ProviderKind::Codex {
                 assert!(retain_runtime_after_cancel(provider));
             }
         }

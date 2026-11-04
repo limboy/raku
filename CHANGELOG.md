@@ -16,6 +16,8 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Remove Antigravity CLI support
+
 ## [2.2.3] - 2026-11-04
 
 - Replace the composer's Local/New worktree selector with a project chip that opens the sidebar's project picker

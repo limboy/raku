@@ -40,8 +40,7 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
             )),
             ProviderModel::new("claude-haiku-4-5", "Claude Haiku 4.5"),
         ],
-        ProviderKind::Antigravity
-        | ProviderKind::Pi => Vec::new(),
+        ProviderKind::Pi => Vec::new(),
     }
 }
 

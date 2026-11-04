@@ -5,8 +5,6 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 
-use crate::model::ProviderKind;
-
 /// Empty, app-owned cwd for provider catalog subprocesses.
 ///
 /// Agent CLIs may index their process cwd during startup. Launching a catalog
@@ -26,19 +24,4 @@ pub(crate) fn catalog_working_directory() -> anyhow::Result<PathBuf> {
         )
     })?;
     Ok(directory)
-}
-
-pub(crate) fn session_title(
-    provider: ProviderKind,
-    title: Option<&str>,
-    session_id: &str,
-) -> String {
-    title
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            let short_id = session_id.chars().take(8).collect::<String>();
-            format!("{} session {short_id}", provider.short_name())
-        })
 }

@@ -2135,10 +2135,7 @@ fn switched_off_providers_leave_the_picker_except_for_their_locked_session() {
 fn model_picker_subtitle_deduplicates_the_provider_name() {
     use super::composer::model_picker_subtitle;
 
-    assert_eq!(
-        model_picker_subtitle(ProviderKind::Pi, Some("Pi")),
-        "Pi"
-    );
+    assert_eq!(model_picker_subtitle(ProviderKind::Pi, Some("Pi")), "Pi");
     assert_eq!(
         model_picker_subtitle(ProviderKind::Pi, Some("OpenAI")),
         "OpenAI · Pi"
@@ -2438,12 +2435,12 @@ fn image_generation_preserves_order_and_stays_visible_after_work_folds() {
 
 #[test]
 fn image_generation_repeated_in_the_answer_folds_without_losing_history() {
-    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Antigravity);
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
     let turn_id = session.begin_turn("生成一张在空中飞的猫的图片");
     push_transcript_activity(
         &mut session,
         ActivityItem::new(
-            Some("agy-image".into()),
+            Some("generated-image".into()),
             ActivityKind::ImageGeneration,
             "Generated image",
             None,
@@ -2490,7 +2487,12 @@ fn image_generation_only_folds_when_every_output_is_actually_displayed() {
         ("```md\n![cat](/tmp/cat.jpg)\n```", 1, false, false),
         ("$![cat](/tmp/cat.jpg)$", 1, false, false),
         ("# ![cat](/tmp/cat.jpg)", 1, false, false),
-        ("| Image |\n| --- |\n| ![cat](/tmp/cat.jpg) |", 1, false, false),
+        (
+            "| Image |\n| --- |\n| ![cat](/tmp/cat.jpg) |",
+            1,
+            false,
+            false,
+        ),
         ("> ![cat](/tmp/cat.jpg)", 1, false, true),
         ("![other](/tmp/other.jpg)", 1, false, false),
         ("![cat](/tmp/cat.jpg)", 2, false, false),

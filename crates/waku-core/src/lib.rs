@@ -17,8 +17,6 @@ macro_rules! tr {
     };
 }
 
-pub mod session_catalog;
-pub mod antigravity_session;
 pub mod attachments;
 pub mod backup;
 pub mod blob_store;
@@ -34,15 +32,16 @@ pub mod driver;
 mod frontmatter;
 pub mod git_branch;
 pub mod git_commit;
-mod image_generation;
 pub mod i18n;
 pub mod identity;
+mod image_generation;
 pub mod model;
 pub mod model_catalog;
 pub mod persistence;
 pub mod pi_session;
 pub mod projectless;
 mod resources;
+pub mod session_catalog;
 pub mod settings;
 pub mod skills;
 mod slash_command_catalog;

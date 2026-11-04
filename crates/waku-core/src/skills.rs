@@ -75,14 +75,6 @@ pub fn user_skill_locations() -> Vec<SkillLocation> {
         SkillSource::Provider(ProviderKind::Pi),
         home_join(".pi/agent/skills"),
     );
-    push(
-        SkillSource::Provider(ProviderKind::Antigravity),
-        home_join(".gemini/antigravity-cli/skills"),
-    );
-    push(
-        SkillSource::Provider(ProviderKind::Antigravity),
-        home_join(".gemini/config/skills"),
-    );
     locations
 }
 
@@ -96,10 +88,6 @@ pub fn project_skill_locations(project_root: &Path, project_name: &str) -> Vec<S
         ),
         (SkillSource::Provider(ProviderKind::Codex), ".codex/skills"),
         (SkillSource::Provider(ProviderKind::Pi), ".pi/skills"),
-        (
-            SkillSource::Provider(ProviderKind::Antigravity),
-            ".agent/skills",
-        ),
     ]
     .into_iter()
     .map(|(source, suffix)| SkillLocation {
@@ -484,10 +472,7 @@ mod tests {
         let locations = vec![
             user_location(SkillSource::Provider(ProviderKind::Codex), &codex_root),
             user_location(SkillSource::Provider(ProviderKind::Pi), &pi_root),
-            user_location(
-                SkillSource::Provider(ProviderKind::Claude),
-                &claude_root,
-            ),
+            user_location(SkillSource::Provider(ProviderKind::Claude), &claude_root),
         ];
         let catalog = scan_skills(&locations);
         assert_eq!(catalog.skills.len(), 1, "one row, not one per root");

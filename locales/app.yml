@@ -194,11 +194,11 @@ settings.general_keywords:
 settings.appearance_keywords:
   en: appearance theme system light dark language english chinese simplified font size text editor
 settings.providers_keywords:
-  en: providers agents models cli version install detect claude codex pi antigravity agy
+  en: providers agents models cli version install detect claude codex pi
 settings.skills:
   en: Skills
 settings.skills_keywords:
-  en: skills skill library agent disable enable delete claude codex pi antigravity agy shared
+  en: skills skill library agent disable enable delete claude codex pi shared
 settings.back:
   en: Back
 settings.close:
