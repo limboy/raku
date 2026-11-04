@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::WireDriverEvent;
-use crate::model::{ActivityKind, DriverEvent, PermissionOption, UserInputQuestion};
+use crate::model::{
+    ActivityKind, DriverEvent, PermissionOption, UserInputDelivery, UserInputQuestion,
+};
 
 pub fn decode_enum<T: DeserializeOwned>(value: &str) -> anyhow::Result<T> {
     serde_json::from_value(Value::String(value.to_owned()))
@@ -90,11 +92,13 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
         DriverEvent::UserInputRequested {
             request_id,
             questions,
+            delivery,
         } => (
             "userInputRequested",
             json!({
                 "requestId": request_id,
                 "questions": questions,
+                "delivery": delivery,
             }),
         ),
         DriverEvent::SteerAccepted { message } => ("steerAccepted", json!({ "message": message })),
@@ -186,6 +190,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
             DriverEvent::UserInputRequested {
                 request_id: request.request_id,
                 questions: request.questions,
+                delivery: request.delivery,
             }
         }
         "steerAccepted" => {
@@ -262,6 +267,8 @@ struct PermissionWire {
 struct UserInputWire {
     request_id: String,
     questions: Vec<UserInputQuestion>,
+    #[serde(default)]
+    delivery: UserInputDelivery,
 }
 
 #[derive(Deserialize)]
@@ -308,7 +315,9 @@ mod tests {
     }
 
     use super::*;
-    use crate::model::{ThreadGoal, ThreadGoalStatus, UserInputOption, UserInputQuestion};
+    use crate::model::{
+        ThreadGoal, ThreadGoalStatus, UserInputDelivery, UserInputOption, UserInputQuestion,
+    };
 
     #[test]
     fn goal_updates_round_trip_through_the_daemon_wire() {
@@ -352,6 +361,7 @@ mod tests {
                 }],
                 multi_select: false,
             }],
+            delivery: UserInputDelivery::Message,
         })
         .unwrap();
         assert_eq!(wire.kind, "userInputRequested");
@@ -359,11 +369,13 @@ mod tests {
         let DriverEvent::UserInputRequested {
             request_id,
             questions,
+            delivery,
         } = event_from_wire(wire).unwrap()
         else {
             panic!("the event changed variants during its wire round trip");
         };
         assert_eq!(request_id, "request-1");
+        assert_eq!(delivery, UserInputDelivery::Message);
         assert_eq!(questions[0].id, "deployment");
         assert_eq!(questions[0].options[0].label, "Preview");
     }

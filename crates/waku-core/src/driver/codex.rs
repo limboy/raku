@@ -27,7 +27,7 @@ use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
     BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, ExecutionPolicy, GoalOperation,
     PermissionOption, ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus,
-    UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
+    UserInputAnswer, UserInputDelivery, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 enum CommandMessage {
@@ -1312,6 +1312,13 @@ struct CodexStreamState {
     next_citation_number: usize,
     /// Item id and part index of the reasoning chunk currently streaming.
     reasoning_part: Option<(String, u64)>,
+    /// Agent messages whose text streamed this turn. A message that settles
+    /// without any deltas (Codex synthesizes async questions that way) is
+    /// otherwise invisible, so its completed text is emitted instead.
+    streamed_messages: HashSet<String>,
+    /// A delta arrived without an item id, so `streamed_messages` cannot
+    /// tell which message it belonged to; never backfill this turn.
+    untracked_message_delta: bool,
 }
 
 impl CodexStreamState {
@@ -1321,6 +1328,28 @@ impl CodexStreamState {
         self.citation_buffer.clear();
         self.next_citation_number = 1;
         self.reasoning_part = None;
+        self.streamed_messages.clear();
+        self.untracked_message_delta = false;
+    }
+
+    /// Text of a completed agent message that never streamed, so the
+    /// transcript still shows it.
+    fn unstreamed_message_text(&mut self, item: &Value) -> Option<String> {
+        if self.untracked_message_delta {
+            return None;
+        }
+        let id = item.get("id").and_then(Value::as_str)?;
+        if self.streamed_messages.contains(id) {
+            return None;
+        }
+        let text = item.get("text").and_then(Value::as_str)?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        let text = self.rewrite_citation_delta(text);
+        // The item is complete; an unterminated marker is not going to close.
+        self.citation_buffer.clear();
+        (!text.is_empty()).then_some(text)
     }
 
     fn capture_citations(&mut self, item: &Value) {
@@ -1808,6 +1837,14 @@ fn handle_codex_message(
             if stream_state.maintenance_turn {
                 return;
             }
+            match params.get("itemId").and_then(Value::as_str) {
+                Some(id) => {
+                    if !stream_state.streamed_messages.contains(id) {
+                        stream_state.streamed_messages.insert(id.to_owned());
+                    }
+                }
+                None => stream_state.untracked_message_delta = true,
+            }
             if let Some(delta) = params.get("delta").and_then(Value::as_str) {
                 let delta = stream_state.rewrite_citation_delta(delta);
                 if !delta.is_empty() {
@@ -1924,6 +1961,15 @@ fn handle_codex_message(
                 }
                 stream_state.capture_citations(item);
                 let complete = method == "item/completed";
+                if complete && item.get("type").and_then(Value::as_str) == Some("agentMessage") {
+                    if let Some(text) = stream_state.unstreamed_message_text(item) {
+                        let _ = events.send(DriverEvent::TextDelta(text));
+                    }
+                    if let Some(event) = codex_async_user_input(item) {
+                        let _ = events.send(event);
+                    }
+                    return;
+                }
                 if item.get("type").and_then(Value::as_str) == Some("reasoning")
                     && let Some(id) = item.get("id").and_then(Value::as_str)
                 {
@@ -2096,6 +2142,7 @@ fn handle_codex_message(
                 let _ = events.send(DriverEvent::UserInputRequested {
                     request_id: rpc_id_string(value.get("id").unwrap()),
                     questions,
+                    delivery: UserInputDelivery::Request,
                 });
             }
         }
@@ -2183,6 +2230,56 @@ fn codex_user_input_questions(params: &Value) -> Vec<UserInputQuestion> {
             })
         })
         .collect()
+}
+
+/// Questions Codex asked without blocking (`request_user_input_async`). They
+/// arrive as an `agentMessage` with `delivery: "async"` rather than a server
+/// request: the tool returns at once, the turn carries on, and the answer is
+/// expected as the next user message.
+fn codex_async_user_input(item: &Value) -> Option<DriverEvent> {
+    if item.get("delivery").and_then(Value::as_str) != Some("async") {
+        return None;
+    }
+    let questions: Vec<_> = item
+        .get("questions")
+        .and_then(Value::as_array)?
+        .iter()
+        .enumerate()
+        .filter_map(|(index, question)| {
+            let text = question.get("title").and_then(Value::as_str)?.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let options = question
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+                .map(|label| UserInputOption {
+                    label: label.to_owned(),
+                    description: None,
+                })
+                .collect();
+            Some(UserInputQuestion {
+                id: format!("question-{index}"),
+                header: "Question".to_owned(),
+                question: text.to_owned(),
+                options,
+                multi_select: false,
+            })
+        })
+        .collect();
+    if questions.is_empty() {
+        return None;
+    }
+    Some(DriverEvent::UserInputRequested {
+        request_id: item.get("id").and_then(Value::as_str)?.to_owned(),
+        questions,
+        delivery: UserInputDelivery::Message,
+    })
 }
 
 /// Map an `account/rateLimits/updated` snapshot into the panel's plan rows.
@@ -4136,5 +4233,101 @@ mod tests {
 
         assert!(codex_plan_usage(Some(&json!({"planType": "plus"}))).is_none());
         assert!(codex_plan_usage(None).is_none());
+    }
+
+    fn feed_codex_messages(messages: Vec<Value>) -> Vec<DriverEvent> {
+        let thread_id = Mutex::new(Some("thread-1".to_owned()));
+        let turn_id = Mutex::new(None);
+        let turn_ids = Mutex::new(Vec::new());
+        let pending_rollbacks = Mutex::new(HashMap::new());
+        let pending_steers = Mutex::new(HashMap::new());
+        let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (commands, _command_rx) = unbounded();
+        let (event_tx, event_rx) = unbounded();
+        let mut stream_state = CodexStreamState::default();
+        for message in messages {
+            handle_codex_message(
+                message,
+                &thread_id,
+                &turn_id,
+                &turn_ids,
+                &pending_rollbacks,
+                &pending_steers,
+                &background_rpcs,
+                &goal_rpcs,
+                &commands,
+                &event_tx,
+                &mut stream_state,
+            );
+        }
+        event_rx.try_iter().collect()
+    }
+
+    #[test]
+    fn async_questions_surface_as_message_delivered_user_input() {
+        // Shape recorded from Codex 0.166 `request_user_input_async`: no
+        // server request and no deltas, only a settled agent message.
+        let events = feed_codex_messages(vec![json!({
+            "method": "item/completed",
+            "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {
+                "type": "agentMessage",
+                "id": "call_ad50",
+                "text": "Approve publishing?\n- Publish\n- Hold",
+                "phase": "final_answer",
+                "delivery": "async",
+                "questions": [
+                    {"title": "Approve publishing?", "options": ["Publish", " ", "Hold"]},
+                    {"title": "  "}
+                ]
+            }}
+        })]);
+
+        assert!(matches!(
+            &events[0],
+            DriverEvent::TextDelta(text) if text == "Approve publishing?\n- Publish\n- Hold"
+        ));
+        let DriverEvent::UserInputRequested {
+            request_id,
+            questions,
+            delivery,
+        } = &events[1]
+        else {
+            panic!("an async question must reach the question sheet");
+        };
+        assert_eq!(request_id, "call_ad50");
+        assert_eq!(*delivery, UserInputDelivery::Message);
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].question, "Approve publishing?");
+        let labels: Vec<_> = questions[0]
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Publish", "Hold"]);
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn streamed_agent_messages_are_not_repeated_on_completion() {
+        let events = feed_codex_messages(vec![
+            json!({"method": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": "Hi"}}),
+            json!({"method": "item/completed", "params": {"item": {
+                "type": "agentMessage", "id": "m1", "text": "Hi"
+            }}}),
+        ]);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], DriverEvent::TextDelta(text) if text == "Hi"));
+    }
+
+    #[test]
+    fn untracked_deltas_disable_completion_backfill_for_the_turn() {
+        let events = feed_codex_messages(vec![
+            json!({"method": "item/agentMessage/delta", "params": {"delta": "Hi"}}),
+            json!({"method": "item/completed", "params": {"item": {
+                "type": "agentMessage", "id": "m1", "text": "Hi"
+            }}}),
+        ]);
+        assert_eq!(events.len(), 1);
     }
 }

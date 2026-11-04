@@ -469,14 +469,20 @@ impl Waku {
             DriverEvent::UserInputRequested {
                 request_id,
                 questions,
+                delivery,
             } => {
                 if self.accepts_turn_output(session_id) && !questions.is_empty() {
-                    runtime.pending_user_input = Some(PendingUserInput::new(request_id, questions));
+                    runtime.pending_user_input =
+                        Some(PendingUserInput::new(request_id, questions, delivery));
                     if self.state.selected_session == Some(session_id) {
                         self.user_input_answer
                             .update(cx, |input, cx| input.clear(cx));
                     }
-                    if let Some(session) = self.state.session_mut(session_id) {
+                    // An async question does not block the provider: its turn
+                    // keeps running and the answer becomes the next message.
+                    if delivery == UserInputDelivery::Request
+                        && let Some(session) = self.state.session_mut(session_id)
+                    {
                         session.status = SessionStatus::Waiting;
                     }
                 }
@@ -719,7 +725,15 @@ impl Waku {
                     self.refresh_session_delegations(cx);
                 }
                 runtime.pending_permission = None;
-                runtime.pending_user_input = None;
+                // An async question outlives the turn that asked it; its
+                // answer is what starts the next one.
+                if runtime
+                    .pending_user_input
+                    .as_ref()
+                    .is_some_and(|pending| pending.delivery == UserInputDelivery::Request)
+                {
+                    runtime.pending_user_input = None;
+                }
                 // The agent may have edited files or switched branches, so the
                 // cached view of the workspace is no longer trustworthy. This
                 // handler has no `Context`, so the drain loop acts on the flag.

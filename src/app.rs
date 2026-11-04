@@ -35,7 +35,7 @@ use crate::model::{
     PendingPermission, Project, ProviderKind, ProviderModel, ProviderProbe, ProviderResumeCursor,
     ProviderSessionHistory, ProviderSessionSummary, QueuedMessage, ReasoningBlock, RuntimeMode,
     SessionStatus, SessionWorkspace, TranscriptBlock, TurnStatus, UserInputAnswer,
-    UserInputQuestion, compact_path, strip_ansi, unix_time, unix_time_millis,
+    UserInputDelivery, UserInputQuestion, compact_path, strip_ansi, unix_time, unix_time_millis,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -898,16 +898,22 @@ struct SessionRuntime {
 struct PendingUserInput {
     request_id: String,
     questions: Vec<UserInputQuestion>,
+    delivery: UserInputDelivery,
     question_index: usize,
     selections: HashMap<String, Vec<String>>,
     custom_answers: HashMap<String, String>,
 }
 
 impl PendingUserInput {
-    fn new(request_id: String, questions: Vec<UserInputQuestion>) -> Self {
+    fn new(
+        request_id: String,
+        questions: Vec<UserInputQuestion>,
+        delivery: UserInputDelivery,
+    ) -> Self {
         Self {
             request_id,
             questions,
+            delivery,
             question_index: 0,
             selections: HashMap::new(),
             custom_answers: HashMap::new(),
@@ -941,6 +947,26 @@ impl PendingUserInput {
                 }
             })
             .collect()
+    }
+
+    /// The answers as a user message, for a provider that asked without
+    /// blocking and reads the reply from its next turn.
+    fn answer_message(&self) -> String {
+        let answers = self.answers();
+        self.questions
+            .iter()
+            .zip(&answers)
+            .filter(|(_, answer)| !answer.answers.is_empty())
+            .map(|(question, answer)| {
+                let reply = answer.answers.join(", ");
+                if self.questions.len() == 1 {
+                    reply
+                } else {
+                    format!("{}\n{reply}", question.question)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 }
 

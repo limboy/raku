@@ -45,7 +45,8 @@ use crate::driver::{
 use crate::model::{
     ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey, BackgroundWorkKind,
     BackgroundWorkStatus, DriverEvent, ExecutionPolicy, PermissionOption, ProviderResumeCursor,
-    RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
+    RuntimeMode, UserInputAnswer, UserInputDelivery, UserInputOption, UserInputQuestion,
+    unix_time_millis,
 };
 
 enum CommandMessage {
@@ -1960,6 +1961,7 @@ fn request_user_input(
     let _ = events.send(DriverEvent::UserInputRequested {
         request_id: request_id.to_owned(),
         questions,
+        delivery: UserInputDelivery::Request,
     });
     true
 }
@@ -3165,6 +3167,7 @@ mod tests {
         let DriverEvent::UserInputRequested {
             request_id,
             questions,
+            ..
         } = event_rx.try_recv().unwrap()
         else {
             panic!("AskUserQuestion must reach the structured question UI");

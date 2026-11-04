@@ -27,7 +27,8 @@ use crate::git_branch::BranchEntry;
 use crate::model::{
     ActivityItem, ActivityKind, AgentSession, Checkpoint, CheckpointFile, CheckpointStatus,
     DriverEvent, Message, MessageRole, ProviderKind, ReasoningBlock, RuntimeEventCursor,
-    SessionStatus, TranscriptBlock, TurnStatus, UserInputOption, UserInputQuestion,
+    SessionStatus, TranscriptBlock, TurnStatus, UserInputDelivery, UserInputOption,
+    UserInputQuestion,
 };
 
 #[test]
@@ -51,7 +52,8 @@ fn structured_user_input_preserves_question_order_and_custom_answer_precedence()
             multi_select: false,
         },
     ];
-    let mut pending = PendingUserInput::new("request-1".into(), questions);
+    let mut pending =
+        PendingUserInput::new("request-1".into(), questions, UserInputDelivery::Request);
     pending
         .selections
         .insert("environment".into(), vec!["Preview".into()]);
@@ -67,6 +69,16 @@ fn structured_user_input_preserves_question_order_and_custom_answer_precedence()
     assert_eq!(answers[0].answers, ["Preview"]);
     assert_eq!(answers[1].question_id, "notes");
     assert_eq!(answers[1].answers, ["Use the EU region"]);
+    assert_eq!(
+        pending.answer_message(),
+        "Where should this deploy?\nPreview\n\nAnything else?\nUse the EU region"
+    );
+
+    let single = PendingUserInput {
+        questions: pending.questions[..1].to_vec(),
+        ..pending
+    };
+    assert_eq!(single.answer_message(), "Preview");
 }
 use gpui::{ListAlignment, ListState, Pixels, px};
 use std::{

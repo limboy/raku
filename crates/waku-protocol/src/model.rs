@@ -1721,12 +1721,14 @@ pub enum DriverEvent {
         detail: String,
         options: Vec<PermissionOption>,
     },
-    /// Structured questions the provider needs answered before it can
-    /// continue the active turn. Unlike a permission, this is never
+    /// Structured questions for the user. Unlike a permission, this is never
     /// auto-approved: the content itself has to come from the user.
+    /// `delivery` says whether the provider is blocked on a reply or has
+    /// already moved on and expects the answer as the next user message.
     UserInputRequested {
         request_id: String,
         questions: Vec<UserInputQuestion>,
+        delivery: UserInputDelivery,
     },
     /// The provider accepted a steering message into the running turn.
     SteerAccepted {
@@ -2117,6 +2119,20 @@ pub struct UserInputOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// How the answer to a [`DriverEvent::UserInputRequested`] reaches the
+/// provider.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UserInputDelivery {
+    /// The provider is blocked on a request and the answer is its reply.
+    #[default]
+    Request,
+    /// The provider asked without blocking (Codex `request_user_input_async`)
+    /// and its turn carries on. The answer is sent as the next user message,
+    /// and there is nothing to reply to when the user dismisses it.
+    Message,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -1427,18 +1427,50 @@ impl Waku {
             let Some(pending) = runtime.pending_user_input.take() else {
                 return;
             };
-            let answers = pending.answers();
-            runtime
-                .driver
-                .respond_user_input(pending.request_id, answers);
-            if let Some(session) = self.state.session_mut(session_id) {
-                session.status = SessionStatus::Working;
-            }
             self.user_input_answer
                 .update(cx, |input, cx| input.clear(cx));
+            match pending.delivery {
+                UserInputDelivery::Request => {
+                    let answers = pending.answers();
+                    runtime
+                        .driver
+                        .respond_user_input(pending.request_id, answers);
+                    if let Some(session) = self.state.session_mut(session_id) {
+                        session.status = SessionStatus::Working;
+                    }
+                }
+                // The provider is not waiting on a reply; the answer starts
+                // its next turn, or queues behind the one still running.
+                UserInputDelivery::Message => {
+                    let message = pending.answer_message();
+                    self.submit_composer_submission(ComposerSubmission::plain(message), cx);
+                }
+            }
         } else {
             self.sync_user_input_answer(cx);
         }
+        cx.notify();
+    }
+
+    /// Close an async question without answering. The provider never
+    /// blocked on it, so there is nothing to reply to.
+    pub(super) fn dismiss_user_input(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.state.selected_session else {
+            return;
+        };
+        let Some(runtime) = self.runtimes.get_mut(&session_id) else {
+            return;
+        };
+        if runtime
+            .pending_user_input
+            .as_ref()
+            .is_none_or(|pending| pending.delivery != UserInputDelivery::Message)
+        {
+            return;
+        }
+        runtime.pending_user_input = None;
+        self.user_input_answer
+            .update(cx, |input, cx| input.clear(cx));
         cx.notify();
     }
 
