@@ -1,5 +1,6 @@
 //! Provider model and agent-preset discovery.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -68,7 +69,14 @@ pub fn discover_catalog(
     let (discovered, discovered_presets) = match provider {
         ProviderKind::Codex => (discover_codex_models(binary), None),
         ProviderKind::Claude => (discover_claude_models(binary), None),
-        ProviderKind::Pi => (discover_pi_models(binary), None),
+        ProviderKind::Pi => std::thread::scope(|scope| {
+            // The Console round trip overlaps the RPC probe instead of
+            // extending discovery.
+            let disabled = scope.spawn(opencode_console_disabled_models);
+            let models = discover_pi_models(binary);
+            let disabled = disabled.join().unwrap_or_default();
+            (without_disabled_models(models, &disabled), None)
+        }),
     };
     let models = if discovered.is_empty() {
         // A failed or empty probe keeps the last successful discovery over
@@ -240,6 +248,82 @@ fn claude_release_label(label: &str, description: Option<&str>) -> String {
         None => label.to_owned(),
     }
 }
+/// Pi's providers backed by an OpenCode Console workspace: Zen and Go.
+const PI_OPENCODE_PROVIDERS: [&str; 2] = ["opencode", crate::usage::PI_OPENCODE_GO_PROVIDER];
+
+/// The workspace config OpenCode's own CLI loads. It is keyed by the API key's
+/// workspace and lists, per provider, the models switched off on the
+/// Console's Models page.
+const OPENCODE_CONSOLE_CONFIG_URL: &str = "https://opencode.ai/console/api/v2/config";
+
+/// `provider/model` ids of Pi's OpenCode models that the user's workspace
+/// disabled. Pi lists every model it ships for these providers, and requests
+/// to a disabled one would fail. Empty when Pi has no OpenCode key or the
+/// Console can't be read, which leaves the catalog unfiltered. Blocking
+/// file and network I/O.
+fn opencode_console_disabled_models() -> HashSet<String> {
+    let mut configs: HashMap<String, Option<Value>> = HashMap::new();
+    let mut disabled = HashSet::new();
+    for provider in PI_OPENCODE_PROVIDERS {
+        let Some(api_key) = crate::usage::pi_opencode_api_key(provider) else {
+            continue;
+        };
+        // Zen and Go usually share one key, hence one workspace and one fetch.
+        let config = configs
+            .entry(api_key)
+            .or_insert_with_key(|api_key| fetch_opencode_console_config(api_key));
+        if let Some(config) = config {
+            disabled.extend(opencode_disabled_model_ids(config, provider));
+        }
+    }
+    disabled
+}
+
+fn fetch_opencode_console_config(api_key: &str) -> Option<Value> {
+    let (status, body) = crate::usage::http_get(
+        OPENCODE_CONSOLE_CONFIG_URL,
+        &[
+            format!("Authorization: Bearer {api_key}"),
+            "Accept: application/json".to_owned(),
+            "User-Agent: waku".to_owned(),
+        ],
+    )
+    .ok()?;
+    (status == 200)
+        .then(|| serde_json::from_str(&body).ok())
+        .flatten()
+}
+
+/// Live shape verified on 2026-11-04:
+/// `{"providers":{"opencode-go":{"models":{"glm-5.2":{"disabled":true}}}}}`.
+fn opencode_disabled_model_ids<'a>(
+    config: &'a Value,
+    provider: &'a str,
+) -> impl Iterator<Item = String> + 'a {
+    config
+        .get("providers")
+        .and_then(|providers| providers.get(provider))
+        .and_then(|provider| provider.get("models"))
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(_, model)| model.get("disabled").and_then(Value::as_bool) == Some(true))
+        .map(move |(model_id, _)| format!("{provider}/{model_id}"))
+}
+
+fn without_disabled_models(
+    models: Vec<ProviderModel>,
+    disabled: &HashSet<String>,
+) -> Vec<ProviderModel> {
+    if disabled.is_empty() {
+        return models;
+    }
+    models
+        .into_iter()
+        .filter(|model| !disabled.contains(&model.id))
+        .collect()
+}
+
 const PI_PROBE_ARGS: &[&str] = &[
     "--mode",
     "rpc",
@@ -920,6 +1004,45 @@ printf '%s\n' '{"type":"control_response","response":{"request_id":"waku-initial
         assert_eq!(
             models[0].service_tiers[0].description.as_deref(),
             Some("Priority processing")
+        );
+    }
+
+    #[test]
+    fn opencode_console_disabled_models_leave_only_enabled_pi_models() {
+        let config = json!({"providers": {
+            "opencode": {"models": {"glm-5.2": {"disabled": true}}},
+            "opencode-go": {"models": {
+                "kimi-k3": {"disabled": true},
+                "glm-5.3": {"disabled": false}
+            }}
+        }});
+        let disabled = PI_OPENCODE_PROVIDERS
+            .into_iter()
+            .flat_map(|provider| opencode_disabled_model_ids(&config, provider))
+            .collect::<HashSet<_>>();
+        let models = [
+            "opencode-go/kimi-k3",
+            "opencode-go/glm-5.3",
+            // Zen's switch must not hide Go's model of the same name.
+            "opencode-go/glm-5.2",
+            "opencode/glm-5.2",
+            "anthropic/kimi-k3",
+        ]
+        .map(|id| ProviderModel::new(id, id))
+        .to_vec();
+
+        let ids = without_disabled_models(models, &disabled)
+            .into_iter()
+            .map(|model| model.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            [
+                "opencode-go/glm-5.3",
+                "opencode-go/glm-5.2",
+                "anthropic/kimi-k3"
+            ]
         );
     }
 

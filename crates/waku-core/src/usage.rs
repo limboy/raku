@@ -165,7 +165,7 @@ pub fn fetch_codex_plan_usage() -> anyhow::Result<PlanUsage> {
 /// monthly limits with the API key Pi itself uses. `None` means Pi has no Go
 /// key, which hides the plan section instead of reporting an error. Blocking.
 pub fn fetch_pi_opencode_go_plan_usage() -> anyhow::Result<Option<PlanUsage>> {
-    let Some(api_key) = pi_opencode_go_api_key() else {
+    let Some(api_key) = pi_opencode_api_key(PI_OPENCODE_GO_PROVIDER) else {
         return Ok(None);
     };
     let (status, body) = http_get(
@@ -214,9 +214,11 @@ fn usage_error_detail(body: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Pi's credential precedence for `opencode-go`: the `auth.json` entry in
-/// `$PI_CODING_AGENT_DIR` (default `~/.pi/agent`), then `OPENCODE_API_KEY`.
-fn pi_opencode_go_api_key() -> Option<String> {
+/// Pi's credential precedence for its OpenCode providers (`opencode` for Zen,
+/// `opencode-go` for Go): the provider's `auth.json` entry in
+/// `$PI_CODING_AGENT_DIR` (default `~/.pi/agent`), then `OPENCODE_API_KEY`,
+/// which Pi reads for both. Blocking file I/O.
+pub(crate) fn pi_opencode_api_key(provider: &str) -> Option<String> {
     let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
         .filter(|path| !path.is_empty())
         .map(std::path::PathBuf::from)
@@ -224,7 +226,9 @@ fn pi_opencode_go_api_key() -> Option<String> {
     std::fs::read_to_string(agent_dir.join("auth.json"))
         .ok()
         .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
-        .and_then(|auth| pi_opencode_go_api_key_from_auth(&auth, |name| std::env::var(name).ok()))
+        .and_then(|auth| {
+            pi_opencode_api_key_from_auth(&auth, provider, |name| std::env::var(name).ok())
+        })
         .or_else(|| non_empty(std::env::var("OPENCODE_API_KEY").ok()?))
 }
 
@@ -233,11 +237,12 @@ fn pi_opencode_go_api_key() -> Option<String> {
 /// escape), looked up in the entry's own `env` map first. A `!command` key
 /// would mean running the user's shell on every refresh, so it is left to
 /// the `OPENCODE_API_KEY` fallback.
-fn pi_opencode_go_api_key_from_auth(
+fn pi_opencode_api_key_from_auth(
     auth: &Value,
+    provider: &str,
     process_env: impl Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    let entry = auth.get(PI_OPENCODE_GO_PROVIDER)?;
+    let entry = auth.get(provider)?;
     if entry.get("type").and_then(Value::as_str) != Some("api_key") {
         return None;
     }
@@ -778,26 +783,32 @@ mod tests {
     }
 
     #[test]
-    fn pi_auth_resolves_only_the_opencode_go_api_key() {
+    fn pi_auth_resolves_only_the_requested_opencode_api_key() {
         let no_env = |_: &str| None;
         let auth = serde_json::json!({
             "opencode": {"type": "api_key", "key": "zen-key"},
             "opencode-go": {"type": "api_key", "key": " go-key "}
         });
         assert_eq!(
-            pi_opencode_go_api_key_from_auth(&auth, no_env).as_deref(),
+            pi_opencode_api_key_from_auth(&auth, PI_OPENCODE_GO_PROVIDER, no_env).as_deref(),
             Some("go-key")
         );
         assert_eq!(
-            pi_opencode_go_api_key_from_auth(
+            pi_opencode_api_key_from_auth(&auth, "opencode", no_env).as_deref(),
+            Some("zen-key")
+        );
+        assert_eq!(
+            pi_opencode_api_key_from_auth(
                 &serde_json::json!({"opencode": {"type": "api_key", "key": "zen-key"}}),
+                PI_OPENCODE_GO_PROVIDER,
                 no_env
             ),
             None
         );
         assert_eq!(
-            pi_opencode_go_api_key_from_auth(
+            pi_opencode_api_key_from_auth(
                 &serde_json::json!({"opencode-go": {"type": "api_key", "key": "!op read x"}}),
+                PI_OPENCODE_GO_PROVIDER,
                 no_env
             ),
             None
@@ -811,11 +822,14 @@ mod tests {
         });
         let env = |name: &str| (name == "GO_KEY").then(|| "a".to_owned());
         assert_eq!(
-            pi_opencode_go_api_key_from_auth(&auth, env).as_deref(),
+            pi_opencode_api_key_from_auth(&auth, PI_OPENCODE_GO_PROVIDER, env).as_deref(),
             Some("a-b$")
         );
         // A missing variable leaves the key unresolved, as in Pi.
-        assert_eq!(pi_opencode_go_api_key_from_auth(&auth, |_| None), None);
+        assert_eq!(
+            pi_opencode_api_key_from_auth(&auth, PI_OPENCODE_GO_PROVIDER, |_| None),
+            None
+        );
     }
 
     #[test]
