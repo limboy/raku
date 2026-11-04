@@ -1319,6 +1319,12 @@ struct CodexStreamState {
     /// A delta arrived without an item id, so `streamed_messages` cannot
     /// tell which message it belonged to; never backfill this turn.
     untracked_message_delta: bool,
+    /// The agent message that wrote the transcript's latest text, cleared
+    /// once any other item or reasoning lands after it. Codex can settle a
+    /// commentary message and the final answer back to back; the app keeps
+    /// appending to one assistant message until the stream changes phase,
+    /// so the second needs its own paragraph break.
+    open_text_message: Option<String>,
 }
 
 impl CodexStreamState {
@@ -1330,6 +1336,20 @@ impl CodexStreamState {
         self.reasoning_part = None;
         self.streamed_messages.clear();
         self.untracked_message_delta = false;
+        self.open_text_message = None;
+    }
+
+    /// Text for agent message `id` is about to reach the transcript. When it
+    /// directly follows a different message's text, separate the two with a
+    /// paragraph break so their sentences do not run together.
+    fn begin_message_text(&mut self, id: &str, events: &impl DriverEventSink) {
+        if self.open_text_message.as_deref() == Some(id) {
+            return;
+        }
+        if self.open_text_message.is_some() {
+            let _ = events.send(DriverEvent::TextDelta("\n\n".to_owned()));
+        }
+        self.open_text_message = Some(id.to_owned());
     }
 
     /// Text of a completed agent message that never streamed, so the
@@ -1837,7 +1857,8 @@ fn handle_codex_message(
             if stream_state.maintenance_turn {
                 return;
             }
-            match params.get("itemId").and_then(Value::as_str) {
+            let item_id = params.get("itemId").and_then(Value::as_str);
+            match item_id {
                 Some(id) => {
                     if !stream_state.streamed_messages.contains(id) {
                         stream_state.streamed_messages.insert(id.to_owned());
@@ -1848,6 +1869,9 @@ fn handle_codex_message(
             if let Some(delta) = params.get("delta").and_then(Value::as_str) {
                 let delta = stream_state.rewrite_citation_delta(delta);
                 if !delta.is_empty() {
+                    if let Some(id) = item_id {
+                        stream_state.begin_message_text(id, events);
+                    }
                     let _ = events.send(DriverEvent::TextDelta(delta));
                 }
             }
@@ -1856,6 +1880,7 @@ fn handle_codex_message(
             if stream_state.maintenance_turn {
                 return;
             }
+            stream_state.open_text_message = None;
             if let Some(delta) = params
                 .get("delta")
                 .and_then(Value::as_str)
@@ -1914,6 +1939,10 @@ fn handle_codex_message(
         }
         "item/started" | "item/completed" => {
             if let Some(item) = params.get("item") {
+                if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
+                    // Activity between two messages already splits them.
+                    stream_state.open_text_message = None;
+                }
                 if item.get("type").and_then(Value::as_str) == Some("contextCompaction") {
                     if method == "item/started" {
                         if let Some(pending) = background_rpcs.lock().manual_compaction.clone()
@@ -1963,6 +1992,9 @@ fn handle_codex_message(
                 let complete = method == "item/completed";
                 if complete && item.get("type").and_then(Value::as_str) == Some("agentMessage") {
                     if let Some(text) = stream_state.unstreamed_message_text(item) {
+                        if let Some(id) = item.get("id").and_then(Value::as_str) {
+                            stream_state.begin_message_text(id, events);
+                        }
                         let _ = events.send(DriverEvent::TextDelta(text));
                     }
                     if let Some(event) = codex_async_user_input(item) {
@@ -4318,6 +4350,49 @@ mod tests {
         ]);
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], DriverEvent::TextDelta(text) if text == "Hi"));
+    }
+
+    #[test]
+    fn consecutive_agent_messages_are_separated_by_a_paragraph_break() {
+        let events = feed_codex_messages(vec![
+            json!({"method": "item/completed", "params": {"item": {
+                "type": "agentMessage", "id": "m1", "text": "Ready for approval.",
+                "phase": "commentary"
+            }}}),
+            json!({"method": "item/completed", "params": {"item": {
+                "type": "agentMessage", "id": "m2", "text": "Prepared v2.2.5.",
+                "phase": "final_answer"
+            }}}),
+            json!({"method": "item/agentMessage/delta", "params": {"itemId": "m3", "delta": "More"}}),
+            json!({"method": "item/agentMessage/delta", "params": {"itemId": "m3", "delta": " text"}}),
+        ]);
+        let text: Vec<_> = events
+            .iter()
+            .map(|event| match event {
+                DriverEvent::TextDelta(text) => text.as_str(),
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            text,
+            ["Ready for approval.", "\n\n", "Prepared v2.2.5.", "\n\n", "More", " text"]
+        );
+    }
+
+    #[test]
+    fn activity_between_agent_messages_needs_no_paragraph_break() {
+        let events = feed_codex_messages(vec![
+            json!({"method": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": "Checking."}}),
+            json!({"method": "item/started", "params": {"item": {
+                "type": "commandExecution", "id": "c1", "command": "ls"
+            }}}),
+            json!({"method": "item/agentMessage/delta", "params": {"itemId": "m2", "delta": "Done."}}),
+        ]);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, DriverEvent::TextDelta(text) if text == "\n\n"))
+        );
     }
 
     #[test]
