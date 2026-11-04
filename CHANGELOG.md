@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.5] - 2026-11-04
+
+- Show OpenCode Go and Go Plus plan usage limits for Pi tasks using OpenCode Go models
+
 ## [2.2.4] - 2026-11-04
 
 - Fix Codex questions never appearing, and answer or dismiss them from the question sheet
