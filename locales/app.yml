@@ -1409,15 +1409,17 @@ open_in.choose:
   en: Open project in…
 
 environment.title:
-  en: Environment
-environment.summary:
-  en: Environment and background work
+  en: Git
+environment.checking_git:
+  en: Checking Git status…
+environment.git_unavailable:
+  en: Git is unavailable for this project.
 environment.changes:
   en: Changes
 environment.commit_or_push:
   en: Commit or push
-environment.compare_branch:
-  en: Compare branch
+environment.review_changes:
+  en: Review changes
 
 commit.message_placeholder:
   en: Commit message (leave blank to generate)…

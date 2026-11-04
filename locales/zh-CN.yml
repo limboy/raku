@@ -686,11 +686,12 @@ right_panel.hide: 隐藏右侧面板
 right_panel.close_tab: 关闭%{title}
 open_in.open: 用%{app}打开项目
 open_in.choose: 选择打开项目的应用…
-environment.title: 环境
-environment.summary: 环境和后台工作
+environment.title: Git
+environment.checking_git: 正在检查 Git 状态…
+environment.git_unavailable: 此项目无法使用 Git。
 environment.changes: 更改
 environment.commit_or_push: 提交或推送
-environment.compare_branch: 比较分支
+environment.review_changes: 审阅更改
 commit.message_placeholder: 提交信息（留空以自动生成）…
 commit.message: 提交信息
 commit.include_unstaged: 包含未暂存的更改

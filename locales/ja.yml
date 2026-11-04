@@ -722,11 +722,12 @@ right_panel.close_tab: "%{title} を閉じる"
 open_in.open: "プロジェクトを %{app} で開く"
 open_in.choose: プロジェクトを開くアプリを選択…
 
-environment.title: 環境
-environment.summary: 環境とバックグラウンド作業
+environment.title: Git
+environment.checking_git: Git の状態を確認中…
+environment.git_unavailable: このプロジェクトでは Git を利用できません。
 environment.changes: 変更
 environment.commit_or_push: コミットまたはプッシュ
-environment.compare_branch: ブランチを比較
+environment.review_changes: 変更をレビュー
 
 commit.message_placeholder: コミットメッセージ（空欄の場合は自動生成）…
 commit.message: コミットメッセージ

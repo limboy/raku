@@ -69,7 +69,12 @@ enum BackgroundSummaryRow {
 impl BackgroundSummaryRow {
     fn key(&self) -> String {
         match self {
-            Self::Environment(_) => "environment".into(),
+            Self::Environment(environment) => if environment.git_available == Some(true) {
+                "environment-actions"
+            } else {
+                "environment-status"
+            }
+            .into(),
             Self::Separator(key) | Self::Heading(key, _) => (*key).into(),
             Self::Work(entry) => entry.target.control_id(),
         }
@@ -77,7 +82,13 @@ impl BackgroundSummaryRow {
 
     fn height(&self) -> f32 {
         match self {
-            Self::Environment(_) => 94.0,
+            Self::Environment(environment) => {
+                if environment.git_available == Some(true) {
+                    94.0
+                } else {
+                    62.0
+                }
+            }
             Self::Separator(_) => 17.0,
             Self::Heading(_, _) => 26.0,
             Self::Work(_) => 34.0,
@@ -95,10 +106,12 @@ impl BackgroundSummaryRow {
     fn focus_targets(&self, row: usize, targets: &mut Vec<(usize, FocusHandle)>) {
         match self {
             Self::Environment(environment) => {
-                if environment.commit_status.is_none() {
-                    targets.push((row, environment.commit_focus.clone()));
+                if environment.git_available == Some(true) {
+                    if environment.commit_status.is_none() {
+                        targets.push((row, environment.commit_focus.clone()));
+                    }
+                    targets.push((row, environment.compare_focus.clone()));
                 }
-                targets.push((row, environment.compare_focus.clone()));
             }
             Self::Work(entry) => {
                 targets.push((row, entry.row_focus.clone()));
@@ -213,6 +226,7 @@ impl BackgroundSummaryStatus {
 }
 #[derive(Clone)]
 struct EnvironmentSummary {
+    git_available: Option<bool>,
     commit_status: Option<String>,
     commit_focus: FocusHandle,
     compare_focus: FocusHandle,
@@ -884,7 +898,7 @@ impl Waku {
     }
 
     fn render_current_background_summary_card(
-        &self,
+        &mut self,
         handle: &ContextMenuHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -959,7 +973,30 @@ impl Waku {
                 });
             }
         }
+        let workspace_path = self
+            .selected_workspace_path()
+            .or_else(|| {
+                self.selected_project()
+                    .map(|project| project.path.as_path())
+            })
+            .map(std::path::Path::to_path_buf);
+        let git_available = workspace_path.map_or(Some(false), |path| {
+            if self
+                .visible_branch_snapshot
+                .as_ref()
+                .is_some_and(|(snapshot_path, _)| snapshot_path == &path)
+                || self.branch_snapshot_for_workspace(&path, cx).is_some()
+            {
+                Some(true)
+            } else {
+                match self.branch_snapshots.read(&path) {
+                    Query::Ready(_) => Some(false),
+                    Query::Pending | Query::Missing(_) => None,
+                }
+            }
+        });
         let environment = Some(EnvironmentSummary {
+            git_available,
             commit_status: self.commit_operation_status_label(),
             commit_focus: self.transcript_control_focus("environment-summary-commit", cx),
             compare_focus: self.transcript_control_focus("environment-summary-compare", cx),
@@ -1002,7 +1039,6 @@ impl Waku {
                 .flat_map(|group| group.tasks.iter().map(|task| task.status)),
         );
         let has_live_work = processes > 0 || agents > 0;
-        let summary = background_work_count_summary(processes, agents);
         let theme = Theme::current(cx);
         let refresh_weak = cx.entity().downgrade();
         let handle = self.menu_handle_with(BACKGROUND_SUMMARY_MENU_ID, cx, move |open, _, cx| {
@@ -1030,11 +1066,6 @@ impl Waku {
             })
             .hover(|style| style.bg(theme.overlay))
             .when(handle.is_open(), |style| style.bg(theme.overlay_strong))
-            .tooltip(Tooltip::text(if summary.is_empty() {
-                tr!("environment.summary")
-            } else {
-                summary
-            }))
             .child(icon("icons/info.svg", 15.0, theme.text_tertiary))
             .when(has_live_work, |trigger| {
                 trigger.child(
@@ -1631,25 +1662,6 @@ fn background_summary_counts(
     )
 }
 
-fn background_work_count_summary(processes: usize, agents: usize) -> String {
-    let mut parts = Vec::new();
-    if processes > 0 {
-        parts.push(if processes == 1 {
-            tr!("background.process_count_one")
-        } else {
-            tr!("background.process_count", count = processes)
-        });
-    }
-    if agents > 0 {
-        parts.push(if agents == 1 {
-            tr!("background.agent_count_one")
-        } else {
-            tr!("background.agent_count", count = agents)
-        });
-    }
-    parts.join(" · ")
-}
-
 fn background_summary_navigation_index(
     key: &str,
     shift: bool,
@@ -1919,6 +1931,33 @@ fn render_environment_summary_section(
     weak: WeakEntity<Waku>,
     theme: &Theme,
 ) -> Div {
+    let section = div().w_full().flex().flex_col().gap_0().child(
+        div()
+            .h(px(30.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .text_size(sp(13.5))
+            .text_color(theme.text_tertiary)
+            .child(tr!("environment.title")),
+    );
+    if environment.git_available != Some(true) {
+        return section.child(
+            div()
+                .h(px(32.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .text_size(sp(13.0))
+                .text_color(theme.text_secondary)
+                .child(if environment.git_available.is_none() {
+                    tr!("environment.checking_git")
+                } else {
+                    tr!("environment.git_unavailable")
+                }),
+        );
+    }
+
     let commit_handle = handle.clone();
     let commit_weak = weak.clone();
     let commit_pending = environment.commit_status.is_some();
@@ -1931,7 +1970,6 @@ fn render_environment_summary_section(
             .unwrap_or_else(|| tr!("environment.commit_or_push")),
         !commit_pending,
         commit_pending,
-        None,
         theme,
         move |window, cx| {
             commit_handle.close(window, cx);
@@ -1947,11 +1985,10 @@ fn render_environment_summary_section(
     let compare = render_environment_action_row(
         "environment-summary-compare",
         &environment.compare_focus,
-        "icons/github.svg",
-        tr!("environment.compare_branch"),
+        "icons/file-diff.svg",
+        tr!("environment.review_changes"),
         true,
         false,
-        Some(icon("icons/arrow-up-right.svg", 13.0, theme.text_tertiary).into_any_element()),
         theme,
         move |window, cx| {
             compare_handle.close(window, cx);
@@ -1962,23 +1999,7 @@ fn render_environment_summary_section(
         },
     );
 
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap_0()
-        .child(
-            div()
-                .h(px(30.0))
-                .px(px(8.0))
-                .flex()
-                .items_center()
-                .text_size(sp(13.5))
-                .text_color(theme.text_tertiary)
-                .child(tr!("environment.title")),
-        )
-        .child(commit)
-        .child(compare)
+    section.child(commit).child(compare)
 }
 
 fn render_environment_action_row(
@@ -1988,7 +2009,6 @@ fn render_environment_action_row(
     label: String,
     enabled: bool,
     active: bool,
-    trailing: Option<AnyElement>,
     theme: &Theme,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
@@ -2037,7 +2057,6 @@ fn render_environment_action_row(
                 .text_color(foreground)
                 .child(label),
         )
-        .children(trailing)
         .when(enabled, |row| {
             row.on_click(move |_, window, cx| action(window, cx))
                 .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -2354,14 +2373,20 @@ mod tests {
         pty.can_stop = true;
         pty.output = Some("subcommand failed\nExit code: 1\n".into());
         registry.upsert(pty);
-        assert_eq!(registry.items[&proc_key].status, BackgroundWorkStatus::Failed);
+        assert_eq!(
+            registry.items[&proc_key].status,
+            BackgroundWorkStatus::Failed
+        );
 
         // Authoritative process-table poll (`output: None`) reporting the
         // background terminal still running must not be clobbered by old output.
         let mut live_poll = item("pty-1", BackgroundWorkStatus::Running, true);
         live_poll.can_stop = true;
         registry.reconcile_processes(vec![live_poll]);
-        assert_eq!(registry.items[&proc_key].status, BackgroundWorkStatus::Running);
+        assert_eq!(
+            registry.items[&proc_key].status,
+            BackgroundWorkStatus::Running
+        );
         assert!(registry.items[&proc_key].can_stop);
 
         let agent_key = BackgroundWorkKey::new(BackgroundWorkKind::Subagent, "agent-1");
@@ -2378,7 +2403,10 @@ mod tests {
             key: agent_key.clone(),
             delta: "The test printed:\nCommand exited with code 101\n".into(),
         });
-        assert_eq!(registry.items[&agent_key].status, BackgroundWorkStatus::Running);
+        assert_eq!(
+            registry.items[&agent_key].status,
+            BackgroundWorkStatus::Running
+        );
         assert!(registry.items[&agent_key].can_stop);
     }
 
