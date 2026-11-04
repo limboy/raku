@@ -817,6 +817,22 @@ mode.auto_description:
   en: An AI reviewer approves routine actions; risky ones still ask
 mode.full_access_description:
   en: Allow commands and edits without prompts
+mode.plan:
+  en: Plan
+mode.planning:
+  en: Planning
+mode.plan_off_tooltip:
+  en: Plan first — investigate and propose a plan before changing anything (⌘⇧P)
+mode.plan_on_tooltip:
+  en: Planning — the agent proposes a plan for approval before changing anything. Click to turn off (⌘⇧P)
+plan.ready:
+  en: Plan ready
+plan.ready_detail:
+  en: Implement it with %{mode}, or reply below to revise the plan.
+plan.implement:
+  en: Implement plan
+plan.implement_prompt:
+  en: Implement the plan.
 common.deny:
   en: Deny
 permission.allow_once:

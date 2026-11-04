@@ -6,8 +6,8 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::model::{
-    BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, ProviderResumeCursor,
-    RuntimeMode, UserInputAnswer,
+    BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, PlanDecision,
+    ProviderResumeCursor, RuntimeMode, UserInputAnswer,
 };
 
 #[derive(Clone)]
@@ -85,6 +85,10 @@ impl DriverHandle {
         self.inner.respond_user_input(request_id, answers);
     }
 
+    pub fn respond_plan(&self, request_id: String, decision: PlanDecision) {
+        self.inner.respond_plan(request_id, decision);
+    }
+
     /// Read or mutate the provider-persisted thread goal. Outcomes arrive
     /// asynchronously as `DriverEvent::GoalUpdated` or `DriverEvent::Error`.
     pub fn goal(&self, operation: GoalOperation) {
@@ -127,6 +131,7 @@ pub trait DriverControl: Send + Sync {
     fn stop_background_work(&self, _key: BackgroundWorkKey, _control_id: String) {}
     fn respond(&self, request_id: String, option_id: String);
     fn respond_user_input(&self, _request_id: String, _answers: Vec<UserInputAnswer>) {}
+    fn respond_plan(&self, _request_id: String, _decision: PlanDecision) {}
     fn goal(&self, _operation: GoalOperation) {}
     fn apply_options(&self, _options: SessionOptions) -> bool {
         false
@@ -142,6 +147,7 @@ pub struct DriverStartOptions {
     pub binary: PathBuf,
     pub cwd: PathBuf,
     pub mode: RuntimeMode,
+    pub plan_mode: bool,
     pub execution_policy: ExecutionPolicy,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -154,6 +160,7 @@ pub struct DriverStartOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionOptions {
     pub mode: RuntimeMode,
+    pub plan_mode: bool,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,

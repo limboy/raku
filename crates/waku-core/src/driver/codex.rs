@@ -82,6 +82,10 @@ struct BackgroundRpcState {
     lists: HashSet<u64>,
     stops: HashMap<u64, BackgroundWorkKey>,
     unsupported: bool,
+    /// Not an RPC: the model `thread/start` or `thread/resume` resolved to.
+    /// Shared with the writer because a collaboration mode must name a model
+    /// even when the session leaves the choice to Codex.
+    thread_model: Option<String>,
 }
 
 enum PendingBackgroundRpc {
@@ -140,6 +144,7 @@ impl CodexDriver {
             binary,
             cwd,
             mode,
+            plan_mode,
             execution_policy,
             model,
             reasoning_effort,
@@ -269,6 +274,13 @@ impl CodexDriver {
                 let mut model = model;
                 let mut reasoning_effort = reasoning_effort;
                 let mut service_tier = service_tier;
+                // A review subtask has no one to approve a plan.
+                let mut plan_mode =
+                    plan_mode && execution_policy == ExecutionPolicy::Interactive;
+                // The collaboration mode sticks to the thread, so after a plan
+                // turn — or on a resumed thread, which may have been left in
+                // plan mode — the next default turn must say so explicitly.
+                let mut collaboration_mode_dirty = provider_session_id.is_some();
                 let open_thread = if let Some(thread_id) = provider_session_id {
                     let mut params = json!({
                         "threadId": thread_id,
@@ -369,6 +381,19 @@ impl CodexDriver {
                             }
                             if let Some(service_tier) = service_tier.as_deref() {
                                 params["serviceTier"] = json!(service_tier);
+                            }
+                            if plan_mode || collaboration_mode_dirty {
+                                let mode_model = model
+                                    .clone()
+                                    .or_else(|| writer_background_rpcs.lock().thread_model.clone());
+                                if let Some(mode_model) = mode_model {
+                                    params["collaborationMode"] = collaboration_mode_params(
+                                        plan_mode,
+                                        &mode_model,
+                                        reasoning_effort.as_deref(),
+                                    );
+                                    collaboration_mode_dirty = plan_mode;
+                                }
                             }
                             json!({
                                 "method": "turn/start",
@@ -523,6 +548,8 @@ impl CodexDriver {
                             model = options.model;
                             reasoning_effort = options.reasoning_effort;
                             service_tier = options.service_tier;
+                            plan_mode = options.plan_mode
+                                && execution_policy == ExecutionPolicy::Interactive;
                             continue;
                         }
                         CommandMessage::Goal(operation) => {
@@ -843,6 +870,22 @@ fn turn_start_params(
     })
 }
 
+/// Codex's native collaboration mode for one turn (experimental API, opted
+/// into at `initialize`). It takes precedence over the turn's own model and
+/// effort, so it repeats them. `developer_instructions: null` selects Codex's
+/// built-in instructions for the mode. In `plan` the agent explores read-only
+/// and ends the turn with a `plan` item; verified on codex-cli 0.166.
+fn collaboration_mode_params(plan: bool, model: &str, reasoning_effort: Option<&str>) -> Value {
+    json!({
+        "mode": if plan { "plan" } else { "default" },
+        "settings": {
+            "model": model,
+            "reasoning_effort": reasoning_effort,
+            "developer_instructions": null
+        }
+    })
+}
+
 fn toml_string(value: &str) -> String {
     serde_json::to_string(value).expect("a filesystem path is always valid JSON")
 }
@@ -976,8 +1019,8 @@ impl DriverControl for CodexDriver {
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {
-        // Model, effort and tier ride on every `turn/start`, so the next turn
-        // picks them up. The approval policy and sandbox are not treated the
+        // Model, effort, tier and the plan collaboration mode ride on every
+        // `turn/start`, so the next turn picks them up. The approval policy and sandbox are not treated the
         // same way even though they are also per-turn fields: loosening or
         // tightening what an already-running agent may touch deserves a fresh
         // thread, so a mode change asks to be restarted instead.
@@ -1887,6 +1930,10 @@ fn handle_codex_message(
                 .flatten()
                 .filter_map(|turn| turn.get("id").and_then(Value::as_str).map(str::to_owned))
                 .collect();
+            background_rpcs.lock().thread_model = value
+                .pointer("/result/model")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             *thread_id.lock() = Some(id.to_owned());
             if let Some(title) = value
                 .pointer("/result/thread/name")
@@ -1944,7 +1991,9 @@ fn handle_codex_message(
                 let _ = events.send(DriverEvent::TurnStarted);
             }
         }
-        "item/agentMessage/delta" => {
+        // A proposed plan streams like an agent message: it is the answer of
+        // a plan-mode turn, so it lands in the transcript as text.
+        "item/agentMessage/delta" | "item/plan/delta" => {
             if stream_state.maintenance_turn {
                 return;
             }
@@ -2030,6 +2079,21 @@ fn handle_codex_message(
         }
         "item/started" | "item/completed" => {
             if let Some(item) = params.get("item") {
+                if item.get("type").and_then(Value::as_str) == Some("plan") {
+                    if stream_state.maintenance_turn || method != "item/completed" {
+                        return;
+                    }
+                    // The completed item is authoritative; it only fills in
+                    // when no deltas streamed.
+                    if let Some(text) = stream_state.unstreamed_message_text(item) {
+                        if let Some(id) = item.get("id").and_then(Value::as_str) {
+                            stream_state.begin_message_text(id, events);
+                        }
+                        let _ = events.send(DriverEvent::TextDelta(text));
+                    }
+                    let _ = events.send(DriverEvent::PlanProposed { request_id: None });
+                    return;
+                }
                 if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
                     // Activity between two messages already splits them.
                     stream_state.open_text_message = None;
@@ -3073,6 +3137,7 @@ mod tests {
                 binary,
                 cwd: directory.clone(),
                 mode: RuntimeMode::Ask,
+                plan_mode: false,
                 execution_policy: Default::default(),
                 model: None,
                 reasoning_effort: None,
@@ -3142,6 +3207,7 @@ mod tests {
                     binary: binary.clone(),
                     cwd: directory.clone(),
                     mode: RuntimeMode::Ask,
+                    plan_mode: false,
                     execution_policy: Default::default(),
                     model: None,
                     reasoning_effort: None,
@@ -3229,6 +3295,7 @@ mod tests {
                     binary: binary.clone(),
                     cwd: cwd.clone(),
                     mode: RuntimeMode::Ask,
+                    plan_mode: false,
                     execution_policy: Default::default(),
                     model: Some(CODEX_TITLE_MODEL.to_owned()),
                     reasoning_effort: Some("low".to_owned()),
@@ -3608,6 +3675,7 @@ mod tests {
     fn session_options(mode: RuntimeMode, model: &str) -> SessionOptions {
         SessionOptions {
             mode,
+            plan_mode: false,
             model: Some(model.to_owned()),
             reasoning_effort: None,
             service_tier: None,
@@ -3629,6 +3697,15 @@ mod tests {
         assert!(matches!(
             command_rx.try_recv(),
             Ok(CommandMessage::Options(_))
+        ));
+
+        // Plan mode is a per-turn collaboration mode, not a sandbox change.
+        let mut planning = session_options(RuntimeMode::FullAccess, "gpt-5-codex");
+        planning.plan_mode = true;
+        assert!(driver.apply_options(planning));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(CommandMessage::Options(options)) if options.plan_mode
         ));
 
         // This changes the sandbox the running thread was opened with.
@@ -4537,6 +4614,66 @@ mod tests {
             );
         }
         event_rx.try_iter().collect()
+    }
+
+    #[test]
+    fn plan_mode_turns_name_the_native_collaboration_mode() {
+        assert_eq!(
+            collaboration_mode_params(true, "gpt-6.1-sol", Some("low")),
+            json!({"mode": "plan", "settings": {
+                "model": "gpt-6.1-sol", "reasoning_effort": "low", "developer_instructions": null
+            }})
+        );
+        assert_eq!(
+            collaboration_mode_params(false, "gpt-6.1-sol", None)["mode"],
+            "default"
+        );
+    }
+
+    #[test]
+    fn proposed_plans_stream_as_text_and_ask_for_approval() {
+        // Shapes observed from codex-cli 0.166 in plan mode.
+        let events = feed_codex_messages(vec![
+            json!({"method": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": "Checking."}}),
+            json!({"method": "item/completed", "params": {"item": {
+                "type": "agentMessage", "id": "m1", "text": "Checking."
+            }}}),
+            json!({"method": "item/started", "params": {"item": {"type": "plan", "id": "t-plan", "text": ""}}}),
+            json!({"method": "item/plan/delta", "params": {"itemId": "t-plan", "delta": "### Plan\n"}}),
+            json!({"method": "item/plan/delta", "params": {"itemId": "t-plan", "delta": "- Do it\n"}}),
+            json!({"method": "item/completed", "params": {"item": {
+                "type": "plan", "id": "t-plan", "text": "### Plan\n- Do it\n"
+            }}}),
+        ]);
+        let text = events
+            .iter()
+            .filter_map(|event| match event {
+                DriverEvent::TextDelta(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(text, "Checking.\n\n### Plan\n- Do it\n");
+        assert!(matches!(
+            events.last(),
+            Some(DriverEvent::PlanProposed { request_id: None })
+        ));
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                DriverEvent::Activity { .. } | DriverEvent::RichActivity(_)
+            )),
+            "{events:?}"
+        );
+
+        // A plan that never streamed is filled in from the completed item.
+        let events = feed_codex_messages(vec![json!({"method": "item/completed", "params": {
+            "item": {"type": "plan", "id": "t-plan", "text": "Only plan"}
+        }})]);
+        assert!(matches!(
+            &events[..],
+            [DriverEvent::TextDelta(text), DriverEvent::PlanProposed { request_id: None }]
+                if text == "Only plan"
+        ));
     }
 
     #[test]

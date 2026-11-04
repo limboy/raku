@@ -89,6 +89,9 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "options": options,
             }),
         ),
+        DriverEvent::PlanProposed { request_id } => {
+            ("planProposed", json!({ "requestId": request_id }))
+        }
         DriverEvent::UserInputRequested {
             request_id,
             questions,
@@ -185,6 +188,12 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 options: permission.options,
             }
         }
+        "planProposed" => DriverEvent::PlanProposed {
+            request_id: payload
+                .get("requestId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        },
         "userInputRequested" => {
             let request: UserInputWire = serde_json::from_value(payload)?;
             DriverEvent::UserInputRequested {

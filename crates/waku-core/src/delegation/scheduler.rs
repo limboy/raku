@@ -749,6 +749,7 @@ impl DelegationScheduler {
             binary,
             cwd,
             mode: RuntimeMode::Ask,
+            plan_mode: false,
             execution_policy: ExecutionPolicy::ReviewReadOnly,
             model: Some(target.model_id.clone()),
             reasoning_effort: target.reasoning_effort.clone(),

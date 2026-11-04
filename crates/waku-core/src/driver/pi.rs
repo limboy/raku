@@ -240,6 +240,7 @@ impl PiDriver {
             binary,
             cwd,
             mode,
+            plan_mode: _,
             execution_policy,
             model,
             reasoning_effort,
@@ -2154,6 +2155,7 @@ mod tests {
                 binary,
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
+                plan_mode: false,
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
@@ -2218,6 +2220,7 @@ mod tests {
         };
         let options = |mode| SessionOptions {
             mode,
+            plan_mode: false,
             model: Some("anthropic/claude-opus-5".to_owned()),
             reasoning_effort: Some("high".to_owned()),
             service_tier: None,

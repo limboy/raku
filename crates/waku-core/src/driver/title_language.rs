@@ -381,6 +381,7 @@ mod tests {
                     binary: binary.clone(),
                     cwd: cwd.clone(),
                     mode: RuntimeMode::FullAccess,
+                    plan_mode: false,
                     execution_policy: ExecutionPolicy::Interactive,
                     model: model.clone(),
                     reasoning_effort: reasoning_effort.clone(),

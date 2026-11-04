@@ -18,7 +18,7 @@ use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 use waku_protocol::capabilities::RuntimeCapabilities;
 
 use crate::model::{
-    BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, ProviderKind,
+    BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, PlanDecision, ProviderKind,
     ProviderResumeCursor, RuntimeMode, UserInputAnswer,
 };
 
@@ -125,6 +125,10 @@ impl DriverHandle {
         self.inner.respond_user_input(request_id, answers);
     }
 
+    pub fn respond_plan(&self, request_id: String, decision: PlanDecision) {
+        self.inner.respond_plan(request_id, decision);
+    }
+
     /// Read or mutate the provider-persisted thread goal. Outcomes arrive
     /// asynchronously as `DriverEvent::GoalUpdated` or `DriverEvent::Error`.
     pub fn goal(&self, operation: GoalOperation) {
@@ -158,6 +162,9 @@ pub trait DriverControl: Send + Sync {
     fn stop_background_work(&self, _key: BackgroundWorkKey, _control_id: String) {}
     fn respond(&self, request_id: String, option_id: String);
     fn respond_user_input(&self, _request_id: String, _answers: Vec<UserInputAnswer>) {}
+    /// Answer a plan the provider is blocked on. Only transports that emit
+    /// `PlanProposed` with a request id implement this.
+    fn respond_plan(&self, _request_id: String, _decision: PlanDecision) {}
     /// Providers without persisted goals ignore the request; the UI only
     /// offers goal controls where the provider reports one.
     fn goal(&self, _operation: GoalOperation) {}
@@ -177,6 +184,8 @@ pub struct DriverStartOptions {
     pub binary: PathBuf,
     pub cwd: PathBuf,
     pub mode: RuntimeMode,
+    /// Start in the provider's native plan mode. See `AgentSession::plan_mode`.
+    pub plan_mode: bool,
     pub execution_policy: ExecutionPolicy,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -194,6 +203,7 @@ pub struct DriverStartOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionOptions {
     pub mode: RuntimeMode,
+    pub plan_mode: bool,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
@@ -267,6 +277,7 @@ mod tests {
                     binary: "/missing/waku-capability-test-provider".into(),
                     cwd: "/missing/waku-capability-test-workspace".into(),
                     mode,
+                    plan_mode: false,
                     execution_policy,
                     model: None,
                     reasoning_effort: None,

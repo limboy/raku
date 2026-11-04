@@ -45,8 +45,8 @@ use crate::driver::{
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
     BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, ExecutionPolicy, PermissionOption,
-    ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputDelivery, UserInputOption,
-    UserInputQuestion, unix_time_millis,
+    PlanDecision, ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputDelivery,
+    UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 enum CommandMessage {
@@ -62,6 +62,11 @@ enum CommandMessage {
         request_id: String,
         input: Value,
         answers: Vec<UserInputAnswer>,
+    },
+    RespondPlan {
+        request_id: String,
+        input: Value,
+        decision: PlanDecision,
     },
     Options(SessionOptions),
     StopBackgroundWork {
@@ -111,7 +116,67 @@ fn stop_task_request(request_id: u64, task_id: &str) -> Value {
 pub struct ClaudeDriver {
     commands: Sender<CommandMessage>,
     pending_user_inputs: Arc<Mutex<HashMap<String, Value>>>,
+    /// `ExitPlanMode` inputs awaiting the user's decision, by request id.
+    pending_plans: Arc<Mutex<HashMap<String, Value>>>,
     mode: RuntimeMode,
+}
+
+/// Claude's native plan-approval tool. In plan mode the agent calls it with
+/// the finished plan, and the permission request it raises is the approval.
+const EXIT_PLAN_MODE_TOOL: &str = "ExitPlanMode";
+
+/// The permission mode Claude runs under right now: `plan` while planning,
+/// otherwise the session's access posture.
+fn effective_permission_mode(mode: RuntimeMode, plan_mode: bool) -> &'static str {
+    if plan_mode {
+        "plan"
+    } else {
+        permission_mode(mode)
+    }
+}
+
+fn set_permission_mode_request(request_id: u64, mode: &str) -> Value {
+    json!({
+        "type": "control_request",
+        "request_id": format!("waku-{request_id}"),
+        "request": {"subtype": "set_permission_mode", "mode": mode}
+    })
+}
+
+/// The answer to a pending `ExitPlanMode` request. Approval switches the
+/// session out of plan mode in the same response, so implementation starts
+/// under the chosen access posture without another round trip; revising
+/// returns the feedback to the agent, which stays in plan mode and replans.
+/// Both shapes verified against the real CLI (2.1.316).
+fn plan_decision_response(
+    request_id: &str,
+    input: Value,
+    decision: &PlanDecision,
+    mode: RuntimeMode,
+) -> Value {
+    let response = match decision {
+        PlanDecision::Approve => json!({
+            "behavior": "allow",
+            "updatedInput": input,
+            "updatedPermissions": [{
+                "type": "setMode",
+                "mode": permission_mode(mode),
+                "destination": "session"
+            }]
+        }),
+        PlanDecision::Revise { feedback } => json!({
+            "behavior": "deny",
+            "message": feedback
+        }),
+    };
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": response
+        }
+    })
 }
 
 /// Who answers Claude's permission requests.
@@ -226,7 +291,7 @@ fn configure_delegation_tools(command: &mut Command, daemon_binary: &Path, sessi
     ]);
 }
 
-fn configure_stream_command(command: &mut Command, mode: RuntimeMode) {
+fn configure_stream_command(command: &mut Command, mode: RuntimeMode, plan_mode: bool) {
     command.args([
         "-p",
         "--input-format",
@@ -248,10 +313,17 @@ fn configure_stream_command(command: &mut Command, mode: RuntimeMode) {
         "--permission-prompt-tool",
         "stdio",
         "--permission-mode",
-        permission_mode(mode),
+        effective_permission_mode(mode, plan_mode),
     ]);
     if mode == RuntimeMode::FullAccess {
-        command.arg("--dangerously-skip-permissions");
+        // The forcing flag overrides `--permission-mode plan` at launch;
+        // the permissive one only makes bypass available, which approving a
+        // plan then switches to. Both verified on the CLI (2.1.316).
+        command.arg(if plan_mode {
+            "--allow-dangerously-skip-permissions"
+        } else {
+            "--dangerously-skip-permissions"
+        });
     }
 }
 
@@ -261,6 +333,7 @@ impl ClaudeDriver {
             binary,
             cwd,
             mode,
+            plan_mode,
             execution_policy,
             model,
             reasoning_effort,
@@ -294,7 +367,9 @@ impl ClaudeDriver {
 
         let mut command = crate::command_env::command(&binary);
         command.current_dir(&cwd);
-        configure_stream_command(&mut command, mode);
+        // A review subtask has no one to approve a plan.
+        let plan_mode = plan_mode && execution_policy == ExecutionPolicy::Interactive;
+        configure_stream_command(&mut command, mode, plan_mode);
         let launch_model = wire_model(model.as_deref(), context_window.as_deref());
         if let Some(model) = launch_model.as_deref() {
             command.args(["--model", model]);
@@ -350,6 +425,7 @@ impl ClaudeDriver {
         let turn_active = Arc::new(Mutex::new(false));
         let pending_task_stops = Arc::new(Mutex::new(HashMap::<String, BackgroundWorkKey>::new()));
         let pending_user_inputs = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
+        let pending_plans = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
 
         let manual_compaction = Arc::new(Mutex::new(None::<ContextCompaction>));
         let reader_compaction = manual_compaction.clone();
@@ -362,12 +438,14 @@ impl ClaudeDriver {
         let reader_session = session_id.clone();
         let reader_pending_task_stops = pending_task_stops.clone();
         let reader_pending_user_inputs = pending_user_inputs.clone();
+        let reader_pending_plans = pending_plans.clone();
         let reader_thread = thread::Builder::new()
             .name("waku-claude-reader".into())
             .spawn(move || {
                 let mut state = ClaudeStreamState {
                     pending_task_stops: reader_pending_task_stops,
                     pending_user_inputs: reader_pending_user_inputs,
+                    pending_plans: reader_pending_plans,
                     manual_compaction: reader_compaction,
                     compaction_cancelled: reader_compaction_cancelled,
                     ..ClaudeStreamState::default()
@@ -402,6 +480,7 @@ impl ClaudeDriver {
                 let mut stdin = stdin;
                 let mut next_request_id = 0_u64;
                 let mut current_model = launch_model;
+                let mut current_plan_mode = plan_mode;
                 let mut title_pending = request_title;
                 while let Ok(message) = command_rx.recv() {
                     let written = match message {
@@ -563,7 +642,34 @@ impl ClaudeDriver {
                                 }),
                             )
                         }
+                        CommandMessage::RespondPlan {
+                            request_id,
+                            input,
+                            decision,
+                        } => {
+                            if decision == PlanDecision::Approve {
+                                // The response itself leaves plan mode.
+                                current_plan_mode = false;
+                            }
+                            write_line(
+                                &mut stdin,
+                                &plan_decision_response(&request_id, input, &decision, mode),
+                            )
+                        }
                         CommandMessage::Options(options) => {
+                            let mut requests = Vec::new();
+                            // Plan mode is a session permission mode with its
+                            // own setter, so toggling it keeps the process —
+                            // verified on the CLI (2.1.316), including from
+                            // and back to `bypassPermissions`.
+                            if options.plan_mode != current_plan_mode {
+                                current_plan_mode = options.plan_mode;
+                                next_request_id += 1;
+                                requests.push(set_permission_mode_request(
+                                    next_request_id,
+                                    effective_permission_mode(mode, current_plan_mode),
+                                ));
+                            }
                             // The window rides on the model id, so switching it
                             // is the same `set_model` round trip as switching
                             // models — verified accepted by the CLI (2.1.228).
@@ -571,22 +677,23 @@ impl ClaudeDriver {
                                 options.model.as_deref(),
                                 options.context_window.as_deref(),
                             );
-                            if next_model == current_model {
+                            if next_model != current_model {
+                                current_model = next_model;
+                                if let Some(model) = current_model.as_deref() {
+                                    next_request_id += 1;
+                                    requests.push(json!({
+                                        "type": "control_request",
+                                        "request_id": format!("waku-{next_request_id}"),
+                                        "request": {"subtype": "set_model", "model": model}
+                                    }));
+                                }
+                            }
+                            if requests.is_empty() {
                                 continue;
                             }
-                            current_model = next_model;
-                            let Some(model) = current_model.as_deref() else {
-                                continue;
-                            };
-                            next_request_id += 1;
-                            write_line(
-                                &mut stdin,
-                                &json!({
-                                    "type": "control_request",
-                                    "request_id": format!("waku-{next_request_id}"),
-                                    "request": {"subtype": "set_model", "model": model}
-                                }),
-                            )
+                            requests
+                                .iter()
+                                .try_for_each(|request| write_line(&mut stdin, request))
                         }
                         CommandMessage::StopBackgroundWork { key, control_id } => {
                             next_request_id += 1;
@@ -659,6 +766,7 @@ impl ClaudeDriver {
         Ok(Self {
             commands,
             pending_user_inputs,
+            pending_plans,
             mode,
         })
     }
@@ -713,9 +821,21 @@ impl DriverControl for ClaudeDriver {
         });
     }
 
+    fn respond_plan(&self, request_id: String, decision: PlanDecision) {
+        let Some(input) = self.pending_plans.lock().remove(&request_id) else {
+            return;
+        };
+        let _ = self.commands.send(CommandMessage::RespondPlan {
+            request_id,
+            input,
+            decision,
+        });
+    }
+
     fn apply_options(&self, options: SessionOptions) -> bool {
-        // The model has a setter; the permission posture is a launch flag, and
-        // changing what a running agent may touch deserves a fresh session.
+        // The model and plan mode have setters; the permission posture is a
+        // launch flag, and changing what a running agent may touch deserves a
+        // fresh session.
         if options.mode != self.mode {
             return false;
         }
@@ -777,6 +897,11 @@ struct ClaudeStreamState {
     task_output_tails: ClaudeTaskOutputTails,
     pending_task_stops: Arc<Mutex<HashMap<String, BackgroundWorkKey>>>,
     pending_user_inputs: Arc<Mutex<HashMap<String, Value>>>,
+    pending_plans: Arc<Mutex<HashMap<String, Value>>>,
+    /// `ExitPlanMode` tool uses. The plan reaches the transcript as text and
+    /// the approval as a plan prompt, so the raw tool call and its result
+    /// stay out of the activity rows.
+    hidden_tools: HashSet<String>,
     /// Model of the latest main-thread assistant message, so the settled
     /// turn's `modelUsage` map can be read for that model's context window
     /// rather than a subagent's.
@@ -1592,7 +1717,9 @@ fn handle_message(
                 begin_unprompted_turn(turn_active, state, events);
                 if permission_policy == PermissionPolicy::DenyWrites {
                     request_permission(value, events, commands, permission_policy);
-                } else if !request_user_input(value, events, state) {
+                } else if !request_plan_approval(value, events, state)
+                    && !request_user_input(value, events, state)
+                {
                     request_permission(value, events, commands, permission_policy);
                 }
             }
@@ -1741,6 +1868,14 @@ fn handle_message(
                             let _ = events.send(DriverEvent::ReasoningDelta(text.to_owned()));
                         }
                     }
+                    Some("tool_use")
+                        if block.get("name").and_then(Value::as_str)
+                            == Some(EXIT_PLAN_MODE_TOOL) =>
+                    {
+                        if let Some(id) = block.get("id").and_then(Value::as_str) {
+                            state.hidden_tools.insert(id.to_owned());
+                        }
+                    }
                     Some("tool_use") => {
                         let id = block.get("id").and_then(Value::as_str).map(str::to_owned);
                         let wire_title = block
@@ -1822,6 +1957,9 @@ fn handle_message(
                     .get("tool_use_id")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
+                if id.as_ref().is_some_and(|id| state.hidden_tools.remove(id)) {
+                    continue;
+                }
                 let (kind, title, wire_name, _) = id
                     .as_ref()
                     .and_then(|id| state.tools.remove(id))
@@ -1962,6 +2100,42 @@ fn handle_message(
         // transcript content.
         _ => {}
     }
+}
+
+/// Route Claude's `ExitPlanMode` approval to the plan prompt. The request is
+/// never auto-approved, whatever the access mode: approving a plan is the
+/// user's decision. Returns whether the request was a plan.
+fn request_plan_approval(
+    value: &Value,
+    events: &impl DriverEventSink,
+    state: &ClaudeStreamState,
+) -> bool {
+    let request = value.get("request").unwrap_or(&Value::Null);
+    if request.get("tool_name").and_then(Value::as_str) != Some(EXIT_PLAN_MODE_TOOL) {
+        return false;
+    }
+    let Some(request_id) = value.get("request_id").and_then(Value::as_str) else {
+        return true;
+    };
+    let input = request.get("input").cloned().unwrap_or(Value::Null);
+    if let Some(plan) = input
+        .get("plan")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|plan| !plan.is_empty())
+    {
+        // The leading break keeps the plan its own paragraph after any text
+        // the agent wrote before calling the tool.
+        let _ = events.send(DriverEvent::TextDelta(format!("\n\n{plan}\n")));
+    }
+    state
+        .pending_plans
+        .lock()
+        .insert(request_id.to_owned(), input);
+    let _ = events.send(DriverEvent::PlanProposed {
+        request_id: Some(request_id.to_owned()),
+    });
+    true
 }
 
 fn request_user_input(
@@ -2162,7 +2336,7 @@ mod tests {
     #[test]
     fn streaming_command_requests_readable_reasoning_summary() {
         let mut command = Command::new("/usr/bin/true");
-        configure_stream_command(&mut command, RuntimeMode::AutoAcceptEdits);
+        configure_stream_command(&mut command, RuntimeMode::AutoAcceptEdits, false);
         let arguments = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -2173,6 +2347,35 @@ mod tests {
                 .windows(2)
                 .any(|arguments| { arguments == ["--thinking-display", "summarized"] })
         );
+    }
+
+    #[test]
+    fn a_full_access_session_can_still_launch_into_plan_mode() {
+        let arguments = |mode, plan_mode| {
+            let mut command = Command::new("/usr/bin/true");
+            configure_stream_command(&mut command, mode, plan_mode);
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let planning = arguments(RuntimeMode::FullAccess, true);
+        assert!(
+            planning
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "plan"])
+        );
+        // The forcing flag would override plan mode at launch.
+        assert!(!planning.contains(&"--dangerously-skip-permissions".to_owned()));
+        assert!(planning.contains(&"--allow-dangerously-skip-permissions".to_owned()));
+
+        let building = arguments(RuntimeMode::FullAccess, false);
+        assert!(
+            building
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "bypassPermissions"])
+        );
+        assert!(building.contains(&"--dangerously-skip-permissions".to_owned()));
     }
 
     fn harness() -> (
@@ -2219,6 +2422,7 @@ mod tests {
                     binary,
                     cwd: directory.clone(),
                     mode: RuntimeMode::FullAccess,
+                    plan_mode: false,
                     execution_policy,
                     model: None,
                     reasoning_effort: None,
@@ -2498,6 +2702,7 @@ mod tests {
                 binary,
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
+                plan_mode: false,
                 execution_policy: Default::default(),
                 model: None,
                 reasoning_effort: None,
@@ -2568,6 +2773,7 @@ mod tests {
                 binary,
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
+                plan_mode: false,
                 model: Some("claude-haiku-4-5-20251001".into()),
                 execution_policy: Default::default(),
                 reasoning_effort: None,
@@ -2646,6 +2852,7 @@ mod tests {
         let driver = ClaudeDriver {
             commands,
             pending_user_inputs: Arc::new(Mutex::new(HashMap::new())),
+            pending_plans: Default::default(),
             mode: RuntimeMode::FullAccess,
         };
 
@@ -3268,6 +3475,86 @@ mod tests {
         };
         assert_eq!(option_id, "allow");
         assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn exit_plan_mode_reaches_the_plan_prompt_in_every_access_mode() {
+        for policy in [PermissionPolicy::Ask, PermissionPolicy::AutoApprove] {
+            let (events, event_rx, commands, command_rx, turn, mut state) = harness();
+            // Shapes observed from a live `--permission-mode plan` session.
+            let plan = "1. Create `hello.txt`.\n2. Read it back.\n";
+            let messages = [
+                json!({"type": "assistant", "message": {"content": [{
+                    "type": "tool_use", "id": "toolu_plan", "name": "ExitPlanMode",
+                    "input": {"plan": plan, "planFilePath": "/plans/p.md"}
+                }]}}),
+                json!({"type": "control_request", "request_id": "plan-1", "request": {
+                    "subtype": "can_use_tool", "tool_name": "ExitPlanMode",
+                    "display_name": "ExitPlanMode",
+                    "input": {"plan": plan, "planFilePath": "/plans/p.md"},
+                    "tool_use_id": "toolu_plan", "requires_user_interaction": true
+                }}),
+                json!({"type": "user", "message": {"content": [{
+                    "type": "tool_result", "tool_use_id": "toolu_plan",
+                    "content": "User has approved your plan."
+                }]}}),
+            ];
+            for message in &messages {
+                handle_message(message, "s", &events, &commands, &turn, policy, &mut state);
+            }
+            let events = event_rx.try_iter().collect::<Vec<_>>();
+            assert!(
+                matches!(&events[..], [
+                    DriverEvent::TextDelta(text),
+                    DriverEvent::PlanProposed { request_id: Some(id) },
+                ] if text.trim() == plan.trim() && id == "plan-1"),
+                "{policy:?}: {events:?}"
+            );
+            assert!(
+                command_rx.try_recv().is_err(),
+                "{policy:?}: a plan must never be approved automatically"
+            );
+            assert!(state.pending_plans.lock().contains_key("plan-1"));
+        }
+    }
+
+    #[test]
+    fn plan_decisions_leave_or_keep_plan_mode() {
+        assert_eq!(effective_permission_mode(RuntimeMode::Ask, true), "plan");
+        assert_eq!(
+            effective_permission_mode(RuntimeMode::FullAccess, false),
+            "bypassPermissions"
+        );
+        let input = json!({"plan": "p"});
+        let approve = plan_decision_response(
+            "r",
+            input.clone(),
+            &PlanDecision::Approve,
+            RuntimeMode::FullAccess,
+        );
+        assert_eq!(approve.pointer("/response/request_id"), Some(&json!("r")));
+        assert_eq!(
+            approve.pointer("/response/response"),
+            Some(&json!({
+                "behavior": "allow",
+                "updatedInput": input,
+                "updatedPermissions": [{
+                    "type": "setMode", "mode": "bypassPermissions", "destination": "session"
+                }]
+            }))
+        );
+        let revise = plan_decision_response(
+            "r",
+            input,
+            &PlanDecision::Revise {
+                feedback: "Also add tests.".into(),
+            },
+            RuntimeMode::Ask,
+        );
+        assert_eq!(
+            revise.pointer("/response/response"),
+            Some(&json!({"behavior": "deny", "message": "Also add tests."}))
+        );
     }
 
     #[test]

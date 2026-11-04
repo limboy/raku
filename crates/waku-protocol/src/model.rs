@@ -758,6 +758,12 @@ pub struct AgentSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub runtime_mode: RuntimeMode,
+    /// The provider's native plan mode: the agent investigates read-only and
+    /// proposes a plan for approval before it changes anything. Independent
+    /// of `runtime_mode`, which is the access posture used once a plan is
+    /// approved. Only offered where `ProviderCapabilities::plan_mode` holds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan_mode: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -855,6 +861,7 @@ impl AgentSession {
             provider,
             model: None,
             runtime_mode: RuntimeMode::FullAccess,
+            plan_mode: false,
             reasoning_effort: None,
             service_tier: None,
             context_window: None,
@@ -894,6 +901,7 @@ impl AgentSession {
             provider: self.provider,
             model: self.model.clone(),
             runtime_mode: RuntimeMode::default(),
+            plan_mode: false,
             reasoning_effort: None,
             service_tier: None,
             context_window: None,
@@ -1725,6 +1733,14 @@ pub enum DriverEvent {
         detail: String,
         options: Vec<PermissionOption>,
     },
+    /// The agent finished planning in plan mode and is waiting for the user
+    /// to approve the plan. The plan text itself has already streamed as
+    /// assistant text. `request_id` is set when the provider is blocked on
+    /// the answer (Claude's `ExitPlanMode`); `None` means the planning turn
+    /// ended and approval is a follow-up turn outside plan mode (Codex).
+    PlanProposed {
+        request_id: Option<String>,
+    },
     /// Structured questions for the user. Unlike a permission, this is never
     /// auto-approved: the content itself has to come from the user.
     /// `delivery` says whether the provider is blocked on a reply or has
@@ -2156,6 +2172,21 @@ pub struct UserInputQuestion {
 pub struct UserInputAnswer {
     pub question_id: String,
     pub answers: Vec<String>,
+}
+
+/// The user's answer to a plan proposed in plan mode, for providers that wait
+/// on it (see [`DriverEvent::PlanProposed`]).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    tag = "decision",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlanDecision {
+    /// Leave plan mode and implement under the session's access mode.
+    Approve,
+    /// Stay in plan mode and revise the plan with this feedback.
+    Revise { feedback: String },
 }
 
 /// What a provider says happened to a file, when it says anything at all.

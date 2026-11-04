@@ -466,6 +466,16 @@ impl Waku {
                     }
                 }
             }
+            DriverEvent::PlanProposed { request_id } => {
+                if self.accepts_turn_output(session_id) {
+                    let blocking = request_id.is_some();
+                    self.pending_plans
+                        .insert(session_id, PendingPlan { request_id });
+                    if blocking && let Some(session) = self.state.session_mut(session_id) {
+                        session.status = SessionStatus::Waiting;
+                    }
+                }
+            }
             DriverEvent::UserInputRequested {
                 request_id,
                 questions,
@@ -725,6 +735,7 @@ impl Waku {
                     self.refresh_session_delegations(cx);
                 }
                 runtime.pending_permission = None;
+                self.clear_blocking_plan(session_id);
                 // An async question outlives the turn that asked it; its
                 // answer is what starts the next one.
                 if runtime
@@ -805,6 +816,7 @@ impl Waku {
                 runtime.stream_phase = None;
                 runtime.pending_permission = None;
                 runtime.pending_user_input = None;
+                self.clear_blocking_plan(session_id);
                 let needs_fallback = !self.turn_has_assistant_message(session_id);
                 let failure_message = runtime
                     .last_driver_error

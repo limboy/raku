@@ -2295,6 +2295,7 @@ impl Waku {
             runtime.pending_permission = None;
             runtime.pending_user_input = None;
         }
+        self.clear_blocking_plan(session_id);
         self.invalidate_checkpoint_refs();
         if self
             .message_edit
@@ -2363,6 +2364,7 @@ impl Waku {
         });
         SessionOptions {
             mode: session.runtime_mode,
+            plan_mode: session.plan_mode && session.provider.capabilities().plan_mode,
             model,
             reasoning_effort,
             service_tier,
@@ -2483,6 +2485,7 @@ impl Waku {
                 provider: session.provider,
                 mode: session.runtime_mode,
             })?;
+        options.plan_mode = false;
         self.driver_start_request_with_options(session, cwd, options)
     }
 
@@ -2506,6 +2509,7 @@ impl Waku {
             })?;
         let SessionOptions {
             mode,
+            plan_mode,
             model,
             reasoning_effort,
             service_tier,
@@ -2518,6 +2522,7 @@ impl Waku {
                 binary,
                 cwd,
                 mode,
+                plan_mode,
                 execution_policy: Default::default(),
                 model,
                 reasoning_effort,
@@ -2749,6 +2754,9 @@ impl Waku {
         submission: ComposerSubmission,
         cx: &mut Context<Self>,
     ) {
+        if self.revise_pending_plan(&submission, cx) {
+            return;
+        }
         let Some(session) = self.selected_session() else {
             return;
         };
@@ -2795,6 +2803,9 @@ impl Waku {
         submission: ComposerSubmission,
         cx: &mut Context<Self>,
     ) {
+        if self.revise_pending_plan(&submission, cx) {
+            return;
+        }
         let Some(session) = self.selected_session().cloned() else {
             return;
         };
@@ -2986,7 +2997,7 @@ impl Waku {
         );
     }
 
-    fn submit_submission_for_session(
+    pub(super) fn submit_submission_for_session(
         &mut self,
         session_id: Uuid,
         submission: ComposerSubmission,
@@ -2995,6 +3006,9 @@ impl Waku {
         if self.response_fork_preparations.contains_key(&session_id) {
             return;
         }
+        // A new turn answers any plan that ended its own turn: replying is
+        // how a plan is revised, and implementing it arrives here too.
+        self.pending_plans.remove(&session_id);
         let selected = self.state.selected_session == Some(session_id);
         let Some(session) = self
             .state
@@ -3280,6 +3294,7 @@ impl Waku {
             runtime.pending_user_input = None;
             runtime.last_active_at = Instant::now();
         }
+        self.clear_blocking_plan(session_id);
         // The transcript already shows the turn — the prompt message, its
         // anchor, and the working indicator all landed at accept time. Only
         // preparation's own output surfaces here.

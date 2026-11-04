@@ -33,6 +33,9 @@ pub struct ProviderCapabilities {
     pub delegation: DelegationCapabilities,
     pub model_discovery: bool,
     pub goals: bool,
+    /// A native plan mode Waku can toggle within a session (Claude's `plan`
+    /// permission mode, Codex's `plan` collaboration mode).
+    pub plan_mode: bool,
 }
 
 impl ProviderCapabilities {
@@ -87,6 +90,7 @@ impl ProviderKind {
                 },
                 model_discovery: true,
                 goals: false,
+                plan_mode: true,
             },
             Self::Codex => ProviderCapabilities {
                 access_modes: &RuntimeMode::ACCESS_OPTIONS,
@@ -103,6 +107,7 @@ impl ProviderKind {
                 },
                 model_discovery: true,
                 goals: true,
+                plan_mode: true,
             },
             Self::Pi => ProviderCapabilities {
                 access_modes: &[RuntimeMode::FullAccess],
@@ -119,6 +124,7 @@ impl ProviderKind {
                 },
                 model_discovery: true,
                 goals: false,
+                plan_mode: false,
             },
         }
     }

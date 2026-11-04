@@ -158,6 +158,7 @@ the transport absorbed the change or wants to be restarted:
 | Change | Codex | Pi | Claude |
 | --- | --- | --- | --- |
 | Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — a `set_model` control request |
+| Plan mode | in session — `collaborationMode` rides on every `turn/start` | not offered | in session — a `set_permission_mode` control request |
 | Access mode | restart | restart | restart |
 | Provider | restart | restart | restart |
 
@@ -261,7 +262,8 @@ retained because `thread/fork` needs a `lastTurnId`.
 | Method | Becomes |
 | --- | --- |
 | `turn/started` | `TurnStarted` (records the turn id) |
-| `item/agentMessage/delta` | `TextDelta` |
+| `item/agentMessage/delta`, `item/plan/delta` | `TextDelta` |
+| `item/completed` with a `plan` item | `TextDelta` if the plan never streamed, then `PlanProposed { request_id: None }` |
 | `item/reasoning/summaryTextDelta`, `item/reasoning/textDelta` | `ReasoningDelta` |
 | `item/started`, `item/completed` | `RichActivity` (command, patch, web search, plan, MCP tool) |
 | `turn/completed` | `TurnFinished { success: status == "completed" }` |
@@ -466,6 +468,27 @@ Pi accepts Full access only and always runs wide open (`--approve`).
 
 Codex and Claude can route Supervised permission requests to Waku. Pi has no
 permission system.
+
+## Plan mode
+
+Plan mode (`AgentSession::plan_mode`) is separate from the access mode: the
+agent investigates read-only and proposes a plan, and the access mode is what
+it implements under once the user approves. Only providers with a native plan
+mode offer it (`ProviderCapabilities::plan_mode`); both switch it inside the
+live session.
+
+| | Codex | Claude |
+| --- | --- | --- |
+| Enter / leave | `collaborationMode: {mode: "plan" \| "default", settings: {model, reasoning_effort, developer_instructions: null}}` on `turn/start` (experimental API). The mode sticks to the thread, so the first default turn after a plan turn — or on a resumed thread — names `default` explicitly | `--permission-mode plan` at launch, `set_permission_mode` mid-session. A Full access launch uses `--allow-dangerously-skip-permissions`, because `--dangerously-skip-permissions` overrides `plan` |
+| The plan | a `plan` item streamed with `item/plan/delta`, ending the turn | `ExitPlanMode` input `plan`, raised as a `can_use_tool` request that blocks the turn |
+| Approve | Waku leaves plan mode, then sends "Implement the plan." as the next turn | allow with `updatedPermissions: [{type: "setMode", mode: <access mode>, destination: "session"}]` — the agent continues in the same turn |
+| Revise | the user's reply is a new planning turn | deny with the reply as `message`; the agent replans in the same turn |
+
+Both plans reach the transcript as assistant text and raise
+`DriverEvent::PlanProposed`, whose `request_id` says whether the provider is
+blocked on the answer. `ExitPlanMode` is never auto-approved, whatever the
+access mode, and its raw tool row is hidden. Verified against codex-cli 0.166
+and Claude Code 2.1.316.
 
 ## Resume cursors
 

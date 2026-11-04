@@ -1031,6 +1031,7 @@ fn command_targets_runtime(command: &Command) -> bool {
             | Command::StopBackgroundWork { .. }
             | Command::Respond { .. }
             | Command::RespondUserInput { .. }
+            | Command::RespondPlan { .. }
             | Command::ApplyOptions { .. }
             | Command::Rollback { .. }
             | Command::Fork { .. }
@@ -1654,6 +1655,7 @@ mod tests {
                         binary: PathBuf::from("codex"),
                         cwd: PathBuf::from("."),
                         mode: "fullAccess".into(),
+                        plan_mode: false,
                         model: None,
                         reasoning_effort: None,
                         service_tier: None,
@@ -1721,6 +1723,7 @@ mod tests {
                         binary: PathBuf::from("codex"),
                         cwd: PathBuf::from("."),
                         mode: "fullAccess".into(),
+                        plan_mode: false,
                         model: None,
                         reasoning_effort: None,
                         service_tier: None,
@@ -2258,6 +2261,7 @@ mod tests {
             binary: PathBuf::from("codex"),
             cwd: PathBuf::from("."),
             mode: "fullAccess".into(),
+            plan_mode: false,
             model: None,
             reasoning_effort: None,
             service_tier: None,

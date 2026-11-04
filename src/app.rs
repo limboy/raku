@@ -32,10 +32,11 @@ use crate::model::{
     ActivityItem, ActivityKind, AgentSession, BackgroundWorkEvent, BackgroundWorkItem,
     BackgroundWorkKey, BackgroundWorkKind, BackgroundWorkStatus, Checkpoint, CheckpointStatus,
     ContextUsage, DriverEvent, FavoriteModel, Message, MessageAttachment, MessageRole,
-    PendingPermission, Project, ProviderKind, ProviderModel, ProviderProbe, ProviderResumeCursor,
-    ProviderSessionHistory, ProviderSessionSummary, QueuedMessage, ReasoningBlock, RuntimeMode,
-    SessionStatus, SessionWorkspace, TranscriptBlock, TurnStatus, UserInputAnswer,
-    UserInputDelivery, UserInputQuestion, compact_path, strip_ansi, unix_time, unix_time_millis,
+    PendingPermission, PlanDecision, Project, ProviderKind, ProviderModel, ProviderProbe,
+    ProviderResumeCursor, ProviderSessionHistory, ProviderSessionSummary, QueuedMessage,
+    ReasoningBlock, RuntimeMode, SessionStatus, SessionWorkspace, TranscriptBlock, TurnStatus,
+    UserInputAnswer, UserInputDelivery, UserInputQuestion, compact_path, strip_ansi, unix_time,
+    unix_time_millis,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -70,7 +71,8 @@ use crate::{
     OpenFind, OpenFindReplace, OpenResumePicker, OpenSettings, ReplaceAllMatches, SaveFile,
     SelectFirstTask, SelectLastTask, SwitchTaskBackward, SwitchTaskForward, ToggleCommandPalette,
     ToggleFindCaseSensitive, ToggleFindRegex, ToggleFindWholeWord, ToggleFpsCounter,
-    ToggleModelPicker, ToggleProjectPicker, ToggleRightPanel, ToggleSidebar, ToggleUsagePanel,
+    ToggleModelPicker, TogglePlanMode, ToggleProjectPicker, ToggleRightPanel, ToggleSidebar,
+    ToggleUsagePanel,
 };
 
 #[cfg(target_os = "macos")]
@@ -894,6 +896,13 @@ struct SessionRuntime {
     last_background_refresh_at: Instant,
 }
 
+/// A plan awaiting approval. `request_id` is the provider request blocked on
+/// the answer (Claude); `None` means approval is a follow-up turn (Codex).
+#[derive(Clone, Debug)]
+struct PendingPlan {
+    request_id: Option<String>,
+}
+
 #[derive(Clone)]
 struct PendingUserInput {
     request_id: String,
@@ -1291,6 +1300,10 @@ pub struct Waku {
     /// Runtime-only by design: providers reconcile their authoritative state
     /// when the resident transport reconnects.
     background_work: HashMap<Uuid, BackgroundWorkRegistry>,
+    /// Plans proposed in plan mode and awaiting the user's decision. Kept
+    /// off the runtime: a Codex plan ends its turn, and the idle reaper may
+    /// release that runtime long before the user decides.
+    pending_plans: HashMap<Uuid, PendingPlan>,
     last_background_work_tick: Instant,
     /// Accepted submissions still creating their workspace/checkpoint, or an
     /// edited past message still rewinding its workspace and provider. The
@@ -2744,6 +2757,7 @@ impl Waku {
                 runtime_attach_pending: HashSet::new(),
                 runtime_attach_misses: HashMap::new(),
                 background_work: HashMap::new(),
+                pending_plans: HashMap::new(),
                 last_background_work_tick: Instant::now(),
                 submission_preparations: HashSet::new(),
                 escape_stop_confirmation: EscapeStopConfirmation::default(),

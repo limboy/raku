@@ -693,6 +693,9 @@ impl Backend for WakuBackend {
                     binary: options.binary,
                     cwd: options.cwd,
                     mode,
+                    plan_mode: options.plan_mode
+                        && provider.capabilities().plan_mode
+                        && options.execution_policy == crate::model::ExecutionPolicy::Interactive,
                     execution_policy: options.execution_policy,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
@@ -1310,6 +1313,7 @@ impl WakuBackend {
                         provider: source.provider,
                         mode: source.runtime_mode,
                     })?,
+                plan_mode: false,
                 execution_policy: Default::default(),
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
@@ -1390,6 +1394,7 @@ impl WakuBackend {
                 binary: binary.to_owned(),
                 cwd: cwd.to_owned(),
                 mode: source.runtime_mode,
+                plan_mode: false,
                 execution_policy: Default::default(),
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
@@ -1605,6 +1610,10 @@ fn handle_driver_command(
             request_id,
             answers,
         } => driver.respond_user_input(request_id, answers),
+        Command::RespondPlan {
+            request_id,
+            decision,
+        } => driver.respond_plan(request_id, decision),
         Command::Goal { operation } => {
             anyhow::ensure!(
                 driver.provider().capabilities().goals,
@@ -1618,6 +1627,7 @@ fn handle_driver_command(
             return Ok(ResponsePayload::OptionsApplied {
                 applied: driver.apply_options(SessionOptions {
                     mode,
+                    plan_mode: options.plan_mode && driver.provider().capabilities().plan_mode,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
                     service_tier: options.service_tier,
@@ -1739,6 +1749,7 @@ mod capability_tests {
         Command::ApplyOptions {
             options: waku_protocol::WireSessionOptions {
                 mode: waku_protocol::encode_enum(mode).unwrap(),
+                plan_mode: false,
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
@@ -1894,6 +1905,7 @@ mod delegation_lifecycle_tests {
                             agent_preset: None,
                             provider_cursor: None,
                             execution_policy: crate::model::ExecutionPolicy::Interactive,
+                            plan_mode: false,
                         },
                     },
                 },
@@ -2122,6 +2134,9 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "options": options,
             }),
         ),
+        DriverEvent::PlanProposed { request_id } => {
+            ("planProposed", json!({ "requestId": request_id }))
+        }
         DriverEvent::UserInputRequested {
             request_id,
             questions,
@@ -2218,6 +2233,12 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 options: permission.options,
             }
         }
+        "planProposed" => DriverEvent::PlanProposed {
+            request_id: payload
+                .get("requestId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        },
         "userInputRequested" => {
             let request: UserInputWire = serde_json::from_value(payload)?;
             DriverEvent::UserInputRequested {

@@ -1080,6 +1080,172 @@ impl Waku {
         }
     }
 
+    pub(super) fn set_plan_mode(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let Some(session) = self.selected_session_mut().filter(|session| {
+            session.plan_mode != enabled && session.provider.capabilities().plan_mode
+        }) else {
+            return;
+        };
+        let session_id = session.id;
+        session.plan_mode = enabled;
+        // Both providers switch plan mode inside the live session, so this
+        // never costs a restart.
+        self.apply_session_options(session_id, cx);
+        self.save();
+        cx.notify();
+    }
+
+    pub(super) fn toggle_plan_mode_action(
+        &mut self,
+        _: &TogglePlanMode,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(enabled) = self.selected_session().map(|session| !session.plan_mode) {
+            self.set_plan_mode(enabled, cx);
+        }
+    }
+
+    /// Drop a plan whose provider request died with its turn or runtime. A
+    /// plan that ended its turn (Codex) stays until the user decides.
+    pub(super) fn clear_blocking_plan(&mut self, session_id: Uuid) {
+        if self
+            .pending_plans
+            .get(&session_id)
+            .is_some_and(|plan| plan.request_id.is_some())
+        {
+            self.pending_plans.remove(&session_id);
+        }
+    }
+
+    /// Approve the selected session's proposed plan: leave plan mode and
+    /// implement it under the session's access mode.
+    pub(super) fn implement_plan(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.state.selected_session else {
+            return;
+        };
+        let Some(plan) = self.pending_plans.remove(&session_id) else {
+            return;
+        };
+        let Some(session) = self.state.session_mut(session_id) else {
+            return;
+        };
+        session.plan_mode = false;
+        match plan.request_id {
+            // Claude is blocked on `ExitPlanMode`; approving it also switches
+            // the live session out of plan mode, so no options round trip.
+            Some(request_id) => {
+                session.status = SessionStatus::Working;
+                if let Some(runtime) = self.runtimes.get_mut(&session_id) {
+                    runtime
+                        .driver
+                        .respond_plan(request_id, PlanDecision::Approve);
+                    runtime.last_active_at = Instant::now();
+                }
+            }
+            // Codex ended the planning turn; implementing is the next turn,
+            // outside plan mode. A live runtime must absorb the mode change
+            // before that prompt is written, so the prompt follows the
+            // options acknowledgement rather than racing it.
+            None => {
+                let prompt = ComposerSubmission::plain(tr!("plan.implement_prompt"));
+                let options = self
+                    .state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .map(|session| self.session_options(session));
+                if let Some(options) = options
+                    && let Some(runtime) = self.runtimes.get_mut(&session_id)
+                {
+                    runtime.options_generation = runtime.options_generation.wrapping_add(1);
+                    let driver = runtime.driver.clone();
+                    cx.spawn(async move |waku, cx| {
+                        let applied = cx
+                            .background_executor()
+                            .spawn(async move { driver.apply_options(options) })
+                            .await;
+                        let _ = waku.update(cx, |waku, cx| {
+                            if !applied {
+                                waku.reset_session_runtime(session_id);
+                            }
+                            waku.send_plan_implementation(session_id, prompt, cx);
+                        });
+                    })
+                    .detach();
+                } else {
+                    self.send_plan_implementation(session_id, prompt, cx);
+                }
+            }
+        }
+        self.save();
+        cx.notify();
+    }
+
+    fn send_plan_implementation(
+        &mut self,
+        session_id: Uuid,
+        prompt: ComposerSubmission,
+        cx: &mut Context<Self>,
+    ) {
+        let busy = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .is_some_and(AgentSession::is_busy);
+        if busy {
+            self.enqueue_follow_up_submission(session_id, prompt, cx);
+        } else {
+            self.submit_submission_for_session(session_id, prompt, cx);
+        }
+    }
+
+    /// While Claude waits on a plan, a message from the composer is feedback
+    /// on that plan: the agent stays in plan mode and revises it. Returns
+    /// whether the submission was consumed that way.
+    pub(super) fn revise_pending_plan(
+        &mut self,
+        submission: &ComposerSubmission,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(session_id) = self.state.selected_session else {
+            return false;
+        };
+        let Some(request_id) = self
+            .pending_plans
+            .get(&session_id)
+            .and_then(|plan| plan.request_id.clone())
+        else {
+            return false;
+        };
+        let Some(runtime) = self.runtimes.get_mut(&session_id) else {
+            return false;
+        };
+        self.pending_plans.remove(&session_id);
+        runtime.driver.respond_plan(
+            request_id,
+            PlanDecision::Revise {
+                feedback: submission.prompt.clone(),
+            },
+        );
+        runtime.last_active_at = Instant::now();
+        if let Some(session) = self.state.session_mut(session_id) {
+            // The feedback joins the running turn, like a steer.
+            session.push_user_message_with_presentation(
+                submission.prompt.clone(),
+                submission.display_content.clone(),
+                submission.attachments.clone(),
+            );
+            session.status = SessionStatus::Working;
+            session.updated_at = unix_time();
+        }
+        self.remeasure_transcript_tail();
+        self.save();
+        cx.notify();
+        true
+    }
+
     pub(super) fn set_reasoning_effort(&mut self, effort: String, cx: &mut Context<Self>) {
         if let Some(session) = self.selected_session_mut()
             && session.reasoning_effort.as_deref() != Some(effort.as_str())
@@ -1184,6 +1350,7 @@ impl Waku {
             runtime.pending_permission = None;
             runtime.pending_user_input = None;
         }
+        self.clear_blocking_plan(session_id);
         if has_active_turn {
             let needs_fallback = !self.turn_has_assistant_message(session_id);
             if let Some(session) = self.state.session_mut(session_id) {

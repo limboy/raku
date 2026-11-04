@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::attachments::{AttachmentUpload, StoredAttachment};
 use crate::backup::{BackupInfo, DesktopBackup};
 use crate::capabilities::RuntimeCapabilities;
+use crate::model::PlanDecision;
 use crate::model::{
     AgentSession, GoalOperation, Project, ProviderKind, ProviderProbe, ProviderResumeCursor,
     ProviderSessionHistory, ProviderSessionSummary, UserInputAnswer,
@@ -18,7 +19,7 @@ use crate::skills::SkillsCatalog;
 use crate::usage::PlanUsage;
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "WAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "WAKU_DAEMON_ADDRESS";
@@ -108,6 +109,12 @@ pub enum Command {
     RespondUserInput {
         request_id: String,
         answers: Vec<UserInputAnswer>,
+    },
+    /// Answer a plan the provider is blocked on (`planProposed` with a
+    /// request id).
+    RespondPlan {
+        request_id: String,
+        decision: PlanDecision,
     },
     /// Ask the live provider runtime to read or mutate its persisted thread
     /// goal. Fire-and-forget: the outcome arrives as a `goalUpdated` driver
@@ -283,12 +290,16 @@ pub struct WireDriverStartOptions {
     pub provider_cursor: Option<Value>,
     #[serde(default)]
     pub execution_policy: crate::model::ExecutionPolicy,
+    #[serde(default)]
+    pub plan_mode: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireSessionOptions {
     pub mode: String,
+    #[serde(default)]
+    pub plan_mode: bool,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,

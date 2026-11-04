@@ -27,7 +27,12 @@ impl Waku {
         if let Some(input) = self.selected_runtime()?.pending_user_input.clone() {
             return Some(self.render_user_input(input, cx));
         }
-        let permission = self.selected_runtime()?.pending_permission.as_ref()?;
+        let Some(permission) = self
+            .selected_runtime()
+            .and_then(|runtime| runtime.pending_permission.as_ref())
+        else {
+            return self.render_pending_plan(cx);
+        };
         let theme = Theme::current(cx);
         let request_id = permission.request_id.clone();
         let mut buttons = div().flex().items_center().gap(px(8.0)).mt(px(10.0));
@@ -112,6 +117,94 @@ impl Waku {
                             .child(SharedString::from(permission.detail.clone())),
                     )
                     .child(buttons),
+            ),
+        )
+    }
+
+    /// Approval for a plan proposed in plan mode. The plan itself is already
+    /// in the transcript; this only carries the decision. Revising is simply
+    /// replying in the composer.
+    fn render_pending_plan(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let session = self.selected_session()?;
+        self.pending_plans.get(&session.id)?;
+        let theme = Theme::current(cx);
+        let focus = self.transcript_control_focus(format!("plan-implement-{}", session.id), cx);
+        let implement = div()
+            .id("plan-implement")
+            .track_focus(&focus)
+            .tab_index(0)
+            .tab_stop(true)
+            .h(px(28.0))
+            .px(px(13.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(theme.inverse)
+            .flex()
+            .items_center()
+            .cursor_default()
+            .text_size(sp(12.5))
+            .font_weight(FontWeight::NORMAL)
+            .bg(theme.inverse)
+            .text_color(theme.on_inverse)
+            .hover(|button| button.opacity(0.9))
+            .active(|button| button.opacity(0.8))
+            .focus_visible(|button| button.border_color(theme.accent))
+            .child(tr!("plan.implement"))
+            .on_click(cx.listener(|this, _, _, cx| this.implement_plan(cx)))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.implement_plan(cx);
+                    cx.stop_propagation();
+                }
+            }));
+        Some(
+            div().flex_none().px(px(20.0)).pb(px(8.0)).child(
+                div()
+                    .id("plan-approval")
+                    .w_full()
+                    .max_w(px(CONTENT_MAX_WIDTH))
+                    .mx_auto()
+                    .p(px(12.0))
+                    .rounded(px(12.0))
+                    .border_1()
+                    .border_color(theme.border_strong)
+                    .bg(theme.raised)
+                    .shadow_md()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(icon("icons/list.svg", 13.0, theme.accent))
+                                    .child(
+                                        div()
+                                            .text_size(sp(12.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.text)
+                                            .child(tr!("plan.ready")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(4.0))
+                                    .text_size(sp(12.5))
+                                    .line_height(sp(16.0))
+                                    .text_color(theme.text_secondary)
+                                    .whitespace_normal()
+                                    .child(tr!(
+                                        "plan.ready_detail",
+                                        mode = session.runtime_mode.label()
+                                    )),
+                            ),
+                    )
+                    .child(implement),
             ),
         )
     }
@@ -1352,6 +1445,73 @@ impl Waku {
         )
     }
 
+    /// The plan-mode toggle, offered only for providers with a native plan
+    /// mode. The label changes with the state so it never rests on color.
+    pub(super) fn render_plan_mode_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let session = self.selected_session()?;
+        if !session.provider.capabilities().plan_mode {
+            return None;
+        }
+        let enabled = session.plan_mode;
+        let theme = Theme::current(cx);
+        let focus = self.transcript_control_focus("composer-plan-mode", cx);
+        let weak = cx.entity().downgrade();
+        let key_weak = weak.clone();
+        Some(
+            div()
+                .id("composer-plan-mode")
+                .track_focus(&focus)
+                .tab_index(0)
+                .tab_stop(true)
+                .h(px(24.0))
+                .px(px(7.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(theme.border.opacity(0.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .cursor_default()
+                .text_size(sp(12.5))
+                .line_height(sp(14.0))
+                .when(enabled, |chip| {
+                    chip.bg(theme.accent.opacity(0.1)).text_color(theme.accent)
+                })
+                .when(!enabled, |chip| chip.text_color(theme.text_secondary))
+                .child(icon(
+                    "icons/list.svg",
+                    10.5,
+                    if enabled {
+                        theme.accent
+                    } else {
+                        theme.text_tertiary
+                    },
+                ))
+                .child(if enabled {
+                    tr!("mode.planning")
+                } else {
+                    tr!("mode.plan")
+                })
+                .hover(|chip| chip.bg(theme.overlay))
+                .focus_visible(|chip| chip.border_color(theme.accent))
+                .tooltip(Tooltip::text(if enabled {
+                    tr!("mode.plan_on_tooltip")
+                } else {
+                    tr!("mode.plan_off_tooltip")
+                }))
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| this.set_plan_mode(!enabled, cx));
+                })
+                .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        let _ = key_weak.update(cx, |this, cx| this.set_plan_mode(!enabled, cx));
+                        cx.stop_propagation();
+                    }
+                })
+                .into_any_element(),
+        )
+    }
+
     /// The thread-goal chip: present only while the provider reports a goal,
     /// it pairs a target icon with the status phrase (and budget consumption)
     /// and opens the goal dialog. `/goal` is the keyboard route to the same
@@ -2533,6 +2693,7 @@ impl Waku {
                         .child(self.render_provider_model_control(cx))
                         .children(self.render_model_traits_control(cx))
                         .child(self.render_access_control(cx))
+                        .children(self.render_plan_mode_control(cx))
                         .children(self.render_goal_control(cx))
                         .child(div().flex_1())
                         .child(match submit_action {

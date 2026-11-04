@@ -30,6 +30,7 @@ pub(crate) fn start_remote(
             binary: options.binary,
             cwd: options.cwd,
             mode: waku_client::encode_enum(options.mode)?,
+            plan_mode: options.plan_mode,
             model: options.model,
             reasoning_effort: options.reasoning_effort,
             service_tier: options.service_tier,
@@ -300,6 +301,13 @@ impl DriverControl for RemoteDriverControl {
         });
     }
 
+    fn respond_plan(&self, request_id: String, decision: waku_protocol::model::PlanDecision) {
+        self.notify(waku_client::Command::RespondPlan {
+            request_id,
+            decision,
+        });
+    }
+
     fn goal(&self, operation: waku_protocol::model::GoalOperation) {
         self.notify(waku_client::Command::Goal { operation });
     }
@@ -308,6 +316,7 @@ impl DriverControl for RemoteDriverControl {
         let options = (|| {
             Ok::<_, anyhow::Error>(waku_client::WireSessionOptions {
                 mode: waku_client::encode_enum(options.mode)?,
+                plan_mode: options.plan_mode,
                 model: options.model,
                 reasoning_effort: options.reasoning_effort,
                 service_tier: options.service_tier,

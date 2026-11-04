@@ -1270,6 +1270,7 @@ impl StateStore {
         session.workspace = stored.workspace;
         session.provider_cursor = stored.provider_cursor;
         session.runtime_mode = stored.runtime_mode;
+        session.plan_mode = stored.plan_mode;
         session.reasoning_effort = stored.reasoning_effort;
         session.service_tier = stored.service_tier;
         session.context_window = stored.context_window;
@@ -1558,6 +1559,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         model,
         // Hydration replaces these; the list never reads them.
         runtime_mode: RuntimeMode::default(),
+        plan_mode: false,
         reasoning_effort: None,
         service_tier: None,
         context_window: None,
