@@ -86,7 +86,10 @@ Stop and report if any check fails.
 ## 5. Confirm, commit, tag, push
 
 - Show the user the version, the notes, and the commits being released, and
-  get an explicit go-ahead with AskUserQuestion.
+  get an explicit go-ahead through the agent's question tool so Waku shows
+  the question sheet: `AskUserQuestion` in Claude Code,
+  `request_user_input_async` in Codex. Do not ask in prose, and do not push
+  until the answer arrives.
 - Commit and tag (existing release tags are lightweight):
 
   ```sh
