@@ -733,9 +733,6 @@ right_panel.add_tab: パネルタブを追加
 right_panel.hide: 右パネルを隠す
 right_panel.close_tab: "%{title} を閉じる"
 
-open_in.open: "プロジェクトを %{app} で開く"
-open_in.choose: プロジェクトを開くアプリを選択…
-
 environment.title: Git
 environment.checking_git: Git の状態を確認中…
 environment.git_unavailable: このプロジェクトでは Git を利用できません。

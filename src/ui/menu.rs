@@ -30,7 +30,7 @@ use gpui::{
     AnyElement, App, Bounds, Display, Element, ElementId, FocusHandle, FontWeight, GlobalElementId,
     InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, MouseButton,
     MouseDownEvent, ParentElement, Pixels, Point, Position, RenderOnce, SharedString, Size,
-    StatefulInteractiveElement, Style, Styled, Window, actions, canvas, deferred, div, img,
+    StatefulInteractiveElement, Style, Styled, Window, actions, canvas, deferred, div,
     prelude::FluentBuilder, px,
 };
 
@@ -87,9 +87,6 @@ pub enum MenuItem {
     Entry {
         label: SharedString,
         icon: Option<&'static str>,
-        /// A full-color raster icon — a real app icon — where `icon` would
-        /// draw a tinted glyph.
-        image: Option<std::sync::Arc<gpui::Image>>,
         /// Draws a trailing check, for menus that present a current choice.
         selected: bool,
         /// Shown greyed and inert. Preferred over omitting the row when the
@@ -125,7 +122,6 @@ impl MenuItem {
         Self::Entry {
             label: label.into(),
             icon: None,
-            image: None,
             selected: false,
             disabled: false,
             on_click: Rc::new(on_click),
@@ -174,13 +170,6 @@ impl MenuItem {
     pub fn icon(mut self, path: &'static str) -> Self {
         if let Self::Entry { icon, .. } = &mut self {
             *icon = Some(path);
-        }
-        self
-    }
-
-    pub fn image(mut self, value: std::sync::Arc<gpui::Image>) -> Self {
-        if let Self::Entry { image, .. } = &mut self {
-            *image = Some(value);
         }
         self
     }
@@ -1142,7 +1131,6 @@ fn render_menu_item(
         MenuItem::Entry {
             label,
             icon: item_icon,
-            image,
             selected,
             disabled,
             on_click,
@@ -1163,9 +1151,6 @@ fn render_menu_item(
             .when(selected, |element| element.font_weight(FontWeight::MEDIUM))
             .when_some(item_icon, |element, path| {
                 element.child(icon(path, 12.0, color))
-            })
-            .when_some(image, |element, image| {
-                element.child(img(image).size(px(16.0)).flex_none())
             })
             .child(div().flex_1().min_w_0().truncate().child(label))
             .when(selected, |element| {

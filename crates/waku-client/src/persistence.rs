@@ -300,10 +300,6 @@ pub struct AppSettings {
     /// applied.
     pub code_font_size: f32,
     pub render_math: bool,
-    /// Preferred target of the header's "open project in app" control, by
-    /// catalog id. `None` — and an id no longer installed — fall back to the
-    /// platform file manager.
-    pub open_in_app: Option<String>,
     pub backup_directory: Option<PathBuf>,
 }
 
@@ -318,7 +314,6 @@ impl Default for AppSettings {
             ui_font_size: DEFAULT_UI_FONT_SIZE,
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
-            open_in_app: None,
             backup_directory: None,
         }
     }
@@ -453,8 +448,6 @@ pub struct PersistedState {
     #[serde(default = "default_render_math")]
     pub render_math: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open_in_app: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup_directory: Option<PathBuf>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
@@ -526,7 +519,6 @@ impl PersistedState {
             ui_font_size: DEFAULT_UI_FONT_SIZE,
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
-            open_in_app: None,
             backup_directory: None,
             sidebar_visible: true,
             right_panel_visible: false,
@@ -749,7 +741,6 @@ impl PersistedState {
             ui_font_size: self.ui_font_size,
             code_font_size: self.code_font_size,
             render_math: self.render_math,
-            open_in_app: self.open_in_app.clone(),
             backup_directory: self.backup_directory.clone(),
         };
         settings.normalize_desktop_defaults();
@@ -793,7 +784,6 @@ impl PersistedState {
         self.ui_font_size = sanitized_ui_font_size(settings.ui_font_size);
         self.code_font_size = sanitized_code_font_size(settings.code_font_size);
         self.render_math = settings.render_math;
-        self.open_in_app = settings.open_in_app;
         self.backup_directory = settings.backup_directory;
     }
 

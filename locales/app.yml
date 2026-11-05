@@ -1430,11 +1430,6 @@ right_panel.hide:
 right_panel.close_tab:
   en: Close %{title}
 
-open_in.open:
-  en: Open project in %{app}
-open_in.choose:
-  en: Open project in…
-
 environment.title:
   en: Git
 environment.checking_git:
