@@ -16,6 +16,23 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.9] - 2026-11-05
+
+- Let agents hand you a command as a runnable block: a Run button opens an inline terminal, and the agent resumes with the exit code and output when it finishes
+- Move Plan mode into the commands list
+- Add ⌘1–⌘9 shortcuts for sidebar sessions
+- Add a search filter to the Files tree, and show it beside an empty editor pane by default
+- Add image and SVG previews and file context actions to the right sidebar
+- Add session deeplinks that paste as conversation attachments
+- Open a file's diff from the changed-files card
+- Notify when another project's turn finishes while Waku is frontmost, prefixed with the project name
+- Steer Codex async question answers into the running turn instead of queuing them
+- Replace the UI font size setting with a transcript font size (Small, Medium, Large)
+- Restyle context menus after native macOS menus, and keep them anchored to the cursor
+- Refresh the light palette, sidebar project selector, picker search fields, and icons
+- Simplify the right sidebar and header controls, and remove the header app launcher
+- Fix a maximized window reopening with a gap at the right and bottom, and show it already zoomed on launch
+
 ## [2.2.8] - 2026-11-05
 
 - List skills under `$` in the composer, separate from `/` commands; a leading `/skill` typed from habit still runs the skill
