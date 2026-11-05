@@ -38,7 +38,8 @@ fn native_override(preference: ThemePreference) -> Option<bool> {
 /// of Cursor — color is reserved for meaning. On macOS the sidebar's semantic
 /// tint is installed as a native layer above Sidebar vibrancy; keeping this
 /// GPUI surface clear avoids incorrectly accumulating the alpha of nested Metal
-/// backgrounds. Selected, hovered, and pressed rows remain a 6% neutral layer.
+/// backgrounds. Light mode is a white canvas over a cool gray sidebar, with
+/// selected sidebar rows as a ~10% neutral layer (dark mode stays at 6%).
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub is_dark: bool,
@@ -151,14 +152,14 @@ impl Theme {
             sidebar: if cfg!(target_os = "macos") {
                 transparent_black()
             } else {
-                rgb(0xF3F3F3).into()
+                rgb(0xEBECED).into()
             },
-            sidebar_drag_background: rgb(0xF3F3F3).into(),
-            sidebar_item_background: hsla(0.0, 0.0, 0.078, 0.06),
+            sidebar_drag_background: rgb(0xEBECED).into(),
+            sidebar_item_background: hsla(0.0, 0.0, 0.0, 0.10),
             surface: rgb(0xF6F5F6).into(),
-            raised: rgb(0xECECEC).into(),
+            raised: rgb(0xF3F3F3).into(),
             composer: rgb(0xFFFFFF).into(),
-            inset: rgb(0xE6E6E6).into(),
+            inset: rgb(0xE5E5E5).into(),
             terminal: rgb(0xFFFFFF).into(),
             overlay: hsla(220.0 / 360.0, 0.10, 0.12, 0.05),
             overlay_strong: hsla(220.0 / 360.0, 0.10, 0.12, 0.09),

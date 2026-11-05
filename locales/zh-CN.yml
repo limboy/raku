@@ -567,7 +567,6 @@ composer.show_in_text_field: 在输入框中显示
 composer.pasted_text: 已粘贴文本
 composer.queued_message_actions: 后续消息操作
 branches.detached_head: 游离 HEAD
-branches.search_project: 搜索 %{project} 的分支
 branches.switching: 正在切换…
 branches.none_found: 未找到分支
 branches.title: 分支

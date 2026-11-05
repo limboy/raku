@@ -541,7 +541,7 @@ impl Waku {
                                     .h(px(28.0))
                                     .px(px(10.0))
                                     .rounded(px(9.0))
-                                    .bg(theme.surface)
+                                    .bg(theme.composer)
                                     .flex()
                                     .items_center()
                                     .child(div().flex_1().min_w_0().child(search.clone())),

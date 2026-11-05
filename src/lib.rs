@@ -363,10 +363,12 @@ pub fn run() {
                                 target_os = "macos",
                                 target_os = "windows"
                             )),
-                            // Centers the lights on the 48pt navigation row,
-                            // level with the sidebar toggle and search icons.
+                            // AppKit's buttons are 14pt tall and sit with their
+                            // top at this y, so 17 centers them on the glyph
+                            // line of the 48pt navigation row (toggle and
+                            // search icons), not 1.5pt above it.
                             traffic_light_position: cfg!(target_os = "macos")
-                                .then(|| point(px(16.0), px(16.0))),
+                                .then(|| point(px(16.0), px(17.0))),
                         }),
                         // Waku moves its custom macOS titlebar explicitly. Keep
                         // the NSWindow movable so native controls and Window-menu

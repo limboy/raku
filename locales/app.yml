@@ -1160,8 +1160,6 @@ composer.pasted_text:
   en: Pasted text
 branches.detached_head:
   en: Detached HEAD
-branches.search_project:
-  en: Search %{project} branches
 branches.switching:
   en: Switching…
 branches.none_found:
