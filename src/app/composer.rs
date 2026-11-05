@@ -835,7 +835,7 @@ impl Waku {
                             .h(px(34.0))
                             .px(px(10.0))
                             .rounded(px(9.0))
-                            .bg(theme.raised)
+                            .bg(theme.composer)
                             .flex()
                             .items_center()
                             .gap(px(8.0))
@@ -2912,15 +2912,8 @@ impl Waku {
                 let _ = toggle_weak.update(cx, |this, cx| {
                     if open {
                         this.branch_picker_highlight = None;
-                        let project_name = this
-                            .selected_project()
-                            .map(Project::display_name)
-                            .unwrap_or_else(|| tr!("project.project_lower"));
                         reset_search.update(cx, |input, cx| {
-                            input.set_placeholder(
-                                tr!("branches.search_project", project = project_name),
-                                cx,
-                            );
+                            input.set_placeholder(tr!("input.search_branches"), cx);
                             input.clear(cx);
                         });
                         this.refresh_selected_branch_snapshot(cx);
@@ -3129,11 +3122,9 @@ impl Waku {
                                         .h(px(34.0))
                                         .px(px(10.0))
                                         .rounded(px(9.0))
-                                        .bg(theme.surface)
+                                        .bg(theme.composer)
                                         .flex()
                                         .items_center()
-                                        .gap(px(8.0))
-                                        .child(icon("icons/search.svg", 15.0, theme.text_secondary))
                                         .child(div().flex_1().min_w_0().child(search.clone())),
                                 ),
                         )

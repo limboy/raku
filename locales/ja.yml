@@ -594,7 +594,6 @@ composer.pasted_text: 貼り付けたテキスト
 composer.queued_message_actions: フォローアップの操作
 
 branches.detached_head: Detached HEAD
-branches.search_project: "%{project} のブランチを検索"
 branches.switching: 切り替え中…
 branches.none_found: ブランチが見つかりません
 branches.title: ブランチ
