@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use whatlang::Lang;
 
-use crate::model::{ExecutionPolicy, MessageRole, ProviderKind, ProviderSessionHistory};
+use crate::model::{MessageRole, ProviderKind, ProviderSessionHistory};
 
 // Bracketed metadata survives both cleanup and conversation framing.
 const CONTEXT_START: &str = "\n\n[[waku-session-title-language=";
@@ -159,14 +159,11 @@ pub(super) fn is_ordinary_prompt(prompt: &str) -> bool {
 }
 
 impl TitleLanguageContext {
-    pub(super) fn new(provider: ProviderKind, execution_policy: ExecutionPolicy) -> Self {
+    pub(super) fn new(provider: ProviderKind) -> Self {
         Self {
             // Codex receives this policy in its isolated title turn's system
-            // instructions. Review subtasks never request a session title.
-            pending: AtomicBool::new(
-                provider != ProviderKind::Codex
-                    && execution_policy != ExecutionPolicy::ReviewReadOnly,
-            ),
+            // instructions.
+            pending: AtomicBool::new(provider != ProviderKind::Codex),
         }
     }
 
@@ -217,7 +214,7 @@ mod tests {
     #[test]
     fn native_harnesses_receive_the_naming_context_once() {
         for provider in ProviderKind::ALL {
-            let context = TitleLanguageContext::new(provider, ExecutionPolicy::Interactive);
+            let context = TitleLanguageContext::new(provider);
             let prompt = "修复 sidebar 的 title 更新";
             let first = context.prepare(prompt.into());
             if provider == ProviderKind::Codex {
@@ -231,7 +228,7 @@ mod tests {
 
     #[test]
     fn commands_and_empty_prompts_do_not_consume_the_naming_context() {
-        let context = TitleLanguageContext::new(ProviderKind::Pi, ExecutionPolicy::Interactive);
+        let context = TitleLanguageContext::new(ProviderKind::Pi);
         for command in ["", "   ", "/rename 用户指定标题", "  /compact"] {
             assert_eq!(context.prepare(command.into()), command);
         }
@@ -240,21 +237,9 @@ mod tests {
     }
 
     #[test]
-    fn review_subtasks_never_receive_naming_instructions() {
-        for provider in ProviderKind::ALL {
-            let context = TitleLanguageContext::new(provider, ExecutionPolicy::ReviewReadOnly);
-            assert_eq!(
-                context.prepare("Review this change".into()),
-                "Review this change"
-            );
-        }
-    }
-
-    #[test]
     fn imports_hide_only_our_complete_user_message_suffix() {
         let prompt = "修复标题语言\n";
-        let raw = TitleLanguageContext::new(ProviderKind::Claude, ExecutionPolicy::Interactive)
-            .prepare(prompt.into());
+        let raw = TitleLanguageContext::new(ProviderKind::Claude).prepare(prompt.into());
         let quoted_marker = "Explain <waku-session-title-language> in this file";
         let mut history = ProviderSessionHistory {
             messages: vec![
@@ -314,7 +299,7 @@ mod tests {
 
     #[test]
     fn indeterminate_input_keeps_the_policy_available_for_a_real_request() {
-        let context = TitleLanguageContext::new(ProviderKind::Claude, ExecutionPolicy::Interactive);
+        let context = TitleLanguageContext::new(ProviderKind::Claude);
         assert_eq!(context.prepare("1234".into()), "1234");
         let prompt = "请修复中文会话标题的语言";
         assert_eq!(strip_context(&context.prepare(prompt.into())), Some(prompt));
@@ -333,11 +318,11 @@ mod tests {
         hide_title_language_context(&mut history);
         assert_eq!(history.messages[0].visible_content(), prompt);
 
-        let context = TitleLanguageContext::new(ProviderKind::Pi, ExecutionPolicy::Interactive);
+        let context = TitleLanguageContext::new(ProviderKind::Pi);
         let upgraded = context.prepare(legacy);
         assert_eq!(strip_context(&upgraded), Some(prompt));
         assert!(upgraded.ends_with(CONTEXT_CLOSE));
-        let retry = TitleLanguageContext::new(ProviderKind::Pi, ExecutionPolicy::Interactive);
+        let retry = TitleLanguageContext::new(ProviderKind::Pi);
         assert_eq!(retry.prepare(upgraded.clone()), upgraded);
     }
 
@@ -382,15 +367,12 @@ mod tests {
                     cwd: cwd.clone(),
                     mode: RuntimeMode::FullAccess,
                     plan_mode: false,
-                    execution_policy: ExecutionPolicy::Interactive,
                     model: model.clone(),
                     reasoning_effort: reasoning_effort.clone(),
                     service_tier: None,
                     context_window: None,
                     agent_preset: None,
                     provider_cursor: None,
-                    delegation_session_path: None,
-                    delegation_registry_dir: None,
                 },
                 events,
             )

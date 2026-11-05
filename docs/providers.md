@@ -62,7 +62,7 @@ sources of truth:
 
 - `ProviderKind::capabilities()` is the exhaustive declaration of Waku's
   provider-level support: interactive access modes, conversation actions,
-  compaction, delegation parent/child roles, model discovery and goals.
+  compaction, model discovery, goals and plan mode.
   UI visibility, command discovery and daemon validation read this declaration.
 - `ProviderModel` describes model-specific reasoning efforts, service tiers and
   context windows discovered from the provider. An empty option list hides its

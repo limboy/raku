@@ -40,7 +40,6 @@ pub(crate) fn start_remote(
                 .provider_cursor
                 .map(serde_json::to_value)
                 .transpose()?,
-            execution_policy: options.execution_policy,
         },
     };
     let capabilities = match client.request(session_id, runtime_id, command) {
@@ -239,21 +238,7 @@ impl DriverControl for RemoteDriverControl {
     }
 
     fn prompt(&self, prompt: String) {
-        self.notify(waku_client::Command::Prompt {
-            prompt,
-            delegation_context: None,
-        });
-    }
-
-    fn prompt_with_context(
-        &self,
-        prompt: String,
-        delegation: Option<waku_client::delegation::PromptDelegationContext>,
-    ) {
-        self.notify(waku_client::Command::Prompt {
-            prompt,
-            delegation_context: delegation,
-        });
+        self.notify(waku_client::Command::Prompt { prompt });
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {

@@ -33,7 +33,6 @@ pub mod capabilities;
 pub mod checkpoint;
 pub mod compaction;
 pub mod composer;
-pub mod delegation;
 mod driver_wire;
 pub mod git;
 pub mod i18n;

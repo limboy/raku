@@ -44,7 +44,7 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
-    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, ExecutionPolicy, PermissionOption,
+    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, PermissionOption,
     PlanDecision, ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputDelivery,
     UserInputOption, UserInputQuestion, unix_time_millis,
 };
@@ -180,36 +180,18 @@ fn plan_decision_response(
 }
 
 /// Who answers Claude's permission requests.
-///
-/// `ReviewReadOnly` is the subtask posture: the agent may read and search, but
-/// a write or a command is denied without ever reaching a UI that is not there
-/// to answer it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PermissionPolicy {
     Ask,
     AutoApprove,
-    DenyWrites,
 }
 
-fn permission_policy(mode: RuntimeMode, execution_policy: ExecutionPolicy) -> PermissionPolicy {
-    if execution_policy == ExecutionPolicy::ReviewReadOnly {
-        return PermissionPolicy::DenyWrites;
-    }
+fn permission_policy(mode: RuntimeMode) -> PermissionPolicy {
     if mode == RuntimeMode::Ask {
         PermissionPolicy::Ask
     } else {
         PermissionPolicy::AutoApprove
     }
-}
-
-/// Tools a review subtask may use. Everything else — shells, editors,
-/// notebook writes, subagents — is denied, so an unattended run cannot change
-/// the workspace it is reviewing.
-fn is_read_only_tool(tool: &str) -> bool {
-    matches!(
-        tool,
-        "Read" | "Grep" | "Glob" | "LS" | "NotebookRead" | "WebFetch" | "WebSearch" | "TodoWrite"
-    )
 }
 
 /// The permission posture Claude is launched with.
@@ -257,40 +239,6 @@ fn start_claude_title_refresh(
     );
 }
 
-/// The server name Waku's delegation tools are registered under. Claude
-/// addresses MCP tools as `mcp__<server>__<tool>`, the same name Codex sees.
-const DELEGATION_MCP_SERVER: &str = "waku_agent_tools";
-
-/// Register Waku's delegation tools for a parent session.
-///
-/// `--mcp-config` adds the server for this process only, beside the user's own
-/// MCP configuration (no `--strict-mcp-config`). The tools are pre-approved:
-/// they only start and await read-only subtasks the user asked for with `^`,
-/// so a Supervised session must not stop for a permission prompt per call.
-fn configure_delegation_tools(command: &mut Command, daemon_binary: &Path, session_path: &Path) {
-    let config = json!({
-        "mcpServers": {
-            DELEGATION_MCP_SERVER: {
-                "type": "stdio",
-                "command": daemon_binary.display().to_string(),
-                "args": ["mcp-agent-tools"],
-                "env": {
-                    "WAKU_DELEGATION_SESSION_PATH": session_path.display().to_string(),
-                },
-            }
-        }
-    });
-    command.args(["--mcp-config", &config.to_string()]);
-    // One comma-separated value: the flag is variadic and would otherwise
-    // swallow whatever argument follows it.
-    command.args([
-        "--allowedTools",
-        &format!(
-            "mcp__{DELEGATION_MCP_SERVER}__delegate_batch,mcp__{DELEGATION_MCP_SERVER}__wait_delegates"
-        ),
-    ]);
-}
-
 fn configure_stream_command(command: &mut Command, mode: RuntimeMode, plan_mode: bool) {
     command.args([
         "-p",
@@ -334,15 +282,12 @@ impl ClaudeDriver {
             cwd,
             mode,
             plan_mode,
-            execution_policy,
             model,
             reasoning_effort,
             service_tier: _,
             context_window,
             agent_preset: _,
             provider_cursor,
-            delegation_session_path,
-            ..
         } = options;
         let (resume_session_id, resume_at) = match provider_cursor {
             Some(ProviderResumeCursor::Claude {
@@ -362,13 +307,10 @@ impl ClaudeDriver {
         let session_id = resume_session_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let request_title =
-            resume_session_id.is_none() && execution_policy == ExecutionPolicy::Interactive;
+        let request_title = resume_session_id.is_none();
 
         let mut command = crate::command_env::command(&binary);
         command.current_dir(&cwd);
-        // A review subtask has no one to approve a plan.
-        let plan_mode = plan_mode && execution_policy == ExecutionPolicy::Interactive;
         configure_stream_command(&mut command, mode, plan_mode);
         let launch_model = wire_model(model.as_deref(), context_window.as_deref());
         if let Some(model) = launch_model.as_deref() {
@@ -381,15 +323,6 @@ impl ClaudeDriver {
             command.args(["--resume", &session_id]);
         } else {
             command.args(["--session-id", &session_id]);
-        }
-        // Only a parent session gets the bridge; subtasks are started without
-        // a session path, so they can never delegate in turn.
-        if let Some(session_path) = delegation_session_path.as_deref()
-            && execution_policy == ExecutionPolicy::Interactive
-        {
-            let daemon_binary =
-                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
-            configure_delegation_tools(&mut command, &daemon_binary, session_path);
         }
 
         let command = command
@@ -421,7 +354,7 @@ impl ClaudeDriver {
         });
 
         let (commands, command_rx) = unbounded();
-        let permission_policy = permission_policy(mode, execution_policy);
+        let permission_policy = permission_policy(mode);
         let turn_active = Arc::new(Mutex::new(false));
         let pending_task_stops = Arc::new(Mutex::new(HashMap::<String, BackgroundWorkKey>::new()));
         let pending_user_inputs = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
@@ -1715,9 +1648,7 @@ fn handle_message(
         Some("control_request") => {
             if value.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool") {
                 begin_unprompted_turn(turn_active, state, events);
-                if permission_policy == PermissionPolicy::DenyWrites {
-                    request_permission(value, events, commands, permission_policy);
-                } else if !request_plan_approval(value, events, state)
+                if !request_plan_approval(value, events, state)
                     && !request_user_input(value, events, state)
                 {
                     request_permission(value, events, commands, permission_policy);
@@ -2226,29 +2157,11 @@ fn request_permission(
     let Some(request_id) = value.get("request_id").and_then(Value::as_str) else {
         return;
     };
-    let tool_name = value
-        .pointer("/request/tool_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     match policy {
         PermissionPolicy::AutoApprove => {
             let _ = commands.send(CommandMessage::Respond {
                 request_id: request_id.to_owned(),
                 option_id: "allow".into(),
-            });
-            return;
-        }
-        // A review subtask has no UI behind it: answer every request now, so a
-        // write or command is refused instead of hanging the run.
-        PermissionPolicy::DenyWrites => {
-            let option_id = if is_read_only_tool(tool_name) {
-                "allow"
-            } else {
-                "deny"
-            };
-            let _ = commands.send(CommandMessage::Respond {
-                request_id: request_id.to_owned(),
-                option_id: option_id.into(),
             });
             return;
         }
@@ -2297,41 +2210,6 @@ fn request_permission(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_parent_session_gets_the_preapproved_delegation_tools() {
-        let mut command = Command::new("/usr/bin/true");
-        configure_delegation_tools(
-            &mut command,
-            Path::new("/opt/waku/waku-daemon"),
-            Path::new("/tmp/waku/session.json"),
-        );
-        let arguments = command
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        let config_at = arguments
-            .iter()
-            .position(|argument| argument == "--mcp-config")
-            .expect("the bridge is registered");
-        let config: Value = serde_json::from_str(&arguments[config_at + 1]).unwrap();
-        let server = &config["mcpServers"]["waku_agent_tools"];
-        assert_eq!(server["command"], "/opt/waku/waku-daemon");
-        assert_eq!(server["args"], json!(["mcp-agent-tools"]));
-        assert_eq!(
-            server["env"]["WAKU_DELEGATION_SESSION_PATH"],
-            "/tmp/waku/session.json"
-        );
-        assert!(!arguments.iter().any(|argument| argument == "--strict-mcp-config"));
-        let allowed_at = arguments
-            .iter()
-            .position(|argument| argument == "--allowedTools")
-            .expect("the tools are pre-approved");
-        assert_eq!(
-            arguments[allowed_at + 1],
-            "mcp__waku_agent_tools__delegate_batch,mcp__waku_agent_tools__wait_delegates"
-        );
-    }
 
     #[test]
     fn streaming_command_requests_readable_reasoning_summary() {
@@ -2404,11 +2282,7 @@ mod tests {
         use crate::model::ProviderKind;
         use std::os::unix::fs::PermissionsExt as _;
 
-        for (resume, execution_policy, expected_requests) in [
-            (false, ExecutionPolicy::Interactive, 1),
-            (true, ExecutionPolicy::Interactive, 0),
-            (false, ExecutionPolicy::ReviewReadOnly, 0),
-        ] {
+        for (resume, expected_requests) in [(false, 1), (true, 0)] {
             let directory =
                 std::env::temp_dir().join(format!("waku-claude-title-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&directory).unwrap();
@@ -2423,7 +2297,6 @@ mod tests {
                     cwd: directory.clone(),
                     mode: RuntimeMode::FullAccess,
                     plan_mode: false,
-                    execution_policy,
                     model: None,
                     reasoning_effort: None,
                     service_tier: None,
@@ -2433,8 +2306,6 @@ mod tests {
                         session_id: Uuid::new_v4().to_string(),
                         resume_at: None,
                     }),
-                    delegation_session_path: None,
-                    delegation_registry_dir: None,
                 },
                 events,
             )
@@ -2703,15 +2574,12 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
                 plan_mode: false,
-                execution_policy: Default::default(),
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
                 provider_cursor: None,
-                delegation_session_path: None,
-                delegation_registry_dir: None,
             },
             events,
         )
@@ -2775,14 +2643,11 @@ mod tests {
                 mode: RuntimeMode::FullAccess,
                 plan_mode: false,
                 model: Some("claude-haiku-4-5-20251001".into()),
-                execution_policy: Default::default(),
                 reasoning_effort: None,
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
                 provider_cursor: None,
-                delegation_session_path: None,
-                delegation_registry_dir: None,
             },
             events,
         )
@@ -3882,62 +3747,14 @@ mod tests {
 }
 
 #[cfg(test)]
-mod review_policy_tests {
+mod permission_policy_tests {
     use super::*;
 
     #[test]
-    fn an_unattended_question_is_denied_instead_of_waiting_for_ui() {
-        let (events, receiver) = crate::driver::test_event_channel();
-        let (commands, replies) = unbounded();
-        let mut state = ClaudeStreamState::default();
-        handle_message(
-            &json!({"type":"control_request", "request_id":"question",
-            "request":{"subtype":"can_use_tool", "tool_name":"AskUserQuestion",
-                "input":{"questions":[{"question":"Which module?", "options":[{"label":"A"}]}]}}}),
-            "session",
-            &events,
-            &commands,
-            &Mutex::new(true),
-            PermissionPolicy::DenyWrites,
-            &mut state,
-        );
-        assert!(
-            matches!(replies.try_recv(), Ok(CommandMessage::Respond { option_id, .. }) if option_id == "deny")
-        );
-        assert!(
-            !receiver
-                .try_iter()
-                .any(|event| matches!(event, DriverEvent::UserInputRequested { .. }))
-        );
-    }
-
-    #[test]
-    fn a_review_subtask_denies_everything_that_can_change_the_workspace() {
-        let policy = permission_policy(RuntimeMode::Ask, ExecutionPolicy::ReviewReadOnly);
-        assert_eq!(policy, PermissionPolicy::DenyWrites);
-        // Even Full access on the parent session cannot widen a subtask: the
-        // execution policy is the subtask's own posture, not the user's.
+    fn a_session_keeps_its_own_permission_posture() {
+        assert_eq!(permission_policy(RuntimeMode::Ask), PermissionPolicy::Ask);
         assert_eq!(
-            permission_policy(RuntimeMode::FullAccess, ExecutionPolicy::ReviewReadOnly),
-            PermissionPolicy::DenyWrites
-        );
-
-        for tool in ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Task"] {
-            assert!(!is_read_only_tool(tool), "{tool} must be denied");
-        }
-        for tool in ["Read", "Grep", "Glob", "LS", "WebSearch"] {
-            assert!(is_read_only_tool(tool), "{tool} must stay available");
-        }
-    }
-
-    #[test]
-    fn an_interactive_session_keeps_its_own_permission_posture() {
-        assert_eq!(
-            permission_policy(RuntimeMode::Ask, ExecutionPolicy::Interactive),
-            PermissionPolicy::Ask
-        );
-        assert_eq!(
-            permission_policy(RuntimeMode::FullAccess, ExecutionPolicy::Interactive),
+            permission_policy(RuntimeMode::FullAccess),
             PermissionPolicy::AutoApprove
         );
     }

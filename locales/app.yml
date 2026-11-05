@@ -1138,15 +1138,6 @@ composer.show_in_text_field:
   en: Show in text field
 composer.pasted_text:
   en: Pasted text
-composer.remove_target:
-  en: Remove delegation target
-composer.delegation_target_added:
-  en: Delegation target added
-composer.delegation_unavailable:
-  en: This agent cannot delegate; switch to Claude, Codex, or Pi to use ^
-composer.invalid_model_reference:
-  en: "Select this model again; its reference is ambiguous or unavailable: %{label}"
-
 branches.detached_head:
   en: Detached HEAD
 branches.search_project:
@@ -1979,29 +1970,6 @@ backup.automatic_description:
 backup.latest:
   en: "Latest backup"
 
-delegation.status_queued:
-  en: Queued
-delegation.status_starting:
-  en: Starting
-delegation.status_running:
-  en: Running
-delegation.status_completed:
-  en: Completed
-delegation.status_failed:
-  en: Failed
-delegation.status_cancelled:
-  en: Cancelled
-delegation.status_timed_out:
-  en: Timed out
-delegation.status_interrupted:
-  en: Interrupted
-delegation.detail_unavailable:
-  en: This delegated task is not available in this session.
-delegation.detail_waiting:
-  en: The subtask is still working. Its conclusion will appear here when available.
-delegation.detail_no_result:
-  en: This subtask finished without a conclusion.
-
 compaction.action:
   en: "Compact Context"
 compaction.interrupted:
@@ -2024,66 +1992,3 @@ compaction.waiting_usage:
   en: "Updates after next reply"
 compaction.history_archived:
   en: "Earlier messages have been archived to free up context. You can continue the conversation; the model will use the archived history as needed."
-
-settings.agents:
-  en: Agents
-agents.description:
-  en: "Agents are named models you can hand work to. Type ^ in the composer and pick one; each runs its task independently, read-only, and reports back."
-agents.add_agent:
-  en: Add Agent
-agents.add_agent_ellipsis:
-  en: Add agent…
-agents.empty:
-  en: No agents yet. Add one to delegate work with ^.
-agents.new_agent:
-  en: New Agent
-agents.edit_agent:
-  en: Edit Agent
-agents.edit_named:
-  en: "Edit %{name}"
-agents.delete_named:
-  en: "Delete %{name}"
-agents.name:
-  en: Name
-agents.name_description:
-  en: Type ^ followed by this name in the composer to call the agent.
-agents.name_placeholder:
-  en: e.g. Reviewer
-agents.model:
-  en: Model
-agents.model_description:
-  en: The model and reasoning level this agent runs on.
-agents.choose_model:
-  en: Choose a model
-agents.search_models:
-  en: Search models
-agents.no_models:
-  en: No models available. Enable a provider that can run subtasks in Providers.
-agents.no_matching_models:
-  en: No matching models
-agents.instructions:
-  en: Instructions
-agents.instructions_description:
-  en: Optional. Sent to this agent ahead of every task it receives.
-agents.instructions_placeholder:
-  en: e.g. Review for security issues and cite file paths.
-agents.save:
-  en: Save
-agents.error_name_empty:
-  en: Give the agent a name.
-agents.error_name_invalid:
-  en: "Names can't contain brackets or line breaks."
-agents.error_name_duplicate:
-  en: Another agent already uses this name.
-agents.error_model_missing:
-  en: Choose a model for the agent.
-agents.unavailable:
-  en: Unavailable
-agents.unavailable_tooltip:
-  en: "This agent's provider is switched off, not installed, or can't run subtasks."
-transcript.sub_agent:
-  en: "%{count} agent"
-transcript.sub_agents:
-  en: "%{count} agents"
-transcript.sub_agents_open:
-  en: "Open %{name}"

@@ -25,8 +25,6 @@ install -Dm644 resources/linux/sh.waku.desktop \
   "$package_dir/share/applications/sh.waku.desktop"
 install -Dm644 resources/linux/self-update-v1 \
   "$package_dir/share/waku/self-update-v1"
-install -Dm644 resources/delegation/pi-extension.ts \
-  "$package_dir/share/waku/delegation/pi-extension.ts"
 install -Dm644 resources/pi/session-title.ts \
   "$package_dir/share/waku/pi/session-title.ts"
 install -Dm644 website/public/app-icon.png \

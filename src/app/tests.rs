@@ -11,17 +11,16 @@ use super::{
     append_text_delta_to_session, assistant_response_footer, assistant_response_footer_index,
     assistant_response_footer_time, compact_driver_error, disclosure_leading_space,
     fitted_file_tree_width, fitted_panel_widths, folded_transcript_row_kinds,
-    folded_transcript_row_kinds_with_delegations, folded_transcript_rows, format_worked_duration,
-    format_working_elapsed, maintain_transcript_anchor, message_opens_turn,
-    message_starts_followup_turn, navigation_preview_snippet, navigation_rail_fade_visibility,
-    navigation_rail_height, navigation_rail_scale, paused_toast_duration, pop_stream_batch,
-    push_transcript_activity, response_footer_message_index, response_row_turn_id,
-    session_accepts_turn_output, session_is_reapable, should_refresh_branch_after_activity,
-    should_show_navigation_rail, should_show_scroll_to_bottom, task_id_from_notification_tag,
-    task_notification_tag, transcript_anchor_end_space, transcript_navigation_turns,
-    transcript_rests_at_tail, transcript_row_kinds, transcript_row_splice,
-    transcript_rows_fingerprint, widened_panel_width_for_file_editor,
-    widened_panel_width_for_review,
+    folded_transcript_rows, format_worked_duration, format_working_elapsed,
+    maintain_transcript_anchor, message_opens_turn, message_starts_followup_turn,
+    navigation_preview_snippet, navigation_rail_fade_visibility, navigation_rail_height,
+    navigation_rail_scale, paused_toast_duration, pop_stream_batch, push_transcript_activity,
+    response_footer_message_index, response_row_turn_id, session_accepts_turn_output,
+    session_is_reapable, should_refresh_branch_after_activity, should_show_navigation_rail,
+    should_show_scroll_to_bottom, task_id_from_notification_tag, task_notification_tag,
+    transcript_anchor_end_space, transcript_navigation_turns, transcript_rests_at_tail,
+    transcript_row_kinds, transcript_row_splice, transcript_rows_fingerprint,
+    widened_panel_width_for_file_editor, widened_panel_width_for_review,
 };
 use crate::git_branch::BranchEntry;
 use crate::model::{
@@ -1231,70 +1230,6 @@ fn changed_files_attach_to_the_response_footer() {
 }
 
 #[test]
-fn agents_card_precedes_changed_files_after_a_footerless_turn() {
-    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
-    let turn_id = session.begin_turn("Ask ^[Reviewer]");
-    session.transcript_blocks.push(TranscriptBlock {
-        after_message: 1,
-        turn_id: Some(turn_id),
-        activities: vec![ActivityItem::new(
-            None,
-            ActivityKind::Command,
-            "delegate_batch",
-            None,
-            true,
-        )],
-    });
-    session.push_message(MessageRole::Assistant, "");
-    session.finish_active_turn(TurnStatus::Interrupted);
-    attach_changed_files(
-        &mut session,
-        vec![CheckpointFile {
-            path: "src/lib.rs".into(),
-            additions: 1,
-            deletions: 0,
-        }],
-    );
-    let delegated = HashSet::from([turn_id]);
-
-    assert_eq!(
-        folded_transcript_row_kinds_with_delegations(&session, &HashSet::new(), &delegated),
-        vec![
-            Message(0),
-            TurnFold(turn_id),
-            SubAgents(turn_id),
-            ChangedFiles(turn_id),
-        ]
-    );
-    // Without groups for the turn there is no card.
-    assert!(!folded_transcript_row_kinds(&session, &HashSet::new()).contains(&SubAgents(turn_id)));
-    assert_eq!(
-        response_row_turn_id(&session, SubAgents(turn_id)),
-        Some(turn_id)
-    );
-}
-
-#[test]
-fn agents_card_joins_the_response_footer_and_waits_for_settlement() {
-    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
-    let turn_id = session.begin_turn("Ask ^[Reviewer]");
-    let delegated = HashSet::from([turn_id]);
-    session.push_message(MessageRole::Assistant, "Working on it");
-    assert!(
-        !folded_transcript_row_kinds_with_delegations(&session, &HashSet::new(), &delegated)
-            .contains(&SubAgents(turn_id)),
-        "a running turn shows its subtasks elsewhere, not as a settled card"
-    );
-    session.finish_active_turn(TurnStatus::Completed);
-    let rows = folded_transcript_row_kinds_with_delegations(&session, &HashSet::new(), &delegated);
-    assert!(rows.contains(&ResponseFooter(turn_id, 1)));
-    assert!(
-        !rows.contains(&SubAgents(turn_id)),
-        "a response with a footer renders the card inside it"
-    );
-}
-
-#[test]
 fn response_hover_owns_every_response_row_but_not_the_prompt() {
     let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
     let turn_id = session.begin_turn("Build it");
@@ -1599,10 +1534,9 @@ fn a_settled_turn_folds_all_of_its_work_above_the_answer() {
     session.push_message(MessageRole::Assistant, "Done. The change is ready.");
     session.finish_active_turn(TurnStatus::Completed);
 
-    let (_, collapsed_work) = folded_transcript_rows(&session, &HashSet::new(), &HashSet::new());
+    let (_, collapsed_work) = folded_transcript_rows(&session, &HashSet::new());
     assert!(collapsed_work.is_empty());
-    let (_, expanded_work) =
-        folded_transcript_rows(&session, &HashSet::from([turn_id]), &HashSet::new());
+    let (_, expanded_work) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
     assert_eq!(
         expanded_work,
         HashSet::from([TurnBlock(0), Message(1), TurnBlock(1)]),
@@ -1659,8 +1593,7 @@ fn consecutive_trailing_text_parts_all_stay_out_of_the_fold() {
     session.push_message(MessageRole::Assistant, "Second half of the answer.");
     session.finish_active_turn(TurnStatus::Completed);
 
-    let (_, work_rows) =
-        folded_transcript_rows(&session, &HashSet::from([turn_id]), &HashSet::new());
+    let (_, work_rows) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
     assert_eq!(
         work_rows,
         HashSet::from([TurnBlock(0)]),
@@ -1700,8 +1633,7 @@ fn a_turn_without_an_answer_folds_completely() {
     session.push_message(MessageRole::Assistant, "");
     session.finish_active_turn(TurnStatus::Interrupted);
 
-    let (_, work_rows) =
-        folded_transcript_rows(&session, &HashSet::from([turn_id]), &HashSet::new());
+    let (_, work_rows) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
     assert_eq!(work_rows, HashSet::from([TurnBlock(0), Message(1)]));
 
     assert_eq!(
@@ -1978,8 +1910,7 @@ fn a_busy_turn_pins_the_working_indicator_after_the_last_row() {
     let turn_id = session.begin_turn("Build it");
     session.status = SessionStatus::Working;
 
-    let (_, work_rows) =
-        folded_transcript_rows(&session, &HashSet::from([turn_id]), &HashSet::new());
+    let (_, work_rows) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
     assert!(
         work_rows.is_empty(),
         "live turns have no settled work section"
@@ -2056,7 +1987,6 @@ fn settings_navigation_contains_only_supported_pages() {
     let expected = vec![
         SettingsPage::Appearance,
         SettingsPage::Providers,
-        SettingsPage::Agents,
         SettingsPage::Skills,
         SettingsPage::Backups,
     ];
@@ -2339,11 +2269,7 @@ fn compaction_milestones_survive_folding_roundtrip_and_later_activity() {
         serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
     restored.migrate_legacy_state();
     assert_eq!(restored.transcript_blocks.len(), 3);
-    let (rows, work) = folded_transcript_rows(
-        &restored,
-        &std::collections::HashSet::new(),
-        &HashSet::new(),
-    );
+    let (rows, work) = folded_transcript_rows(&restored, &std::collections::HashSet::new());
     assert!(
         rows.contains(&TurnBlock(1)),
         "a compaction milestone must stay visible after work folds"
@@ -2434,11 +2360,7 @@ fn image_generation_preserves_order_and_stays_visible_after_work_folds() {
     let image = &restored.transcript_blocks[1].activities[0];
     assert!(image.complete);
     assert_eq!(image.image_urls, ["waku-blob:12345678.png"]);
-    let (rows, work) = folded_transcript_rows(
-        &restored,
-        &std::collections::HashSet::new(),
-        &HashSet::new(),
-    );
+    let (rows, work) = folded_transcript_rows(&restored, &std::collections::HashSet::new());
     assert!(rows.contains(&TurnBlock(1)));
     assert!(!rows.contains(&TurnBlock(0)));
     assert!(!rows.contains(&TurnBlock(2)));
@@ -2467,16 +2389,15 @@ fn image_generation_repeated_in_the_answer_folds_without_losing_history() {
         "已为您生成图片：\n\n![在空中飞翔的猫](file:///tmp/waku%20images/flying%20cat.jpg)\n\n图片已保存。",
     );
 
-    let (running, _) = folded_transcript_rows(&session, &HashSet::new(), &HashSet::new());
+    let (running, _) = folded_transcript_rows(&session, &HashSet::new());
     assert!(running.contains(&TurnBlock(0)), "live output stays visible");
     session.finish_active_turn(TurnStatus::Completed);
-    let (collapsed, _) = folded_transcript_rows(&session, &HashSet::new(), &HashSet::new());
+    let (collapsed, _) = folded_transcript_rows(&session, &HashSet::new());
     assert!(!collapsed.contains(&TurnBlock(0)));
     assert!(collapsed.contains(&TurnFold(turn_id)));
     assert!(collapsed.contains(&Message(1)));
 
-    let (expanded, work) =
-        folded_transcript_rows(&session, &HashSet::from([turn_id]), &HashSet::new());
+    let (expanded, work) = folded_transcript_rows(&session, &HashSet::from([turn_id]));
     assert!(work.contains(&TurnBlock(0)));
     assert!(
         expanded.iter().position(|row| *row == TurnBlock(0))
@@ -2526,7 +2447,7 @@ fn image_generation_only_folds_when_every_output_is_actually_displayed() {
         );
         session.push_message(MessageRole::Assistant, answer);
         session.finish_active_turn(TurnStatus::Completed);
-        let (rows, _) = folded_transcript_rows(&session, &HashSet::new(), &HashSet::new());
+        let (rows, _) = folded_transcript_rows(&session, &HashSet::new());
         assert_eq!(
             !rows.contains(&TurnBlock(0)),
             folds,

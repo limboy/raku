@@ -1662,7 +1662,6 @@ mod tests {
                         context_window: None,
                         agent_preset: None,
                         provider_cursor: None,
-                        execution_policy: Default::default(),
                     },
                 },
             )
@@ -1730,7 +1729,6 @@ mod tests {
                         context_window: None,
                         agent_preset: None,
                         provider_cursor: None,
-                        execution_policy: Default::default(),
                     },
                 },
             )
@@ -1764,7 +1762,6 @@ mod tests {
                 runtime_id,
                 Command::Prompt {
                     prompt: "streamed from the first client".into(),
-                    delegation_context: None,
                 },
             )
             .unwrap();
@@ -2166,7 +2163,6 @@ mod tests {
                 runtime_id: blocked_runtime_id,
                 command: Command::Prompt {
                     prompt: "after start".into(),
-                    delegation_context: None,
                 },
             },
             second_client_outgoing,
@@ -2268,7 +2264,6 @@ mod tests {
             context_window: None,
             agent_preset: None,
             provider_cursor: None,
-            execution_policy: Default::default(),
         }
     }
 }

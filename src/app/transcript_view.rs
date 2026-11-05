@@ -1249,7 +1249,6 @@ impl Waku {
             | TranscriptRowKind::TurnFold(_)
             | TranscriptRowKind::ResponseFooter(_, _)
             | TranscriptRowKind::ChangedFiles(_)
-            | TranscriptRowKind::SubAgents(_)
             | TranscriptRowKind::WorkingIndicator => false,
         };
         // Providers separate consecutive tool calls with whitespace-only text
@@ -1422,9 +1421,6 @@ impl Waku {
             TranscriptRowKind::ChangedFiles(turn_id) => self
                 .render_changed_files_row(turn_id, &theme, cx)
                 .unwrap_or_else(|| div().into_any_element()),
-            TranscriptRowKind::SubAgents(turn_id) => self
-                .render_sub_agents_card(turn_id, &theme, cx)
-                .unwrap_or_else(|| div().into_any_element()),
             TranscriptRowKind::WorkingIndicator => self.render_working_indicator_row(&theme),
         };
         let inner = if is_work_row {
@@ -1533,9 +1529,6 @@ impl Waku {
             .flex_col()
             .gap(px(3.0))
             .group(group_name.clone());
-        if let Some(agents) = self.render_sub_agents_card(turn_id, theme, cx) {
-            column = column.child(div().w_full().mb(px(3.0)).child(agents));
-        }
         if let Some(changed_files) = self.render_changed_files_row(turn_id, theme, cx) {
             column = column.child(div().w_full().mb(px(3.0)).child(changed_files));
         }
@@ -1990,51 +1983,6 @@ impl Waku {
         .detach();
     }
 
-    fn toggle_activity_surface_group(
-        &mut self,
-        detail: Option<Uuid>,
-        block: usize,
-        current: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(generation) = detail {
-            self.toggle_detail_group(generation, block, current, cx);
-        } else {
-            self.toggle_activities(block, current, cx);
-        }
-    }
-
-    fn toggle_activity_surface_item(
-        &mut self,
-        detail: Option<Uuid>,
-        id: Uuid,
-        current: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(generation) = detail {
-            self.toggle_detail_item(generation, id, current, cx);
-        } else {
-            self.toggle_activity_item(id, current, cx);
-        }
-    }
-
-    fn activity_surface_markdown_ctx<'a>(
-        &self,
-        surface: &ActivityRenderContext<'_>,
-        row: String,
-        palette: &'a MarkdownPalette,
-        metrics: MarkdownMetrics,
-        animate: bool,
-    ) -> MarkdownCtx<'a> {
-        if surface.detail_generation.is_none() {
-            return self.markdown_ctx(row, palette, metrics, animate);
-        }
-        MarkdownCtx::new(row, palette, metrics, surface.selection.clone())
-            .with_math_enabled(self.state.render_math)
-            .with_link_handler(super::delegation_detail::safe_detail_link_handler())
-            .with_image_renderer(self.markdown_image_renderer.clone())
-            .with_streaming_animation(animate)
-    }
     pub(super) fn render_activities_row(
         &self,
         activities: &[ActivityItem],
@@ -2078,7 +2026,6 @@ impl Waku {
             activities,
             block_index,
             ActivityRenderContext {
-                detail_generation: None,
                 live_group,
                 part: ActivityClusterPart::All,
                 live_reasoning_id,
@@ -2091,7 +2038,6 @@ impl Waku {
                 markdown: &self.activity_markdown,
                 window_starts: &self.reasoning_window_starts,
                 viewports: &self.activity_scroll_viewports,
-                selection: self.transcript_selection.clone(),
             },
             theme,
             window,
@@ -2112,7 +2058,6 @@ impl Waku {
             return div().into_any_element();
         }
         let id = activity.id;
-        let detail_generation = surface.detail_generation;
         let expanded = surface.expanded_items.get(&id).copied().unwrap_or(false);
         let has_detail = item.summary.as_ref().is_some_and(|text| !text.is_empty())
             || item.error.is_some()
@@ -2221,20 +2166,19 @@ impl Waku {
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if has_detail {
-                            this.toggle_activity_surface_item(detail_generation, id, expanded, cx);
+                            this.toggle_activity_item(id, expanded, cx);
                         }
                     }))
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                         if has_detail && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.toggle_activity_surface_item(detail_generation, id, expanded, cx);
+                            this.toggle_activity_item(id, expanded, cx);
                             cx.stop_propagation();
                         }
                     })),
             );
         if expanded && has_detail {
             let palette = MarkdownPalette::from_theme(theme);
-            let ctx = self.activity_surface_markdown_ctx(
-                surface,
+            let ctx = self.markdown_ctx(
                 format!("compaction-summary-{id}"),
                 &palette,
                 self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
@@ -2291,16 +2235,12 @@ impl Waku {
             live_group,
             live_reasoning_id,
             expanded,
-            detail_generation,
             ..
         } = surface;
         let cluster = if surface.part == ActivityClusterPart::Item {
             div().w_full().min_w_0()
         } else {
-            let group_key = detail_generation.map_or_else(
-                || format!("activity-toggle-{block_index}"),
-                |generation| format!("detail-{generation}-activity-toggle-{block_index}"),
-            );
+            let group_key = format!("activity-toggle-{block_index}");
             let header_title = activity_header_title(activities, live_group, live_reasoning_id);
             let group_running = activities.iter().any(|activity| !activity.complete);
             if !live_group && group_running {
@@ -2362,21 +2302,11 @@ impl Waku {
                             )
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_activity_surface_group(
-                                detail_generation,
-                                block_index,
-                                expanded,
-                                cx,
-                            );
+                            this.toggle_activities(block_index, expanded, cx);
                         }))
                         .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.toggle_activity_surface_group(
-                                    detail_generation,
-                                    block_index,
-                                    expanded,
-                                    cx,
-                                );
+                                this.toggle_activities(block_index, expanded, cx);
                                 cx.stop_propagation();
                             }
                         })),
@@ -2404,7 +2334,6 @@ impl Waku {
             let background_work = self
                 .state
                 .selected_session
-                .filter(|_| detail_generation.is_none())
                 .zip(activity.source_id.as_deref())
                 .and_then(|(session_id, source_id)| {
                     self.background_work_for_activity(session_id, source_id)
@@ -2478,9 +2407,7 @@ impl Waku {
             // open it. A change touching several names each file in the diff
             // below, and each of those rows opens its own.
             let open_file_button = match activity.file_changes.as_slice() {
-                [change]
-                    if activity.kind == ActivityKind::FileChange && detail_generation.is_none() =>
-                {
+                [change] if activity.kind == ActivityKind::FileChange => {
                     Some(self.render_activity_open_file_button(
                         format!("activity-open-{id}"),
                         change.path.clone(),
@@ -2490,8 +2417,7 @@ impl Waku {
                 }
                 _ => None,
             };
-            let shows_diff =
-                detail_generation.is_none() && reasoning.is_none() && activity_shows_diff(activity);
+            let shows_diff = reasoning.is_none() && activity_shows_diff(activity);
             let has_detail = reasoning
                 .is_some_and(|reasoning| !reasoning.content.trim().is_empty())
                 || !sections.is_empty()
@@ -2610,22 +2536,12 @@ impl Waku {
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if has_detail {
-                            this.toggle_activity_surface_item(
-                                detail_generation,
-                                id,
-                                item_expanded,
-                                cx,
-                            );
+                            this.toggle_activity_item(id, item_expanded, cx);
                         }
                     }))
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                         if has_detail && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.toggle_activity_surface_item(
-                                detail_generation,
-                                id,
-                                item_expanded,
-                                cx,
-                            );
+                            this.toggle_activity_item(id, item_expanded, cx);
                             cx.stop_propagation();
                         }
                     })),
@@ -2658,8 +2574,7 @@ impl Waku {
                 palette.text = theme.text_secondary;
                 palette.secondary = theme.text_tertiary;
                 let ctx = self
-                    .activity_surface_markdown_ctx(
-                        &surface,
+                    .markdown_ctx(
                         format!("reasoning-{id}"),
                         &palette,
                         self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
@@ -2764,8 +2679,7 @@ impl Waku {
             }
             if reasoning.is_none() && (!sections.is_empty() || !activity.image_urls.is_empty()) {
                 let palette = MarkdownPalette::from_theme(theme);
-                let ctx = self.activity_surface_markdown_ctx(
-                    &surface,
+                let ctx = self.markdown_ctx(
                     format!("activity-{id}"),
                     &palette,
                     self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
@@ -3252,7 +3166,6 @@ pub(super) enum ActivityClusterPart {
 
 pub(super) struct ActivityRenderContext<'a> {
     pub(super) part: ActivityClusterPart,
-    pub(super) detail_generation: Option<Uuid>,
     pub(super) live_group: bool,
     pub(super) live_reasoning_id: Option<Uuid>,
     pub(super) expanded: bool,
@@ -3260,7 +3173,6 @@ pub(super) struct ActivityRenderContext<'a> {
     pub(super) markdown: &'a RefCell<HashMap<Uuid, MarkdownView>>,
     pub(super) window_starts: &'a RefCell<HashMap<Uuid, usize>>,
     pub(super) viewports: &'a RefCell<HashMap<Uuid, ActivityScrollViewport>>,
-    pub(super) selection: TranscriptSelection,
 }
 
 fn activity_scroll_guard(viewport: ActivityScrollViewport, live: bool) -> impl IntoElement {

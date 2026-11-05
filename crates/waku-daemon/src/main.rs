@@ -8,14 +8,7 @@ use anyhow::{Context as _, anyhow, bail};
 use waku_protocol::{DAEMON_TOKEN_ENV, DaemonReady, PROTOCOL_VERSION};
 
 fn main() -> anyhow::Result<()> {
-    let mut args = std::env::args().skip(1);
-    if let Some(arg) = args.next() {
-        if arg == "mcp-agent-tools" {
-            return waku_core::delegation::bridge::serve_mcp_stdio();
-        }
-        return run_daemon(std::iter::once(arg).chain(args));
-    }
-    run_daemon(std::iter::empty())
+    run_daemon(std::env::args().skip(1))
 }
 
 fn run_daemon(args: impl IntoIterator<Item = String>) -> anyhow::Result<()> {

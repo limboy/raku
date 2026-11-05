@@ -980,7 +980,6 @@ impl RightPanelSurface {
                     title.clone()
                 }
             }
-            Self::DelegatedTask { title, .. } => title.clone(),
             Self::Files => tr!("right_panel.files"),
             Self::Diff => tr!("right_panel.diff"),
             Self::File(path) => path.rsplit('/').next().unwrap_or(path).to_owned(),
@@ -994,7 +993,6 @@ impl RightPanelSurface {
             Self::Browser(_) => "icons/globe.svg",
             Self::Terminal(_) => "icons/terminal.svg",
             Self::BackgroundWork { key, .. } => work_kind_icon(key.kind),
-            Self::DelegatedTask { .. } => "icons/bot.svg",
             Self::Files => "icons/folder.svg",
             Self::Diff => "icons/file-diff.svg",
             Self::File(path) => file_icon_for_path(path),
@@ -1038,18 +1036,6 @@ fn reusable_surface_index(
         RightPanelSurface::BackgroundWork { key, .. } => surfaces.iter().position(|surface| {
             matches!(surface, RightPanelSurface::BackgroundWork { key: candidate, .. } if candidate == key)
         }),
-        RightPanelSurface::DelegatedTask { group_id, task_id, .. } => {
-            surfaces.iter().position(|surface| {
-                matches!(
-                    surface,
-                    RightPanelSurface::DelegatedTask {
-                        group_id: candidate_group,
-                        task_id: candidate_task,
-                        ..
-                    } if candidate_group == group_id && candidate_task == task_id
-                )
-            })
-        }
         RightPanelSurface::PastedText { id, .. } => surfaces.iter().position(|surface| {
             matches!(
                 surface,
@@ -1972,41 +1958,6 @@ mod tests {
     }
 
     #[test]
-    fn delegated_tabs_reuse_task_identity_not_model_title() {
-        let group_id = Uuid::new_v4();
-        let task_id = Uuid::new_v4();
-        let surfaces = vec![RightPanelSurface::DelegatedTask {
-            group_id,
-            task_id,
-            title: "Same model".into(),
-        }];
-        assert_eq!(
-            reusable_surface_index(
-                &surfaces,
-                &RightPanelSurface::DelegatedTask {
-                    group_id,
-                    task_id,
-                    title: "Renamed model".into(),
-                },
-            ),
-            Some(0)
-        );
-        for (group_id, task_id) in [(group_id, Uuid::new_v4()), (Uuid::new_v4(), task_id)] {
-            assert_eq!(
-                reusable_surface_index(
-                    &surfaces,
-                    &RightPanelSurface::DelegatedTask {
-                        group_id,
-                        task_id,
-                        title: "Same model".into(),
-                    },
-                ),
-                None
-            );
-        }
-    }
-
-    #[test]
     fn right_panel_state_isolated_by_session() {
         let session_with_terminal = Uuid::new_v4();
         let other_session = Uuid::new_v4();
@@ -2181,7 +2132,6 @@ impl Waku {
     }
 
     fn take_active_right_panel_state(&mut self) -> RightPanelSessionState {
-        self.delegation_detail.borrow_mut().take();
         RightPanelSessionState {
             visible: self.right_panel_visible,
             surfaces: std::mem::take(&mut self.right_panel_surfaces),
@@ -2203,7 +2153,6 @@ impl Waku {
     }
 
     fn replace_active_right_panel_state(&mut self, state: RightPanelSessionState) {
-        self.delegation_detail.borrow_mut().take();
         self.right_panel_visible = state.visible;
         self.right_panel_surfaces = state.surfaces;
         self.right_panel_active_surface = state.active_surface;
@@ -2442,12 +2391,6 @@ impl Waku {
         if index >= self.right_panel_surfaces.len() {
             return;
         }
-        if matches!(
-            self.right_panel_surfaces[index],
-            RightPanelSurface::DelegatedTask { .. }
-        ) {
-            self.delegation_detail.borrow_mut().take();
-        }
         if let Some(terminal_id) = self.right_panel_surfaces[index].terminal_id() {
             self.right_panel_terminals.remove(&terminal_id);
         }
@@ -2493,8 +2436,6 @@ impl Waku {
             if self.right_panel_surfaces.is_empty() {
                 let focus_handle = self.composer_focus(cx);
                 window.focus(&focus_handle, cx);
-            } else {
-                self.focus_active_delegation_detail(window, cx);
             }
         } else {
             crate::platform::hide_window(window);
@@ -2588,11 +2529,6 @@ impl Waku {
             None => self.render_right_panel_chooser(cx).into_any_element(),
             Some(RightPanelSurface::BackgroundWork { key, .. }) => self
                 .render_background_work_surface(&key, cx)
-                .into_any_element(),
-            Some(RightPanelSurface::DelegatedTask {
-                group_id, task_id, ..
-            }) => self
-                .render_delegation_detail(group_id, task_id, window, cx)
                 .into_any_element(),
             Some(RightPanelSurface::Files) => self
                 .render_right_panel_files(width, window, cx)
@@ -2901,12 +2837,11 @@ impl Waku {
                                 });
                             }),
                     )
-                    .on_click(move |_, window, cx| {
+                    .on_click(move |_, _, cx| {
                         let _ = activate_weak.update(cx, |this, cx| {
                             this.right_panel_active_surface = Some(index);
                             this.reveal_right_panel_tab(index);
                             this.request_active_terminal_focus();
-                            this.focus_active_delegation_detail(window, cx);
                             cx.notify();
                         });
                     }),

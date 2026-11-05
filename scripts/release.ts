@@ -419,12 +419,6 @@ try {
   for (const artifact of [
     join(mountedContents, "MacOS", executableName),
     mountedDaemon,
-    join(
-      mountedContents,
-      "Resources",
-      "delegation",
-      "pi-extension.ts",
-    ),
     join(mountedContents, "Resources", "pi", "session-title.ts"),
     join(mountedSparkleFramework, "Sparkle"),
   ]) {

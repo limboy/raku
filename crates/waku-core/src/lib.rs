@@ -27,7 +27,6 @@ pub mod codex_session;
 pub mod command_env;
 pub mod composer_complete;
 pub mod daemon;
-pub mod delegation;
 pub mod driver;
 mod frontmatter;
 pub mod git_branch;

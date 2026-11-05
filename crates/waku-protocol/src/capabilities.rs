@@ -15,22 +15,11 @@ pub struct ConversationCapabilities {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DelegationCapabilities {
-    /// The parent agent can call Waku's delegation tools.
-    pub parent: bool,
-    /// A child can enforce read/search access without writes, commands, or
-    /// approvals that would need an unattended subtask to ask a human.
-    pub review_subtask: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProviderCapabilities {
-    /// Interactive session modes, in menu order. Review subtasks have their
-    /// own execution policy and must not be treated as Full access sessions.
+    /// Interactive session modes, in menu order.
     pub access_modes: &'static [RuntimeMode],
     pub conversation: ConversationCapabilities,
     pub compaction: CompactionCapabilities,
-    pub delegation: DelegationCapabilities,
     pub model_discovery: bool,
     pub goals: bool,
     /// A native plan mode Waku can toggle within a session (Claude's `plan`
@@ -84,10 +73,6 @@ impl ProviderKind {
                     lifecycle: true,
                     summary: false,
                 },
-                delegation: DelegationCapabilities {
-                    parent: true,
-                    review_subtask: true,
-                },
                 model_discovery: true,
                 goals: false,
                 plan_mode: true,
@@ -101,10 +86,6 @@ impl ProviderKind {
                     lifecycle: true,
                     summary: false,
                 },
-                delegation: DelegationCapabilities {
-                    parent: true,
-                    review_subtask: true,
-                },
                 model_discovery: true,
                 goals: true,
                 plan_mode: true,
@@ -117,10 +98,6 @@ impl ProviderKind {
                     instructions: true,
                     lifecycle: true,
                     summary: true,
-                },
-                delegation: DelegationCapabilities {
-                    parent: true,
-                    review_subtask: true,
                 },
                 model_discovery: true,
                 goals: false,

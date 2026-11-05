@@ -524,10 +524,6 @@ pub fn titlebar_double_click(window: &Window) {
 /// translucent interaction layer above it.
 #[cfg(target_os = "macos")]
 pub fn configure_sidebar_material(window: &Window, dark: bool) {
-    #[cfg(test)]
-    if std::env::var_os("WAKU_DELEGATION_SMOKE_PATH").is_some() {
-        return;
-    }
     use objc2::{MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
         NSAutoresizingMaskOptions, NSColor, NSView, NSVisualEffectBlendingMode,
@@ -613,10 +609,6 @@ pub fn configure_sidebar_material(_: &Window, _: bool) {}
 
 #[cfg(target_os = "macos")]
 pub fn set_sidebar_material_width(window: &Window, width: f32) {
-    #[cfg(test)]
-    if std::env::var_os("WAKU_DELEGATION_SMOKE_PATH").is_some() {
-        return;
-    }
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSView;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -659,10 +651,6 @@ pub fn set_sidebar_material_width(_: &Window, _: f32) {}
 /// traffic lights, menus, and vibrancy to the selected appearance.
 #[cfg(target_os = "macos")]
 pub fn set_window_appearance(window: &Window, dark: Option<bool>) {
-    #[cfg(test)]
-    if std::env::var_os("WAKU_DELEGATION_SMOKE_PATH").is_some() {
-        return;
-    }
     use objc2::MainThreadMarker;
     use objc2_app_kit::{
         NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,

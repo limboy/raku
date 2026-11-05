@@ -14,8 +14,7 @@ use crate::model::{ProviderKind, ReportedCommand};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
 pub use waku_protocol::composer::{
-    CommandScope, FileEntry, ModelCandidate, SlashCommand, Trigger, TriggerKind, detect_trigger,
-    extract_model_references, model_candidates, model_reference_text, resolve_model_references,
+    CommandScope, FileEntry, SlashCommand, Trigger, TriggerKind, detect_trigger,
 };
 
 /// How many rows a filter pass returns. The popup shows a screenful and the

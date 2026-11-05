@@ -6,8 +6,8 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 use waku_protocol::capabilities::RuntimeCapabilities;
 use waku_protocol::model::{
-    BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, PlanDecision,
-    ProviderResumeCursor, RuntimeMode, UserInputAnswer,
+    BackgroundWorkKey, DriverEvent, GoalOperation, PlanDecision, ProviderResumeCursor, RuntimeMode,
+    UserInputAnswer,
 };
 
 #[derive(Clone)]
@@ -47,14 +47,6 @@ impl DriverHandle {
 
     pub fn prompt(&self, prompt: String) {
         self.inner.prompt(prompt);
-    }
-
-    pub fn prompt_with_context(
-        &self,
-        prompt: String,
-        delegation: Option<waku_protocol::delegation::PromptDelegationContext>,
-    ) {
-        self.inner.prompt_with_context(prompt, delegation);
     }
 
     pub fn capabilities(&self) -> RuntimeCapabilities {
@@ -115,15 +107,6 @@ impl DriverHandle {
 pub trait DriverControl: Send + Sync {
     fn compact(&self, _request: waku_protocol::compaction::CompactionRequest) {}
     fn prompt(&self, prompt: String);
-    /// Send a prompt together with the models this turn may delegate to.
-    /// Transports that cannot carry delegation ignore the context.
-    fn prompt_with_context(
-        &self,
-        prompt: String,
-        _delegation: Option<waku_protocol::delegation::PromptDelegationContext>,
-    ) {
-        self.prompt(prompt);
-    }
     fn capabilities(&self) -> RuntimeCapabilities;
     fn steer(&self, _prompt: String) {}
     fn cancel(&self);
@@ -148,7 +131,6 @@ pub struct DriverStartOptions {
     pub cwd: PathBuf,
     pub mode: RuntimeMode,
     pub plan_mode: bool,
-    pub execution_policy: ExecutionPolicy,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,

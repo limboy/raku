@@ -125,103 +125,54 @@ impl BackgroundSummaryRow {
 }
 
 #[derive(Clone)]
-enum BackgroundSummaryTarget {
-    Native(BackgroundWorkKey),
-    Delegated { group_id: Uuid, task_id: Uuid },
-}
+struct BackgroundSummaryTarget(BackgroundWorkKey);
 
 impl BackgroundSummaryTarget {
     fn control_id(&self) -> String {
-        match self {
-            Self::Native(key) => format!("native-{}-{}", key.provider_id, key.kind as u8),
-            Self::Delegated { group_id, task_id } => format!("delegated-{group_id}-{task_id}"),
-        }
+        format!("native-{}-{}", self.0.provider_id, self.0.kind as u8)
     }
 
-    fn open(&self, session_id: Uuid, waku: &mut Waku, window: &mut Window, cx: &mut Context<Waku>) {
-        if waku.state.selected_session != Some(session_id) {
-            return;
-        }
-        match self {
-            Self::Native(key) => waku.open_background_work_surface(session_id, key.clone(), cx),
-            Self::Delegated { group_id, task_id } => {
-                waku.open_delegated_task(*group_id, *task_id, window, cx);
-            }
+    fn open(
+        &self,
+        session_id: Uuid,
+        waku: &mut Waku,
+        _window: &mut Window,
+        cx: &mut Context<Waku>,
+    ) {
+        if waku.state.selected_session == Some(session_id) {
+            waku.open_background_work_surface(session_id, self.0.clone(), cx);
         }
     }
 
     fn stop(&self, session_id: Uuid, waku: &mut Waku, cx: &mut Context<Waku>) {
-        if waku.state.selected_session != Some(session_id) {
-            return;
-        }
-        match self {
-            Self::Native(key) => waku.stop_background_work(session_id, key.clone(), cx),
-            Self::Delegated { group_id, task_id } => {
-                let live = waku
-                    .selected_delegations()
-                    .iter()
-                    .find(|group| group.id == *group_id)
-                    .and_then(|group| group.tasks.iter().find(|task| task.task_id == *task_id))
-                    .is_some_and(|task| !task.status.is_terminal());
-                if live {
-                    waku.cancel_delegation(*group_id, Some(*task_id), cx);
-                }
-            }
+        if waku.state.selected_session == Some(session_id) {
+            waku.stop_background_work(session_id, self.0.clone(), cx);
         }
     }
 }
 
 #[derive(Clone, Copy)]
-enum BackgroundSummaryStatus {
-    Native(BackgroundWorkStatus),
-    Delegated(waku_client::delegation::DelegatedTaskStatus),
-}
+struct BackgroundSummaryStatus(BackgroundWorkStatus);
 
 impl BackgroundSummaryStatus {
     fn label(self) -> String {
-        match self {
-            Self::Native(status) => work_status_label(status),
-            Self::Delegated(status) => super::delegation::task_status_label(status),
-        }
+        work_status_label(self.0)
     }
 
     fn is_stoppable(self) -> bool {
-        match self {
-            Self::Native(status) => status.is_stoppable(),
-            Self::Delegated(status) => !status.is_terminal(),
-        }
+        self.0.is_stoppable()
     }
 
     fn color(self, theme: Theme) -> Hsla {
-        match self {
-            Self::Native(status) => work_status_color(status, theme),
-            Self::Delegated(status) => super::delegation::task_status_color(&theme, status),
-        }
+        work_status_color(self.0, theme)
     }
 
     fn render_icon(self, kind: BackgroundWorkKind) -> bool {
-        match self {
-            Self::Native(status) => background_summary_process_status_icon(kind, status).is_some(),
-            Self::Delegated(_) => true,
-        }
+        background_summary_process_status_icon(kind, self.0).is_some()
     }
 
     fn icon(self, theme: Theme) -> AnyElement {
-        match self {
-            Self::Native(status) => rendered_work_status_icon(status, 12.0, self.color(theme)),
-            Self::Delegated(status) => {
-                let icon = icon(
-                    super::delegation::task_status_icon(status),
-                    12.0,
-                    self.color(theme),
-                );
-                if status.is_terminal() {
-                    icon.into_any_element()
-                } else {
-                    motion::spin_slow(icon)
-                }
-            }
-        }
+        rendered_work_status_icon(self.0, 12.0, self.color(theme))
     }
 }
 #[derive(Clone)]
@@ -917,9 +868,9 @@ impl Waku {
                 {
                     continue;
                 }
-                let target = BackgroundSummaryTarget::Native(item.key.clone());
+                let target = BackgroundSummaryTarget(item.key.clone());
                 let id = target.control_id();
-                let status = BackgroundSummaryStatus::Native(item.status);
+                let status = BackgroundSummaryStatus(item.status);
                 let tooltip = match item.model.as_deref() {
                     Some(model) => format!("{}\n{model}\n{}", item.title, status.label()),
                     None => format!("{}\n{}", item.title, status.label()),
@@ -931,41 +882,6 @@ impl Waku {
                     tooltip,
                     status,
                     can_stop: item.can_stop && item.status.is_stoppable(),
-                    row_focus: self
-                        .transcript_control_focus(format!("background-summary-row-{id}"), cx),
-                    stop_focus: self
-                        .transcript_control_focus(format!("background-summary-stop-{id}"), cx),
-                });
-            }
-        }
-        for group in self.selected_delegations() {
-            for task in &group.tasks {
-                let target = BackgroundSummaryTarget::Delegated {
-                    group_id: group.id,
-                    task_id: task.task_id,
-                };
-                let id = target.control_id();
-                let status = BackgroundSummaryStatus::Delegated(task.status);
-                let channel = task.target.sub_provider.as_deref().unwrap_or_default();
-                let provider = task.target.provider.display_name();
-                let source = if channel.is_empty() {
-                    provider.to_owned()
-                } else {
-                    format!("{provider} · {channel}")
-                };
-                entries.push(BackgroundSummaryEntry {
-                    target,
-                    kind: BackgroundWorkKind::Subagent,
-                    title: task.target.display_label.clone(),
-                    tooltip: format!(
-                        "{}\n{source} · {}\n{}\n{}",
-                        task.target.display_label,
-                        task.target.model_id,
-                        task.task_key,
-                        status.label(),
-                    ),
-                    status,
-                    can_stop: !task.status.is_terminal(),
                     row_focus: self
                         .transcript_control_focus(format!("background-summary-row-{id}"), cx),
                     stop_focus: self
@@ -1030,14 +946,9 @@ impl Waku {
         let change_counts = snapshot
             .map(|snapshot| (snapshot.additions, snapshot.deletions))
             .filter(|(additions, deletions)| *additions > 0 || *deletions > 0);
-        let (processes, agents) = background_summary_counts(
-            session_id
-                .map(|session_id| self.background_work_counts(session_id))
-                .unwrap_or_default(),
-            self.selected_delegations()
-                .iter()
-                .flat_map(|group| group.tasks.iter().map(|task| task.status)),
-        );
+        let (processes, agents) = session_id
+            .map(|session_id| self.background_work_counts(session_id))
+            .unwrap_or_default();
         let has_live_work = processes > 0 || agents > 0;
         let theme = Theme::current(cx);
         let refresh_weak = cx.entity().downgrade();
@@ -1649,19 +1560,6 @@ fn background_work_selection_input(selection: TranscriptSelection) -> impl IntoE
     .h(px(0.0))
 }
 
-fn background_summary_counts(
-    native: (usize, usize),
-    delegated_statuses: impl Iterator<Item = waku_client::delegation::DelegatedTaskStatus>,
-) -> (usize, usize) {
-    (
-        native.0,
-        native.1
-            + delegated_statuses
-                .filter(|status| !status.is_terminal())
-                .count(),
-    )
-}
-
 fn background_summary_navigation_index(
     key: &str,
     shift: bool,
@@ -2264,43 +2162,6 @@ mod tests {
         assert_eq!(
             background_summary_navigation_index("enter", false, Some(0), 204),
             None
-        );
-    }
-
-    #[test]
-    fn summary_counts_include_only_live_delegated_tasks() {
-        use waku_client::delegation::DelegatedTaskStatus::*;
-
-        let statuses = [
-            Queued,
-            Starting,
-            Running,
-            Completed,
-            Failed,
-            Cancelled,
-            TimedOut,
-            Interrupted,
-        ];
-        assert_eq!(
-            background_summary_counts((2, 1), statuses.into_iter()),
-            (2, 4),
-        );
-        assert_eq!(
-            background_summary_counts(
-                (0, 0),
-                statuses.into_iter().map(|status| {
-                    if status.is_terminal() {
-                        status
-                    } else {
-                        Completed
-                    }
-                }),
-            ),
-            (0, 0),
-        );
-        assert_eq!(
-            background_summary_counts((1, 2), std::iter::empty()),
-            (1, 2),
         );
     }
 

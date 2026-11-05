@@ -305,8 +305,6 @@ pub struct AppSettings {
     /// platform file manager.
     pub open_in_app: Option<String>,
     pub backup_directory: Option<PathBuf>,
-    /// Named delegation targets offered by the composer's `^` picker.
-    pub sub_agents: Vec<waku_protocol::delegation::SubAgent>,
 }
 
 impl Default for AppSettings {
@@ -322,7 +320,6 @@ impl Default for AppSettings {
             render_math: true,
             open_in_app: None,
             backup_directory: None,
-            sub_agents: Vec::new(),
         }
     }
 }
@@ -459,8 +456,6 @@ pub struct PersistedState {
     pub open_in_app: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup_directory: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sub_agents: Vec<waku_protocol::delegation::SubAgent>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
     #[serde(default = "default_right_panel_visibility")]
@@ -533,7 +528,6 @@ impl PersistedState {
             render_math: true,
             open_in_app: None,
             backup_directory: None,
-            sub_agents: Vec::new(),
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -757,7 +751,6 @@ impl PersistedState {
             render_math: self.render_math,
             open_in_app: self.open_in_app.clone(),
             backup_directory: self.backup_directory.clone(),
-            sub_agents: self.sub_agents.clone(),
         };
         settings.normalize_desktop_defaults();
         settings
@@ -802,7 +795,6 @@ impl PersistedState {
         self.render_math = settings.render_math;
         self.open_in_app = settings.open_in_app;
         self.backup_directory = settings.backup_directory;
-        self.sub_agents = settings.sub_agents;
     }
 
     fn apply_app_state(&mut self, app_state: AppState) {
@@ -1220,9 +1212,6 @@ impl StateStore {
     }
 
     pub fn default_path() -> PathBuf {
-        if let Some(directory) = std::env::var_os("WAKU_SUBAGENT_SMOKE_DATA_DIR") {
-            return PathBuf::from(directory).join("app.db");
-        }
         if cfg!(debug_assertions) {
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -1589,7 +1578,6 @@ mod tests {
             "antigravity",
             "agy",
         ] {
-            let active_agent_id = Uuid::new_v4();
             let document = serde_json::to_vec(&serde_json::json!({
                 "theme": "dark",
                 "language": "simplified-chinese",
@@ -1600,10 +1588,9 @@ mod tests {
                     {"provider": "codex", "model": "gpt-5.4"},
                     {"provider": "pi", "model": "deepseek/deepseek-flash"}
                 ],
+                // Retired with the sub-agent system; must not block loading.
                 "sub_agents": [
-                    {"id": Uuid::new_v4(), "name": "retired", "provider": provider,
-                     "modelId": "retired"},
-                    {"id": active_agent_id, "name": "reviewer", "provider": "claude",
+                    {"id": Uuid::new_v4(), "name": "reviewer", "provider": "claude",
                      "modelId": "sonnet", "instructions": "Review the diff"}
                 ]
             }))
@@ -1614,10 +1601,6 @@ mod tests {
             assert_eq!(settings.language, AppLanguage::SimplifiedChinese);
             assert_eq!(settings.ui_font_size, 17.0);
             assert!(settings.model_picker_favorites_only);
-            assert_eq!(settings.sub_agents.len(), 1);
-            assert_eq!(settings.sub_agents[0].id, active_agent_id);
-            assert_eq!(settings.sub_agents[0].provider, ProviderKind::Claude);
-            assert_eq!(settings.sub_agents[0].instructions, "Review the diff");
             assert_eq!(
                 settings.favorite_models,
                 vec![

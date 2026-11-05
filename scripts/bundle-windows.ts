@@ -138,11 +138,6 @@ try {
     await copyFile(join(releaseDirectory, file), join(packageDirectory, file));
   }
   const resourcesDirectory = join(packageDirectory, "resources");
-  await mkdir(join(resourcesDirectory, "delegation"), { recursive: true });
-  await copyFile(
-    join(projectRoot, "resources", "delegation", "pi-extension.ts"),
-    join(resourcesDirectory, "delegation", "pi-extension.ts"),
-  );
   await mkdir(join(resourcesDirectory, "pi"), { recursive: true });
   await copyFile(
     join(projectRoot, "resources", "pi", "session-title.ts"),

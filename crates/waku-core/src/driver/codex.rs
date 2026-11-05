@@ -25,7 +25,7 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
-    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, ExecutionPolicy, GoalOperation,
+    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, GoalOperation,
     PermissionOption, ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus,
     UserInputAnswer, UserInputDelivery, UserInputOption, UserInputQuestion, unix_time_millis,
 };
@@ -145,15 +145,12 @@ impl CodexDriver {
             cwd,
             mode,
             plan_mode,
-            execution_policy,
             model,
             reasoning_effort,
             service_tier,
             context_window: _,
             agent_preset: _,
             provider_cursor,
-            delegation_session_path,
-            delegation_registry_dir: _,
         } = options;
         let provider_session_id = match provider_cursor {
             Some(ProviderResumeCursor::Codex { thread_id }) => Some(thread_id),
@@ -169,21 +166,6 @@ impl CodexDriver {
         let title_cwd = cwd.clone();
         let mut command = crate::command_env::command(&binary);
         command.args(["app-server", "--stdio"]);
-        if let Some(session_path) = delegation_session_path.as_ref() {
-            let daemon_bin =
-                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
-            let bin_str = toml_string(&daemon_bin.display().to_string());
-            let path_str = toml_string(&session_path.display().to_string());
-            command
-                .arg("-c")
-                .arg(format!("mcp_servers.waku_agent_tools.command={bin_str}"))
-                .arg("-c")
-                .arg("mcp_servers.waku_agent_tools.args=[\"mcp-agent-tools\"]")
-                .arg("-c")
-                .arg(format!(
-                    "mcp_servers.waku_agent_tools.env.WAKU_DELEGATION_SESSION_PATH={path_str}"
-                ));
-        }
         let command = command
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -270,13 +252,11 @@ impl CodexDriver {
                 // The permission policy is deliberately not in that set — see
                 // `apply_options`.
                 let (approval_policy, sandbox, approvals_reviewer) =
-                    codex_permissions(mode, execution_policy);
+                    codex_permissions(mode);
                 let mut model = model;
                 let mut reasoning_effort = reasoning_effort;
                 let mut service_tier = service_tier;
-                // A review subtask has no one to approve a plan.
-                let mut plan_mode =
-                    plan_mode && execution_policy == ExecutionPolicy::Interactive;
+                let mut plan_mode = plan_mode;
                 // The collaboration mode sticks to the thread, so after a plan
                 // turn — or on a resumed thread, which may have been left in
                 // plan mode — the next default turn must say so explicitly.
@@ -548,8 +528,7 @@ impl CodexDriver {
                             model = options.model;
                             reasoning_effort = options.reasoning_effort;
                             service_tier = options.service_tier;
-                            plan_mode = options.plan_mode
-                                && execution_policy == ExecutionPolicy::Interactive;
+                            plan_mode = options.plan_mode;
                             continue;
                         }
                         CommandMessage::Goal(operation) => {
@@ -828,13 +807,7 @@ impl CodexDriver {
     }
 }
 
-fn codex_permissions(
-    mode: RuntimeMode,
-    execution_policy: ExecutionPolicy,
-) -> (&'static str, &'static str, &'static str) {
-    if execution_policy == ExecutionPolicy::ReviewReadOnly {
-        return ("never", "read-only", "user");
-    }
+fn codex_permissions(mode: RuntimeMode) -> (&'static str, &'static str, &'static str) {
     match mode {
         RuntimeMode::Ask => ("untrusted", "read-only", "user"),
         RuntimeMode::AutoAcceptEdits => ("on-request", "workspace-write", "user"),
@@ -884,10 +857,6 @@ fn collaboration_mode_params(plan: bool, model: &str, reasoning_effort: Option<&
             "developer_instructions": null
         }
     })
-}
-
-fn toml_string(value: &str) -> String {
-    serde_json::to_string(value).expect("a filesystem path is always valid JSON")
 }
 
 /// `thread/goal/set` params. Omitted fields keep their provider-side value,
@@ -3138,7 +3107,6 @@ mod tests {
                 cwd: directory.clone(),
                 mode: RuntimeMode::Ask,
                 plan_mode: false,
-                execution_policy: Default::default(),
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
@@ -3147,8 +3115,6 @@ mod tests {
                 provider_cursor: Some(ProviderResumeCursor::Codex {
                     thread_id: "thread-original".into(),
                 }),
-                delegation_session_path: None,
-                delegation_registry_dir: None,
             },
             events,
         )
@@ -3208,15 +3174,12 @@ mod tests {
                     cwd: directory.clone(),
                     mode: RuntimeMode::Ask,
                     plan_mode: false,
-                    execution_policy: Default::default(),
                     model: None,
                     reasoning_effort: None,
                     service_tier: None,
                     context_window: None,
                     agent_preset: None,
                     provider_cursor: Some(cursor),
-                    delegation_session_path: None,
-                    delegation_registry_dir: None,
                 },
                 events,
             )
@@ -3296,15 +3259,12 @@ mod tests {
                     cwd: cwd.clone(),
                     mode: RuntimeMode::Ask,
                     plan_mode: false,
-                    execution_policy: Default::default(),
                     model: Some(CODEX_TITLE_MODEL.to_owned()),
                     reasoning_effort: Some("low".to_owned()),
                     service_tier: None,
                     context_window: None,
                     agent_preset: None,
                     provider_cursor: cursor,
-                    delegation_session_path: None,
-                    delegation_registry_dir: None,
                 },
                 events,
             )
@@ -3647,28 +3607,20 @@ mod tests {
     #[test]
     fn access_modes_match_codex_permission_profiles() {
         assert_eq!(
-            codex_permissions(RuntimeMode::Ask, ExecutionPolicy::Interactive),
+            codex_permissions(RuntimeMode::Ask),
             ("untrusted", "read-only", "user")
         );
         assert_eq!(
-            codex_permissions(RuntimeMode::AutoAcceptEdits, ExecutionPolicy::Interactive),
+            codex_permissions(RuntimeMode::AutoAcceptEdits),
             ("on-request", "workspace-write", "user")
         );
         assert_eq!(
-            codex_permissions(RuntimeMode::Auto, ExecutionPolicy::Interactive),
+            codex_permissions(RuntimeMode::Auto),
             ("on-request", "workspace-write", "auto_review")
         );
         assert_eq!(
-            codex_permissions(RuntimeMode::FullAccess, ExecutionPolicy::Interactive),
+            codex_permissions(RuntimeMode::FullAccess),
             ("never", "danger-full-access", "user")
-        );
-        assert_eq!(
-            codex_permissions(RuntimeMode::Ask, ExecutionPolicy::ReviewReadOnly),
-            ("never", "read-only", "user")
-        );
-        assert_eq!(
-            codex_permissions(RuntimeMode::FullAccess, ExecutionPolicy::ReviewReadOnly),
-            ("never", "read-only", "user")
         );
     }
 

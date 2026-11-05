@@ -18,7 +18,7 @@ use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 use waku_protocol::capabilities::RuntimeCapabilities;
 
 use crate::model::{
-    BackgroundWorkKey, DriverEvent, ExecutionPolicy, GoalOperation, PlanDecision, ProviderKind,
+    BackgroundWorkKey, DriverEvent, GoalOperation, PlanDecision, ProviderKind,
     ProviderResumeCursor, RuntimeMode, UserInputAnswer,
 };
 
@@ -186,15 +186,12 @@ pub struct DriverStartOptions {
     pub mode: RuntimeMode,
     /// Start in the provider's native plan mode. See `AgentSession::plan_mode`.
     pub plan_mode: bool,
-    pub execution_policy: ExecutionPolicy,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
     pub agent_preset: Option<String>,
     pub provider_cursor: Option<ProviderResumeCursor>,
-    pub delegation_session_path: Option<PathBuf>,
-    pub delegation_registry_dir: Option<PathBuf>,
 }
 
 /// The subset of `DriverStartOptions` a user can change without starting a new
@@ -215,11 +212,8 @@ pub(crate) fn start_local(
     options: DriverStartOptions,
     events: DriverEventSender,
 ) -> anyhow::Result<DriverHandle> {
-    validate_start(provider, options.mode, options.execution_policy)?;
-    let title_language = Arc::new(title_language::TitleLanguageContext::new(
-        provider,
-        options.execution_policy,
-    ));
+    provider.validate_access_mode(options.mode)?;
+    let title_language = Arc::new(title_language::TitleLanguageContext::new(provider));
     let inner: Arc<dyn DriverControl> = match provider {
         ProviderKind::Codex => Arc::new(codex::CodexDriver::start(options, events)?),
         ProviderKind::Pi => Arc::new(pi::PiDriver::start(options, events)?),
@@ -234,79 +228,38 @@ pub(crate) fn start_local(
     })
 }
 
-/// Validate before starting a transport or replacing a running session.
-pub(crate) fn validate_start(
-    provider: ProviderKind,
-    mode: RuntimeMode,
-    policy: ExecutionPolicy,
-) -> anyhow::Result<()> {
-    match policy {
-        ExecutionPolicy::Interactive => provider.validate_access_mode(mode)?,
-        ExecutionPolicy::ReviewReadOnly => anyhow::ensure!(
-            provider.capabilities().delegation.review_subtask,
-            "{} does not support read-only review subtasks",
-            provider.display_name()
-        ),
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn incompatible_execution_policies_fail_before_opening_a_transport() {
-        for (provider, mode, execution_policy) in [
-            (
-                ProviderKind::Pi,
-                RuntimeMode::Ask,
-                ExecutionPolicy::Interactive,
-            ),
-            (
-                ProviderKind::Pi,
-                RuntimeMode::Auto,
-                ExecutionPolicy::Interactive,
-            ),
-        ] {
+    fn unsupported_access_modes_fail_before_opening_a_transport() {
+        for mode in [RuntimeMode::Ask, RuntimeMode::Auto] {
             let (wake, _) = smol::channel::bounded(1);
             let (events, _) = event_channel(wake);
             let result = start_local(
-                provider,
+                ProviderKind::Pi,
                 DriverStartOptions {
                     binary: "/missing/waku-capability-test-provider".into(),
                     cwd: "/missing/waku-capability-test-workspace".into(),
                     mode,
                     plan_mode: false,
-                    execution_policy,
                     model: None,
                     reasoning_effort: None,
                     service_tier: None,
                     context_window: None,
                     agent_preset: None,
                     provider_cursor: None,
-                    delegation_session_path: None,
-                    delegation_registry_dir: None,
                 },
                 events,
             );
-            let error = result.err().expect("unsupported start must fail");
-            if execution_policy == ExecutionPolicy::Interactive {
-                let error = error
-                    .downcast::<waku_protocol::capabilities::UnsupportedAccessMode>()
-                    .unwrap();
-                assert_eq!(error.provider, provider);
-                assert_eq!(error.mode, mode);
-            } else {
-                assert!(error.to_string().contains("read-only"), "{error}");
-            }
-        }
-        // Pi's restricted tool allowlist is independent of the permission
-        // modes offered to interactive sessions.
-        for provider in [ProviderKind::Pi] {
-            assert!(
-                validate_start(provider, RuntimeMode::Ask, ExecutionPolicy::ReviewReadOnly).is_ok()
-            );
+            let error = result
+                .err()
+                .expect("unsupported start must fail")
+                .downcast::<waku_protocol::capabilities::UnsupportedAccessMode>()
+                .unwrap();
+            assert_eq!(error.provider, ProviderKind::Pi);
+            assert_eq!(error.mode, mode);
         }
     }
 

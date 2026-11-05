@@ -104,14 +104,6 @@ impl ProviderResumeCursor {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ExecutionPolicy {
-    #[default]
-    Interactive,
-    ReviewReadOnly,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RuntimeMode {
@@ -498,9 +490,6 @@ pub struct QueuedMessage {
     pub display_content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MessageAttachment>,
-    /// Delegation targets chosen for this queued prompt.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_references: Vec<crate::delegation::ModelReference>,
     pub created_at: u64,
 }
 
@@ -511,7 +500,6 @@ impl QueuedMessage {
             content: content.into(),
             display_content: None,
             attachments: Vec::new(),
-            model_references: Vec::new(),
             created_at: unix_time(),
         }
     }
@@ -525,19 +513,6 @@ impl QueuedMessage {
             display_content,
             attachments,
             ..Self::new(content)
-        }
-    }
-
-    /// Queue a prompt that also names the models it may delegate to.
-    pub fn with_presentation_and_targets(
-        content: impl Into<String>,
-        display_content: Option<String>,
-        attachments: Vec<MessageAttachment>,
-        model_references: Vec<crate::delegation::ModelReference>,
-    ) -> Self {
-        Self {
-            model_references,
-            ..Self::with_presentation(content, display_content, attachments)
         }
     }
 
@@ -5113,26 +5088,5 @@ mod tests {
         assert_eq!(activity.tool_name.as_deref(), Some("delegate_batch"));
         assert!(activity.file_changes.is_empty());
         assert_eq!(activity.display_target, None);
-    }
-}
-
-#[cfg(test)]
-mod review_subtask_tests {
-    use super::ProviderKind;
-
-    #[test]
-    fn only_providers_with_a_read_only_posture_can_be_delegated_to() {
-        for provider in [
-            ProviderKind::Codex,
-            ProviderKind::Claude,
-            // Pi launches subtasks with a read-only tool allowlist.
-            ProviderKind::Pi,
-        ] {
-            assert!(
-                provider.capabilities().delegation.review_subtask,
-                "{} has a verified read-only path",
-                provider.display_name()
-            );
-        }
     }
 }

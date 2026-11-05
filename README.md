@@ -37,7 +37,7 @@ structured protocol and session continuity.
 ## Highlights
 
 - Manage projects and independent agent sessions in one native interface, with pinned sessions, unread completion indicators, and project or date grouping.
-- Switch models, reasoning effort, and access modes from a unified composer, and delegate subtasks across models and providers.
+- Switch models, reasoning effort, and access modes from a unified composer.
 - Queue or steer follow-up messages while an agent is streaming, and trigger native context compaction across providers.
 - Inspect token usage and subscription plan quotas (`⌘U`).
 - Rewind Git-backed tasks with conversation-aware checkpoints and recover state from automatic daily backups.

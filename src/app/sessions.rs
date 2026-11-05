@@ -26,9 +26,6 @@ impl Waku {
     pub(super) fn select_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
         self.finished_session_ids.remove(&session_id);
         self.request_session_activation(session_id, SessionActivationTransition::Visit, cx);
-        // Cards for a session that delegated earlier must be there on the first
-        // frame after opening it, not only after its next turn settles.
-        self.refresh_session_delegations(cx);
     }
 
     fn request_session_activation(
@@ -212,7 +209,6 @@ impl Waku {
         }
         self.refresh_composer_sources(cx);
         self.reset_transcript_rows(self.transcript_row_count());
-        self.refresh_session_delegations(cx);
         self.save();
         self.maybe_refresh_plan_usage(cx);
         if self
@@ -518,7 +514,6 @@ impl Waku {
         self.right_panel_visible = visible;
         self.right_panel_slide = self.begin_panel_slide(self.right_panel_rendered_width, cx);
         if visible {
-            self.resume_active_delegation_detail(cx);
             self.analytics
                 .track(crate::analytics::Event::RightPanelOpened);
         }

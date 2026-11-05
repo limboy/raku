@@ -3,7 +3,7 @@
 use super::compaction::CompactionTracker;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
@@ -23,18 +23,9 @@ use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
 use crate::model::{
-    ActivityKind, DriverEvent, ExecutionPolicy, ProviderResumeCursor, ReportedCommand,
+    ActivityKind, DriverEvent, ProviderResumeCursor, ReportedCommand,
     unix_time_millis,
 };
-
-/// The tool allowlist a review subtask is launched with.
-const REVIEW_READ_ONLY_TOOLS: &str = "read,grep,glob,lsp,web_search";
-
-/// The arguments a review subtask is launched with. No `--approve`:
-/// that would auto-approve exactly the writes the allowlist removes.
-fn review_read_only_args() -> [&'static str; 4] {
-    ["--mode", "rpc", "--tools", REVIEW_READ_ONLY_TOOLS]
-}
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -158,40 +149,6 @@ pub struct PiDriver {
     commands: Sender<CommandMessage>,
 }
 
-/// Give the parent agent Waku's delegation tools.
-///
-/// Pi cannot inherit an MCP server the way Codex does, so the tools arrive as
-/// an extension that spawns `waku-daemon mcp-agent-tools` itself; the session
-/// registration file tells that bridge whose turn this is. The extension marks
-/// both tools `loadMode: "essential"`, so Oh My Pi keeps their full schemas at
-/// top level without needing `--tools`. Without the extension the task still
-/// runs, so a missing asset is reported and skipped rather than failing the
-/// launch.
-fn configure_pi_delegation_command(
-    command: &mut std::process::Command,
-    flavor: PiFlavor,
-    session_path: Option<&Path>,
-    extension: impl FnOnce() -> anyhow::Result<PathBuf>,
-) {
-    let Some(session_path) = session_path else {
-        return;
-    };
-    match extension() {
-        Ok(extension) => {
-            let daemon = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("waku-daemon"));
-            command
-                .arg("--extension")
-                .arg(extension)
-                .env("WAKU_AGENT_TOOLS_SERVER", daemon)
-                .env("WAKU_DELEGATION_SESSION_PATH", session_path);
-        }
-        Err(error) => eprintln!(
-            "{} will not be able to delegate: {error:#}",
-            flavor.display_name()
-        ),
-    }
-}
-
 /// The extension that gives Pi sessions automatic titles.
 ///
 /// Pi names a session only when something calls `setSessionName`; Claude and
@@ -207,18 +164,13 @@ pub(crate) fn pi_title_extension_path() -> anyhow::Result<PathBuf> {
     crate::resources::packaged_file(&path, "Waku Pi session title extension")
 }
 
-/// Interactive sessions get automatic titles. Review subtasks never request a
-/// session title, matching the title-language context. A missing asset only
-/// costs the generated title, so it is reported and skipped.
+/// Sessions get automatic titles. A missing asset only costs the generated
+/// title, so it is reported and skipped.
 fn configure_pi_title_command(
     command: &mut std::process::Command,
     flavor: PiFlavor,
-    execution_policy: ExecutionPolicy,
     extension: impl FnOnce() -> anyhow::Result<PathBuf>,
 ) {
-    if execution_policy == ExecutionPolicy::ReviewReadOnly {
-        return;
-    }
     match extension() {
         Ok(extension) => {
             command.arg("--extension").arg(extension);
@@ -241,23 +193,14 @@ impl PiDriver {
             cwd,
             mode,
             plan_mode: _,
-            execution_policy,
             model,
             reasoning_effort,
             service_tier: _,
             context_window: _,
             agent_preset: _,
             provider_cursor,
-            delegation_session_path,
-            delegation_registry_dir: _,
         } = options;
-        // A review subtask runs unattended, so it never gets the full-access
-        // launch: the tool allowlist below is what makes it read-only, and it
-        // is enforced by the CLI refusing to expose anything else.
-        let review_read_only = execution_policy == ExecutionPolicy::ReviewReadOnly;
-        if !review_read_only {
-            flavor.provider().validate_access_mode(mode)?;
-        }
+        flavor.provider().validate_access_mode(mode)?;
         let resume_session_file = match provider_cursor {
             Some(cursor) if flavor.owns_cursor(&cursor) => {
                 let Some(session_file) = flavor.session_file_from_cursor(&cursor).cloned() else {
@@ -282,30 +225,11 @@ impl PiDriver {
         }
 
         let mut command = crate::command_env::command(&binary);
-        if review_read_only {
-            // Only read-capable tools exist in this session. Shells, editors,
-            // notebooks and subagents are absent rather than denied, and the
-            // delegation extension's tools are not in the allowlist, so a
-            // subtask cannot recurse.
-            command.args(review_read_only_args());
-        } else {
-            command.args(["--mode", "rpc", flavor.full_access_arg()]);
-        }
+        command.args(["--mode", "rpc", flavor.full_access_arg()]);
         if flavor.skips_version_check_by_env() {
             command.env("PI_SKIP_VERSION_CHECK", "1");
         }
-        configure_pi_delegation_command(
-            &mut command,
-            flavor,
-            delegation_session_path.as_deref(),
-            crate::delegation::pi_extension_path,
-        );
-        configure_pi_title_command(
-            &mut command,
-            flavor,
-            execution_policy,
-            pi_title_extension_path,
-        );
+        configure_pi_title_command(&mut command, flavor, pi_title_extension_path);
         let command = command
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -2160,11 +2084,8 @@ mod tests {
                 reasoning_effort: None,
                 service_tier: None,
                 context_window: None,
-                execution_policy: Default::default(),
                 agent_preset: None,
                 provider_cursor: None,
-                delegation_session_path: None,
-                delegation_registry_dir: None,
             },
             events,
         )
@@ -2956,7 +2877,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod delegation_tests {
+mod launch_tests {
     use super::*;
 
     fn command() -> std::process::Command {
@@ -2970,79 +2891,16 @@ mod delegation_tests {
             .collect()
     }
 
-    fn env(command: &std::process::Command, key: &str) -> Option<String> {
-        command
-            .get_envs()
-            .find(|(name, _)| *name == key)
-            .and_then(|(_, value)| value)
-            .map(|value| value.to_string_lossy().into_owned())
-    }
-
     #[test]
-    fn a_session_with_targets_gets_the_delegation_extension() {
+    fn a_session_gets_the_title_extension() {
         let mut command = command();
-        configure_pi_delegation_command(
-            &mut command,
-            PiFlavor::Pi,
-            Some(Path::new("/tmp/registration.json")),
-            || Ok(PathBuf::from("/bundle/delegation/pi-extension.ts")),
-        );
-
-        let args = args(&command);
-        let flag = args.iter().position(|arg| arg == "--extension").unwrap();
-        assert_eq!(args[flag + 1], "/bundle/delegation/pi-extension.ts");
-        assert!(!args.iter().any(|arg| arg == "--tools"));
-        assert_eq!(
-            env(&command, "WAKU_DELEGATION_SESSION_PATH").as_deref(),
-            Some("/tmp/registration.json")
-        );
-        // The bridge executable must be the daemon that owns this task, never
-        // an arbitrary path from the model.
-        assert_eq!(
-            env(&command, "WAKU_AGENT_TOOLS_SERVER").as_deref(),
-            std::env::current_exe()
-                .ok()
-                .as_deref()
-                .map(|path| path.to_string_lossy())
-                .as_deref()
-        );
-    }
-
-    #[test]
-    fn a_session_without_targets_spawns_no_extension() {
-        let mut command = command();
-        configure_pi_delegation_command(&mut command, PiFlavor::Pi, None, || {
-            panic!("the extension must not be probed without a registration")
+        configure_pi_title_command(&mut command, PiFlavor::Pi, || {
+            Ok(PathBuf::from("/bundle/pi/session-title.ts"))
         });
-        assert!(args(&command).is_empty());
-        assert!(env(&command, "WAKU_AGENT_TOOLS_SERVER").is_none());
-    }
-
-    #[test]
-    fn an_interactive_session_gets_the_title_extension() {
-        let mut command = command();
-        configure_pi_title_command(
-            &mut command,
-            PiFlavor::Pi,
-            ExecutionPolicy::Interactive,
-            || Ok(PathBuf::from("/bundle/pi/session-title.ts")),
-        );
         assert_eq!(
             args(&command),
             ["--extension", "/bundle/pi/session-title.ts"]
         );
-    }
-
-    #[test]
-    fn a_review_subtask_never_gets_the_title_extension() {
-        let mut command = command();
-        configure_pi_title_command(
-            &mut command,
-            PiFlavor::Pi,
-            ExecutionPolicy::ReviewReadOnly,
-            || panic!("a review subtask must not probe the title extension"),
-        );
-        assert!(args(&command).is_empty());
     }
 
     /// The extension strips Waku's title-language note before the agent sees
@@ -3052,7 +2910,6 @@ mod delegation_tests {
         let source = include_str!("../../../../resources/pi/session-title.ts");
         let prepared = super::super::title_language::TitleLanguageContext::new(
             crate::model::ProviderKind::Pi,
-            ExecutionPolicy::Interactive,
         )
         .prepare("修复侧边栏的标题更新问题".into());
         let suffix = prepared
@@ -3064,41 +2921,5 @@ mod delegation_tests {
         assert_eq!(suffix.matches('\n').count(), 4);
         let pattern = r"\n\n\[\[waku-session-title-language=[a-z]{3}\]\]\nAutomatic session titles MUST use ([^,\n]+), unless [^\n]*\n\[\[\/waku-session-title-language\]\]$";
         assert!(source.contains(pattern), "the extension's pattern drifted");
-    }
-
-    /// The subtask launch must not carry the full-access flag: `--approve` /
-    /// `--yolo` would auto-approve the writes the allowlist exists to prevent.
-    #[test]
-    fn a_review_subtask_is_launched_with_a_read_only_tool_allowlist() {
-        let _flavor = PiFlavor::Pi;
-        let mut command = command();
-        command.args(review_read_only_args());
-        let args = args(&command);
-        let tools = args
-            .iter()
-            .position(|arg| arg == "--tools")
-            .map(|index| args[index + 1].clone())
-            .expect("a review subtask must carry a tool allowlist");
-        for denied in ["bash", "edit", "write", "python", "notebook", "task"] {
-            assert!(!tools.split(',').any(|tool| tool == denied), "{denied}");
-        }
-        for allowed in ["read", "grep", "glob"] {
-            assert!(tools.split(',').any(|tool| tool == allowed), "{allowed}");
-        }
-        assert!(!args.iter().any(|arg| arg == "--approve" || arg == "--yolo"));
-    }
-
-    #[test]
-    fn a_missing_extension_leaves_the_task_runnable() {
-        let mut command = command();
-        // A build without the asset still launches the agent; it simply cannot
-        // delegate, which is what the eprintln! records.
-        configure_pi_delegation_command(
-            &mut command,
-            PiFlavor::Pi,
-            Some(Path::new("/tmp/registration.json")),
-            || anyhow::bail!("asset missing"),
-        );
-        assert!(args(&command).is_empty());
     }
 }

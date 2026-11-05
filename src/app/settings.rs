@@ -13,7 +13,7 @@ const SETTINGS_POPUP_MAX_HEIGHT: f32 = 760.0;
 const SETTINGS_CONTEXT: &str = "Settings";
 
 /// The remaining settings sections, in navigation order.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str); 4] = [
     (
         SettingsPage::Appearance,
         "settings.appearance",
@@ -24,7 +24,6 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
         "settings.providers",
         "icons/bot.svg",
     ),
-    (SettingsPage::Agents, "settings.agents", "icons/users.svg"),
     (SettingsPage::Skills, "settings.skills", "icons/package.svg"),
     (
         SettingsPage::Backups,
@@ -146,7 +145,7 @@ impl Waku {
             .shadow_xl()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(self.render_settings_sidebar(cx))
-            .child(self.render_settings_content(window, cx))
+            .child(self.render_settings_content(cx))
             .child(close);
         let layer = div()
             .id("settings-popup-layer")
@@ -323,13 +322,12 @@ impl Waku {
         self.open_settings_page(pages[next], cx);
     }
 
-    fn render_settings_content(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+    fn render_settings_content(&self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::current(cx);
         let page = self.settings_page.unwrap_or(SettingsPage::Appearance);
         let title = match page {
             SettingsPage::Appearance => tr!("settings.appearance"),
             SettingsPage::Providers => tr!("settings.providers"),
-            SettingsPage::Agents => tr!("settings.agents"),
             SettingsPage::Skills => tr!("settings.skills"),
             SettingsPage::Backups => tr!("settings.backups"),
         };
@@ -356,7 +354,6 @@ impl Waku {
                 .child(match page {
                     SettingsPage::Appearance => self.render_appearance_settings(cx),
                     SettingsPage::Providers => self.render_providers_settings(cx),
-                    SettingsPage::Agents => self.render_agent_settings(window, cx),
                     SettingsPage::Backups => self.render_backup_settings(cx),
                     SettingsPage::Skills => unreachable!(),
                 });
@@ -1150,7 +1147,6 @@ impl Waku {
             }
         }
         self.save();
-        self.refresh_delegation_model_index();
         cx.notify();
     }
 

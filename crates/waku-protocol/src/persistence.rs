@@ -82,11 +82,7 @@ pub fn migrate_retired_provider_references(value: &mut serde_json::Value) -> boo
                             changed |= selections.len() != previous;
                         }
                     }
-                    "favorite_models"
-                    | "remembered_model_traits"
-                    | "model_references"
-                    | "modelReferences"
-                    | "sub_agents" => {
+                    "favorite_models" | "remembered_model_traits" => {
                         if let Some(entries) = value.as_array_mut() {
                             let previous = entries.len();
                             entries.retain(|entry| {
@@ -129,8 +125,6 @@ pub struct ComposerDraft {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<ComposerDraftAttachment>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_references: Vec<crate::delegation::ModelReference>,
 }
 
 impl ComposerDraft {
@@ -282,7 +276,7 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn retired_model_references_do_not_discard_the_rest_of_a_draft() {
+    fn retired_delegation_targets_do_not_discard_the_rest_of_a_draft() {
         let project_id = Uuid::new_v4();
         let document = serde_json::to_vec(&serde_json::json!({
             "new_sessions": {
@@ -313,15 +307,6 @@ mod tests {
             .get(ComposerDraftKey::NewSession(project_id))
             .unwrap();
         assert_eq!(draft.text, "Keep this unfinished prompt");
-        assert_eq!(
-            draft.model_references,
-            vec![crate::delegation::ModelReference::new(
-                "active",
-                crate::model::ProviderKind::Pi,
-                "deepseek/deepseek-flash",
-                "DeepSeek",
-            )]
-        );
         let saved = serde_json::to_vec(&drafts).unwrap();
         assert_eq!(
             serde_json::from_slice::<ComposerDrafts>(&saved).unwrap(),

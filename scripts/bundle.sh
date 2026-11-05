@@ -101,8 +101,6 @@ if [ "$profile" = "release" ]; then
 fi
 cp resources/Info.plist "$contents/Info.plist"
 cp "resources/$icon_file" "$contents/Resources/AppIcon.icns"
-mkdir -p "$contents/Resources/delegation"
-cp resources/delegation/pi-extension.ts "$contents/Resources/delegation/pi-extension.ts"
 mkdir -p "$contents/Resources/pi"
 cp resources/pi/session-title.ts "$contents/Resources/pi/session-title.ts"
 frameworks_directory="$contents/Frameworks"

@@ -729,11 +729,6 @@ impl Waku {
                         crate::analytics::TurnOutcome::Failed
                     },
                 );
-                // Subtask results belong to this turn; re-read the group so
-                // the card shows its settled conclusions.
-                if self.state.selected_session == Some(session_id) {
-                    self.refresh_session_delegations(cx);
-                }
                 runtime.pending_permission = None;
                 self.clear_blocking_plan(session_id);
                 // An async question outlives the turn that asked it; its

@@ -555,10 +555,6 @@ composer.loading_suggestions: 正在加载建议…
 composer.remove_attachment: 移除 %{name}
 composer.show_in_text_field: 在输入框中显示
 composer.pasted_text: 已粘贴文本
-composer.remove_target: 移除委派目标
-composer.delegation_target_added: 已添加委派目标
-composer.delegation_unavailable: 当前 Agent 无法委派，切换到 Claude、Codex 或 Pi 才能使用 ^
-composer.invalid_model_reference: "此模型引用不明确或不可用，请重新选择：%{label}"
 composer.queued_message_actions: 后续消息操作
 branches.detached_head: 游离 HEAD
 branches.search_project: 搜索 %{project} 的分支
@@ -964,18 +960,6 @@ backup.restore_failed: "恢复失败，已保留原有数据：%{error}"
 backup.automatic_description: "Waku 打开时每 24 小时自动备份一次；错过时会在下次启动补备份。仅保留最新 1 份备份。"
 backup.latest: "最新备份"
 
-delegation.status_queued: 排队中
-delegation.status_starting: 启动中
-delegation.status_running: 运行中
-delegation.status_completed: 已完成
-delegation.status_failed: 失败
-delegation.status_cancelled: 已取消
-delegation.status_timed_out: 已超时
-delegation.status_interrupted: 已中断
-delegation.detail_unavailable: 此会话暂时无法显示该子任务。
-delegation.detail_waiting: 子任务仍在执行，完成后将在此显示结论。
-delegation.detail_no_result: 子任务已结束，但未返回结论。
-
 compaction.action: "压缩上下文"
 compaction.interrupted: "上下文压缩已停止"
 compaction.unconfirmed: "未确认上下文压缩"
@@ -987,35 +971,3 @@ compaction.focus_unsupported: "此提供商不支持指定压缩重点。"
 compaction.no_history: "发送消息后才能压缩此会话。"
 compaction.waiting_usage: "下次回复后更新用量"
 compaction.history_archived: "较早的消息已归档，以腾出上下文空间。你可以继续对话，模型会按需使用归档的历史内容。"
-
-settings.agents: 智能体
-agents.description: "智能体是可以委派工作的具名模型。在输入框中输入 ^ 并选择一个，它会独立、只读地执行任务并汇报结果。"
-agents.add_agent: 添加智能体
-agents.add_agent_ellipsis: 添加智能体…
-agents.empty: 还没有智能体。添加后即可用 ^ 委派工作。
-agents.new_agent: 新建智能体
-agents.edit_agent: 编辑智能体
-agents.edit_named: "编辑 %{name}"
-agents.delete_named: "删除 %{name}"
-agents.name: 名称
-agents.name_description: 在输入框中输入 ^ 加上这个名称即可调用该智能体。
-agents.name_placeholder: 例如：Reviewer
-agents.model: 模型
-agents.model_description: 该智能体使用的模型和思考强度。
-agents.choose_model: 选择模型
-agents.search_models: 搜索模型
-agents.no_models: 没有可用模型。请在服务商设置中启用可以运行子任务的服务商。
-agents.no_matching_models: 没有匹配的模型
-agents.instructions: 指令
-agents.instructions_description: 可选。在该智能体收到的每个任务前发送。
-agents.instructions_placeholder: 例如：重点审查安全问题，并注明文件路径。
-agents.save: 保存
-agents.error_name_empty: 请为智能体命名。
-agents.error_name_invalid: 名称不能包含方括号或换行。
-agents.error_name_duplicate: 已有其他智能体使用此名称。
-agents.error_model_missing: 请为智能体选择模型。
-agents.unavailable: 不可用
-agents.unavailable_tooltip: 该智能体的服务商已关闭、未安装，或无法运行子任务。
-transcript.sub_agent: "%{count} 个智能体"
-transcript.sub_agents: "%{count} 个智能体"
-transcript.sub_agents_open: "打开 %{name}"
