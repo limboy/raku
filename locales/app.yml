@@ -1554,6 +1554,10 @@ files.open_files_appear_here:
   en: Open files appear here
 files.open_files_description:
   en: Pick a file in the tree, or click a file path in the conversation.
+files.filter_files:
+  en: Filter files…
+files.no_matching_files:
+  en: No matching files
 files.no_project_open:
   en: No project open
 files.no_project_open_description:

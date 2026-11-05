@@ -797,6 +797,8 @@ background.unavailable: このバックグラウンド処理は利用できな�
 files.unsaved_changes: 未保存の変更があります — %{shortcut} で保存
 files.open_files_appear_here: 開いたファイルがここに表示されます
 files.open_files_description: ファイルツリーでファイルを選ぶか、会話内のファイルパスをクリックしてください。
+files.filter_files: ファイルを絞り込む…
+files.no_matching_files: 一致するファイルがありません
 files.no_project_open: プロジェクトが開かれていません
 files.no_project_open_description: プロジェクトを開くとファイルを閲覧できます
 files.no_project_is_open: 開いているプロジェクトはありません

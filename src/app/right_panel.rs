@@ -76,6 +76,68 @@ pub(super) struct WorkingTreeEntry {
     depth: usize,
 }
 
+fn filtered_working_tree_entries(
+    root: &Path,
+    files: &[FileEntry],
+    filter: &str,
+    collapsed_paths: &HashSet<PathBuf>,
+) -> Vec<WorkingTreeEntry> {
+    let filter = filter.trim().replace('\\', "/").to_lowercase();
+    let mut paths = HashMap::new();
+    for file in files {
+        let path = file.path.trim_end_matches('/');
+        if !path.to_lowercase().contains(&filter) {
+            continue;
+        }
+        paths.insert(path.to_owned(), file.is_dir);
+        let mut parent = path;
+        while let Some((directory, _)) = parent.rsplit_once('/') {
+            paths.insert(directory.to_owned(), true);
+            parent = directory;
+        }
+    }
+
+    let mut rows = paths
+        .into_iter()
+        .filter_map(|(relative_path, is_dir)| {
+            let absolute_path = root.join(&relative_path);
+            if absolute_path
+                .ancestors()
+                .skip(1)
+                .any(|path| collapsed_paths.contains(path))
+            {
+                return None;
+            }
+            let components = relative_path.split('/').collect::<Vec<_>>();
+            let name = components.last()?.to_string();
+            // A component-wise key keeps each folder's descendants together and
+            // directories before files, matching the unfiltered tree's ordering.
+            let sort_key = components
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    (
+                        index + 1 == components.len() && !is_dir,
+                        name.to_lowercase(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let entry = WorkingTreeEntry {
+                depth: components.len() - 1,
+                name: name.clone(),
+                file_icon: (!is_dir).then(|| file_icon_for_name(&name)),
+                expanded: is_dir && !collapsed_paths.contains(&absolute_path),
+                relative_path,
+                absolute_path,
+                is_dir,
+            };
+            Some((sort_key, entry))
+        })
+        .collect::<Vec<_>>();
+    rows.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    rows.into_iter().map(|(_, entry)| entry).collect()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TranscriptLinkRoute {
     ProjectFile(String),
@@ -1734,6 +1796,52 @@ mod tests {
     }
 
     #[test]
+    fn file_filter_finds_nested_matches_and_preserves_their_parent_folders() {
+        let root = Path::new("/workspace");
+        let files = [
+            "notes/Intro.md",
+            "src/tools/README.md",
+            "README.md",
+            "src/lib.rs",
+        ]
+        .map(|path| FileEntry {
+            path: path.into(),
+            is_dir: false,
+        });
+        let rows = filtered_working_tree_entries(root, &files, " readME ", &HashSet::new());
+        assert_eq!(
+            rows.iter()
+                .map(|entry| (entry.relative_path.as_str(), entry.depth, entry.expanded))
+                .collect::<Vec<_>>(),
+            [
+                ("src", 0, true),
+                ("src/tools", 1, true),
+                ("src/tools/README.md", 2, false),
+                ("README.md", 0, false)
+            ]
+        );
+        assert_eq!(rows[2].absolute_path, root.join("src/tools/README.md"));
+    }
+
+    #[test]
+    fn file_filter_matches_paths_and_allows_result_folders_to_collapse() {
+        let root = Path::new("/workspace");
+        let files = ["src/tools/README.md", "README.md", "src/lib.rs"].map(|path| FileEntry {
+            path: path.into(),
+            is_dir: false,
+        });
+        let collapsed = HashSet::from([root.join("src/tools")]);
+        let rows = filtered_working_tree_entries(root, &files, " SRC\\ ", &collapsed);
+        assert_eq!(
+            rows.iter()
+                .map(|entry| (entry.relative_path.as_str(), entry.expanded))
+                .collect::<Vec<_>>(),
+            [("src", true), ("src/tools", false), ("src/lib.rs", false)]
+        );
+        assert!(filtered_working_tree_entries(root, &files, "missing", &HashSet::new()).is_empty());
+    }
+
+    #[test]
     fn file_highlighter_language_follows_file_name_and_extension() {
         assert_eq!(file_highlighter_language("src/app.rs"), "rust");
         assert_eq!(file_highlighter_language("ui/panel.tsx"), "tsx");
@@ -2153,6 +2261,10 @@ impl Waku {
     }
 
     fn replace_active_right_panel_state(&mut self, state: RightPanelSessionState) {
+        self.right_panel_files_filter_generation =
+            self.right_panel_files_filter_generation.wrapping_add(1);
+        self.right_panel_filtered_working_tree = None;
+        self.right_panel_files_filter_collapsed_paths.clear();
         self.right_panel_visible = state.visible;
         self.right_panel_surfaces = state.surfaces;
         self.right_panel_active_surface = state.active_surface;
@@ -3142,104 +3254,29 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::current(cx);
-        let Some(project) = self.selected_project() else {
+        if self.selected_project().is_none() {
             return self.render_right_panel_empty_message(
                 tr!("files.no_project_open"),
                 tr!("files.no_project_open_description"),
                 cx,
             );
-        };
-        let project_name = project.display_name();
-        // Read only. The walk is filesystem I/O, so it happens in
-        // `refresh_right_panel_working_tree`, never in a frame.
-        let entries = self.right_panel_working_tree.clone();
-
-        let mut list = div().flex().flex_col().py(px(6.0));
-        for entry in entries {
-            let relative_path = entry.relative_path.clone();
-            let absolute_path = entry.absolute_path.clone();
-            let is_dir = entry.is_dir;
-            let selected = selected_path == Some(relative_path.as_str());
-            let row = div()
-                .id(SharedString::from(format!(
-                    "right-panel-file-{relative_path}"
-                )))
-                .h(px(30.0))
-                .mx(px(8.0))
-                .pl(px(8.0 + entry.depth as f32 * 16.0))
-                .pr(px(8.0))
-                .rounded(px(6.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .cursor_default()
-                .when(selected, |element| element.bg(theme.overlay_strong))
-                .hover(|element| element.bg(theme.overlay))
-                .child(if is_dir {
-                    icon(
-                        if entry.expanded {
-                            "icons/chevron-down.svg"
-                        } else {
-                            "icons/chevron-right.svg"
-                        },
-                        10.0,
-                        theme.text_ghost,
-                    )
-                    .into_any_element()
-                } else {
-                    div().w(px(10.0)).h(px(10.0)).flex_none().into_any_element()
-                })
-                .when_some(entry.file_icon, |element, file_icon_path| {
-                    element.child(file_icon(file_icon_path, 14.0))
-                })
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_size(sp(12.5))
-                        .text_color(theme.text_secondary)
-                        .child(entry.name),
-                );
-            list = if is_dir {
-                list.child(row.on_click(cx.listener(move |this, _, _, cx| {
-                    if !this.right_panel_expanded_paths.remove(&absolute_path) {
-                        this.right_panel_expanded_paths
-                            .insert(absolute_path.clone());
-                    }
-                    this.refresh_right_panel_working_tree(cx);
-                    cx.notify();
-                })))
-            } else {
-                let menu_id = SharedString::from(format!(
-                    "right-panel-file-menu-{}",
-                    absolute_path.display()
-                ));
-                let menu = self.menu_handle(menu_id.clone(), cx);
-                let keyboard_menu = menu.clone();
-                let keyboard_path = relative_path.clone();
-                let row = row
-                    .track_focus(menu.trigger_focus_handle())
-                    .tab_index(0)
-                    .focus_visible(|style| style.border_1().border_color(theme.accent))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_right_panel_file(relative_path.clone(), cx);
-                    }))
-                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                        let key = event.keystroke.key.as_str();
-                        if matches!(key, "enter" | "space") {
-                            this.open_right_panel_file(keyboard_path.clone(), cx);
-                            cx.stop_propagation();
-                        } else if key == "f10" && event.keystroke.modifiers.shift {
-                            keyboard_menu.open_context_menu(window, cx);
-                            cx.stop_propagation();
-                        }
-                    }));
-                list.child(context_menu(row, menu_id, &menu, move |_| {
-                    file_menu_items(absolute_path.clone())
-                }))
-            };
         }
+        let entity = cx.entity().downgrade();
+        let selected_path = selected_path.map(str::to_owned);
+        let filter_focus = self.right_panel_files_filter.focus_handle(cx);
+        let filtering = !self
+            .right_panel_files_filter
+            .read(cx)
+            .content()
+            .trim()
+            .is_empty();
+        let empty_message = filtering
+            .then(|| match &self.right_panel_filtered_working_tree {
+                None => Some(tr!("files.loading")),
+                Some(entries) if entries.is_empty() => Some(tr!("files.no_matching_files")),
+                Some(_) => None,
+            })
+            .flatten();
 
         div()
             .flex_1()
@@ -3250,22 +3287,20 @@ impl Waku {
                 div()
                     .h(px(42.0))
                     .flex_none()
-                    .px(px(16.0))
+                    .px(px(8.0))
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(icon("icons/folder.svg", 13.0, theme.text_tertiary))
                     .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .text_size(sp(12.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_secondary)
-                            .child(project_name),
+                        TextField::new(
+                            "right-panel-files-filter",
+                            self.right_panel_files_filter.clone(),
+                        )
+                        .track_focus(&filter_focus)
+                        .tab_index(0)
+                        .icon("icons/search.svg", 13.0)
+                        .w_full(),
                     ),
             )
             .child(
@@ -3274,18 +3309,242 @@ impl Waku {
                     .min_h_0()
                     .relative()
                     .child(
-                        div()
-                            .id("right-panel-files-scroll")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.right_panel_files_scroll_handle)
-                            .child(list),
+                        list(
+                            self.right_panel_files_list_state.clone(),
+                            move |index, _window, cx| {
+                                entity
+                                    .upgrade()
+                                    .map(|entity| {
+                                        entity.update(cx, |this, cx| {
+                                            this.render_right_panel_working_tree_row(
+                                                index,
+                                                selected_path.as_deref(),
+                                                cx,
+                                            )
+                                        })
+                                    })
+                                    .unwrap_or_else(|| div().into_any_element())
+                            },
+                        )
+                        .size_full()
+                        .py(px(6.0)),
                     )
+                    .when_some(empty_message, |element, message| {
+                        element.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .px(px(12.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_center()
+                                .text_size(sp(12.5))
+                                .text_color(theme.text_tertiary)
+                                .child(message),
+                        )
+                    })
                     .child(scrollbar::vertical(
-                        &self.right_panel_files_scroll_handle,
+                        &self.right_panel_files_list_state,
                         &self.right_panel_files_scrollbar,
                     )),
             )
+    }
+
+    fn render_right_panel_working_tree_row(
+        &self,
+        index: usize,
+        selected_path: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let filtering = !self
+            .right_panel_files_filter
+            .read(cx)
+            .content()
+            .trim()
+            .is_empty();
+        let entries = if filtering {
+            self.right_panel_filtered_working_tree
+                .as_deref()
+                .unwrap_or_default()
+        } else {
+            &self.right_panel_working_tree
+        };
+        let Some(entry) = entries.get(index).cloned() else {
+            return div().into_any_element();
+        };
+        let theme = Theme::current(cx);
+        let relative_path = entry.relative_path;
+        let absolute_path = entry.absolute_path;
+        let selected = selected_path == Some(relative_path.as_str());
+        let row = div()
+            .id(SharedString::from(format!(
+                "right-panel-file-{relative_path}"
+            )))
+            .h(px(30.0))
+            .mx(px(8.0))
+            .pl(px(8.0 + entry.depth as f32 * 16.0))
+            .pr(px(8.0))
+            .rounded(px(6.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .cursor_default()
+            .when(selected, |element| element.bg(theme.overlay_strong))
+            .hover(|element| element.bg(theme.overlay))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                this.navigate_right_panel_file_tree(index, event, window, cx);
+            }))
+            .child(if entry.is_dir {
+                icon(
+                    if entry.expanded {
+                        "icons/chevron-down.svg"
+                    } else {
+                        "icons/chevron-right.svg"
+                    },
+                    10.0,
+                    theme.text_ghost,
+                )
+                .into_any_element()
+            } else {
+                div().w(px(10.0)).h(px(10.0)).flex_none().into_any_element()
+            })
+            .when_some(entry.file_icon, |element, file_icon_path| {
+                element.child(file_icon(file_icon_path, 14.0))
+            })
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_size(sp(12.5))
+                    .text_color(theme.text_secondary)
+                    .child(entry.name),
+            );
+        if entry.is_dir {
+            let focus =
+                self.transcript_control_focus(format!("right-panel-directory-{relative_path}"), cx);
+            let keyboard_path = absolute_path.clone();
+            row.track_focus(&focus)
+                .tab_index(0)
+                .focus_visible(|style| style.border_1().border_color(theme.accent))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_right_panel_directory(&absolute_path, cx);
+                }))
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        this.toggle_right_panel_directory(&keyboard_path, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .into_any_element()
+        } else {
+            let menu_id =
+                SharedString::from(format!("right-panel-file-menu-{}", absolute_path.display()));
+            let menu = self.menu_handle(menu_id.clone(), cx);
+            let keyboard_menu = menu.clone();
+            let keyboard_path = relative_path.clone();
+            let row = row
+                .track_focus(menu.trigger_focus_handle())
+                .tab_index(0)
+                .focus_visible(|style| style.border_1().border_color(theme.accent))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_right_panel_file(relative_path.clone(), cx);
+                }))
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                    let key = event.keystroke.key.as_str();
+                    if matches!(key, "enter" | "space") {
+                        this.open_right_panel_file(keyboard_path.clone(), cx);
+                        cx.stop_propagation();
+                    } else if key == "f10" && event.keystroke.modifiers.shift {
+                        keyboard_menu.open_context_menu(window, cx);
+                        cx.stop_propagation();
+                    }
+                }));
+            context_menu(row, menu_id, &menu, move |_| {
+                file_menu_items(absolute_path.clone())
+            })
+            .into_any_element()
+        }
+    }
+
+    fn navigate_right_panel_file_tree(
+        &self,
+        index: usize,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let filtering = !self
+            .right_panel_files_filter
+            .read(cx)
+            .content()
+            .trim()
+            .is_empty();
+        let entries = if filtering {
+            self.right_panel_filtered_working_tree
+                .as_deref()
+                .unwrap_or_default()
+        } else {
+            &self.right_panel_working_tree
+        };
+        let last = entries.len().saturating_sub(1);
+        let target = match event.keystroke.key.as_str() {
+            "up" => index.saturating_sub(1),
+            "down" => (index + 1).min(last),
+            "home" => 0,
+            "end" => last,
+            _ => return,
+        };
+        let Some(entry) = entries.get(target) else {
+            return;
+        };
+        let focus = if entry.is_dir {
+            self.transcript_control_focus(
+                format!("right-panel-directory-{}", entry.relative_path),
+                cx,
+            )
+        } else {
+            let menu_id = SharedString::from(format!(
+                "right-panel-file-menu-{}",
+                entry.absolute_path.display()
+            ));
+            self.menu_handle(menu_id, cx).trigger_focus_handle().clone()
+        };
+        self.right_panel_files_list_state
+            .scroll_to_reveal_item(target);
+        window.defer(cx, move |window, cx| focus.focus(window, cx));
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn reset_right_panel_files_list(&self, count: usize) {
+        let scroll = self.right_panel_files_list_state.logical_scroll_top();
+        self.right_panel_files_list_state
+            .reset_with_uniform_height(count, px(30.0));
+        self.right_panel_files_list_state.scroll_to(scroll);
+    }
+
+    fn toggle_right_panel_directory(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if self
+            .right_panel_files_filter
+            .read(cx)
+            .content()
+            .trim()
+            .is_empty()
+        {
+            if !self.right_panel_expanded_paths.remove(path) {
+                self.right_panel_expanded_paths.insert(path.to_owned());
+            }
+            self.refresh_right_panel_working_tree(cx);
+        } else {
+            if !self.right_panel_files_filter_collapsed_paths.remove(path) {
+                self.right_panel_files_filter_collapsed_paths
+                    .insert(path.to_owned());
+            }
+            self.sync_right_panel_files_filter(cx);
+        }
+        cx.notify();
     }
 
     /// The read-only body for a pasted text attachment: the snippet exactly as
@@ -4912,6 +5171,58 @@ impl Waku {
         }
     }
 
+    pub(super) fn sync_right_panel_files_filter(&mut self, cx: &mut Context<Self>) {
+        self.right_panel_files_filter_generation =
+            self.right_panel_files_filter_generation.wrapping_add(1);
+        let generation = self.right_panel_files_filter_generation;
+        let filter = self
+            .right_panel_files_filter
+            .read(cx)
+            .content()
+            .trim()
+            .to_owned();
+        if filter.is_empty() {
+            self.right_panel_filtered_working_tree = None;
+            self.reset_right_panel_files_list(self.right_panel_working_tree.len());
+            return;
+        }
+        let Some(root) = self.selected_workspace_path().map(Path::to_owned) else {
+            self.right_panel_filtered_working_tree = Some(Vec::new());
+            self.reset_right_panel_files_list(0);
+            return;
+        };
+        if self.mention_file_index_path.as_ref() != Some(&root) || self.mention_file_index_loading {
+            self.right_panel_filtered_working_tree = None;
+            self.reset_right_panel_files_list(0);
+            self.refresh_composer_sources(cx);
+            return;
+        }
+        let files = self.mention_file_index.clone();
+        let collapsed = self.right_panel_files_filter_collapsed_paths.clone();
+        cx.spawn(async move |waku, cx| {
+            let entries = cx
+                .background_executor()
+                .spawn({
+                    let root = root.clone();
+                    async move { filtered_working_tree_entries(&root, &files, &filter, &collapsed) }
+                })
+                .await;
+            waku.update(cx, |waku, cx| {
+                if waku.right_panel_files_filter_generation == generation
+                    && waku
+                        .selected_workspace_path()
+                        .is_some_and(|path| path == root)
+                {
+                    waku.reset_right_panel_files_list(entries.len());
+                    waku.right_panel_filtered_working_tree = Some(entries);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Re-walks the project's working tree.
     ///
     /// `read_dir` plus a `stat` per entry, recursively over expanded
@@ -4919,18 +5230,31 @@ impl Waku {
     /// the panel keeps drawing the previous listing until the result lands.
     /// Called when the tree's inputs change, never from a frame.
     fn refresh_right_panel_working_tree(&mut self, cx: &mut Context<Self>) {
+        self.sync_right_panel_files_filter(cx);
         let Some(project_path) = self
             .selected_workspace_path()
             .map(std::path::Path::to_path_buf)
         else {
             self.right_panel_working_tree.clear();
+            self.reset_right_panel_files_list(0);
             return;
         };
         // The tree on disk moves under us, and the expanded set may just have
         // changed, so a cached listing is only good until something asks again.
         self.working_trees.invalidate(&project_path);
         match self.working_trees.read(&project_path) {
-            Query::Ready(entries) => self.right_panel_working_tree = (*entries).clone(),
+            Query::Ready(entries) => {
+                self.right_panel_working_tree = (*entries).clone();
+                if self
+                    .right_panel_files_filter
+                    .read(cx)
+                    .content()
+                    .trim()
+                    .is_empty()
+                {
+                    self.reset_right_panel_files_list(entries.len());
+                }
+            }
             Query::Pending => {}
             Query::Missing(token) => {
                 let expanded = self.right_panel_expanded_paths.clone();
@@ -4972,6 +5296,17 @@ impl Waku {
                                 .is_some_and(|path| path == project_path)
                         {
                             waku.right_panel_working_tree = entries;
+                            if waku
+                                .right_panel_files_filter
+                                .read(cx)
+                                .content()
+                                .trim()
+                                .is_empty()
+                            {
+                                waku.reset_right_panel_files_list(
+                                    waku.right_panel_working_tree.len(),
+                                );
+                            }
                             cx.notify();
                         }
                     })

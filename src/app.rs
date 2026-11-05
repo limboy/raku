@@ -1233,7 +1233,7 @@ pub struct Waku {
     slash_command_index_loading: bool,
     /// Workspace file index per project root, shared by mentions and Markdown.
     mention_files: QueryCache<PathBuf, autocomplete::FileIndex>,
-    mention_file_index: Rc<Vec<FileEntry>>,
+    mention_file_index: Arc<Vec<FileEntry>>,
     mention_file_index_path: Option<PathBuf>,
     mention_file_index_loading: bool,
     markdown_file_links: Option<Arc<md::file_links::FileLinks>>,
@@ -1343,7 +1343,8 @@ pub struct Waku {
     right_panel_surfaces: Vec<RightPanelSurface>,
     right_panel_active_surface: Option<usize>,
     right_panel_tabs_scroll_handle: ScrollHandle,
-    right_panel_files_scroll_handle: ScrollHandle,
+    right_panel_files_filter: Entity<TextInput>,
+    right_panel_files_list_state: ListState,
     right_panel_files_scrollbar: Rc<ScrollbarState>,
     right_panel_diff_filter: Entity<TextInput>,
     /// Unified diff rows and changed-file tree rows are independently
@@ -1391,6 +1392,11 @@ pub struct Waku {
     /// The working tree as currently drawn. Held so a refresh can redraw the
     /// previous listing instead of blanking the panel.
     right_panel_working_tree: Vec<right_panel::WorkingTreeEntry>,
+    /// Filtered rows come from the shared file index, including collapsed
+    /// directories. Matching and sorting run off-thread, once per query.
+    right_panel_filtered_working_tree: Option<Vec<right_panel::WorkingTreeEntry>>,
+    right_panel_files_filter_generation: u64,
+    right_panel_files_filter_collapsed_paths: HashSet<PathBuf>,
     /// Working tree per project path. Walking it is filesystem I/O and must
     /// never happen in a frame.
     working_trees: QueryCache<PathBuf, Vec<right_panel::WorkingTreeEntry>>,
@@ -1946,6 +1952,11 @@ impl Waku {
         });
         let right_panel_diff_filter =
             cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("diff.filter_files")));
+        let right_panel_files_filter = cx.new(|cx| {
+            TextInput::new(window, cx)
+                .clear_on_escape()
+                .placeholder(tr!("files.filter_files"))
+        });
         let navigation_rail = cx.new(|_| ConversationNavigationRail::new());
         let sidebar_pane = WakuPane::new(Waku::sidebar_pane_content, cx);
         let transcript_pane = WakuPane::new(Waku::transcript_pane_content, cx);
@@ -2486,6 +2497,21 @@ impl Waku {
             )
             .detach();
             cx.subscribe(
+                &right_panel_files_filter,
+                |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        this.right_panel_files_filter_collapsed_paths.clear();
+                        this.right_panel_files_list_state.scroll_to(ListOffset {
+                            item_ix: 0,
+                            offset_in_item: px(0.0),
+                        });
+                        this.sync_right_panel_files_filter(cx);
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+            cx.subscribe(
                 &right_panel_diff_filter,
                 |this: &mut Self, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Edited) {
@@ -2698,7 +2724,7 @@ impl Waku {
                 slash_command_index_key: None,
                 slash_command_index_loading: false,
                 mention_files: QueryCache::new(MAX_CACHED_WORKSPACES),
-                mention_file_index: Rc::new(Vec::new()),
+                mention_file_index: Arc::new(Vec::new()),
                 mention_file_index_path: None,
                 mention_file_index_loading: false,
                 markdown_file_links: None,
@@ -2755,7 +2781,9 @@ impl Waku {
                 right_panel_surfaces: Vec::new(),
                 right_panel_active_surface: None,
                 right_panel_tabs_scroll_handle: ScrollHandle::new(),
-                right_panel_files_scroll_handle: ScrollHandle::new(),
+                right_panel_files_filter,
+                right_panel_files_list_state: ListState::new(0, ListAlignment::Top, px(180.0))
+                    .with_uniform_item_height(px(30.0)),
                 right_panel_files_scrollbar: ScrollbarState::new(),
                 right_panel_diff_filter,
                 right_panel_diff_list_state: ListState::new(0, ListAlignment::Top, px(512.0)),
@@ -2790,6 +2818,9 @@ impl Waku {
                 right_panel_diff_tree_rows: RefCell::new(Vec::new()),
                 right_panel_diff_tree_cursor: None,
                 right_panel_working_tree: Vec::new(),
+                right_panel_filtered_working_tree: None,
+                right_panel_files_filter_generation: 0,
+                right_panel_files_filter_collapsed_paths: HashSet::new(),
                 working_trees: QueryCache::new(MAX_CACHED_WORKSPACES),
                 workspace_queries_stale: false,
                 right_panel_terminals: HashMap::new(),

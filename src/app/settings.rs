@@ -1193,6 +1193,9 @@ impl Waku {
         self.skills_search.update(cx, |input, cx| {
             input.set_placeholder(tr!("skills.search"), cx)
         });
+        self.right_panel_files_filter.update(cx, |input, cx| {
+            input.set_placeholder(tr!("files.filter_files"), cx)
+        });
         self.provider_path_input.update(cx, |input, cx| {
             input.set_placeholder(tr!("input.detected_automatically"), cx)
         });

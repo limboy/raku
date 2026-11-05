@@ -36,7 +36,7 @@ const AUTOCOMPLETE_CONTEXT: &str = "ComposerAutocomplete > TextInput";
 const AUTOCOMPLETE_LOADING_CONTEXT: &str = "ComposerAutocompleteLoading > TextInput";
 
 pub(super) struct FileIndex {
-    entries: Vec<FileEntry>,
+    entries: Arc<Vec<FileEntry>>,
     links: Arc<md::file_links::FileLinks>,
 }
 
@@ -125,7 +125,7 @@ impl Waku {
             self.slash_command_index = Rc::new(Vec::new());
             self.slash_command_index_key = None;
             self.slash_command_index_loading = false;
-            self.mention_file_index = Rc::new(Vec::new());
+            self.mention_file_index = Arc::new(Vec::new());
             self.mention_file_index_path = None;
             self.mention_file_index_loading = false;
             self.markdown_file_links = None;
@@ -199,15 +199,27 @@ impl Waku {
 
         match self.mention_files.read(&project_path) {
             Query::Ready(files) => {
-                self.mention_file_index = files.entries.clone().into();
+                let changed = !Arc::ptr_eq(&self.mention_file_index, &files.entries)
+                    || self.mention_file_index_path.as_ref() != Some(&project_path);
+                self.mention_file_index = files.entries.clone();
                 self.markdown_file_links = Some(files.links.clone());
                 self.mention_file_index_path = Some(project_path);
                 self.mention_file_index_loading = false;
+                if changed
+                    && !self
+                        .right_panel_files_filter
+                        .read(cx)
+                        .content()
+                        .trim()
+                        .is_empty()
+                {
+                    self.sync_right_panel_files_filter(cx);
+                }
             }
             Query::Pending => {
                 self.mention_file_index_loading = true;
                 if self.mention_file_index_path.as_ref() != Some(&project_path) {
-                    self.mention_file_index = Rc::new(Vec::new());
+                    self.mention_file_index = Arc::new(Vec::new());
                     self.mention_file_index_path = None;
                     self.markdown_file_links = None;
                 }
@@ -215,7 +227,7 @@ impl Waku {
             Query::Missing(token) => {
                 self.mention_file_index_loading = true;
                 if self.mention_file_index_path.as_ref() != Some(&project_path) {
-                    self.mention_file_index = Rc::new(Vec::new());
+                    self.mention_file_index = Arc::new(Vec::new());
                     self.mention_file_index_path = None;
                     self.markdown_file_links = None;
                 }
@@ -243,7 +255,10 @@ impl Waku {
                                     .filter(|entry| !entry.is_dir)
                                     .map(|entry| entry.path.as_str()),
                             ));
-                            FileIndex { entries, links }
+                            FileIndex {
+                                entries: Arc::new(entries),
+                                links,
+                            }
                         })
                         .await;
                     waku.update(cx, |waku, cx| {
@@ -322,7 +337,7 @@ impl Waku {
             TriggerKind::Command | TriggerKind::Skill => {
                 Rc::as_ptr(&self.slash_command_index) as usize
             }
-            TriggerKind::File => Rc::as_ptr(&self.mention_file_index) as usize,
+            TriggerKind::File => Arc::as_ptr(&self.mention_file_index) as usize,
         };
         {
             let memo = self.composer_autocomplete.results.borrow();
