@@ -1361,6 +1361,8 @@ impl Waku {
             .id("window-header")
             .h(px(48.0))
             .flex_none()
+            .border_b_1()
+            .border_color(theme.border)
             .flex()
             .items_center()
             .gap(px(8.0))
