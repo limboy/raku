@@ -471,7 +471,11 @@ impl Waku {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_right_panel_visible(!self.right_panel_visible, cx);
+        if self.right_panel_visible {
+            self.set_right_panel_visible(false, cx);
+        } else {
+            self.open_right_panel_surface(RightPanelSurface::Files, cx);
+        }
     }
 
     pub(super) fn toggle_fps_counter_action(

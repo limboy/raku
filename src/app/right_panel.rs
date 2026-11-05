@@ -8,7 +8,7 @@ use crate::md::file_links::strip_file_location;
 
 const TAB_SCROLL_FADE_WIDTH: f32 = 24.0;
 const REVIEW_DIFF_FILE_HEADER_HEIGHT: f32 = 36.0;
-const RIGHT_PANEL_TOGGLE_SIZE: f32 = 26.0;
+const RIGHT_PANEL_TOGGLE_SIZE: f32 = 28.0;
 const RIGHT_TITLEBAR_INSET: f32 = 14.0;
 const RIGHT_TITLEBAR_GAP: f32 = 6.0;
 const MAX_ATTACHMENT_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
@@ -1005,10 +1005,13 @@ fn attachment_text(bytes: Vec<u8>) -> anyhow::Result<String> {
 }
 
 impl RightPanelSurface {
+    // Keep the browser and terminal implementations while their entry points are hidden.
+    #[allow(dead_code)]
     fn new_browser() -> Self {
         Self::Browser(Uuid::new_v4())
     }
 
+    #[allow(dead_code)]
     pub(super) fn new_terminal() -> Self {
         Self::Terminal(Uuid::new_v4())
     }
@@ -2297,9 +2300,40 @@ impl Waku {
         self.right_panel_tabs_scroll_handle.scroll_to_item(index);
     }
 
-    fn active_right_panel_surface(&self) -> Option<&RightPanelSurface> {
+    pub(super) fn active_right_panel_surface(&self) -> Option<&RightPanelSurface> {
         self.right_panel_active_surface
             .and_then(|index| self.right_panel_surfaces.get(index))
+    }
+
+    fn right_panel_files_are_active(&self) -> bool {
+        self.right_panel_visible
+            && matches!(
+                self.active_right_panel_surface(),
+                Some(
+                    RightPanelSurface::Files
+                        | RightPanelSurface::File(_)
+                        | RightPanelSurface::AttachmentFile(_)
+                        | RightPanelSurface::PastedText { .. }
+                )
+            )
+    }
+
+    fn toggle_right_panel_files(&mut self, cx: &mut Context<Self>) {
+        if self.right_panel_files_are_active() {
+            self.set_right_panel_visible(false, cx);
+        } else {
+            self.open_right_panel_surface(RightPanelSurface::Files, cx);
+        }
+    }
+
+    pub(super) fn toggle_right_panel_diff(&mut self, cx: &mut Context<Self>) {
+        if self.right_panel_visible
+            && self.active_right_panel_surface() == Some(&RightPanelSurface::Diff)
+        {
+            self.set_right_panel_visible(false, cx);
+        } else {
+            self.set_right_panel_diff_source(ReviewDiffSource::Uncommitted, cx);
+        }
     }
 
     pub(super) fn request_active_terminal_focus(&mut self) {
@@ -2563,62 +2597,86 @@ impl Waku {
             window,
             cx,
         );
-        RIGHT_TITLEBAR_INSET
-            + RIGHT_PANEL_TOGGLE_SIZE
-            + if window_controls > 0.0 {
-                RIGHT_TITLEBAR_GAP + window_controls
-            } else {
-                0.0
-            }
+        if window_controls > 0.0 {
+            RIGHT_TITLEBAR_INSET + window_controls
+        } else {
+            0.0
+        }
     }
 
-    /// One window-anchored toggle survives the entire panel slide; neither
-    /// header owns a second copy while the panel is still on screen.
+    /// Native window controls stay anchored to the window; workspace controls
+    /// live in the main header, outside the right panel.
     pub(super) fn render_right_titlebar_controls(
         &self,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        div()
-            .id("right-titlebar-controls")
-            .absolute()
-            .top_0()
-            .right_0()
-            .w(px(self.right_titlebar_controls_width(window, cx)))
-            .h(px(48.0))
-            .pr(px(RIGHT_TITLEBAR_INSET))
-            .flex()
-            .items_center()
-            .gap(px(RIGHT_TITLEBAR_GAP))
-            .child(self.render_right_panel_toggle(cx))
-            .children(self.render_client_window_controls(
-                super::window_chrome::WindowControlSide::Right,
-                window,
-                cx,
-            ))
+    ) -> Option<Stateful<Div>> {
+        let width = self.right_titlebar_controls_width(window, cx);
+        (width > 0.0).then(|| {
+            div()
+                .id("right-titlebar-controls")
+                .absolute()
+                .top_0()
+                .right_0()
+                .w(px(width))
+                .h(px(48.0))
+                .pr(px(RIGHT_TITLEBAR_INSET))
+                .flex()
+                .items_center()
+                .children(self.render_client_window_controls(
+                    super::window_chrome::WindowControlSide::Right,
+                    window,
+                    cx,
+                ))
+        })
     }
 
-    fn render_right_panel_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn render_right_panel_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::current(cx);
+        let selected = self.right_panel_files_are_active();
+        let focus = self.transcript_control_focus("toggle-right-panel", cx);
         div()
             .id("toggle-right-panel")
+            .track_focus(&focus)
+            .tab_index(0)
+            .tab_stop(true)
             .size(px(RIGHT_PANEL_TOGGLE_SIZE))
             .flex_none()
-            .rounded(px(6.0))
+            .rounded(px(7.0))
             .flex()
             .items_center()
             .justify_center()
             .cursor_default()
-            .hover(|element| element.bg(theme.overlay))
+            .when(selected, |element| element.bg(theme.overlay_strong))
+            .when(!selected, |element| {
+                element.hover(|element| element.bg(theme.overlay))
+            })
             .active(|element| element.bg(theme.overlay_strong))
-            .child(icon("icons/panel-right.svg", 14.0, theme.text_tertiary))
-            .tooltip(|window, cx| Tooltip::new(tr!("right_panel.toggle")).build(window, cx))
+            .focus_visible(|style| style.border_1().border_color(theme.accent))
+            .child(icon(
+                "icons/folder.svg",
+                15.0,
+                if selected {
+                    theme.text
+                } else {
+                    theme.text_tertiary
+                },
+            ))
+            .tooltip(Tooltip::text(tr!("right_panel.files")))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
             .on_click(cx.listener(|this, _, _, cx| {
                 cx.stop_propagation();
-                this.set_right_panel_visible(!this.right_panel_visible, cx);
+                this.toggle_right_panel_files(cx);
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if !event.keystroke.modifiers.modified()
+                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                {
+                    this.toggle_right_panel_files(cx);
+                    cx.stop_propagation();
+                }
             }))
     }
 
@@ -2964,7 +3022,7 @@ impl Waku {
         }
         tabs = tabs.child(div().w(px(TAB_SCROLL_FADE_WIDTH)).h(px(1.0)).flex_none());
 
-        let mut header = div()
+        let header = div()
             .id("right-panel-header")
             .h(px(48.0))
             .flex_none()
@@ -3004,51 +3062,6 @@ impl Waku {
                     )),
             );
 
-        if !self.right_panel_surfaces.is_empty() {
-            let weak = cx.entity().downgrade();
-            let existing_surfaces = self.right_panel_surfaces.clone();
-            let options = [
-                RightPanelSurface::new_browser(),
-                RightPanelSurface::new_terminal(),
-                RightPanelSurface::Files,
-                RightPanelSurface::Diff,
-            ];
-            let handle = self.menu_handle("add-right-panel-surface", cx);
-            header = header.child(
-                div()
-                    .flex_none()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(dropdown_menu(
-                        icon_button("add-right-panel-surface", "icons/plus.svg", theme),
-                        "add-right-panel-surface-menu",
-                        &handle,
-                        MenuAlign::BelowRight,
-                        move |_| {
-                            options
-                                .clone()
-                                .into_iter()
-                                .map(|surface| {
-                                    let weak = weak.clone();
-                                    let open_surface = surface.clone();
-                                    let already_open =
-                                        reusable_surface_index(&existing_surfaces, &surface)
-                                            .is_some();
-                                    MenuItem::new(surface.label(), move |_, cx| {
-                                        let _ = weak.update(cx, |this, cx| {
-                                            this.open_right_panel_surface(open_surface.clone(), cx);
-                                        });
-                                    })
-                                    .icon(surface.icon_path())
-                                    .selected(already_open)
-                                })
-                                .collect()
-                        },
-                    )),
-            );
-        }
-
         self.window_drag_region(header, cx)
     }
 
@@ -3087,23 +3100,6 @@ impl Waku {
                     .child(
                         div()
                             .mt(px(18.0))
-                            .w_full()
-                            .flex()
-                            .gap(px(8.0))
-                            .child(self.render_right_panel_card(
-                                RightPanelSurface::new_browser(),
-                                tr!("right_panel.browser_description"),
-                                cx,
-                            ))
-                            .child(self.render_right_panel_card(
-                                RightPanelSurface::new_terminal(),
-                                tr!("right_panel.terminal_description"),
-                                cx,
-                            )),
-                    )
-                    .child(
-                        div()
-                            .mt(px(8.0))
                             .w_full()
                             .flex()
                             .gap(px(8.0))

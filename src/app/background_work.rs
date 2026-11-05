@@ -930,21 +930,8 @@ impl Waku {
     pub(super) fn render_background_work_summary(&self, cx: &mut Context<Self>) -> AnyElement {
         let session = self.selected_session();
         let session_id = session.map(|session| session.id);
-        let workspace_path = session
-            .and_then(|session| self.workspace_path_for_session(session))
-            .or_else(|| {
-                self.selected_project()
-                    .map(|project| project.path.as_path())
-            });
-        let snapshot = workspace_path.and_then(|path| {
-            self.visible_branch_snapshot
-                .as_ref()
-                .filter(|(snapshot_path, _)| snapshot_path == path)
-                .map(|(_, snapshot)| snapshot)
-        });
-        let change_counts = snapshot
-            .map(|snapshot| (snapshot.additions, snapshot.deletions))
-            .filter(|(additions, deletions)| *additions > 0 || *deletions > 0);
+        let diff_selected = self.right_panel_visible
+            && self.active_right_panel_surface() == Some(&RightPanelSurface::Diff);
         let (processes, agents) = session_id
             .map(|session_id| self.background_work_counts(session_id))
             .unwrap_or_default();
@@ -958,6 +945,7 @@ impl Waku {
                 });
             }
         });
+        let info_selected = handle.is_open();
         let trigger = div()
             .id("environment-summary-trigger")
             .size(px(28.0))
@@ -968,15 +956,20 @@ impl Waku {
             .items_center()
             .justify_center()
             .cursor_default()
-            .focus_visible(|style| {
-                style
-                    .bg(theme.overlay)
-                    .border_1()
-                    .border_color(theme.accent)
+            .focus_visible(|style| style.border_1().border_color(theme.accent))
+            .when(!info_selected, |style| {
+                style.hover(|style| style.bg(theme.overlay))
             })
-            .hover(|style| style.bg(theme.overlay))
-            .when(handle.is_open(), |style| style.bg(theme.overlay_strong))
-            .child(icon("icons/info.svg", 15.0, theme.text_tertiary))
+            .when(info_selected, |style| style.bg(theme.overlay_strong))
+            .child(icon(
+                "icons/info.svg",
+                15.0,
+                if info_selected {
+                    theme.text
+                } else {
+                    theme.text_tertiary
+                },
+            ))
             .when(has_live_work, |trigger| {
                 trigger.child(
                     div()
@@ -986,60 +979,53 @@ impl Waku {
                         .child(pulse_dot(5.0, theme.accent)),
                 )
             });
-        let git_status = change_counts.map(|(additions, deletions)| {
+        let diff = {
             let focus = self.transcript_control_focus("header-git-status", cx);
             div()
                 .id("header-git-status")
                 .track_focus(&focus)
                 .tab_index(0)
-                .h(px(28.0))
-                .px(px(7.0))
+                .tab_stop(true)
+                .size(px(28.0))
                 .rounded(px(7.0))
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(6.0))
+                .justify_center()
                 .cursor_default()
-                .text_size(sp(12.5))
-                .font_weight(FontWeight::MEDIUM)
-                .focus_visible(|style| {
-                    style
-                        .bg(theme.overlay)
-                        .border_1()
-                        .border_color(theme.accent)
+                .focus_visible(|style| style.border_1().border_color(theme.accent))
+                .when(diff_selected, |style| style.bg(theme.overlay_strong))
+                .when(!diff_selected, |style| {
+                    style.hover(|style| style.bg(theme.overlay))
                 })
-                .hover(|style| style.bg(theme.overlay))
                 .active(|style| style.bg(theme.overlay_strong))
-                .when(additions > 0, |button| {
-                    button.child(
-                        div()
-                            .text_color(theme.success)
-                            .child(format!("+{additions}")),
-                    )
-                })
-                .when(deletions > 0, |button| {
-                    button.child(
-                        div()
-                            .text_color(theme.danger)
-                            .child(format!("-{deletions}")),
-                    )
-                })
+                .child(icon(
+                    "icons/file-diff.svg",
+                    15.0,
+                    if diff_selected {
+                        theme.text
+                    } else {
+                        theme.text_tertiary
+                    },
+                ))
                 .tooltip(Tooltip::text(tr!("environment.changes")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();
                 })
                 .on_click(cx.listener(|this, _, _, cx| {
                     cx.stop_propagation();
-                    this.set_right_panel_diff_source(ReviewDiffSource::Uncommitted, cx);
+                    this.toggle_right_panel_diff(cx);
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        this.set_right_panel_diff_source(ReviewDiffSource::Uncommitted, cx);
+                    if !event.keystroke.modifiers.modified()
+                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    {
+                        this.toggle_right_panel_diff(cx);
                         cx.stop_propagation();
                     }
                 }))
                 .into_any_element()
-        });
+        };
         let weak = cx.entity().downgrade();
         let info = popover(
             trigger,
@@ -1062,8 +1048,9 @@ impl Waku {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .children(git_status)
             .child(info)
+            .child(diff)
+            .child(self.render_right_panel_toggle(cx))
             .into_any_element()
     }
 

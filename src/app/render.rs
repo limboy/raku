@@ -367,7 +367,7 @@ impl Render for Waku {
                 )
             })
             .child(self.render_window_navigation(window, cx))
-            .child(self.render_right_titlebar_controls(window, cx))
+            .children(self.render_right_titlebar_controls(window, cx))
             .when(self.settings_page.is_some(), |root| {
                 root.child(
                     self.settings_pane
