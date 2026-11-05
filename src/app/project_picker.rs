@@ -1,7 +1,7 @@
 //! The project picker behind the sidebar selector, the empty-state headline
 //! and the composer footer's project chip: a filter field over a virtualized project list, with the
-//! add-project and no-project actions pinned beneath it so a long list can
-//! never push them out of reach.
+//! no-project action pinned above it and the add-project action below it so
+//! a long list can never push them out of reach.
 //!
 //! The triggers never have their panels open together, so they share one
 //! filter field, one keyboard cursor and one list. Rows are only ranked while
@@ -74,8 +74,8 @@ pub(super) struct ProjectPickerEntry {
     pub finished: bool,
 }
 
-/// A keyboard-reachable target, in drawn order: each project and its remove
-/// button, then the two pinned actions.
+/// A keyboard-reachable target, in drawn order: no project, each project and
+/// its remove button, then new project.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectPickerAction {
     Select(Uuid),
@@ -214,18 +214,14 @@ impl Waku {
             self.sync_project_picker_rows(&projects);
         }
         let actions = Rc::new(
-            projects
-                .iter()
-                .flat_map(|entry| {
+            std::iter::once(ProjectPickerAction::NoProject)
+                .chain(projects.iter().flat_map(|entry| {
                     [
                         ProjectPickerAction::Select(entry.id),
                         ProjectPickerAction::Remove(entry.id),
                     ]
-                })
-                .chain([
-                    ProjectPickerAction::NewProject,
-                    ProjectPickerAction::NoProject,
-                ])
+                }))
+                .chain(std::iter::once(ProjectPickerAction::NewProject))
                 .collect::<Vec<_>>(),
         );
         let highlight = self
@@ -271,6 +267,8 @@ impl Waku {
                                     return div().into_any_element();
                                 };
                                 let project_id = entry.id;
+                                let select_index = index * 2 + 1;
+                                let remove_index = select_index + 1;
                                 let name = entry.name.clone();
                                 let status = entry.status;
                                 let finished = entry.finished;
@@ -280,7 +278,7 @@ impl Waku {
                                 let select_popover = list_popover.clone();
                                 project_picker_row(
                                     ("project-row", index),
-                                    highlight == Some(index * 2),
+                                    highlight == Some(select_index),
                                     &theme,
                                 )
                                 .group("project-picker-row")
@@ -315,7 +313,7 @@ impl Waku {
                                         .flex_none()
                                         .when(
                                             selected_project == Some(project_id)
-                                                && highlight != Some(index * 2 + 1),
+                                                && highlight != Some(remove_index),
                                             |element| {
                                                 element.child(
                                                     div()
@@ -339,7 +337,7 @@ impl Waku {
                                         .when(
                                             selected_project != Some(project_id)
                                                 && finished
-                                                && highlight != Some(index * 2 + 1),
+                                                && highlight != Some(remove_index),
                                             |element| {
                                                 element.child(
                                                     div()
@@ -379,7 +377,7 @@ impl Waku {
                                                     .border_1()
                                                     .border_color(theme.accent)
                                             })
-                                            .when(highlight == Some(index * 2 + 1), |element| {
+                                            .when(highlight == Some(remove_index), |element| {
                                                 element.opacity(1.0).bg(theme.overlay_strong)
                                             })
                                             .tooltip(Tooltip::text(tr!("project.remove")))
@@ -438,7 +436,6 @@ impl Waku {
 
                 let pinned_row = |action: ProjectPickerAction,
                                   id: &'static str,
-                                  icon_path: &'static str,
                                   label: String,
                                   selected: bool| {
                     let weak = weak.clone();
@@ -446,7 +443,6 @@ impl Waku {
                     let index = actions.iter().position(|candidate| *candidate == action);
                     project_picker_row(id, highlight.is_some() && highlight == index, &theme)
                         .mx(px(4.0))
-                        .child(icon(icon_path, 12.0, theme.text_secondary))
                         .child(
                             div()
                                 .min_w_0()
@@ -553,21 +549,20 @@ impl Waku {
                                     .child(div().flex_1().min_w_0().child(search.clone())),
                             ),
                     )
+                    .child(pinned_row(
+                        ProjectPickerAction::NoProject,
+                        "project-picker-none",
+                        tr!("project.no_project_name"),
+                        projectless_selected,
+                    ))
+                    .child(div().mx(px(6.0)).my(px(4.0)).h(px(1.0)).bg(theme.border))
                     .child(rows)
                     .child(div().mx(px(6.0)).my(px(4.0)).h(px(1.0)).bg(theme.border))
                     .child(pinned_row(
                         ProjectPickerAction::NewProject,
                         "project-picker-new",
-                        "icons/folder-new.svg",
                         tr!("project.new_project"),
                         false,
-                    ))
-                    .child(pinned_row(
-                        ProjectPickerAction::NoProject,
-                        "project-picker-none",
-                        "icons/folder-dashed.svg",
-                        tr!("project.no_project"),
-                        projectless_selected,
                     ))
                     .child(div().h(px(4.0)))
                     .into_any_element()
@@ -602,9 +597,9 @@ impl Waku {
         };
         self.project_picker_highlight = Some(next);
         // The pinned actions sit outside the list and are always visible.
-        if next < row_count * 2 {
+        if next > 0 && next <= row_count * 2 {
             self.project_picker_list_state
-                .scroll_to_reveal_item(next / 2);
+                .scroll_to_reveal_item((next - 1) / 2);
         }
         cx.notify();
     }
@@ -703,15 +698,17 @@ fn next_project_picker_highlight(
         "shift-tab" => next_picker_highlight(current, row_count * 2 + 2, "up"),
         "up" | "down" => {
             let row = current.map(|index| {
-                if index < row_count * 2 {
-                    index / 2
+                if index <= row_count * 2 {
+                    (index + 1) / 2
                 } else {
                     index - row_count
                 }
             });
             next_picker_highlight(row, row_count + 2, key).map(|index| {
-                if index < row_count {
-                    index * 2
+                if index == 0 {
+                    0
+                } else if index <= row_count {
+                    index * 2 - 1
                 } else {
                     index + row_count
                 }
@@ -1149,16 +1146,21 @@ mod tests {
 
     #[test]
     fn arrows_skip_remove_buttons_while_tab_visits_them() {
-        // Two projects, then New project and No project.
+        // No project, two projects (each with a remove button), then New project.
         assert_eq!(next_project_picker_highlight(None, 2, "down"), Some(0));
         assert_eq!(next_project_picker_highlight(Some(0), 2, "tab"), Some(1));
-        assert_eq!(next_project_picker_highlight(Some(1), 2, "down"), Some(2));
+        assert_eq!(next_project_picker_highlight(Some(0), 2, "down"), Some(1));
+        assert_eq!(next_project_picker_highlight(Some(1), 2, "tab"), Some(2));
+        assert_eq!(next_project_picker_highlight(Some(1), 2, "down"), Some(3));
         assert_eq!(next_project_picker_highlight(Some(2), 2, "up"), Some(0));
         assert_eq!(next_project_picker_highlight(Some(2), 2, "tab"), Some(3));
-        assert_eq!(next_project_picker_highlight(Some(2), 2, "down"), Some(4));
+        assert_eq!(next_project_picker_highlight(Some(2), 2, "down"), Some(3));
+        assert_eq!(next_project_picker_highlight(Some(3), 2, "tab"), Some(4));
+        assert_eq!(next_project_picker_highlight(Some(3), 2, "down"), Some(5));
         assert_eq!(next_project_picker_highlight(Some(4), 2, "down"), Some(5));
         assert_eq!(next_project_picker_highlight(Some(5), 2, "down"), Some(0));
-        assert_eq!(next_project_picker_highlight(Some(4), 2, "up"), Some(2));
+        assert_eq!(next_project_picker_highlight(Some(4), 2, "up"), Some(1));
+        assert_eq!(next_project_picker_highlight(Some(5), 2, "up"), Some(3));
         assert_eq!(
             next_project_picker_highlight(Some(0), 2, "shift-tab"),
             Some(5)
