@@ -1662,7 +1662,6 @@ impl Waku {
             .rounded(px(12.0))
             .border_1()
             .border_color(theme.border_strong)
-            .bg(theme.overlay)
             .tab_index(0)
             .tab_group()
             .tab_stop(false)
@@ -1723,6 +1722,9 @@ impl Waku {
                     .child(review),
             );
 
+        // The card is an outline on the transcript surface. `overflow_hidden`
+        // does not clip child paint to its rounded corners, so the last row's
+        // hover fill carries its own bottom radius (12px less the 1px border).
         let mut file_rows = div()
             .w_full()
             .min_w_0()
@@ -1730,26 +1732,50 @@ impl Waku {
             .flex_col()
             .border_t_1()
             .border_color(theme.border);
-        for file in files.iter().take(visible_count) {
+        let row_count = visible_count + usize::from(can_expand);
+        for (index, file) in files.iter().take(visible_count).enumerate() {
+            let last = index + 1 == row_count;
+            let row_focus = self.transcript_control_focus(
+                format!("changed-file-{turn_id}-{}", file.path),
+                cx,
+            );
+            let path = file.path.clone();
+            let key_path = file.path.clone();
             file_rows = file_rows.child(
                 div()
+                    .id(SharedString::from(format!(
+                        "changed-file-{turn_id}-{}",
+                        file.path
+                    )))
+                    .track_focus(&row_focus)
+                    .tab_index(0)
                     .h(px(31.0))
                     .px(px(12.0))
                     .flex()
                     .items_center()
                     .gap(px(8.0))
+                    .cursor_default()
+                    .when(last, |row| row.rounded_b(px(11.0)))
+                    .hover(|style| style.bg(theme.overlay))
+                    .active(|style| style.bg(theme.overlay_strong))
+                    .focus_visible(|style| style.bg(theme.overlay_strong))
+                    .tooltip(Tooltip::text(file.path.clone()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_turn_diff_file(turn_id, path.clone(), cx);
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.open_turn_diff_file(turn_id, key_path.clone(), cx);
+                            cx.stop_propagation();
+                        }
+                    }))
                     .child(
                         div()
-                            .id(SharedString::from(format!(
-                                "changed-file-path-{turn_id}-{}",
-                                file.path
-                            )))
                             .min_w_0()
                             .flex_1()
                             .truncate()
                             .text_size(sp(12.5))
                             .text_color(theme.text_secondary)
-                            .tooltip(Tooltip::text(file.path.clone()))
                             .child(file.path.clone()),
                     )
                     .child(
@@ -1768,8 +1794,6 @@ impl Waku {
                     ),
             );
         }
-        card = card.child(file_rows);
-
         if can_expand {
             let toggle_focus =
                 self.transcript_control_focus(format!("changed-files-toggle-{turn_id}"), cx);
@@ -1781,11 +1805,12 @@ impl Waku {
                     count = files.len() - CHANGED_FILES_PREVIEW_LIMIT
                 )
             };
-            card = card.child(
+            file_rows = file_rows.child(
                 div()
                     .id(SharedString::from(format!(
                         "changed-files-toggle-{turn_id}"
                     )))
+                    .rounded_b(px(11.0))
                     .track_focus(&toggle_focus)
                     .tab_index(0)
                     .h(px(34.0))
@@ -1838,6 +1863,7 @@ impl Waku {
                     })),
             );
         }
+        card = card.child(file_rows);
 
         Some(card.into_any_element())
     }

@@ -1389,6 +1389,8 @@ pub struct Waku {
     right_panel_diff_error: Option<String>,
     right_panel_diff_generation: u64,
     right_panel_diff_selected_file: Option<usize>,
+    /// A file to scroll to once the pending diff snapshot lands.
+    right_panel_diff_reveal_path: Option<String>,
     right_panel_diff_expanded_paths: HashSet<String>,
     right_panel_diff_tree_rows: RefCell<Vec<right_panel::ReviewDiffTreeRow>>,
     right_panel_diff_tree_cursor: Option<usize>,
@@ -2827,6 +2829,7 @@ impl Waku {
                 right_panel_diff_error: None,
                 right_panel_diff_generation: 0,
                 right_panel_diff_selected_file: None,
+                right_panel_diff_reveal_path: None,
                 right_panel_diff_expanded_paths: HashSet::new(),
                 right_panel_diff_tree_rows: RefCell::new(Vec::new()),
                 right_panel_diff_tree_cursor: None,

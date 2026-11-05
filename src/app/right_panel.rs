@@ -2690,7 +2690,27 @@ impl Waku {
         self.right_panel_diff_selection.clear();
         self.right_panel_diff_snapshot = None;
         self.right_panel_diff_selected_file = None;
+        self.right_panel_diff_reveal_path = None;
         self.open_right_panel_surface(RightPanelSurface::Diff, cx);
+    }
+
+    /// Opens a turn's diff scrolled to one file. The diff loads off the UI
+    /// thread, so the path is held until that snapshot lands.
+    pub(super) fn open_turn_diff_file(
+        &mut self,
+        turn_id: Uuid,
+        path: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_turn_diff(turn_id, cx);
+        // `open_turn_diff` bails when the turn is gone; only arm the reveal
+        // when it actually switched to this turn.
+        if matches!(
+            self.right_panel_diff_source,
+            ReviewDiffSource::LastTurn { turn_id: source, .. } if source == turn_id
+        ) {
+            self.right_panel_diff_reveal_path = Some(path);
+        }
     }
 
     fn open_right_panel_file(&mut self, relative_path: String, cx: &mut Context<Self>) {
@@ -5621,6 +5641,7 @@ impl Waku {
         cx: &mut Context<Self>,
     ) {
         if self.right_panel_diff_source != source {
+            self.right_panel_diff_reveal_path = None;
             self.right_panel_diff_selection.clear();
             self.right_panel_diff_source = source;
             self.right_panel_diff_snapshot = None;
@@ -5733,10 +5754,16 @@ impl Waku {
                                 snapshot.files.iter().position(|file| file.path == path)
                             })
                             .or_else(|| (!snapshot.files.is_empty()).then_some(0));
+                        let reveal = waku.right_panel_diff_reveal_path.take().and_then(|path| {
+                            snapshot.files.iter().position(|file| file.path == path)
+                        });
                         let line_count = snapshot.lines.len();
                         waku.right_panel_diff_snapshot = Some(Arc::new(snapshot));
                         waku.right_panel_diff_error = None;
                         waku.right_panel_diff_list_state.reset(line_count);
+                        if let Some(file_index) = reveal {
+                            waku.select_right_panel_diff_file(file_index, cx);
+                        }
                         waku.sync_right_panel_diff_tree_rows(cx);
                     }
                     Err(error) => {
