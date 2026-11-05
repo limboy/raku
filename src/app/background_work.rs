@@ -1541,7 +1541,7 @@ fn render_background_summary_card(
         .border_1()
         .border_color(theme.border_strong)
         .overflow_hidden()
-        .bg(theme.raised)
+        .bg(theme.menu)
         .shadow_lg()
         .child(content)
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
