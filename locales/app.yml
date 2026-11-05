@@ -247,7 +247,7 @@ settings.theme_dark:
 input.do_anything:
   en: Do anything…
 input.search_models:
-  en: Search models…
+  en: Search models
 input.search_branches:
   en: Search branches
 input.search_projects:

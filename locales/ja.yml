@@ -125,7 +125,7 @@ settings.theme_light: ライト
 settings.theme_dark: ダーク
 
 input.do_anything: 何でも依頼できます…
-input.search_models: モデルを検索…
+input.search_models: モデルを検索
 input.search_branches: ブランチを検索
 input.search_projects: プロジェクトを検索
 input.detected_automatically: 自動検出

@@ -835,11 +835,11 @@ impl Waku {
                             .h(px(34.0))
                             .px(px(10.0))
                             .rounded(px(9.0))
-                            .bg(theme.composer)
+                            // The pane behind is `surface`; a white field
+                            // would vanish into it.
+                            .bg(theme.raised)
                             .flex()
                             .items_center()
-                            .gap(px(8.0))
-                            .child(icon("icons/search.svg", 15.0, theme.text_secondary))
                             .child(div().flex_1().min_w_0().child(search.clone())),
                     );
 

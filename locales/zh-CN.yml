@@ -120,7 +120,7 @@ settings.theme_system: 跟随系统
 settings.theme_light: 浅色
 settings.theme_dark: 深色
 input.do_anything: 做什么都可以…
-input.search_models: 搜索模型…
+input.search_models: 搜索模型
 input.search_branches: 搜索分支
 input.search_projects: 搜索项目
 input.detected_automatically: 自动检测
