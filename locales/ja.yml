@@ -795,6 +795,8 @@ background.status.lost: 切断
 background.unavailable: このバックグラウンド処理は利用できなくなりました。
 
 files.unsaved_changes: 未保存の変更があります — %{shortcut} で保存
+files.open_files_appear_here: 開いたファイルがここに表示されます
+files.open_files_description: ファイルツリーでファイルを選ぶか、会話内のファイルパスをクリックしてください。
 files.no_project_open: プロジェクトが開かれていません
 files.no_project_open_description: プロジェクトを開くとファイルを閲覧できます
 files.no_project_is_open: 開いているプロジェクトはありません

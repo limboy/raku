@@ -1550,6 +1550,10 @@ background.unavailable:
 
 files.unsaved_changes:
   en: Unsaved changes — %{shortcut} to save
+files.open_files_appear_here:
+  en: Open files appear here
+files.open_files_description:
+  en: Pick a file in the tree, or click a file path in the conversation.
 files.no_project_open:
   en: No project open
 files.no_project_open_description:

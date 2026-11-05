@@ -2251,7 +2251,10 @@ impl Waku {
         cx: &mut Context<Self>,
     ) {
         let reusable_index = reusable_surface_index(&self.right_panel_surfaces, &surface);
-        if matches!(&surface, RightPanelSurface::File(_)) {
+        if matches!(
+            &surface,
+            RightPanelSurface::Files | RightPanelSurface::File(_)
+        ) {
             self.ensure_initial_right_panel_file_editor_width();
         }
         if surface == RightPanelSurface::Diff {
@@ -3066,8 +3069,71 @@ impl Waku {
         if let Some(relative_path) = self.right_panel_files_selected_path.clone() {
             self.render_right_panel_file(relative_path, None, panel_width, window, cx)
         } else {
-            self.render_right_panel_working_tree(None, cx)
+            let theme = Theme::current(cx);
+            let file_tree_width =
+                fitted_file_tree_width(panel_width, self.right_panel_file_tree_width);
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .px(px(24.0))
+                        .pb(px(32.0))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .text_center()
+                        .child(icon("icons/folder.svg", 24.0, theme.text_tertiary))
+                        .child(
+                            div()
+                                .mt(px(24.0))
+                                .text_size(sp(14.0))
+                                .text_color(theme.text)
+                                .child(tr!("files.open_files_appear_here")),
+                        )
+                        .child(
+                            div()
+                                .mt(px(6.0))
+                                .max_w(px(300.0))
+                                .text_size(sp(13.0))
+                                .line_height(sp(18.0))
+                                .text_color(theme.text_tertiary)
+                                .child(tr!("files.open_files_description")),
+                        ),
+                )
+                .child(self.render_right_panel_file_tree(None, file_tree_width, cx))
         }
+    }
+
+    fn render_right_panel_file_tree(
+        &self,
+        selected_path: Option<&str>,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = Theme::current(cx);
+        div()
+            .w(px(width))
+            .min_w(px(FILE_TREE_MIN_WIDTH))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .relative()
+            .border_l_1()
+            .border_color(theme.border_strong)
+            .child(self.render_right_panel_working_tree(selected_path, cx))
+            .child(self.render_panel_resize_handle(
+                "right-panel-file-tree-resize-handle",
+                PanelResizeTarget::FileTree,
+                cx,
+            ))
     }
 
     fn render_right_panel_working_tree(
@@ -3411,24 +3477,11 @@ impl Waku {
             .flex()
             .child(editor)
             .when(attachment.is_none(), |element| {
-                element.child(
-                    div()
-                        .w(px(file_tree_width))
-                        .min_w(px(FILE_TREE_MIN_WIDTH))
-                        .h_full()
-                        .flex_none()
-                        .flex()
-                        .flex_col()
-                        .relative()
-                        .border_l_1()
-                        .border_color(theme.border_strong)
-                        .child(self.render_right_panel_working_tree(Some(&relative_path), cx))
-                        .child(self.render_panel_resize_handle(
-                            "right-panel-file-tree-resize-handle",
-                            PanelResizeTarget::FileTree,
-                            cx,
-                        )),
-                )
+                element.child(self.render_right_panel_file_tree(
+                    Some(&relative_path),
+                    file_tree_width,
+                    cx,
+                ))
             })
     }
 

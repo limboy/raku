@@ -756,6 +756,8 @@ background.status.stopped: 已停止
 background.status.lost: 已断开
 background.unavailable: 此后台工作已不可用。
 files.unsaved_changes: 有未保存的更改 — 按 %{shortcut} 保存
+files.open_files_appear_here: 打开的文件会显示在这里
+files.open_files_description: 在文件树中选择文件，或点击对话中的文件路径。
 files.no_project_open: 尚未打开项目
 files.no_project_open_description: 打开一个项目即可浏览其中的文件
 files.no_project_is_open: 尚未打开项目
