@@ -113,8 +113,8 @@ function logStep(message: string): void {
 async function withRetries(
   label: string,
   run: () => Promise<unknown>,
-  attempts = 5,
-  delayMs = 20_000,
+  attempts = 8,
+  delayMs = 30_000,
 ): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
