@@ -547,13 +547,26 @@ impl Waku {
             return;
         }
         let previous = self.state.window_state;
-        let display = window.display(cx).and_then(|display| display.uuid().ok());
+        let screen = window.display(cx);
+        let display = screen.as_ref().and_then(|display| display.uuid().ok());
+        // A zoom animates, and every step reports a `Windowed` frame that is
+        // not yet exactly the visible area. Recording those as the floating
+        // frame would reopen the window nearly full-size, where AppKit's
+        // `zoom:` reads it as already zoomed and shrinks it instead — leaving
+        // a gap at the right and bottom. A frame that nearly fills the display
+        // is treated as maximized and leaves the floating frame alone.
+        let fills_display = |bounds: Bounds<Pixels>| {
+            window.is_maximized()
+                || screen
+                    .as_ref()
+                    .is_some_and(|screen| nearly_fills(bounds.size, screen.visible_bounds().size))
+        };
         self.state.window_state = Some(match window.window_bounds() {
             WindowBounds::Fullscreen(restore) => {
                 previous.unwrap_or_else(|| persisted_window_state(restore, false, display))
             }
             WindowBounds::Maximized(restore) => persisted_window_state(restore, true, display),
-            WindowBounds::Windowed(bounds) if window.is_maximized() => PersistedWindowState {
+            WindowBounds::Windowed(bounds) if fills_display(bounds) => PersistedWindowState {
                 maximized: true,
                 ..previous.unwrap_or_else(|| persisted_window_state(bounds, true, display))
             },

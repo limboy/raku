@@ -1,6 +1,40 @@
 use super::*;
 
 impl Waku {
+    /// Title for a turn-end banner, or `None` when the user is already
+    /// looking at the task's project. A banner is due when Waku is in the
+    /// background, or when the task belongs to a project other than the
+    /// selected one — the sidebar dot alone is easy to miss there.
+    fn turn_end_notification_title(&self, session_id: Uuid, cx: &App) -> Option<String> {
+        let session = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)?;
+        let other_project = self.state.selected_project != Some(session.project_id);
+        if cx.active_window().is_some() && !other_project {
+            return None;
+        }
+        let title = if session.display_title() == AgentSession::DEFAULT_TITLE {
+            tr!("session.new_task")
+        } else {
+            session.display_title().to_owned()
+        };
+        let project = other_project
+            .then(|| {
+                self.state
+                    .projects
+                    .iter()
+                    .find(|project| project.id == session.project_id)
+            })
+            .flatten()
+            .filter(|project| !project.is_projectless());
+        Some(match project {
+            Some(project) => format!("{} · {title}", project.name),
+            None => title,
+        })
+    }
+
     pub(super) fn finish_streaming_assistant(&mut self, session_id: Uuid) {
         if let Some(session) = self.state.session_mut(session_id) {
             for message in &mut session.messages {
@@ -261,23 +295,10 @@ impl Waku {
                 }
                 self.settle_foreground_work(session_id, BackgroundWorkStatus::Completed);
                 let previous_kinds = self.snapshot_selected_transcript_rows(session_id);
-                let announce = cx.active_window().is_none()
-                    && !runtime.park_announced
-                    && self.active_turn_has_user_message(session_id);
+                let announce =
+                    !runtime.park_announced && self.active_turn_has_user_message(session_id);
                 let task_notification = announce
-                    .then(|| {
-                        self.state
-                            .sessions
-                            .iter()
-                            .find(|session| session.id == session_id)
-                            .map(|session| {
-                                if session.display_title() == AgentSession::DEFAULT_TITLE {
-                                    tr!("session.new_task")
-                                } else {
-                                    session.display_title().to_owned()
-                                }
-                            })
-                    })
+                    .then(|| self.turn_end_notification_title(session_id, cx))
                     .flatten();
                 self.finish_streaming_assistant(session_id);
                 self.complete_turn_blocks(session_id);
@@ -657,25 +678,15 @@ impl Waku {
                 {
                     return true;
                 }
-                let task_notification = cx.active_window().is_none().then(|| {
-                    self.state
-                        .sessions
-                        .iter()
-                        .find(|session| session.id == session_id)
-                        .map(|session| {
-                            let title = if session.display_title() == AgentSession::DEFAULT_TITLE {
-                                tr!("session.new_task")
-                            } else {
-                                session.display_title().to_owned()
-                            };
-                            let body = if success {
-                                tr!("session.turn_completed")
-                            } else {
-                                tr!("session.stopped")
-                            };
-                            (title, body)
-                        })
-                });
+                let task_notification =
+                    self.turn_end_notification_title(session_id, cx).map(|title| {
+                        let body = if success {
+                            tr!("session.turn_completed")
+                        } else {
+                            tr!("session.stopped")
+                        };
+                        (title, body)
+                    });
                 self.finish_streaming_assistant(session_id);
                 self.complete_turn_blocks(session_id);
                 runtime.stream_phase = None;
@@ -756,7 +767,7 @@ impl Waku {
                 if let Some(previous_kinds) = previous_kinds.as_deref() {
                     self.splice_active_transcript_rows_after_visibility_change(previous_kinds);
                 }
-                if let Some(Some((title, body))) = task_notification {
+                if let Some((title, body)) = task_notification {
                     crate::platform::show_task_notification(
                         &task_notification_tag(session_id),
                         &title,
