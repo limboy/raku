@@ -244,7 +244,7 @@ impl Waku {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(sp(12.5))
+                        .text_size(sp(13.0))
                         .text_color(theme.text_ghost)
                         .child(tr!("project.none_found"))
                         .into_any_element()
@@ -487,8 +487,8 @@ impl Waku {
                     // A deferred panel inherits its trigger's text style, and
                     // the empty state's trigger sits in a 20pt medium
                     // headline. Pin the rows' metrics for the filter field.
-                    .text_size(sp(12.5))
-                    .line_height(sp(15.0))
+                    .text_size(sp(13.0))
+                    .line_height(sp(16.0))
                     .font_weight(FontWeight::NORMAL)
                     .rounded(px(13.0))
                     .overflow_hidden()
@@ -728,8 +728,8 @@ fn project_picker_row(id: impl Into<ElementId>, highlighted: bool, theme: &Theme
         .items_center()
         .gap(px(8.0))
         .cursor_default()
-        .text_size(sp(12.5))
-        .line_height(sp(15.0))
+        .text_size(sp(13.0))
+        .line_height(sp(16.0))
         .when(highlighted, |element| element.bg(theme.overlay_strong))
         .hover(|element| element.bg(theme.overlay))
         .active(|element| element.opacity(0.85))

@@ -37,7 +37,7 @@ pub fn init(cx: &mut App) {
 const SIDEBAR_SESSION_CARD_HEIGHT: f32 = 32.0;
 const SIDEBAR_SESSION_ROW_GAP: f32 = 1.0;
 const SIDEBAR_SESSION_ROW_HEIGHT: f32 = SIDEBAR_SESSION_CARD_HEIGHT + SIDEBAR_SESSION_ROW_GAP;
-const SIDEBAR_PROJECT_ROW_HEIGHT: f32 = 30.0;
+const SIDEBAR_PROJECT_SELECTOR_HEIGHT: f32 = 36.0;
 const TITLEBAR_BUTTON_SIZE: f32 = 26.0;
 const TITLEBAR_NAVIGATION_GAP: f32 = 6.0;
 
@@ -618,27 +618,26 @@ impl Waku {
             .id("sidebar-project")
             .flex_1()
             .min_w_0()
-            .h(px(SIDEBAR_PROJECT_ROW_HEIGHT))
+            .h(px(SIDEBAR_PROJECT_SELECTOR_HEIGHT))
             // The border takes 1px of the inset.
-            .px(px(3.0))
-            .rounded(px(7.0))
+            .px(px(8.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(theme.border_strong)
+            .border_color(theme.border)
+            .bg(theme.overlay)
             .flex()
             .items_center()
-            // The icon's 20px box pads its 14px glyph by 3px a side, so a 3px
-            // gap matches the 6px between the glyph and the border.
-            .gap(px(3.0))
+            .gap(px(6.0))
             .cursor_default()
             .focus_visible(|style| style.border_color(theme.accent))
-            .when(handle.is_open(), |element| element.bg(theme.overlay))
+            .when(handle.is_open(), |element| element.bg(theme.overlay_strong))
             .when(!handle.is_open(), |element| {
                 element.tooltip(Tooltip::text(tr!(
                     "sidebar.switch_project",
                     shortcut = crate::platform::primary_shortcut("⌘P", "Ctrl+P")
                 )))
             })
-            .hover(|element| element.bg(theme.sidebar_item_background))
+            .hover(|element| element.bg(theme.overlay_strong))
             .active(|element| element.bg(theme.overlay_strong))
             .child(
                 div()
@@ -653,8 +652,8 @@ impl Waku {
                         } else {
                             "icons/folder.svg"
                         },
-                        14.0,
-                        theme.text_tertiary,
+                        16.0,
+                        theme.text,
                     )),
             )
             .child(
@@ -663,7 +662,7 @@ impl Waku {
                     .min_w_0()
                     .truncate()
                     .text_size(sp(13.0))
-                    .text_color(theme.text_secondary)
+                    .text_color(theme.text)
                     .child(self.project_picker_label()),
             )
             .child(
