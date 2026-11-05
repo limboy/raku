@@ -482,8 +482,8 @@ pub fn expand_command_template(template: &str, args: &str) -> String {
 /// The prompt to hand the driver for what the user typed.
 ///
 /// `Some` only when transport text differs from the transcript: known
-/// templates expand, and Codex skill slashes become dollar-prefixed catalog
-/// keys. Other passthrough commands and unknown `/words` stay untouched.
+/// templates expand, and skills adopt the provider's native invocation.
+/// Other passthrough commands and unknown `/words` stay untouched.
 pub fn resolved_submission(
     provider: ProviderKind,
     prompt: &str,
@@ -503,15 +503,18 @@ pub fn resolved_submission(
 }
 
 /// Resolve only provider-native skill syntax, without expanding templates.
+///
+/// Mirrors the client: a leading `$skill` (or the older `/skill`) becomes
+/// Claude's `/skill`, Pi's `/skill:skill`, and Codex's own `$skill`.
 pub fn resolved_skill_submission(
     provider: ProviderKind,
     prompt: &str,
     commands: &[SlashCommand],
 ) -> Option<String> {
-    if !matches!(provider, ProviderKind::Codex | ProviderKind::Pi) {
-        return None;
-    }
-    let invocation = prompt.strip_prefix('/')?;
+    let (sigil, invocation) = match prompt.strip_prefix('$') {
+        Some(invocation) => ('$', invocation),
+        None => ('/', prompt.strip_prefix('/')?),
+    };
     let name = match invocation.split_once(char::is_whitespace) {
         Some((name, _)) => name,
         None => invocation,
@@ -522,11 +525,12 @@ pub fn resolved_skill_submission(
     {
         return None;
     }
-    Some(match provider {
-        ProviderKind::Codex => format!("${invocation}"),
-        ProviderKind::Pi => format!("/skill:{invocation}"),
-        _ => unreachable!("non-native skill providers returned above"),
-    })
+    match (provider, sigil) {
+        (ProviderKind::Codex, '/') => Some(format!("${invocation}")),
+        (ProviderKind::Claude, '$') => Some(format!("/{invocation}")),
+        (ProviderKind::Pi, _) => Some(format!("/skill:{invocation}")),
+        _ => None,
+    }
 }
 
 // ── Workspace file index ───────────────────────────────────────────────────

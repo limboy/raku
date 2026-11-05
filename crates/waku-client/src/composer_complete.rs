@@ -40,9 +40,15 @@ pub fn merge_reported_commands(
     merged
 }
 
-/// Build the slash-prefixed text shown for an autocomplete command.
+/// The composer spelling of an autocomplete entry: `$name` for a skill,
+/// `/name` for every other command.
 pub fn command_composer_text(command: &SlashCommand) -> String {
-    format!("/{}", command.name)
+    let sigil = if command.scope == CommandScope::Skill {
+        '$'
+    } else {
+        '/'
+    };
+    format!("{sigil}{}", command.name)
 }
 
 /// Whether the composer submitted Waku's global terminal-session picker.
@@ -181,7 +187,7 @@ pub fn expand_command_template(template: &str, args: &str) -> String {
 
 /// Resolve composer text into the exact prompt expected by the provider.
 ///
-/// Template commands expand to their body. Skills keep a slash in the
+/// Template commands expand to their body. Skills keep `$name` in the
 /// composer and transcript, then resolve to each provider's native syntax at
 /// the transport boundary.
 pub fn resolved_submission(
@@ -202,18 +208,21 @@ pub fn resolved_submission(
 }
 
 /// Resolve only provider-native skill syntax, without expanding templates.
+///
+/// A prompt that opens with `$skill` becomes Claude's `/skill`, Pi's
+/// `/skill:skill`, and stays as-is for Codex, whose own syntax it is. A
+/// leading `/skill`, typed from habit or restored from older history, still
+/// resolves the same way. `None` means the text is already what the
+/// provider expects.
 pub fn resolved_skill_submission(
     provider: ProviderKind,
     prompt: &str,
     commands: &[SlashCommand],
 ) -> Option<String> {
-    if !matches!(
-        provider,
-        ProviderKind::Codex | ProviderKind::Pi
-    ) {
-        return None;
-    }
-    let invocation = prompt.strip_prefix('/')?;
+    let (sigil, invocation) = match prompt.strip_prefix('$') {
+        Some(invocation) => ('$', invocation),
+        None => ('/', prompt.strip_prefix('/')?),
+    };
     let name = invocation
         .split_once(char::is_whitespace)
         .map_or(invocation, |(name, _)| name);
@@ -223,11 +232,12 @@ pub fn resolved_skill_submission(
     {
         return None;
     }
-    Some(match provider {
-        ProviderKind::Codex => format!("${invocation}"),
-        ProviderKind::Pi => format!("/skill:{invocation}"),
-        _ => unreachable!("non-native skill providers returned above"),
-    })
+    match (provider, sigil) {
+        (ProviderKind::Codex, '/') => Some(format!("${invocation}")),
+        (ProviderKind::Claude, '$') => Some(format!("/{invocation}")),
+        (ProviderKind::Pi, _) => Some(format!("/skill:{invocation}")),
+        _ => None,
+    }
 }
 
 pub fn matcher() -> Matcher {
@@ -277,11 +287,16 @@ fn filter_scored(
         .collect()
 }
 
+/// The `/` list: every command except skills, which `$` lists instead.
 pub fn filter_commands(
     commands: &[SlashCommand],
     query: &str,
     matcher: &mut Matcher,
 ) -> Vec<Scored<SlashCommand>> {
+    let commands = commands
+        .iter()
+        .filter(|command| command.scope != CommandScope::Skill)
+        .collect::<Vec<_>>();
     let names = commands
         .iter()
         .map(|command| command.name.as_str())
@@ -292,6 +307,47 @@ pub fn filter_commands(
             item: commands[index].clone(),
             positions,
         })
+        .collect()
+}
+
+/// The `$` list: skills whose name contains `query`, case-insensitively.
+///
+/// Substring rather than fuzzy matching, because `$` also appears in prose:
+/// `$HOME` must not pop up a skill that merely contains the letters h-o-m-e,
+/// where `enter` would then swap it in.
+pub fn filter_skills(commands: &[SlashCommand], query: &str) -> Vec<Scored<SlashCommand>> {
+    let needle = query.to_lowercase();
+    let mut matches = commands
+        .iter()
+        .filter(|command| command.scope == CommandScope::Skill)
+        .filter_map(|command| {
+            let haystack = command.name.to_lowercase();
+            let start = haystack.find(&needle)?;
+            // Positions are char indices into the original name. Lowercasing
+            // can change a name's length; highlight nothing rather than the
+            // wrong characters when it does.
+            let positions = if haystack.chars().count() == command.name.chars().count() {
+                let first = haystack[..start].chars().count() as u32;
+                (first..first + needle.chars().count() as u32).collect()
+            } else {
+                Vec::new()
+            };
+            Some((
+                start,
+                Scored {
+                    item: command.clone(),
+                    positions,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    // Names that start with the query lead; the stable sort keeps catalogue
+    // order otherwise.
+    matches.sort_by_key(|(start, _)| *start != 0);
+    matches
+        .into_iter()
+        .take(FILTER_CAP)
+        .map(|(_, scored)| scored)
         .collect()
 }
 
@@ -414,9 +470,9 @@ mod tests {
     }
 
     #[test]
-    fn codex_skill_completion_keeps_slash_in_the_composer() {
+    fn skills_complete_with_a_dollar_and_commands_with_a_slash() {
         let skill = command("mattpocock-skills:to-spec", CommandScope::Skill);
-        assert_eq!(command_composer_text(&skill), "/mattpocock-skills:to-spec");
+        assert_eq!(command_composer_text(&skill), "$mattpocock-skills:to-spec");
         assert_eq!(
             command_composer_text(&command("fast", CommandScope::Builtin)),
             "/fast"
@@ -424,40 +480,56 @@ mod tests {
     }
 
     #[test]
-    fn codex_skill_submission_uses_the_catalog_invocation() {
-        let skill = command("mattpocock-skills:to-spec", CommandScope::Skill);
+    fn slash_lists_commands_and_dollar_lists_skills() {
+        let commands = [
+            command("deploy", CommandScope::Skill),
+            command("review", CommandScope::Builtin),
+            command("redeploy-docs", CommandScope::Skill),
+        ];
+        let mut matcher = matcher();
+        let names = |rows: Vec<Scored<SlashCommand>>| {
+            rows.into_iter()
+                .map(|row| row.item.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(filter_commands(&commands, "", &mut matcher)), ["review"]);
         assert_eq!(
-            resolved_submission(
-                ProviderKind::Codex,
-                "/mattpocock-skills:to-spec carefully",
-                std::slice::from_ref(&skill)
-            )
-            .as_deref(),
-            Some("$mattpocock-skills:to-spec carefully")
+            names(filter_skills(&commands, "")),
+            ["deploy", "redeploy-docs"]
         );
+        // A prefix match leads an inner one; case does not matter.
         assert_eq!(
-            resolved_submission(
-                ProviderKind::Claude,
-                "/mattpocock-skills:to-spec carefully",
-                std::slice::from_ref(&skill)
-            ),
-            None
+            names(filter_skills(&commands, "DEPLOY")),
+            ["deploy", "redeploy-docs"]
         );
+        let docs = filter_skills(&commands, "docs");
+        assert_eq!(docs[0].positions, [9, 10, 11, 12]);
+        // Scattered letters are not a match: `$HOME` is prose, not a skill.
+        assert!(filter_skills(&commands, "dpy").is_empty());
     }
 
-
     #[test]
-    fn pi_skill_submission_uses_the_skill_command() {
-        for provider in [ProviderKind::Pi] {
-            for name in ["to-spec", "to-tickets"] {
-                let skill = command(name, CommandScope::Skill);
-                let expected = format!("/skill:{name} carefully");
-                assert_eq!(
-                    resolved_skill_submission(provider, &format!("/{name} carefully"), &[skill])
-                        .as_deref(),
-                    Some(expected.as_str())
-                );
-            }
+    fn skill_submissions_use_each_providers_native_invocation() {
+        let skill = command("mattpocock-skills:to-spec", CommandScope::Skill);
+        let skills = std::slice::from_ref(&skill);
+        let resolve = |provider, prompt| resolved_submission(provider, prompt, skills);
+        let typed = "$mattpocock-skills:to-spec carefully";
+        assert_eq!(resolve(ProviderKind::Codex, typed), None);
+        assert_eq!(
+            resolve(ProviderKind::Claude, typed).as_deref(),
+            Some("/mattpocock-skills:to-spec carefully")
+        );
+        assert_eq!(
+            resolve(ProviderKind::Pi, typed).as_deref(),
+            Some("/skill:mattpocock-skills:to-spec carefully")
+        );
+        // The older slash spelling still reaches the same skill.
+        let legacy = "/mattpocock-skills:to-spec carefully";
+        assert_eq!(resolve(ProviderKind::Codex, legacy).as_deref(), Some(typed));
+        assert_eq!(resolve(ProviderKind::Claude, legacy), None);
+        // An unknown `$word` is prose and passes through untouched.
+        for provider in ProviderKind::ALL {
+            assert_eq!(resolve(provider, "$HOME is unset"), None);
         }
     }
 

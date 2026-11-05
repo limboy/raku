@@ -1,4 +1,5 @@
-//! The composer's autocompletion popup: slash commands and `@` file mentions.
+//! The composer's autocompletion popup: `/` commands, `$` skills and `@` file
+//! mentions.
 //!
 //! The popup is a pure view over prefetched data. Command and file indexes are
 //! discovered on the background executor into `QueryCache`s and mirrored into
@@ -282,7 +283,9 @@ impl Waku {
     fn composer_trigger(&self, window: &Window, cx: &App) -> Option<Trigger> {
         let input = self.composer.read(cx);
         let trigger = if input.focus().is_focused(window) {
-            composer_complete::detect_trigger(input.content(cx), input.cursor(cx))
+            let text = input.content(cx);
+            composer_complete::detect_trigger(text, input.cursor(cx))
+                .filter(|trigger| self.skill_trigger_allowed(trigger, text))
         } else {
             None
         };
@@ -301,11 +304,24 @@ impl Waku {
         trigger
     }
 
+    /// Codex resolves `$skill` anywhere in a prompt. Claude and Pi only invoke
+    /// a skill that opens the message, so there `$` mid-prompt is prose.
+    fn skill_trigger_allowed(&self, trigger: &Trigger, text: &str) -> bool {
+        trigger.kind != TriggerKind::Skill
+            || self
+                .slash_command_index_key
+                .as_ref()
+                .is_some_and(|(provider, ..)| *provider == ProviderKind::Codex)
+            || text[..trigger.range.start].trim().is_empty()
+    }
+
     /// The filtered rows for `trigger`, shared by the popup body, the keyboard
     /// cursor and `enter` so an index always means the same row everywhere.
     fn autocomplete_rows(&self, trigger: &Trigger) -> Rc<Vec<AutocompleteRow>> {
         let source = match trigger.kind {
-            TriggerKind::Command => Rc::as_ptr(&self.slash_command_index) as usize,
+            TriggerKind::Command | TriggerKind::Skill => {
+                Rc::as_ptr(&self.slash_command_index) as usize
+            }
             TriggerKind::File => Rc::as_ptr(&self.mention_file_index) as usize,
         };
         {
@@ -326,6 +342,12 @@ impl Waku {
             .into_iter()
             .map(AutocompleteRow::Command)
             .collect::<Vec<_>>(),
+            TriggerKind::Skill => {
+                composer_complete::filter_skills(&self.slash_command_index, &trigger.query)
+                    .into_iter()
+                    .map(AutocompleteRow::Command)
+                    .collect()
+            }
             TriggerKind::File => composer_complete::filter_files(
                 &self.mention_file_index,
                 &trigger.query,
@@ -425,6 +447,9 @@ impl Waku {
         let loading = match trigger.kind {
             TriggerKind::Command => self.slash_command_index_loading,
             TriggerKind::File => self.mention_file_index_loading,
+            // `$` is also prose (`$HOME`); it opens only once a skill matches,
+            // never as a loading placeholder.
+            TriggerKind::Skill => false,
         };
         if rows.is_empty() && !loading {
             return None;
@@ -579,20 +604,27 @@ impl Waku {
                             .text_color(theme.text_tertiary)
                             .child(SharedString::from(command.description.clone())),
                     )
-                    .child(
-                        div()
-                            .h(px(18.0))
-                            .px(px(5.0))
-                            .flex_none()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(theme.border)
-                            .flex()
-                            .items_center()
-                            .text_size(sp(12.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text_tertiary)
-                            .child(command.scope.label()),
+                    // The `$` list holds only skills; its sigil already says
+                    // what every row is.
+                    .when(
+                        command.scope != composer_complete::CommandScope::Skill,
+                        |row| {
+                            row.child(
+                                div()
+                                    .h(px(18.0))
+                                    .px(px(5.0))
+                                    .flex_none()
+                                    .rounded(px(4.0))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .flex()
+                                    .items_center()
+                                    .text_size(sp(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.text_tertiary)
+                                    .child(command.scope.label()),
+                            )
+                        },
                     )
                     .into_any_element()
             }
