@@ -1605,11 +1605,14 @@ impl Waku {
                         session.status = SessionStatus::Working;
                     }
                 }
-                // The provider is not waiting on a reply; the answer starts
-                // its next turn, or queues behind the one still running.
+                // The provider is not waiting on a reply, but the turn that
+                // asked usually still is running and wants the answer: steer
+                // it into that turn rather than queueing it behind the very
+                // work it should shape. An idle session starts a new turn, and
+                // one that cannot be steered falls back to the queue.
                 UserInputDelivery::Message => {
                     let message = pending.answer_message();
-                    self.submit_composer_submission(ComposerSubmission::plain(message), cx);
+                    self.steer_composer_submission(ComposerSubmission::plain(message), cx);
                 }
             }
         } else {
