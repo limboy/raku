@@ -1549,6 +1549,8 @@ pub struct Waku {
     /// Parsed markdown per assistant message, keeping each response's
     /// incremental parse and flattened blocks alive across frames.
     message_markdown: RefCell<HashMap<Uuid, MarkdownView>>,
+    /// User-run `sh run` blocks, keyed by message. In memory only.
+    shell_runs: shell_runs::ShellRuns,
     /// Stable offsets for capped user bubbles, including across virtualized row rebuilds.
     user_message_viewports: RefCell<HashMap<Uuid, UserMessageScrollViewport>>,
     /// Parsed markdown for reasoning activities, keyed by stable activity id.
@@ -1628,6 +1630,7 @@ mod save_status;
 mod session_export;
 mod sessions;
 mod settings;
+mod shell_runs;
 mod sidebar;
 mod skills_page;
 mod streaming;
@@ -2856,6 +2859,7 @@ impl Waku {
                 transcript_scrollbar_dragging: Cell::new(false),
                 transcript_layout_width: Cell::new(Pixels::ZERO),
                 message_markdown: RefCell::new(HashMap::new()),
+                shell_runs: shell_runs::ShellRuns::new(cx.entity().downgrade()),
                 user_message_viewports: RefCell::new(HashMap::new()),
                 activity_markdown: RefCell::new(HashMap::new()),
                 reasoning_window_starts: RefCell::new(HashMap::new()),

@@ -89,6 +89,24 @@ pub type TranscriptSelection = SelectionState<TextGeometry>;
 /// markdown view continues to use GPUI's ordinary URL opener.
 pub type LinkHandler = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
 
+/// App-owned hooks that make a `sh run` fence runnable. The block itself is
+/// never rewritten; a run's terminal renders beneath it. Keys are the block's
+/// element ordinal, stable for a settled message.
+#[derive(Clone)]
+pub struct CodeRunHooks {
+    pub runs: Rc<HashMap<usize, CodeRunView>>,
+    pub run: CodeRunAction,
+}
+
+#[derive(Clone)]
+pub struct CodeRunView {
+    pub running: bool,
+    pub terminal: gpui::AnyView,
+}
+
+/// Run the block at an ordinal with its source.
+pub type CodeRunAction = Rc<dyn Fn(usize, SharedString, &mut Window, &mut gpui::App)>;
+
 // ── Layout metrics ─────────────────────────────────────────────────────────
 //
 // Everything in this block participates in measurement, so these are the only
@@ -671,6 +689,7 @@ pub struct Ctx<'a> {
     selection: TranscriptSelection,
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
+    code_run: Option<CodeRunHooks>,
     image_renderer: Option<ImageRenderer>,
     file_links: Option<Arc<FileLinks>>,
     /// Cross-frame flatten cache, when this render has one to consult.
@@ -699,6 +718,7 @@ impl<'a> Ctx<'a> {
             selection,
             search: None,
             link_handler: None,
+            code_run: None,
             image_renderer: None,
             file_links: None,
             cache: None,
@@ -718,6 +738,13 @@ impl<'a> Ctx<'a> {
 
     pub fn with_link_handler(mut self, handler: LinkHandler) -> Self {
         self.link_handler = Some(handler);
+        self
+    }
+
+    /// Offer Run on `sh run` fences. Surfaces without hooks render them as
+    /// ordinary code blocks.
+    pub fn with_code_run(mut self, hooks: CodeRunHooks) -> Self {
+        self.code_run = Some(hooks);
         self
     }
 
@@ -768,6 +795,7 @@ impl<'a> Ctx<'a> {
             selection: self.selection.clone(),
             search: self.search.clone(),
             link_handler: self.link_handler.clone(),
+            code_run: self.code_run.clone(),
             image_renderer: self.image_renderer.clone(),
             file_links: self.file_links.clone(),
             cache: Some(view),
@@ -1584,7 +1612,11 @@ fn render_block(block: &Block, ctx: &Ctx) -> AnyElement {
                 .child(text_element(&flat, key, ctx))
                 .into_any_element()
         }
-        Block::CodeBlock { language, code } => render_code_block(language.as_deref(), code, ctx),
+        Block::CodeBlock {
+            language,
+            code,
+            runnable,
+        } => render_code_block(language.as_deref(), code, *runnable, ctx),
         Block::BlockQuote { children } => {
             let rendered = children
                 .iter()
@@ -1891,7 +1923,7 @@ impl gpui::RenderOnce for MermaidPreviewButton {
     }
 }
 
-fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElement {
+fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &Ctx) -> AnyElement {
     let key = ctx.next_key();
     // Tokenizing is the most expensive flatten in the document, so a settled
     // code block is exactly the case the cache exists for.
@@ -1919,6 +1951,17 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
         id: format!("preview-mermaid-{}-{}", key.row, key.index).into(),
         source: flat.text.clone(),
         palette: *ctx.palette,
+    });
+    let run_hooks = ctx.code_run.as_ref().filter(|_| runnable);
+    let run = run_hooks.and_then(|hooks| hooks.runs.get(&key.index).cloned());
+    let run_button = run_hooks.map(|hooks| {
+        render_code_run_button(
+            &hooks.run,
+            run.as_ref().is_some_and(|run| run.running),
+            &key,
+            flat.text.clone(),
+            ctx.palette,
+        )
     });
     let keyboard_copy_content = copy_content.clone();
     let copy_feedback = ctx.cache.map(|view| view.copied_code_blocks.clone());
@@ -1972,7 +2015,7 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
             }
         });
 
-    div()
+    let block = div()
         .id(SharedString::from(format!(
             "code-block-{}-{}",
             key.row, key.index
@@ -2010,6 +2053,7 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
                         }),
                 )
                 .children(preview_button)
+                .children(run_button)
                 .child(copy_button),
         )
         .child(
@@ -2032,7 +2076,82 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
                         .text_color(ctx.palette.secondary)
                         .child(text_element(&flat, key, ctx)),
                 ),
+        );
+    let Some(run) = run else {
+        return block.into_any_element();
+    };
+    // The run's live terminal sits under the untouched block as its own card.
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(block)
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(ctx.palette.border)
+                .overflow_hidden()
+                .child(run.terminal),
         )
+        .into_any_element()
+}
+
+/// Icon-only like Copy; the tooltip names the action. While the command runs
+/// it becomes a spinner, and its tooltip says so.
+fn render_code_run_button(
+    action: &CodeRunAction,
+    running: bool,
+    key: &TextKey,
+    code: SharedString,
+    palette: &Palette,
+) -> AnyElement {
+    let ordinal = key.index;
+    let id = SharedString::from(format!("run-code-{}-{}", key.row, key.index));
+    let button = div()
+        .id(id)
+        .tab_index(0)
+        .size(px(24.0))
+        .flex_none()
+        .rounded(px(5.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_default()
+        .focus_visible(|style| style.border_1().border_color(palette.accent));
+    if running {
+        return button
+            .child(crate::ui::motion::spin_slow(crate::ui::icon(
+                "icons/loader-circle.svg",
+                11.0,
+                palette.ghost,
+            )))
+            .tooltip(Tooltip::text(tr!("code_run.running")))
+            .into_any_element();
+    }
+    let click_action = action.clone();
+    let click_code = code.clone();
+    let keyboard_action = action.clone();
+    button
+        .hover(|style| style.bg(palette.overlay))
+        .child(crate::ui::icon("icons/play.svg", 11.0, palette.ghost))
+        .tooltip(Tooltip::text(tr!("code_run.run_tooltip")))
+        .on_click(move |_, window, cx| {
+            click_action(ordinal, click_code.clone(), window, cx);
+            cx.stop_propagation();
+        })
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if !event.keystroke.modifiers.modified()
+                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+            {
+                keyboard_action(ordinal, code.clone(), window, cx);
+                cx.stop_propagation();
+            }
+        })
         .into_any_element()
 }
 

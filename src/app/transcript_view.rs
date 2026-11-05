@@ -1355,6 +1355,10 @@ impl Waku {
                             animate_streaming,
                         )
                         .with_context_menu(menu.clone());
+                    // A settled reply's `sh run` fences can be run by the user.
+                    if message.role == MessageRole::Assistant && !message.streaming {
+                        ctx = ctx.with_code_run(self.shell_runs.hooks(message.id));
+                    }
                     if let Some(highlights) = self.transcript_search_highlights(message_index) {
                         ctx = ctx.with_search_highlights(highlights);
                     }

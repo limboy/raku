@@ -39,6 +39,28 @@ const TERMINAL_CELL_WIDTH: f32 = 7.8;
 const TERMINAL_CELL_HEIGHT: f32 = 18.0;
 const TERMINAL_FONT_SIZE: f32 = 12.5;
 
+#[cfg(unix)]
+fn command_shell_args(command: &str) -> Vec<String> {
+    // A login shell picks up the same profile an interactive terminal does.
+    vec!["-l".into(), "-c".into(), command.into()]
+}
+
+#[cfg(windows)]
+fn command_shell_args(command: &str) -> Vec<String> {
+    vec!["-NoLogo".into(), "-Command".into(), command.into()]
+}
+
+/// Rows an inline command terminal shows; scrollback holds the rest.
+const INLINE_TERMINAL_ROWS: usize = 10;
+const INLINE_TERMINAL_DEFAULT_COLUMNS: usize = 80;
+
+/// Emitted once by a command terminal when its command has exited and all of
+/// its output has been read.
+pub struct TerminalCommandFinished {
+    pub exit_code: Option<i32>,
+    pub output: String,
+}
+
 #[inline]
 fn primary_modifier_pressed(modifiers: &Modifiers) -> bool {
     modifiers.secondary()
@@ -89,6 +111,8 @@ enum TerminalUiEvent {
     ResetTitle,
     ClipboardStore(String),
     ClipboardLoad(Arc<dyn Fn(&str) -> String + Send + Sync>),
+    /// The shell's own exit status; output may still be draining.
+    ChildExited(Option<i32>),
     Exited,
 }
 
@@ -140,7 +164,13 @@ impl EventListener for TerminalEventProxy {
                 self.write_pty(formatter(*self.window_size.lock()).into_bytes());
             }
             Event::Bell => {}
-            Event::Exit | Event::ChildExit(_) => {
+            Event::ChildExit(status) => {
+                let _ = self
+                    .ui_events
+                    .send(TerminalUiEvent::ChildExited(status.code()));
+                self.dirty.store(true, Ordering::Release);
+            }
+            Event::Exit => {
                 let _ = self.ui_events.send(TerminalUiEvent::Exited);
                 self.dirty.store(true, Ordering::Release);
             }
@@ -179,7 +209,14 @@ struct TerminalSession {
 }
 
 impl TerminalSession {
-    fn new(working_directory: &Path, columns: usize, rows: usize) -> Result<Self> {
+    /// `command` runs once through the user's login shell instead of an
+    /// interactive one; its output drains before the exit is reported.
+    fn new(
+        working_directory: &Path,
+        columns: usize,
+        rows: usize,
+        command: Option<&str>,
+    ) -> Result<Self> {
         let columns = columns.max(TERMINAL_MIN_COLUMNS);
         let rows = rows.max(TERMINAL_MIN_ROWS);
         let window_size = WindowSize {
@@ -215,11 +252,14 @@ impl TerminalSession {
         )));
 
         let shell = crate::command_env::default_terminal_shell();
-        let shell_args = crate::command_env::default_terminal_shell_args(&shell);
+        let shell_args = match command {
+            Some(command) => command_shell_args(command),
+            None => crate::command_env::default_terminal_shell_args(&shell),
+        };
         let mut options = tty::Options {
             shell: Some(Shell::new(shell.to_string_lossy().into_owned(), shell_args)),
             working_directory: Some(working_directory.to_path_buf()),
-            drain_on_exit: false,
+            drain_on_exit: command.is_some(),
             ..Default::default()
         };
         options.env.insert("TERM".into(), "xterm-256color".into());
@@ -232,7 +272,7 @@ impl TerminalSession {
 
         let pty = tty::new(&options, window_size, 0)
             .with_context(|| format!("spawn terminal in {}", working_directory.display()))?;
-        let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false)
+        let event_loop = EventLoop::new(term.clone(), proxy, pty, command.is_some(), false)
             .context("create Alacritty PTY event loop")?;
         let sender = event_loop.channel();
         sender_slot
@@ -282,6 +322,22 @@ impl TerminalSession {
 
     fn mode(&self) -> TermMode {
         *self.term.lock().mode()
+    }
+
+    /// Scrollback and screen as plain text, trailing blank lines dropped.
+    /// One-shot: called once when a command finishes, never per frame.
+    fn full_text(&self) -> String {
+        let term = self.term.lock();
+        let start = TerminalPoint::new(term.topmost_line(), Column(0));
+        let end = TerminalPoint::new(term.bottommost_line(), term.last_column());
+        let text = term.bounds_to_string(start, end);
+        drop(term);
+        text.lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim_end()
+            .to_owned()
     }
 
     fn scroll(&self, lines: i32) {
@@ -627,6 +683,10 @@ pub struct TerminalView {
     working_directory: PathBuf,
     title: String,
     exited: bool,
+    /// A command terminal sized for the transcript, without the toolbar.
+    inline: bool,
+    child_exit: Option<Option<i32>>,
+    finished: bool,
     scroll_accumulator: f32,
     panel_width: f32,
     /// Advance width of one grid cell, measured from the terminal font on
@@ -644,11 +704,29 @@ pub struct TerminalView {
 
 impl TerminalView {
     pub fn new(working_directory: PathBuf, cx: &mut Context<Self>) -> Self {
+        Self::start(working_directory, None, cx)
+    }
+
+    /// An inline terminal that runs `command` once and then stays readable.
+    /// Emits [`TerminalCommandFinished`] when it exits.
+    pub fn command(working_directory: PathBuf, command: String, cx: &mut Context<Self>) -> Self {
+        Self::start(working_directory, Some(command), cx)
+    }
+
+    fn start(working_directory: PathBuf, command: Option<String>, cx: &mut Context<Self>) -> Self {
         let terminal_cwd = working_directory.clone();
+        let inline = command.is_some();
+        let (columns, rows) = if inline {
+            (INLINE_TERMINAL_DEFAULT_COLUMNS, INLINE_TERMINAL_ROWS)
+        } else {
+            (52, 36)
+        };
         cx.spawn(async move |this, cx| {
             let started = cx
                 .background_executor()
-                .spawn(async move { TerminalSession::new(&terminal_cwd, 52, 36) })
+                .spawn(async move {
+                    TerminalSession::new(&terminal_cwd, columns, rows, command.as_deref())
+                })
                 .await;
             if this
                 .update(cx, |this, cx| {
@@ -662,18 +740,19 @@ impl TerminalView {
             {
                 return;
             }
+            // Inline output repaints the whole transcript pane, so it stays
+            // within the ≤30 Hz pulse budget; the panel keeps its faster rate.
+            let interval = Duration::from_millis(if inline { 33 } else { 24 });
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(24))
-                    .await;
-                if this
-                    .update(cx, |this, cx| {
-                        if this.poll(cx) {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
+                cx.background_executor().timer(interval).await;
+                let polling = this.update(cx, |this, cx| {
+                    if this.poll(cx) {
+                        cx.notify();
+                    }
+                    // A finished command's grid never changes again.
+                    !this.finished
+                });
+                if !polling.unwrap_or(false) {
                     break;
                 }
             }
@@ -691,6 +770,9 @@ impl TerminalView {
             title: tr!("right_panel.terminal"),
             working_directory,
             exited: false,
+            inline,
+            child_exit: None,
+            finished: false,
             scroll_accumulator: 0.0,
             panel_width: DEFAULT_RIGHT_PANEL_WIDTH,
             measured_cell_width: None,
@@ -740,8 +822,17 @@ impl TerminalView {
                         .unwrap_or_default();
                     session.write(formatter(&text).into_bytes());
                 }
+                TerminalUiEvent::ChildExited(code) => self.child_exit = Some(code),
                 TerminalUiEvent::Exited => self.exited = true,
             }
+        }
+        if self.inline && self.exited && !self.finished {
+            self.finished = true;
+            let output = session.full_text();
+            cx.emit(TerminalCommandFinished {
+                exit_code: self.child_exit.flatten(),
+                output,
+            });
         }
         changed
     }
@@ -1009,8 +1100,14 @@ impl TerminalView {
         let lines = self.scroll_accumulator.trunc() as i32;
         if lines != 0 {
             self.scroll_accumulator -= lines as f32;
+            let before = session.term.lock().grid().display_offset();
             session.scroll(lines);
-            cx.stop_propagation();
+            let moved = session.term.lock().grid().display_offset() != before;
+            // Inline in the transcript, a terminal at its scroll limit hands
+            // the wheel back so the transcript keeps scrolling.
+            if moved || !self.inline {
+                cx.stop_propagation();
+            }
             cx.notify();
         }
     }
@@ -1076,16 +1173,32 @@ impl Render for TerminalView {
                 .advance(font_id, px(TERMINAL_FONT_SIZE), 'm')
                 .map_or(TERMINAL_CELL_WIDTH, |advance| f32::from(advance.width))
         });
-        let columns = ((panel_width - TERMINAL_PADDING_X * 2.0) / cell_width)
-            .floor()
-            .max(TERMINAL_MIN_COLUMNS as f32) as usize;
-        let rows = ((body_height - TERMINAL_PADDING_Y * 2.0) / TERMINAL_CELL_HEIGHT)
-            .floor()
-            .max(TERMINAL_MIN_ROWS as f32) as usize;
+        let (columns, rows) = if self.inline {
+            // Inline width comes from the transcript's own layout last frame.
+            let columns = self
+                .grid_bounds
+                .get()
+                .map(|bounds| (f32::from(bounds.size.width) / cell_width).floor() as usize)
+                .filter(|columns| *columns > 0)
+                .unwrap_or(INLINE_TERMINAL_DEFAULT_COLUMNS)
+                .max(TERMINAL_MIN_COLUMNS);
+            (columns, INLINE_TERMINAL_ROWS)
+        } else {
+            let columns = ((panel_width - TERMINAL_PADDING_X * 2.0) / cell_width)
+                .floor()
+                .max(TERMINAL_MIN_COLUMNS as f32) as usize;
+            let rows = ((body_height - TERMINAL_PADDING_Y * 2.0) / TERMINAL_CELL_HEIGHT)
+                .floor()
+                .max(TERMINAL_MIN_ROWS as f32) as usize;
+            (columns, rows)
+        };
 
         let terminal_focused = window.is_window_active() && self.focus_handle.is_focused(window);
-        let cursor_style =
-            terminal_cursor_style(terminal_focused, self.cursor_blink.read(cx).visible());
+        let cursor_style = if self.exited {
+            TerminalCursorStyle::Hidden
+        } else {
+            terminal_cursor_style(terminal_focused, self.cursor_blink.read(cx).visible())
+        };
         if let Some(session) = self.session.as_mut() {
             session.resize(columns, rows, cell_width);
         }
@@ -1286,6 +1399,24 @@ impl Render for TerminalView {
             .child(screen)
             .children(scrollbar);
 
+        if self.inline {
+            let height = rows as f32 * TERMINAL_CELL_HEIGHT + TERMINAL_PADDING_Y * 2.0;
+            return div()
+                .id("inline-terminal")
+                .key_context("Terminal")
+                .track_focus(&self.focus_handle)
+                .w_full()
+                .min_w_0()
+                .h(px(height))
+                .flex()
+                .flex_col()
+                .bg(theme.terminal)
+                .child(grid)
+                .on_key_down(cx.listener(Self::on_key_down))
+                .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+                .into_any_element();
+        }
+
         div()
             .id("alacritty-terminal")
             .key_context("Terminal")
@@ -1338,8 +1469,11 @@ impl Render for TerminalView {
             .child(grid)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .into_any_element()
     }
 }
+
+impl gpui::EventEmitter<TerminalCommandFinished> for TerminalView {}
 
 fn terminal_cursor_style(focused: bool, blink_visible: bool) -> TerminalCursorStyle {
     if !focused {

@@ -226,6 +226,7 @@ impl PiDriver {
 
         let mut command = crate::command_env::command(&binary);
         command.args(["--mode", "rpc", flavor.full_access_arg()]);
+        command.args(["--append-system-prompt", super::USER_RUN_INSTRUCTIONS]);
         if flavor.skips_version_check_by_env() {
             command.env("PI_SKIP_VERSION_CHECK", "1");
         }

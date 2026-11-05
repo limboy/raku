@@ -218,6 +218,10 @@ common.copy_code: 复制代码
 common.add_to_chat: 添加到对话
 common.copy_image: 复制图片
 attachments.reveal_in_finder: 在访达中显示
+code_run.run_tooltip: 在终端中运行，并将输出发送给智能体
+code_run.running: 正在终端中运行…
+code_run.queued_output: 终端输出
+code_run.no_workspace: 此会话没有可运行命令的文件夹。
 mermaid.preview: 预览
 mermaid.title: Mermaid 预览
 mermaid.zoom_in: 放大

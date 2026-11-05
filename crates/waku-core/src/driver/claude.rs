@@ -262,6 +262,8 @@ fn configure_stream_command(command: &mut Command, mode: RuntimeMode, plan_mode:
         "stdio",
         "--permission-mode",
         effective_permission_mode(mode, plan_mode),
+        "--append-system-prompt",
+        super::USER_RUN_INSTRUCTIONS,
     ]);
     if mode == RuntimeMode::FullAccess {
         // The forcing flag overrides `--permission-mode plan` at launch;

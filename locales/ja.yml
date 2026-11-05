@@ -232,6 +232,10 @@ common.copy_code: コードをコピー
 common.add_to_chat: チャットに追加
 common.copy_image: 画像をコピー
 attachments.reveal_in_finder: Finder で表示
+code_run.run_tooltip: ターミナルで実行し、出力をエージェントに送信
+code_run.running: ターミナルで実行中…
+code_run.queued_output: ターミナル出力
+code_run.no_workspace: このセッションにはコマンドを実行するフォルダがありません。
 mermaid.preview: プレビュー
 mermaid.title: Mermaid プレビュー
 mermaid.zoom_in: 拡大

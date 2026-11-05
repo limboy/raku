@@ -22,6 +22,23 @@ use crate::model::{
     ProviderResumeCursor, RuntimeMode, UserInputAnswer,
 };
 
+/// Appended to every provider's system instructions so agents know they can
+/// hand the user a runnable command. Waku renders `sh run` fences with a Run
+/// button and reports the result as the user's next message.
+pub(crate) const USER_RUN_INSTRUCTIONS: &str = concat!(
+    "You are running inside Waku, a desktop client that can run shell commands in the user's own ",
+    "terminal. When the user should run a command on their machine themselves rather than you ",
+    "running it with your own tools (for example it touches their private data, needs their ",
+    "credentials or a password prompt, or they asked for a command to run), put it in a fenced ",
+    "code block whose info string is `sh run` (open the fence with ```sh run). Waku shows a Run ",
+    "button on that block. When the user clicks it, Waku runs the block in an interactive terminal ",
+    "with their login shell in the session's working directory, and when it exits sends you the ",
+    "command, its exit code, and the terminal output so you can continue. Only mark self-contained ",
+    "commands that are safe to run as written. Use a plain ```sh or ```bash fence for examples, ",
+    "explanations, and commands you intend to run yourself. Never mark destructive commands ",
+    "without stating clearly what they will do."
+);
+
 /// Provider events remain synchronous to send from reader threads, while the
 /// bounded wake channel lets the UI sleep until at least one event is ready.
 /// Multiple provider writes coalesce into one wake without ever blocking the

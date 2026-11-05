@@ -267,7 +267,8 @@ impl CodexDriver {
                         "cwd": cwd_string,
                         "approvalPolicy": approval_policy,
                         "sandbox": sandbox,
-                        "approvalsReviewer": approvals_reviewer
+                        "approvalsReviewer": approvals_reviewer,
+                        "developerInstructions": super::USER_RUN_INSTRUCTIONS
                     });
                     if let Some(model) = model.as_deref() {
                         params["model"] = json!(model);
@@ -286,7 +287,8 @@ impl CodexDriver {
                         "approvalPolicy": approval_policy,
                         "sandbox": sandbox,
                         "approvalsReviewer": approvals_reviewer,
-                        "serviceName": "waku"
+                        "serviceName": "waku",
+                        "developerInstructions": super::USER_RUN_INSTRUCTIONS
                     });
                     if let Some(model) = model.as_deref() {
                         params["model"] = json!(model);

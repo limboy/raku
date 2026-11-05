@@ -99,6 +99,8 @@ pub enum Block {
     CodeBlock {
         language: Option<String>,
         code: String,
+        /// A shell fence the agent marked for the user to run (`sh run`).
+        runnable: bool,
     },
     DisplayMath {
         latex: String,
@@ -130,6 +132,13 @@ pub struct TopBlock {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BlockTree {
     pub blocks: Vec<TopBlock>,
+}
+
+/// Fence languages whose `run` marker offers the user a Run button.
+fn is_shell_language(language: &str) -> bool {
+    ["sh", "bash", "zsh", "shell"]
+        .iter()
+        .any(|shell| language.eq_ignore_ascii_case(shell))
 }
 
 #[cfg(test)]
@@ -251,13 +260,18 @@ fn parse_started_block(cursor: &mut Cursor) -> Vec<Block> {
             runs: pieces_into_runs(parse_inline_container(cursor)),
         }],
         Tag::CodeBlock(kind) => {
-            let language = match kind {
-                CodeBlockKind::Fenced(info) => info
-                    .split_whitespace()
-                    .next()
-                    .filter(|language| !language.is_empty())
-                    .map(str::to_owned),
-                CodeBlockKind::Indented => None,
+            let (language, runnable) = match kind {
+                CodeBlockKind::Fenced(info) => {
+                    let mut words = info.split_whitespace();
+                    let language = words
+                        .next()
+                        .filter(|language| !language.is_empty())
+                        .map(str::to_owned);
+                    let runnable = language.as_deref().is_some_and(is_shell_language)
+                        && words.any(|word| word.eq_ignore_ascii_case("run"));
+                    (language, runnable)
+                }
+                CodeBlockKind::Indented => (None, false),
             };
             let mut code = String::new();
             loop {
@@ -272,7 +286,11 @@ fn parse_started_block(cursor: &mut Cursor) -> Vec<Block> {
             if code.ends_with('\n') {
                 code.pop();
             }
-            vec![Block::CodeBlock { language, code }]
+            vec![Block::CodeBlock {
+                language,
+                code,
+                runnable,
+            }]
         }
         Tag::BlockQuote(_) => vec![Block::BlockQuote {
             children: parse_block_sequence(cursor),
@@ -1124,6 +1142,7 @@ mod tests {
             Block::CodeBlock {
                 language: Some("rust".into()),
                 code: "fn main() {}".into(),
+                runnable: false,
             }
         );
         // Ranges point back into the source and are ascending.
@@ -1458,5 +1477,18 @@ mod tests {
         let mut parser = IncrementalParser::new();
         parser.set_text("```rust\nlet a = **b;\n");
         assert_eq!(parser.display_tree(), *parser.tree());
+    }
+
+    #[test]
+    fn only_shell_fences_marked_run_are_runnable() {
+        let runnable = |source: &str| match &parse(source).blocks[0].block {
+            Block::CodeBlock { runnable, .. } => *runnable,
+            other => panic!("expected a code block, got {other:?}"),
+        };
+        assert!(runnable("```sh run\nls\n```"));
+        assert!(runnable("```bash  RUN\nls\n```"));
+        assert!(!runnable("```sh\nls\n```"));
+        assert!(!runnable("```python run\nprint(1)\n```"));
+        assert!(!runnable("```run\nls\n```"));
     }
 }

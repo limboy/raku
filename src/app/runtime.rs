@@ -1455,7 +1455,7 @@ impl Waku {
                 .any(|capture| capture.session_id == session_id && capture.turn_count == turn_count)
     }
 
-    fn ending_checkpoint_pending(&self, session_id: Uuid) -> bool {
+    pub(super) fn ending_checkpoint_pending(&self, session_id: Uuid) -> bool {
         self.state
             .sessions
             .iter()
@@ -2983,31 +2983,42 @@ impl Waku {
         submission: ComposerSubmission,
         cx: &mut Context<Self>,
     ) {
+        if let Some(submission) = self.begin_submission_turn(session_id, submission, cx) {
+            self.start_submission_preparation(session_id, submission, cx);
+        }
+    }
+
+    /// Accept a submission into the transcript: its message, turn, and
+    /// working indicator appear now. Returns the submission when a turn began;
+    /// otherwise it was queued, rerouted, or restored to the composer.
+    pub(super) fn begin_submission_turn(
+        &mut self,
+        session_id: Uuid,
+        submission: ComposerSubmission,
+        cx: &mut Context<Self>,
+    ) -> Option<ComposerSubmission> {
         if self.response_fork_preparations.contains_key(&session_id) {
-            return;
+            return None;
         }
         // A new turn answers any plan that ended its own turn: replying is
         // how a plan is revised, and implementing it arrives here too.
         self.pending_plans.remove(&session_id);
         let selected = self.state.selected_session == Some(session_id);
-        let Some(session) = self
+        let session = self
             .state
             .sessions
             .iter()
-            .find(|session| session.id == session_id)
-        else {
-            return;
-        };
+            .find(|session| session.id == session_id)?;
         if session.provider.capabilities().compaction.manual
             && let Some(focus) = compaction::compact_invocation(&submission.prompt)
         {
             self.request_session_compaction(session_id, focus.map(str::to_owned), cx);
-            return;
+            return None;
         }
         if self.ending_checkpoint_pending(session_id) {
             self.enqueue_follow_up_submission(session_id, submission, cx);
             self.defer_queue_drain(session_id);
-            return;
+            return None;
         }
         // A goal operation is already starting this session's provider.
         // Queue the message so it lands on that thread — after the goal —
@@ -3015,11 +3026,11 @@ impl Waku {
         if self.goal_runtime_starts.contains(&session_id) {
             self.enqueue_follow_up_submission(session_id, submission, cx);
             self.defer_queue_drain(session_id);
-            return;
+            return None;
         }
         if session.is_busy() {
             self.enqueue_follow_up_submission(session_id, submission, cx);
-            return;
+            return None;
         }
         let prompt = submission.prompt.clone();
         let human_prompt = submission.human_prompt();
@@ -3040,14 +3051,6 @@ impl Waku {
         };
         let attachment_count = submission.attachments.len();
         let project_id = session.project_id;
-        let workspace = session.workspace.clone();
-        let driver_start = (!self.runtimes.contains_key(&session_id)).then(|| {
-            let provisional_cwd = self
-                .workspace_path_for_session(session)
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_default();
-            self.driver_start_request_for_session(session, provisional_cwd)
-        });
         let Some(project) = self
             .state
             .projects
@@ -3060,7 +3063,7 @@ impl Waku {
                 self.show_toast(tr!("errors.prepare_task_project_not_found"));
             }
             cx.notify();
-            return;
+            return None;
         };
         let projectless = project.is_projectless();
         // Busy is visible before any Git work begins. The separate transient
@@ -3110,7 +3113,6 @@ impl Waku {
                 attachment_count,
                 has_input,
             });
-        self.submission_preparations.insert(session_id);
         if selected {
             self.activities_expanded.clear();
             self.expanded_activity_items.clear();
@@ -3137,8 +3139,47 @@ impl Waku {
             self.scroll_transcript_to_anchor();
         }
         cx.notify();
+        Some(submission)
+    }
 
-        let preparation_prompt = human_prompt;
+    /// Prepare the workspace and runtime for the turn `begin_submission_turn`
+    /// accepted, then hand its prompt to the provider.
+    pub(super) fn start_submission_preparation(
+        &mut self,
+        session_id: Uuid,
+        submission: ComposerSubmission,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+        else {
+            return;
+        };
+        let next_turn_count = session.turns.len();
+        let workspace = session.workspace.clone();
+        let driver_start = (!self.runtimes.contains_key(&session_id)).then(|| {
+            let provisional_cwd = self
+                .workspace_path_for_session(session)
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+            self.driver_start_request_for_session(session, provisional_cwd)
+        });
+        let Some(project) = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.id == session.project_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.submission_preparations.insert(session_id);
+        cx.notify();
+
+        let preparation_prompt = submission.human_prompt();
         let workspace_client = waku_client::WorkspaceClient::new(self.daemon.client());
         cx.spawn(async move |waku, cx| {
             let prepared = cx

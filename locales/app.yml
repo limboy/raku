@@ -451,6 +451,14 @@ common.copy_image:
   en: Copy image
 attachments.reveal_in_finder:
   en: Reveal in Finder
+code_run.run_tooltip:
+  en: Run in terminal and send output to the agent
+code_run.running:
+  en: Running in terminal…
+code_run.queued_output:
+  en: Terminal output
+code_run.no_workspace:
+  en: This session has no folder to run commands in.
 mermaid.preview:
   en: Preview
 mermaid.title:
