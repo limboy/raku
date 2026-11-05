@@ -813,6 +813,8 @@ files.open_in_default_app: デフォルトのアプリで開く
 files.preview_markdown: Markdown をプレビュー
 files.edit_markdown_source: ソースを編集
 files.view_markdown_source: ソースを表示
+files.view_svg_source: SVG ソースを表示
+files.preview_svg: SVG をプレビュー
 files.unable_to_open: "このファイルを開けません：%{error}"
 files.preview_too_large: ファイルが大きすぎるためプレビューできません（最大 2 MB）。
 files.binary_preview_unavailable: このファイルにはバイナリデータが含まれています。

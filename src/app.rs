@@ -696,6 +696,11 @@ struct RightPanelFileEditor {
     /// Uploaded files retain their daemon reference and are always read-only.
     attachment: Option<right_panel::AttachmentFile>,
     disk_content: String,
+    /// Image bytes are fetched and prepared on a worker. Rendering only reads
+    /// this source; GPUI decodes encoded images through its background cache.
+    image: Option<Result<right_panel::FileImageSource, String>>,
+    image_preview: bool,
+    image_epoch: u64,
     writable: bool,
     dirty: bool,
     /// A read is in flight on the background executor. Set from the moment the

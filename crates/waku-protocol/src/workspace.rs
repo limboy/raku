@@ -56,6 +56,10 @@ pub enum WorkspaceOperation {
         root: PathBuf,
         relative_path: PathBuf,
     },
+    ReadFileBytes {
+        root: PathBuf,
+        relative_path: PathBuf,
+    },
     WriteTextFile {
         root: PathBuf,
         relative_path: PathBuf,
@@ -177,6 +181,10 @@ pub enum WorkspaceResult {
     },
     TextFile {
         content: String,
+    },
+    FileBytes {
+        #[serde(with = "crate::protocol::base64_bytes")]
+        bytes: Vec<u8>,
     },
     ProjectFiles {
         entries: Vec<FileEntry>,

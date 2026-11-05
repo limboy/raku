@@ -773,7 +773,8 @@ fn file_icon_for_name(name: &str) -> &'static str {
         "sql" | "db" | "sqlite" | "sqlite3" | "csv" | "xls" | "xlsx" => {
             "icons/file-types/database.svg"
         }
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "ico" | "tiff" => {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "ico" | "tif" | "tiff" | "bmp"
+        | "pnm" | "pbm" | "pgm" | "ppm" | "tga" | "dds" | "hdr" | "exr" | "qoi" | "ff" => {
             "icons/file-types/image.svg"
         }
         "svg" => "icons/file-types/svg.svg",
@@ -951,28 +952,141 @@ fn file_highlighter_language(relative_path: &str) -> &'static str {
     }
 }
 
-/// Reads a file for the editor, returning its text and whether it can be saved.
-///
-/// One unbounded `read_to_string`, so callers keep it off the UI thread; the
-/// only caller is [`Waku::read_right_panel_file_into_editor`].
+pub(super) fn is_svg_file(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+}
+
+pub(super) fn is_image_file(path: &str) -> bool {
+    is_svg_file(path) || image::ImageFormat::from_path(path).is_ok()
+}
+
+/// GPUI's general ImageSource also admits UI callbacks, so it cannot cross
+/// threads. These two in-memory variants can be safely returned by a worker.
+#[derive(Clone)]
+pub(super) enum FileImageSource {
+    Encoded(Arc<gpui::Image>),
+    Rendered(Arc<gpui::RenderImage>),
+}
+
+impl From<FileImageSource> for gpui::ImageSource {
+    fn from(source: FileImageSource) -> Self {
+        match source {
+            FileImageSource::Encoded(image) => image.into(),
+            FileImageSource::Rendered(image) => image.into(),
+        }
+    }
+}
+
+/// Prepare encoded image sources on a worker, including hashing their bytes.
+/// GPUI's asset cache handles decoding without putting it on the frame path.
+fn file_image_source(bytes: Vec<u8>, path: &str) -> anyhow::Result<FileImageSource> {
+    anyhow::ensure!(
+        bytes.len() <= waku_protocol::attachments::MAX_ATTACHMENT_BYTES,
+        "image exceeds 32 MB"
+    );
+    if is_svg_file(path) {
+        return Ok(FileImageSource::Encoded(Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Svg,
+            bytes,
+        ))));
+    }
+    let format = image::guess_format(&bytes).or_else(|_| image::ImageFormat::from_path(path))?;
+    let (width, height) =
+        image::ImageReader::with_format(std::io::Cursor::new(&bytes), format).into_dimensions()?;
+    anyhow::ensure!(
+        u64::from(width) * u64::from(height) <= 32_000_000,
+        "image dimensions are too large to preview"
+    );
+    if let Some(format) = gpui::ImageFormat::from_mime_type(format.to_mime_type()) {
+        return Ok(FileImageSource::Encoded(Arc::new(gpui::Image::from_bytes(
+            format, bytes,
+        ))));
+    }
+
+    // Some file formats, such as TGA, are supported by `image` but are not
+    // clipboard formats in GPUI. Decode those on this worker as well.
+    let mut buffer = image::load_from_memory_with_format(&bytes, format)?.into_rgba8();
+    for pixel in buffer.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    Ok(FileImageSource::Rendered(Arc::new(gpui::RenderImage::new(
+        [image::Frame::new(buffer)],
+    ))))
+}
+
+struct LoadedRightPanelFile {
+    content: String,
+    writable: bool,
+    image: Option<Result<FileImageSource, String>>,
+}
+
+impl LoadedRightPanelFile {
+    fn text(content: String, writable: bool) -> Self {
+        Self {
+            content,
+            writable,
+            image: None,
+        }
+    }
+
+    fn svg(content: String) -> Self {
+        let image = file_image_source(content.as_bytes().to_vec(), "preview.svg")
+            .map_err(|error| error.to_string());
+        Self {
+            content,
+            writable: true,
+            image: Some(image),
+        }
+    }
+}
+
+/// Reads text or image bytes from the daemon. Only called on a worker by
+/// [`Waku::read_right_panel_file_into_editor`], never directly from a frame.
 fn read_right_panel_file(
     workspace: &waku_client::WorkspaceClient,
     project_path: &Path,
     relative_path: &str,
-) -> (String, bool) {
+) -> LoadedRightPanelFile {
+    if is_image_file(relative_path) && !is_svg_file(relative_path) {
+        let image = (|| -> anyhow::Result<FileImageSource> {
+            let waku_client::WorkspaceResult::FileBytes { bytes } =
+                workspace.request(waku_client::WorkspaceOperation::ReadFileBytes {
+                    root: project_path.to_path_buf(),
+                    relative_path: PathBuf::from(relative_path),
+                })?
+            else {
+                anyhow::bail!("the daemon returned an invalid image response");
+            };
+            file_image_source(bytes, relative_path)
+        })();
+        return LoadedRightPanelFile {
+            content: String::new(),
+            writable: false,
+            image: Some(image.map_err(|error| error.to_string())),
+        };
+    }
     match workspace.request(waku_client::WorkspaceOperation::ReadTextFile {
         root: project_path.to_path_buf(),
         relative_path: PathBuf::from(relative_path),
     }) {
-        Ok(waku_client::WorkspaceResult::TextFile { content }) => (content, true),
-        Ok(_) => (
+        Ok(waku_client::WorkspaceResult::TextFile { content }) => {
+            if is_svg_file(relative_path) {
+                LoadedRightPanelFile::svg(content)
+            } else {
+                LoadedRightPanelFile::text(content, true)
+            }
+        }
+        Ok(_) => LoadedRightPanelFile::text(
             tr!(
                 "files.unable_to_edit",
                 error = "the daemon returned an invalid file response"
             ),
             false,
         ),
-        Err(error) => (
+        Err(error) => LoadedRightPanelFile::text(
             tr!("files.unable_to_edit", error = error.to_string()),
             false,
         ),
@@ -1277,6 +1391,89 @@ fn tab_scroll_fade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_images_are_recognized_without_treating_source_files_as_images() {
+        for path in [
+            "assets/photo.PNG",
+            "photo.jpeg",
+            "animation.gif",
+            "art.webp",
+            "icon.SVG",
+            "photo.avif",
+            "photo.tif",
+            "image.bmp",
+        ] {
+            assert!(is_image_file(path), "{path}");
+        }
+        for path in [
+            "main.rs",
+            "notes.md",
+            "document.pdf",
+            "svg",
+            "image.png.txt",
+        ] {
+            assert!(!is_image_file(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn image_previews_decode_binary_pixels_without_using_a_text_buffer() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let FileImageSource::Encoded(source) =
+            file_image_source(bytes.into_inner(), "image.png").unwrap()
+        else {
+            panic!("PNG should use GPUI's encoded image cache");
+        };
+        let rendered = source
+            .to_image_data(gpui::SvgRenderer::new(Arc::new(())))
+            .unwrap();
+        assert_eq!(rendered.size(0).width.0, 3);
+        assert_eq!(rendered.size(0).height.0, 2);
+        assert_eq!(&rendered.as_bytes(0).unwrap()[..4], &[0, 0, 255, 255]);
+        assert!(file_image_source(b"not an image".to_vec(), "image.png").is_err());
+        for (path, format) in [
+            ("image.tga", image::ImageFormat::Tga),
+            ("image.qoi", image::ImageFormat::Qoi),
+        ] {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::from_pixel(3, 2, image::Rgba([255, 0, 0, 255]))
+                .write_to(&mut bytes, format)
+                .unwrap();
+            let FileImageSource::Rendered(image) =
+                file_image_source(bytes.into_inner(), path).unwrap()
+            else {
+                panic!("{path} should be decoded on the worker");
+            };
+            assert_eq!(&image.as_bytes(0).unwrap()[..4], &[0, 0, 255, 255]);
+        }
+    }
+
+    #[test]
+    fn svg_previews_keep_editable_source_and_reflect_changed_source() {
+        let source = "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"8\"><!-- 中文 --><rect width=\"16\" height=\"8\" fill=\"red\"/></svg>";
+        let renderer = gpui::SvgRenderer::new(Arc::new(()));
+        for (content, pixel) in [
+            (source.to_owned(), [0, 0, 255, 255]),
+            (source.replace("red", "blue"), [255, 0, 0, 255]),
+        ] {
+            let loaded = LoadedRightPanelFile::svg(content.clone());
+            assert_eq!(loaded.content, content);
+            assert!(loaded.writable);
+            let FileImageSource::Encoded(image) = loaded.image.unwrap().unwrap() else {
+                panic!("SVG should use GPUI's encoded image cache");
+            };
+            assert_eq!(image.bytes(), content.as_bytes());
+            let rendered = image.to_image_data(renderer.clone()).unwrap();
+            assert_eq!(&rendered.as_bytes(0).unwrap()[..4], &pixel);
+        }
+        let invalid = LoadedRightPanelFile::svg("<svg incomplete".into());
+        assert!(invalid.writable);
+        assert_eq!(invalid.content, "<svg incomplete");
+    }
 
     #[test]
     fn text_attachments_offer_a_preview_without_changing_image_or_directory_actions() {
@@ -2237,6 +2434,7 @@ impl Waku {
         // edits made while another session was on screen.
         for editor in self.right_panel_file_editors.values_mut() {
             editor.reading = false;
+            editor.image_epoch = editor.image_epoch.wrapping_add(1);
         }
         // The find bar pointed into the editors that were just swapped out;
         // its match list means nothing here, and restored editors may carry
@@ -3554,18 +3752,29 @@ impl Waku {
         let (editor_state, writable, _) =
             self.ensure_right_panel_file_editor(&relative_path, attachment.clone(), window, cx);
 
-        // Markdown files carry the global source/preview toggle; every other
-        // language always shows source.
         let is_markdown = file_highlighter_language(&display_path) == "markdown";
-        let preview = is_markdown && self.state.markdown_preview;
-        let reading_attachment =
-            attachment.is_some() && self.right_panel_file_editors[&relative_path].reading;
-        let body = if reading_attachment {
+        let is_image = attachment.is_none() && is_image_file(&display_path);
+        let is_svg = is_image && is_svg_file(&display_path);
+        let preview = if is_image {
+            self.right_panel_file_editors[&relative_path].image_preview
+        } else {
+            is_markdown && self.state.markdown_preview
+        };
+        let reading = self.right_panel_file_editors[&relative_path].reading;
+        let body = if reading
+            && (attachment.is_some()
+                || is_image
+                    && self.right_panel_file_editors[&relative_path]
+                        .image
+                        .is_none())
+        {
             self.render_right_panel_empty_message(
                 tr!("files.loading_file"),
                 tr!("files.preparing_editor"),
                 cx,
             )
+        } else if is_image && preview {
+            self.render_file_image_preview(&relative_path, cx)
         } else if preview {
             self.render_file_markdown_preview(&relative_path, &editor_state, cx)
         } else {
@@ -3578,9 +3787,15 @@ impl Waku {
                 cx,
             )
         };
-        let preview_toggle = is_markdown.then(|| {
-            let focus = self.transcript_control_focus("file-markdown-preview-toggle", cx);
-            let (icon_path, label) = if preview {
+        let preview_toggle = (is_markdown || is_svg).then(|| {
+            let focus = self.transcript_control_focus("file-preview-toggle", cx);
+            let (icon_path, label) = if is_svg {
+                if preview {
+                    ("icons/file.svg", tr!("files.view_svg_source"))
+                } else {
+                    ("icons/eye.svg", tr!("files.preview_svg"))
+                }
+            } else if preview {
                 if attachment.is_some() {
                     ("icons/file.svg", tr!("files.view_markdown_source"))
                 } else {
@@ -3589,8 +3804,10 @@ impl Waku {
             } else {
                 ("icons/eye.svg", tr!("files.preview_markdown"))
             };
+            let click_path = relative_path.clone();
+            let key_path = relative_path.clone();
             div()
-                .id("file-markdown-preview-toggle")
+                .id("file-preview-toggle")
                 .track_focus(&focus)
                 .tab_index(0)
                 .size(px(26.0))
@@ -3604,10 +3821,12 @@ impl Waku {
                 .hover(|style| style.bg(theme.overlay))
                 .child(icon(icon_path, 12.0, theme.text_tertiary))
                 .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_markdown_preview(cx)))
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_file_preview(&click_path, cx);
+                }))
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        this.toggle_markdown_preview(cx);
+                        this.toggle_file_preview(&key_path, cx);
                         cx.stop_propagation();
                     }
                 }))
@@ -3710,6 +3929,9 @@ impl Waku {
                 state: state.clone(),
                 attachment,
                 disk_content: String::new(),
+                image: None,
+                image_preview: true,
+                image_epoch: 0,
                 writable: false,
                 dirty: false,
                 reading: false,
@@ -3798,6 +4020,7 @@ impl Waku {
         editor.reading = true;
         editor.read_epoch += 1;
         let epoch = editor.read_epoch;
+        let state_id = editor.state.entity_id();
         let client = self.daemon.client();
         let workspace = waku_client::WorkspaceClient::new(client.clone());
         let reading_attachment = attachment.is_some();
@@ -3810,9 +4033,11 @@ impl Waku {
                     let relative_path = relative_path.clone();
                     async move {
                         if let Some(attachment) = attachment {
-                            read_attachment_file(&attachment, |command| {
-                                client.request(Uuid::nil(), Uuid::nil(), command)
-                            })
+                            let (content, writable) =
+                                read_attachment_file(&attachment, |command| {
+                                    client.request(Uuid::nil(), Uuid::nil(), command)
+                                });
+                            LoadedRightPanelFile::text(content, writable)
                         } else {
                             read_right_panel_file(
                                 &workspace,
@@ -3833,13 +4058,17 @@ impl Waku {
                     // for the same path in the newly selected session.
                     return;
                 }
-                let (content, writable) = read;
+                let LoadedRightPanelFile {
+                    content,
+                    writable,
+                    image,
+                } = read;
                 let Some(editor) = waku.right_panel_file_editors.get_mut(&relative_path) else {
                     return;
                 };
                 // A save landed while the read was in flight, so this text
                 // describes the file as it was before that save.
-                if editor.read_epoch != epoch {
+                if editor.read_epoch != epoch || editor.state.entity_id() != state_id {
                     return;
                 }
                 editor.reading = false;
@@ -3848,13 +4077,16 @@ impl Waku {
                 if editor.dirty {
                     return;
                 }
-                if editor.disk_content == content && editor.writable == writable {
+                if editor.disk_content == content && editor.writable == writable && image.is_none()
+                {
                     // An empty read-only attachment still retires its loading
                     // placeholder even though its initial text did not change.
                     cx.notify();
                     return;
                 }
                 editor.disk_content = content.clone();
+                editor.image_epoch = editor.image_epoch.wrapping_add(1);
+                editor.image = image;
                 editor.writable = writable;
                 editor.dirty = false;
                 let state = editor.state.clone();
@@ -3867,6 +4099,56 @@ impl Waku {
             .ok();
         })
         .detach();
+    }
+
+    fn render_file_image_preview(&self, relative_path: &str, cx: &mut Context<Self>) -> Div {
+        let theme = Theme::current(cx);
+        let editor = &self.right_panel_file_editors[relative_path];
+        match editor.image.as_ref() {
+            Some(Ok(source)) => {
+                let unavailable = tr!("attachments.preview_unavailable");
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .bg(theme.surface)
+                    .p(px(20.0))
+                    .child(
+                        img(source.clone())
+                            .size_full()
+                            .object_fit(ObjectFit::Contain)
+                            .with_fallback(move || {
+                                div()
+                                    .size_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(8.0))
+                                    .text_size(sp(12.5))
+                                    .text_color(theme.text_secondary)
+                                    .child(icon("icons/alert.svg", 20.0, theme.text_tertiary))
+                                    .child(unavailable.clone())
+                                    .into_any_element()
+                            }),
+                    )
+            }
+            Some(Err(error)) => self.render_right_panel_empty_message(
+                tr!("attachments.preview_unavailable"),
+                error.clone(),
+                cx,
+            ),
+            None => self.render_right_panel_empty_message(
+                if editor.writable || editor.reading {
+                    tr!("files.loading_file")
+                } else {
+                    tr!("attachments.preview_unavailable")
+                },
+                editor.disk_content.clone(),
+                cx,
+            ),
+        }
     }
 
     /// The editor body: a line-number gutter beside soft-wrapped text.
@@ -4007,6 +4289,51 @@ impl Waku {
                         &self.right_panel_editor_scrollbar,
                     )),
             )
+    }
+
+    pub(super) fn toggle_file_preview(&mut self, relative_path: &str, cx: &mut Context<Self>) {
+        if !is_svg_file(relative_path) {
+            self.toggle_markdown_preview(cx);
+            return;
+        }
+        let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) else {
+            return;
+        };
+        editor.image_preview = !editor.image_preview;
+        if editor.image_preview && !editor.reading && editor.writable {
+            // Preview the current buffer, including unsaved source edits. Do
+            // not hash or decode a potentially large SVG in the event handler.
+            let content = editor.state.read(cx).content().to_owned();
+            let state_id = editor.state.entity_id();
+            editor.image_epoch = editor.image_epoch.wrapping_add(1);
+            let epoch = editor.image_epoch;
+            let session_id = self.state.selected_session;
+            let relative_path = relative_path.to_owned();
+            cx.spawn(async move |waku, cx| {
+                let image = cx
+                    .background_executor()
+                    .spawn(async move {
+                        file_image_source(content.into_bytes(), "preview.svg")
+                            .map_err(|error| error.to_string())
+                    })
+                    .await;
+                let _ = waku.update(cx, |waku, cx| {
+                    if waku.state.selected_session != session_id {
+                        return;
+                    }
+                    let Some(editor) = waku.right_panel_file_editors.get_mut(&relative_path) else {
+                        return;
+                    };
+                    if editor.state.entity_id() != state_id || editor.image_epoch != epoch {
+                        return;
+                    }
+                    editor.image = Some(image);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        cx.notify();
     }
 
     /// Flips the global markdown source/preview mode and persists it, so the

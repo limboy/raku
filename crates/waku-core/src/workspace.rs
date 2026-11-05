@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Output;
 
@@ -55,6 +56,21 @@ pub fn execute(operation: WorkspaceOperation) -> anyhow::Result<WorkspaceResult>
         } => WorkspaceResult::TextFile {
             content: fs::read_to_string(resolve_workspace_path(&root, &relative_path)?)?,
         },
+        WorkspaceOperation::ReadFileBytes {
+            root,
+            relative_path,
+        } => {
+            let file = fs::File::open(resolve_workspace_path(&root, &relative_path)?)?;
+            let limit = waku_protocol::attachments::MAX_ATTACHMENT_BYTES;
+            anyhow::ensure!(
+                file.metadata()?.len() <= limit as u64,
+                "image exceeds 32 MB"
+            );
+            let mut bytes = Vec::new();
+            file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= limit, "image exceeds 32 MB");
+            WorkspaceResult::FileBytes { bytes }
+        }
         WorkspaceOperation::WriteTextFile {
             root,
             relative_path,
@@ -635,6 +651,39 @@ mod tests {
             .is_err()
         );
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn binary_file_reader_preserves_bytes_and_rejects_oversized_or_invalid_paths() {
+        let root = std::env::temp_dir().join(format!("waku-image-file-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let bytes = vec![137, 80, 78, 71, 0, 255, 254, 1];
+        fs::write(root.join("image.png"), &bytes).unwrap();
+        let WorkspaceResult::FileBytes { bytes: restored } =
+            execute(WorkspaceOperation::ReadFileBytes {
+                root: root.clone(),
+                relative_path: "image.png".into(),
+            })
+            .unwrap()
+        else {
+            panic!("unexpected workspace response");
+        };
+        assert_eq!(restored, bytes);
+        let oversized = fs::File::create(root.join("oversized.png")).unwrap();
+        oversized
+            .set_len(waku_protocol::attachments::MAX_ATTACHMENT_BYTES as u64 + 1)
+            .unwrap();
+        for path in ["oversized.png", "missing.png", "../image.png", ""] {
+            assert!(
+                execute(WorkspaceOperation::ReadFileBytes {
+                    root: root.clone(),
+                    relative_path: path.into(),
+                })
+                .is_err(),
+                "{path}"
+            );
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

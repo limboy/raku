@@ -1587,6 +1587,10 @@ files.edit_markdown_source:
   en: Edit source
 files.view_markdown_source:
   en: View source
+files.view_svg_source:
+  en: View SVG source
+files.preview_svg:
+  en: Preview SVG
 files.unable_to_open:
   en: "Unable to open this file: %{error}"
 files.preview_too_large:

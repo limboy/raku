@@ -775,6 +775,8 @@ files.open_in_default_app: 用默认应用打开
 files.preview_markdown: 预览 Markdown
 files.edit_markdown_source: 编辑源码
 files.view_markdown_source: 查看源码
+files.view_svg_source: 查看 SVG 源码
+files.preview_svg: 预览 SVG
 files.unable_to_open: "无法打开此文件：%{error}"
 files.preview_too_large: 文件过大，无法预览（最大 2 MB）。
 files.binary_preview_unavailable: 此文件包含二进制数据。

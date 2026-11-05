@@ -460,7 +460,7 @@ impl From<anyhow::Error> for RpcError {
     }
 }
 
-mod base64_bytes {
+pub(crate) mod base64_bytes {
     use base64::Engine as _;
     use serde::{Deserialize as _, Deserializer, Serializer};
 
@@ -495,6 +495,25 @@ mod tests {
 
         assert_eq!(json["bytes"], "AAEC/w==");
         let ResponsePayload::BlobData { bytes } = serde_json::from_value(json).unwrap() else {
+            panic!("unexpected payload variant");
+        };
+        assert_eq!(bytes, vec![0, 1, 2, 255]);
+    }
+
+    #[test]
+    fn workspace_image_bytes_round_trip_as_base64() {
+        let payload = ResponsePayload::Workspace {
+            result: WorkspaceResult::FileBytes {
+                bytes: vec![0, 1, 2, 255],
+            },
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["result"]["type"], "fileBytes");
+        assert_eq!(json["result"]["bytes"], "AAEC/w==");
+        let ResponsePayload::Workspace {
+            result: WorkspaceResult::FileBytes { bytes },
+        } = serde_json::from_value(json).unwrap()
+        else {
             panic!("unexpected payload variant");
         };
         assert_eq!(bytes, vec![0, 1, 2, 255]);

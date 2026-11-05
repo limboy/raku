@@ -300,6 +300,18 @@ impl Waku {
         let Some(path) = self.visible_right_panel_file_path() else {
             return;
         };
+        if right_panel::is_image_file(&path) {
+            if !right_panel::is_svg_file(&path) {
+                return;
+            }
+            if self
+                .right_panel_file_editors
+                .get(&path)
+                .is_some_and(|editor| editor.image_preview)
+            {
+                self.toggle_file_preview(&path, cx);
+            }
+        }
         self.ensure_file_search(window, cx);
 
         // Seed the query from the editor's selection, the way editors
