@@ -5,8 +5,8 @@
 //!
 //! A menu is built lazily: the item list is only constructed once the menu
 //! actually opens, and while closed the wrapper contributes one `Rc<Cell>` read
-//! and no children. The open menu renders through `deferred(anchored(..))` so it
-//! escapes its row's clipping and paints above every sibling.
+//! and no children. The open menu renders through a deferred floating surface
+//! so it escapes its row's clipping and paints above every sibling.
 //!
 //! Dismissal follows Zed's own context menus:
 //!
@@ -30,8 +30,8 @@ use gpui::{
     AnyElement, App, Bounds, Display, Element, ElementId, FocusHandle, FontWeight, GlobalElementId,
     InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, MouseButton,
     MouseDownEvent, ParentElement, Pixels, Point, Position, RenderOnce, SharedString, Size,
-    StatefulInteractiveElement, Style, Styled, Window, actions, anchored, canvas, deferred, div,
-    img, prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Style, Styled, Window, actions, canvas, deferred, div, img,
+    prelude::FluentBuilder, px,
 };
 
 actions!(
@@ -955,16 +955,20 @@ where
 
     element
         .child(
-            deferred(
-                anchored()
-                    .position(position)
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(MenuCard {
-                        id,
-                        handle: handle.clone(),
-                        items,
-                    }),
-            )
+            // A point-sized trigger lets either corner stay at the cursor
+            // when the menu flips, before shifting for the window margin.
+            deferred(FloatingSurface::new(
+                MenuCard {
+                    id,
+                    handle: handle.clone(),
+                    items,
+                }
+                .into_any_element(),
+                Bounds::new(position, Size::default()),
+                MenuAlign::BelowLeft,
+                px(0.0),
+                px(8.0),
+            ))
             .with_priority(priority),
         )
         .into_any_element()
