@@ -1975,7 +1975,8 @@ impl Waku {
                     .map(|error| tr!("errors.save_projectless_migration", error = error))
             });
         let sidebar_visible = state.sidebar_visible;
-        let right_panel_visible = state.right_panel_visible;
+        // Right-panel tabs live only in memory, so a fresh launch has none to show.
+        state.right_panel_visible = false;
         let sidebar_width = sanitize_panel_width(
             state.sidebar_width,
             DEFAULT_SIDEBAR_WIDTH,
@@ -2775,16 +2776,12 @@ impl Waku {
                 session_rename_input,
                 sidebar_visible,
                 sidebar_width,
-                right_panel_visible,
+                right_panel_visible: false,
                 right_panel_width,
                 sidebar_slide: None,
                 right_panel_slide: None,
                 sidebar_rendered_width: if sidebar_visible { sidebar_width } else { 0.0 },
-                right_panel_rendered_width: if right_panel_visible {
-                    right_panel_width
-                } else {
-                    0.0
-                },
+                right_panel_rendered_width: 0.0,
                 fps_counter_visible: false,
                 panel_resize_drag: None,
                 right_panel_session_states: HashMap::new(),

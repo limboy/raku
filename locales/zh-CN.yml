@@ -685,12 +685,8 @@ right_panel.terminal: 终端
 right_panel.files: 文件
 right_panel.diff: 审阅
 right_panel.toggle: 显示或隐藏右侧面板
-right_panel.open_surface: 打开一个面板
-right_panel.choose_surface: 选择要在右侧面板中显示的内容
 right_panel.browser_description: 打开本地应用或网址
 right_panel.terminal_description: 在此工作区中启动 Shell
-right_panel.files_description: 浏览并阅读工作区文件
-right_panel.diff_description: 审阅文件更改
 right_panel.terminal_unavailable: 终端不可用
 right_panel.terminal_unavailable_description: 请重新打开终端面板以启动 Shell
 right_panel.resize: 调整右侧面板宽度

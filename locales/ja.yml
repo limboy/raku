@@ -719,12 +719,8 @@ right_panel.terminal: ターミナル
 right_panel.files: ファイル
 right_panel.diff: レビュー
 right_panel.toggle: 右パネルの表示を切り替える
-right_panel.open_surface: パネルを開く
-right_panel.choose_surface: 右パネルに表示する内容を選択します
 right_panel.browser_description: ローカルアプリまたは URL を開きます
 right_panel.terminal_description: このワークスペースでシェルを起動します
-right_panel.files_description: ワークスペースのファイルを閲覧します
-right_panel.diff_description: ファイルの変更をレビューします
 right_panel.terminal_unavailable: ターミナルを利用できません
 right_panel.terminal_unavailable_description: ターミナルパネルをもう一度開くとシェルが起動します
 right_panel.resize: 右パネルの幅を変更

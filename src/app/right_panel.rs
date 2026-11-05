@@ -2012,7 +2012,7 @@ mod tests {
             .split_once("\n    fn render_right_panel_header(")
             .expect("right panel header renderer")
             .1
-            .split_once("\n    fn render_right_panel_chooser(")
+            .split_once("\n    fn render_right_panel_files(")
             .expect("right panel header renderer end")
             .0;
 
@@ -2738,7 +2738,7 @@ impl Waku {
             self.right_panel_pending_terminal_focus = None;
         }
         let body = match self.active_right_panel_surface().cloned() {
-            None => self.render_right_panel_chooser(cx).into_any_element(),
+            None => div().into_any_element(),
             Some(RightPanelSurface::BackgroundWork { key, .. }) => self
                 .render_background_work_surface(&key, cx)
                 .into_any_element(),
@@ -3102,111 +3102,6 @@ impl Waku {
             );
 
         self.window_drag_region(header, cx)
-    }
-
-    fn render_right_panel_chooser(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let theme = Theme::current(cx);
-        div()
-            .id("right-panel-chooser")
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .px(px(20.0))
-            .pb(px(32.0))
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(420.0))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_size(sp(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(tr!("right_panel.open_surface")),
-                    )
-                    .child(
-                        div()
-                            .mt(px(5.0))
-                            .text_size(sp(12.5))
-                            .text_color(theme.text_tertiary)
-                            .child(tr!("right_panel.choose_surface")),
-                    )
-                    .child(
-                        div()
-                            .mt(px(18.0))
-                            .w_full()
-                            .flex()
-                            .gap(px(8.0))
-                            .child(self.render_right_panel_card(
-                                RightPanelSurface::Files,
-                                tr!("right_panel.files_description"),
-                                cx,
-                            ))
-                            .child(self.render_right_panel_card(
-                                RightPanelSurface::Diff,
-                                tr!("right_panel.diff_description"),
-                                cx,
-                            )),
-                    ),
-            )
-    }
-
-    fn render_right_panel_card(
-        &self,
-        surface: RightPanelSurface,
-        description: String,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let theme = Theme::current(cx);
-        let icon_path = surface.icon_path();
-        let label = surface.label();
-        div()
-            .id(SharedString::from(format!(
-                "right-panel-card-{}",
-                label.to_lowercase()
-            )))
-            .h(px(112.0))
-            .flex_1()
-            .min_w_0()
-            .p(px(14.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.composer)
-            .flex()
-            .flex_col()
-            .items_start()
-            .cursor_default()
-            .hover(|element| element.bg(theme.raised).border_color(theme.text_ghost))
-            .active(|element| element.bg(theme.overlay_strong))
-            .child(icon(icon_path, 18.0, theme.text_secondary))
-            .child(
-                div()
-                    .mt(px(12.0))
-                    .text_size(sp(12.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(label),
-            )
-            .child(
-                div()
-                    .mt(px(4.0))
-                    .text_size(sp(12.5))
-                    .line_height(sp(15.0))
-                    .text_color(theme.text_tertiary)
-                    .whitespace_normal()
-                    .line_clamp(2)
-                    .text_overflow(gpui::TextOverflow::Truncate("...".into()))
-                    .child(description),
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.open_right_panel_surface(surface.clone(), cx);
-            }))
     }
 
     fn render_right_panel_files(
