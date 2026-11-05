@@ -1473,6 +1473,8 @@ pub struct Waku {
     /// Fingerprint + snapshot pair backing `sidebar_rows_cached`.
     sidebar_rows_fingerprint: Cell<Option<u64>>,
     sidebar_rows_snapshot: RefCell<Rc<Vec<SidebarRow>>>,
+    /// Reveal the first nine session shortcuts while the primary modifier is held.
+    sidebar_session_shortcuts_visible: bool,
     /// Calendar boundaries resolved by one background task; render never
     /// consults the system timezone or filesystem.
     sidebar_date_boundaries: Option<SidebarDateBoundaries>,
@@ -2240,6 +2242,10 @@ impl Waku {
             .detach();
 
             cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+                this.set_sidebar_session_shortcuts_visible(
+                    window.is_window_active() && window.modifiers().secondary(),
+                    cx,
+                );
                 if window.is_window_active() {
                     this.reload_clean_right_panel_file_editors(cx);
                     // The working tree and branch may have moved while another
@@ -2834,6 +2840,8 @@ impl Waku {
                 sidebar_row_project: Cell::new(None),
                 sidebar_rows_fingerprint: Cell::new(None),
                 sidebar_rows_snapshot: RefCell::new(Rc::new(Vec::new())),
+                sidebar_session_shortcuts_visible: window.is_window_active()
+                    && window.modifiers().secondary(),
                 sidebar_date_boundaries: None,
                 sidebar_date_task: None,
                 transcript_row_kinds: RefCell::new(Vec::new()),

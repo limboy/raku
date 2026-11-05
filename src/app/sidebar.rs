@@ -5,6 +5,12 @@ use super::*;
 
 actions!(waku_sidebar, [CancelSessionRename]);
 
+/// Select a session by its zero-based position in the sidebar history.
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = waku_sidebar, no_json)]
+pub(super) struct SelectSidebarSession(pub usize);
+
+const SESSION_SHORTCUT_COUNT: usize = 9;
 const SESSION_RENAME_PARENT_CONTEXT: &str = "SessionRename";
 const SESSION_RENAME_FIELD_CONTEXT: &str = "SessionRename > TextInput";
 
@@ -16,6 +22,13 @@ pub fn init(cx: &mut App) {
         CancelSessionRename,
         Some(SESSION_RENAME_FIELD_CONTEXT),
     )]);
+    cx.bind_keys((0..SESSION_SHORTCUT_COUNT).map(|index| {
+        KeyBinding::new(
+            &format!("secondary-{}", index + 1),
+            SelectSidebarSession(index),
+            Some("Waku"),
+        )
+    }));
 }
 
 /// Height of a session card plus the separation reserved beneath it in the
@@ -173,6 +186,16 @@ pub(super) enum SidebarRow {
     DateHeader(SidebarDateGroup),
     /// A started session.
     Session(Uuid),
+}
+
+/// Headers do not consume shortcuts; pinned sessions keep their displayed
+/// positions. Resolve this bounded table once for all visible row builders.
+fn sidebar_session_shortcuts(rows: &[SidebarRow]) -> [Option<Uuid>; SESSION_SHORTCUT_COUNT] {
+    let mut sessions = rows.iter().filter_map(|row| match row {
+        SidebarRow::Session(id) => Some(*id),
+        _ => None,
+    });
+    std::array::from_fn(|_| sessions.next())
 }
 
 fn grouped_sidebar_rows(
@@ -710,6 +733,7 @@ impl Waku {
                 + 20.0;
 
         let rows = self.sidebar_rows_cached();
+        let shortcuts = sidebar_session_shortcuts(&rows);
         self.sync_sidebar_rows(&rows);
         // Restored selection exists before ListState knows the viewport size.
         // Retry after the first layout so nearest-edge alignment has a height.
@@ -800,7 +824,7 @@ impl Waku {
                                         .upgrade()
                                         .map(|entity| {
                                             entity.update(cx, |this, cx| {
-                                                this.sidebar_row(index, &rows, cx)
+                                                this.sidebar_row(index, &rows, &shortcuts, cx)
                                             })
                                         })
                                         .unwrap_or_else(|| div().into_any_element())
@@ -953,7 +977,13 @@ impl Waku {
         }
     }
 
-    fn sidebar_row(&self, index: usize, rows: &[SidebarRow], cx: &mut Context<Self>) -> AnyElement {
+    fn sidebar_row(
+        &self,
+        index: usize,
+        rows: &[SidebarRow],
+        shortcuts: &[Option<Uuid>; SESSION_SHORTCUT_COUNT],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match rows.get(index) {
             Some(row @ (SidebarRow::PinnedHeader | SidebarRow::DateHeader(_))) => {
                 let label = match row {
@@ -977,7 +1007,15 @@ impl Waku {
                     .into_any_element()
             }
             Some(SidebarRow::Session(session_id)) => {
-                self.render_sidebar_session_item(*session_id, cx)
+                let shortcut = if self.sidebar_session_shortcuts_visible {
+                    shortcuts
+                        .iter()
+                        .position(|id| *id == Some(*session_id))
+                        .map(|index| index + 1)
+                } else {
+                    None
+                };
+                self.render_sidebar_session_item(*session_id, shortcut, cx)
             }
             None => div().into_any_element(),
         }
@@ -1062,7 +1100,51 @@ impl Waku {
         cx.notify();
     }
 
-    fn render_sidebar_session_item(&self, session_id: Uuid, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn select_sidebar_session_action(
+        &mut self,
+        action: &SelectSidebarSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let shortcuts = sidebar_session_shortcuts(&self.sidebar_rows_cached());
+        let Some(session_id) = shortcuts.get(action.0).copied().flatten() else {
+            return;
+        };
+        if self.settings_page.is_some() {
+            self.close_settings_popup(window, cx);
+        }
+        self.select_session(session_id, cx);
+    }
+
+    pub(super) fn sidebar_session_shortcuts_modifiers_changed(
+        &mut self,
+        event: &gpui::ModifiersChangedEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_sidebar_session_shortcuts_visible(
+            window.is_window_active() && event.secondary(),
+            cx,
+        );
+    }
+
+    pub(super) fn set_sidebar_session_shortcuts_visible(
+        &mut self,
+        visible: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sidebar_session_shortcuts_visible != visible {
+            self.sidebar_session_shortcuts_visible = visible;
+            cx.notify();
+        }
+    }
+
+    fn render_sidebar_session_item(
+        &self,
+        session_id: Uuid,
+        shortcut: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = Theme::current(cx);
         let Some(session) = self
             .state
@@ -1199,7 +1281,23 @@ impl Waku {
                                     .child(div().size(px(6.0)).rounded_full().bg(theme.accent)),
                             )
                         },
-                    ),
+                    )
+                    .children(shortcut.map(|number| {
+                        div()
+                            .size(px(18.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(theme.border_strong)
+                            .bg(theme.inset)
+                            .text_size(sp(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_secondary)
+                            .child(number.to_string())
+                    })),
             )
             .when(!renaming, |element| {
                 element
@@ -1714,6 +1812,34 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_shortcuts_skip_headers_and_stop_at_nine_sessions() {
+        let mut rows = vec![SidebarRow::PinnedHeader];
+        rows.extend((1..=2).map(|id| SidebarRow::Session(Uuid::from_u128(id))));
+        rows.push(SidebarRow::DateHeader(SidebarDateGroup::Today));
+        rows.extend((3..=11).map(|id| SidebarRow::Session(Uuid::from_u128(id))));
+
+        assert_eq!(
+            sidebar_session_shortcuts(&rows),
+            std::array::from_fn(|index| Some(Uuid::from_u128(index as u128 + 1)))
+        );
+        assert_eq!(
+            sidebar_session_shortcuts(&rows[..3]),
+            [
+                Some(Uuid::from_u128(1)),
+                Some(Uuid::from_u128(2)),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None
+            ]
+        );
+        assert_eq!(sidebar_session_shortcuts(&[]), [None; 9]);
+    }
+
+    #[test]
     fn sidebar_pins_stay_above_dates_within_the_selected_project() {
         let projects =
             ["first", "second"].map(|name| Project::from_path(Path::new("/work").join(name)));
@@ -1736,6 +1862,17 @@ mod tests {
                 None,
                 ordering,
             );
+            let shortcuts =
+                sidebar_session_shortcuts(&grouped_sidebar_rows(&history, Some(dates), &pins));
+            assert_eq!(
+                &shortcuts[..3],
+                &[
+                    Some(sessions[pinned_order[0]].id),
+                    Some(sessions[pinned_order[1]].id),
+                    Some(sessions[1].id)
+                ]
+            );
+            assert!(shortcuts[3..].iter().all(Option::is_none));
             assert_eq!(
                 grouped_sidebar_rows(&history, Some(dates), &pins),
                 vec![
