@@ -182,6 +182,17 @@ fn assemble_slash_commands(
         argument_hint: None,
         template: None,
     });
+    if provider.capabilities().plan_mode {
+        // Waku handles the native plan-mode switch locally, without a turn.
+        commands.retain(|command| command.name != "plan" || command.scope == CommandScope::Skill);
+        commands.push(SlashCommand {
+            name: "plan".into(),
+            description: crate::i18n::translate("commands.plan_description"),
+            scope: CommandScope::Waku,
+            argument_hint: None,
+            template: None,
+        });
+    }
     if provider.capabilities().compaction.manual {
         commands.retain(|command| command.name != "compact");
         commands.push(SlashCommand {

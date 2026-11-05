@@ -507,6 +507,7 @@ skills.details: 技能详情
 skills.section_user_skills: 用户技能
 skills.enable_named: 启用%{name}
 skills.disable_named: 停用%{name}
+commands.plan_description: 切换计划模式
 commands.fast_description: 切换快速模式
 commands.fast_enabled: 已启用快速模式
 commands.fast_disabled: 已关闭快速模式

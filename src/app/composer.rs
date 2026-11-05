@@ -1445,14 +1445,13 @@ impl Waku {
         )
     }
 
-    /// The plan-mode toggle, offered only for providers with a native plan
-    /// mode. The label changes with the state so it never rests on color.
+    /// The active plan-mode chip. `/plan` enables it from the commands list;
+    /// the chip also lets the user leave plan mode.
     pub(super) fn render_plan_mode_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let session = self.selected_session()?;
-        if !session.provider.capabilities().plan_mode {
+        if !session.provider.capabilities().plan_mode || !session.plan_mode {
             return None;
         }
-        let enabled = session.plan_mode;
         let theme = Theme::current(cx);
         let focus = self.transcript_control_focus("composer-plan-mode", cx);
         let weak = cx.entity().downgrade();
@@ -1474,37 +1473,19 @@ impl Waku {
                 .cursor_default()
                 .text_size(sp(12.5))
                 .line_height(sp(14.0))
-                .when(enabled, |chip| {
-                    chip.bg(theme.accent.opacity(0.1)).text_color(theme.accent)
-                })
-                .when(!enabled, |chip| chip.text_color(theme.text_secondary))
-                .child(icon(
-                    "icons/list.svg",
-                    10.5,
-                    if enabled {
-                        theme.accent
-                    } else {
-                        theme.text_tertiary
-                    },
-                ))
-                .child(if enabled {
-                    tr!("mode.planning")
-                } else {
-                    tr!("mode.plan")
-                })
+                .bg(theme.accent.opacity(0.1))
+                .text_color(theme.accent)
+                .child(icon("icons/list.svg", 10.5, theme.accent))
+                .child(tr!("mode.plan"))
                 .hover(|chip| chip.bg(theme.overlay))
                 .focus_visible(|chip| chip.border_color(theme.accent))
-                .tooltip(Tooltip::text(if enabled {
-                    tr!("mode.plan_on_tooltip")
-                } else {
-                    tr!("mode.plan_off_tooltip")
-                }))
+                .tooltip(Tooltip::text(tr!("mode.plan_on_tooltip")))
                 .on_click(move |_, _, cx| {
-                    let _ = weak.update(cx, |this, cx| this.set_plan_mode(!enabled, cx));
+                    let _ = weak.update(cx, |this, cx| this.set_plan_mode(false, cx));
                 })
                 .on_key_down(move |event: &KeyDownEvent, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        let _ = key_weak.update(cx, |this, cx| this.set_plan_mode(!enabled, cx));
+                        let _ = key_weak.update(cx, |this, cx| this.set_plan_mode(false, cx));
                         cx.stop_propagation();
                     }
                 })
@@ -1921,8 +1902,27 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> bool {
         self.execute_resume_composer_command(prompt, cx)
+            || self.execute_plan_mode_toggle(prompt, cx)
             || self.execute_fast_mode_toggle(prompt, cx)
             || self.execute_goal_composer_command(prompt, cx)
+    }
+
+    fn execute_plan_mode_toggle(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
+        if prompt.trim() != "/plan" {
+            return false;
+        }
+        let Some(enabled) = self.selected_session().and_then(|session| {
+            session
+                .provider
+                .capabilities()
+                .plan_mode
+                .then_some(!session.plan_mode)
+        }) else {
+            return false;
+        };
+        self.composer.update(cx, |input, cx| input.clear(cx));
+        self.set_plan_mode(enabled, cx);
+        true
     }
 
     fn execute_resume_composer_command(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {

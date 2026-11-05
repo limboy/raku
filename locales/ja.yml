@@ -533,6 +533,7 @@ skills.section_user_skills: ユーザースキル
 skills.enable_named: "%{name} を有効にする"
 skills.disable_named: "%{name} を無効にする"
 
+commands.plan_description: プランモードを切り替え
 commands.fast_description: 高速モードを切り替え
 commands.fast_enabled: 高速モードを有効にしました
 commands.fast_disabled: 高速モードを無効にしました
