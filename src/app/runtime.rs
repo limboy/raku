@@ -1865,7 +1865,12 @@ impl Waku {
             return;
         };
 
-        let input = cx.new(|cx| ComposerInput::new(window, cx).padding_x(px(12.0), cx));
+        let text_size = px(self.state.transcript_font_size.px());
+        let input = cx.new(|cx| {
+            let input = ComposerInput::new(window, cx).padding_x(px(12.0), cx);
+            input.set_text_size(text_size, cx);
+            input
+        });
         input.update(cx, |input, cx| input.set_content(initial_message, cx));
         cx.subscribe(
             &input,

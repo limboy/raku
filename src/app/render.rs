@@ -436,7 +436,7 @@ impl Waku {
         let text_ctx = MarkdownCtx::new(
             format!("toast-{generation}"),
             &palette,
-            self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
+            self.chrome_markdown_metrics(MarkdownMetrics::COMPACT),
             self.toast_selection.clone(),
         );
         let message = md::render::plain_text(

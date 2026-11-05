@@ -2,15 +2,13 @@ use gpui::{App, Global, Hsla, Rems, Window, WindowAppearance, hsla, rems, rgb, t
 
 pub use waku_client::theme::ThemePreference;
 
-/// Scaled pixels: a dimension authored at the default 14px UI font size,
-/// expressed in rems so the UI font size setting scales it. The window's rem
-/// size *is* the UI font size, so at the default setting this resolves to
-/// exactly the authored pixel value.
+/// Scaled pixels: a dimension authored at the fixed 14px chrome size,
+/// expressed in rems. The window's rem size is that same 14px, so this
+/// resolves to exactly the authored pixel value.
 ///
 /// Chrome text sizes and their line heights go through here. Content surfaces
-/// that already derive from a font-size setting — markdown metrics, the file
-/// editor, diff rows, tool-output mono — stay in `px` so they never scale
-/// twice.
+/// that derive from a font-size setting — transcript markdown, the file
+/// editor, diff rows, tool-output mono — stay in `px`.
 pub fn sp(value: f32) -> Rems {
     rems(value / waku_client::persistence::DEFAULT_UI_FONT_SIZE)
 }
@@ -148,7 +146,7 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             is_dark: false,
-            canvas: rgb(0xF6F5F6).into(),
+            canvas: rgb(0xFFFFFF).into(),
             sidebar: if cfg!(target_os = "macos") {
                 transparent_black()
             } else {
@@ -156,7 +154,7 @@ impl Theme {
             },
             sidebar_drag_background: rgb(0xEBECED).into(),
             sidebar_item_background: hsla(0.0, 0.0, 0.0, 0.10),
-            surface: rgb(0xF6F5F6).into(),
+            surface: rgb(0xFFFFFF).into(),
             raised: rgb(0xF3F3F3).into(),
             composer: rgb(0xFFFFFF).into(),
             inset: rgb(0xE5E5E5).into(),

@@ -1893,11 +1893,9 @@ impl Waku {
             eprintln!("could not normalize daemon settings after migration: {error:#}");
         }
         crate::i18n::set_language(state.language);
-        // Chrome text is authored in `sp` rems against the default UI font
-        // size, so the window's rem size *is* the UI font size setting.
-        window.set_rem_size(px(waku_client::persistence::sanitized_ui_font_size(
-            state.ui_font_size,
-        )));
+        // Chrome text is authored in `sp` rems against this fixed size; only
+        // transcript prose has a size setting.
+        window.set_rem_size(px(waku_client::persistence::DEFAULT_UI_FONT_SIZE));
         let analytics = crate::analytics::Analytics::new(
             state.language.locale(),
             state.analytics_id,
@@ -1916,11 +1914,14 @@ impl Waku {
                 .count(),
         });
 
+        let transcript_text_size = px(state.transcript_font_size.px());
         let composer = cx.new(|cx| {
-            ComposerInput::new(window, cx)
+            let composer = ComposerInput::new(window, cx)
                 .text_snippet_paste(cx)
                 .session_link_paste(cx)
-                .padding_x(px(14.0), cx)
+                .padding_x(px(14.0), cx);
+            composer.set_text_size(transcript_text_size, cx);
+            composer
         });
         let user_input_answer = cx
             .new(|cx| TextInput::new(window, cx).placeholder(tr!("user_input.other_placeholder")));

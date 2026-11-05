@@ -61,10 +61,6 @@ fn default_right_panel_visibility() -> bool {
     false
 }
 
-fn default_ui_font_size() -> f32 {
-    DEFAULT_UI_FONT_SIZE
-}
-
 fn default_code_font_size() -> f32 {
     DEFAULT_CODE_FONT_SIZE
 }
@@ -291,10 +287,10 @@ pub struct AppSettings {
     pub model_picker_favorites_only: bool,
     pub theme: ThemePreference,
     pub language: AppLanguage,
-    /// Base text size for the interface, in pixels: chrome and prose are
-    /// authored against the 14px default and scale from it. Hand-edited
-    /// values are clamped when applied.
-    pub ui_font_size: f32,
+    /// Text size for transcript prose. Chrome stays at the fixed
+    /// [`DEFAULT_UI_FONT_SIZE`] it is authored against.
+    #[serde(deserialize_with = "lenient_transcript_font_size")]
+    pub transcript_font_size: TranscriptFontSize,
     /// Text size for code surfaces — the file editor, diffs, code blocks,
     /// and tool output — in pixels. Hand-edited values are clamped when
     /// applied.
@@ -311,7 +307,7 @@ impl Default for AppSettings {
             model_picker_favorites_only: false,
             theme: ThemePreference::System,
             language: AppLanguage::default(),
-            ui_font_size: DEFAULT_UI_FONT_SIZE,
+            transcript_font_size: TranscriptFontSize::default(),
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
             backup_directory: None,
@@ -327,8 +323,42 @@ impl AppSettings {
     }
 }
 
+/// The size chrome is authored against. Fixed: the window's rem size, which
+/// every `sp` dimension resolves through.
 pub const DEFAULT_UI_FONT_SIZE: f32 = 14.0;
 pub const DEFAULT_CODE_FONT_SIZE: f32 = 13.0;
+
+/// Transcript prose size, one of three steps rather than a free pixel value.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptFontSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl TranscriptFontSize {
+    pub const ALL: [Self; 3] = [Self::Small, Self::Medium, Self::Large];
+
+    pub fn px(self) -> f32 {
+        match self {
+            Self::Small => 14.0,
+            Self::Medium => 15.0,
+            Self::Large => 16.0,
+        }
+    }
+}
+
+/// A missing, hand-edited, or unknown size falls back to the default instead
+/// of rejecting the whole settings document.
+fn lenient_transcript_font_size<'de, D>(deserializer: D) -> Result<TranscriptFontSize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
 
 /// Bounds a possibly hand-edited font size to something the layout survives.
 fn sanitized_font_size(size: f32, fallback: f32) -> f32 {
@@ -337,10 +367,6 @@ fn sanitized_font_size(size: f32, fallback: f32) -> f32 {
     } else {
         fallback
     }
-}
-
-pub fn sanitized_ui_font_size(size: f32) -> f32 {
-    sanitized_font_size(size, DEFAULT_UI_FONT_SIZE)
 }
 
 pub fn sanitized_code_font_size(size: f32) -> f32 {
@@ -441,8 +467,8 @@ pub struct PersistedState {
     pub theme: ThemePreference,
     #[serde(default)]
     pub language: AppLanguage,
-    #[serde(default = "default_ui_font_size")]
-    pub ui_font_size: f32,
+    #[serde(default, deserialize_with = "lenient_transcript_font_size")]
+    pub transcript_font_size: TranscriptFontSize,
     #[serde(default = "default_code_font_size")]
     pub code_font_size: f32,
     #[serde(default = "default_render_math")]
@@ -516,7 +542,7 @@ impl PersistedState {
             model_picker_favorites_only: false,
             theme: ThemePreference::System,
             language: AppLanguage::default(),
-            ui_font_size: DEFAULT_UI_FONT_SIZE,
+            transcript_font_size: TranscriptFontSize::default(),
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
             backup_directory: None,
@@ -738,7 +764,7 @@ impl PersistedState {
             model_picker_favorites_only: self.model_picker_favorites_only,
             theme: self.theme,
             language: self.language,
-            ui_font_size: self.ui_font_size,
+            transcript_font_size: self.transcript_font_size,
             code_font_size: self.code_font_size,
             render_math: self.render_math,
             backup_directory: self.backup_directory.clone(),
@@ -781,7 +807,7 @@ impl PersistedState {
         self.model_picker_favorites_only = settings.model_picker_favorites_only;
         self.theme = settings.theme;
         self.language = settings.language;
-        self.ui_font_size = sanitized_ui_font_size(settings.ui_font_size);
+        self.transcript_font_size = settings.transcript_font_size;
         self.code_font_size = sanitized_code_font_size(settings.code_font_size);
         self.render_math = settings.render_math;
         self.backup_directory = settings.backup_directory;
@@ -1559,6 +1585,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn transcript_font_size_falls_back_without_rejecting_settings() {
+        // The retired free-form UI size is ignored, and the transcript size
+        // takes its default.
+        let legacy = serde_json::to_vec(&serde_json::json!({
+            "theme": "dark",
+            "ui_font_size": 17.0
+        }))
+        .unwrap();
+        let settings: AppSettings = from_persisted_json(&legacy).unwrap();
+        assert_eq!(settings.theme, ThemePreference::Dark);
+        assert_eq!(settings.transcript_font_size, TranscriptFontSize::Medium);
+
+        for value in [serde_json::json!("huge"), serde_json::json!(16.0)] {
+            let document = serde_json::to_vec(&serde_json::json!({
+                "theme": "dark",
+                "transcript_font_size": value
+            }))
+            .unwrap();
+            let settings: AppSettings = from_persisted_json(&document).unwrap();
+            assert_eq!(settings.theme, ThemePreference::Dark);
+            assert_eq!(settings.transcript_font_size, TranscriptFontSize::Medium);
+        }
+
+        let document = serde_json::to_vec(&serde_json::json!({
+            "transcript_font_size": "small"
+        }))
+        .unwrap();
+        let settings: AppSettings = from_persisted_json(&document).unwrap();
+        assert_eq!(settings.transcript_font_size, TranscriptFontSize::Small);
+        assert_eq!(TranscriptFontSize::Small.px(), 14.0);
+        assert_eq!(TranscriptFontSize::Medium.px(), 15.0);
+        assert_eq!(TranscriptFontSize::Large.px(), 16.0);
+    }
+
+    #[test]
     fn retired_provider_settings_do_not_block_launch_settings() {
         for provider in [
             "deepSeek",
@@ -1571,7 +1632,7 @@ mod tests {
             let document = serde_json::to_vec(&serde_json::json!({
                 "theme": "dark",
                 "language": "simplified-chinese",
-                "ui_font_size": 17.0,
+                "transcript_font_size": "large",
                 "model_picker_favorites_only": true,
                 "favorite_models": [
                     {"provider": provider, "model": "retired"},
@@ -1589,7 +1650,7 @@ mod tests {
             let settings: AppSettings = from_persisted_json(&document).unwrap();
             assert_eq!(settings.theme, ThemePreference::Dark);
             assert_eq!(settings.language, AppLanguage::SimplifiedChinese);
-            assert_eq!(settings.ui_font_size, 17.0);
+            assert_eq!(settings.transcript_font_size, TranscriptFontSize::Large);
             assert!(settings.model_picker_favorites_only);
             assert_eq!(
                 settings.favorite_models,
@@ -1768,7 +1829,7 @@ mod tests {
         let mut state = PersistedState::empty();
         state.theme = ThemePreference::Dark;
         state.language = AppLanguage::SimplifiedChinese;
-        state.ui_font_size = 17.0;
+        state.transcript_font_size = TranscriptFontSize::Large;
         state.backup_directory = Some(PathBuf::from("/old-machine/backups"));
         state.selected_project = Some(Uuid::new_v4());
         let documents = state.desktop_backup().unwrap();
@@ -1782,7 +1843,7 @@ mod tests {
             serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
         assert_eq!(settings.theme, ThemePreference::Dark);
         assert_eq!(settings.language, state.language);
-        assert_eq!(settings.ui_font_size, 17.0);
+        assert_eq!(settings.transcript_font_size, TranscriptFontSize::Large);
         assert_eq!(settings.backup_directory, current.backup_directory);
         let restored: AppState = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
         assert_eq!(restored.selected_project, state.selected_project);

@@ -1136,9 +1136,21 @@ impl Waku {
         })
     }
 
-    /// `metrics` rescaled to the user's UI and code font size settings.
-    pub(super) fn scaled_markdown_metrics(&self, metrics: MarkdownMetrics) -> MarkdownMetrics {
-        metrics.scaled(self.state.ui_font_size, self.state.code_font_size)
+    /// `metrics` rescaled to the transcript and code font size settings.
+    pub(super) fn transcript_markdown_metrics(&self, metrics: MarkdownMetrics) -> MarkdownMetrics {
+        metrics.scaled(
+            self.state.transcript_font_size.px(),
+            self.state.code_font_size,
+        )
+    }
+
+    /// `metrics` for markdown outside the transcript (toasts, skill pages):
+    /// prose stays at the fixed chrome size, code follows its setting.
+    pub(super) fn chrome_markdown_metrics(&self, metrics: MarkdownMetrics) -> MarkdownMetrics {
+        metrics.scaled(
+            waku_client::persistence::DEFAULT_UI_FONT_SIZE,
+            self.state.code_font_size,
+        )
     }
 
     /// Mono text scale for plain tool-output sections: the code font size
@@ -1341,7 +1353,7 @@ impl Waku {
                             .clone()
                     });
                     let metrics =
-                        self.scaled_markdown_metrics(if message.role == MessageRole::User {
+                        self.transcript_markdown_metrics(if message.role == MessageRole::User {
                             MarkdownMetrics::USER_MESSAGE
                         } else {
                             MarkdownMetrics::BODY
@@ -2185,7 +2197,7 @@ impl Waku {
             let ctx = self.markdown_ctx(
                 format!("compaction-summary-{id}"),
                 &palette,
-                self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
+                self.transcript_markdown_metrics(MarkdownMetrics::COMPACT),
                 false,
             );
             let mut views = surface.markdown.borrow_mut();
@@ -2581,7 +2593,7 @@ impl Waku {
                     .markdown_ctx(
                         format!("reasoning-{id}"),
                         &palette,
-                        self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
+                        self.transcript_markdown_metrics(MarkdownMetrics::COMPACT),
                         reasoning_live && !cx.reduce_motion(),
                     )
                     .with_math_context_menu(self.menu_handle(format!("reasoning-math-{id}"), cx));
@@ -2686,7 +2698,7 @@ impl Waku {
                 let ctx = self.markdown_ctx(
                     format!("activity-{id}"),
                     &palette,
-                    self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
+                    self.transcript_markdown_metrics(MarkdownMetrics::COMPACT),
                     false,
                 );
                 let (mono_size, mono_line) = self.activity_mono_text();

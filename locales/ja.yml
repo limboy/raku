@@ -111,8 +111,11 @@ settings.close: 設定を閉じる
 settings.search: 設定を検索
 settings.theme: テーマ
 settings.theme_description: システム、ライト、ダークのいずれかのテーマを選択します
-settings.ui_font_size: UI のフォントサイズ
-settings.ui_font_size_description: インターフェース全体とメッセージの文字サイズ
+settings.transcript_font_size: 会話のフォントサイズ
+settings.transcript_font_size_description: 会話内のメッセージの文字サイズ
+settings.font_size_small: 小
+settings.font_size_medium: 中
+settings.font_size_large: 大
 settings.code_font_size: コードのフォントサイズ
 settings.code_font_size_description: ファイルエディタ、差分表示、コードブロック、ツール出力の文字サイズ
 settings.render_math: 数式を描画
@@ -122,7 +125,7 @@ settings.theme_light: ライト
 settings.theme_dark: ダーク
 
 input.do_anything: 何でも依頼できます…
-input.search_models: モデルを検索…
+input.search_models: モデルを検索
 input.search_branches: ブランチを検索
 input.search_projects: プロジェクトを検索
 input.detected_automatically: 自動検出

@@ -219,10 +219,16 @@ settings.theme:
   en: Theme
 settings.theme_description:
   en: Choose between system, light, or dark themes
-settings.ui_font_size:
-  en: UI font size
-settings.ui_font_size_description:
-  en: Text size across the interface and messages
+settings.transcript_font_size:
+  en: Transcript font size
+settings.transcript_font_size_description:
+  en: Text size of messages in the conversation
+settings.font_size_small:
+  en: Small
+settings.font_size_medium:
+  en: Medium
+settings.font_size_large:
+  en: Large
 settings.code_font_size:
   en: Code font size
 settings.code_font_size_description:
@@ -241,7 +247,7 @@ settings.theme_dark:
 input.do_anything:
   en: Do anything…
 input.search_models:
-  en: Search models…
+  en: Search models
 input.search_branches:
   en: Search branches
 input.search_projects:
