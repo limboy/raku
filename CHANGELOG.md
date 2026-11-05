@@ -16,7 +16,7 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
-## [2.2.9] - 2026-11-05
+## [2.2.10] - 2026-11-06
 
 - Let agents hand you a command as a runnable block: a Run button opens an inline terminal, and the agent resumes with the exit code and output when it finishes
 - Move Plan mode into the commands list
