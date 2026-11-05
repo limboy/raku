@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.2.8] - 2026-11-05
+
+- List skills under `$` in the composer, separate from `/` commands; a leading `/skill` typed from habit still runs the skill
+- Remove sub-agent delegation, including the Settings → Agents page and the composer's `^` model trigger
+- Fix long command argument hints pushing the description off the autocomplete row
+
 ## [2.2.7] - 2026-11-04
 
 - Add plan mode for Claude and Codex tasks: the agent investigates and proposes a plan, then implements it once you approve, or revises it from your reply. Toggle it in the composer or with ⌘⇧P
