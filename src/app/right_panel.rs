@@ -2890,15 +2890,7 @@ impl Waku {
             })
             .active(|element| element.bg(theme.overlay_strong))
             .focus_visible(|style| style.border_1().border_color(theme.accent))
-            .child(icon(
-                "icons/folder.svg",
-                15.0,
-                if selected {
-                    theme.text
-                } else {
-                    theme.text_tertiary
-                },
-            ))
+            .child(icon("icons/folder.svg", 20.0, theme.text))
             .tooltip(Tooltip::text(tr!("right_panel.files")))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();

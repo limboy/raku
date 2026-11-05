@@ -961,15 +961,7 @@ impl Waku {
                 style.hover(|style| style.bg(theme.overlay))
             })
             .when(info_selected, |style| style.bg(theme.overlay_strong))
-            .child(icon(
-                "icons/info.svg",
-                15.0,
-                if info_selected {
-                    theme.text
-                } else {
-                    theme.text_tertiary
-                },
-            ))
+            .child(icon("icons/ant/card-list.svg", 20.0, theme.text))
             .when(has_live_work, |trigger| {
                 trigger.child(
                     div()
@@ -999,15 +991,7 @@ impl Waku {
                     style.hover(|style| style.bg(theme.overlay))
                 })
                 .active(|style| style.bg(theme.overlay_strong))
-                .child(icon(
-                    "icons/file-diff.svg",
-                    15.0,
-                    if diff_selected {
-                        theme.text
-                    } else {
-                        theme.text_tertiary
-                    },
-                ))
+                .child(icon("icons/file-diff.svg", 20.0, theme.text))
                 .tooltip(Tooltip::text(tr!("environment.changes")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();

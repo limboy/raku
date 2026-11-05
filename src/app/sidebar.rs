@@ -420,8 +420,11 @@ impl Waku {
 
     fn render_sidebar_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::current(cx);
+        let focus = self.transcript_control_focus("toggle-sidebar", cx);
         div()
             .id("toggle-sidebar")
+            .track_focus(&focus)
+            .tab_index(0)
             .size(px(TITLEBAR_BUTTON_SIZE))
             .flex_none()
             .rounded(px(6.0))
@@ -429,6 +432,7 @@ impl Waku {
             .items_center()
             .justify_center()
             .cursor_default()
+            .focus_visible(|style| style.border_1().border_color(theme.accent))
             .hover(|element| element.bg(theme.overlay))
             .active(|element| element.bg(theme.overlay_strong))
             .tooltip(Tooltip::text(tr!(
@@ -439,13 +443,19 @@ impl Waku {
                 },
                 shortcut = crate::platform::primary_shortcut("⌘B", "Ctrl+B")
             )))
-            .child(icon("icons/panel-left.svg", 14.0, theme.text_tertiary))
+            .child(icon("icons/panel-left.svg", 20.0, theme.text))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
             .on_click(cx.listener(|this, _, _, cx| {
                 cx.stop_propagation();
                 this.set_sidebar_visible(!this.sidebar_visible, cx);
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    this.set_sidebar_visible(!this.sidebar_visible, cx);
+                }
             }))
     }
 
@@ -470,15 +480,7 @@ impl Waku {
                 "sidebar.search_tasks",
                 shortcut = crate::platform::primary_shortcut("⌘K", "Ctrl+K")
             )))
-            .child(icon(
-                "icons/search.svg",
-                14.0,
-                if open {
-                    theme.text_secondary
-                } else {
-                    theme.text_tertiary
-                },
-            ))
+            .child(icon("icons/search.svg", 20.0, theme.text))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
@@ -588,9 +590,9 @@ impl Waku {
                 })
                 .tooltip(Tooltip::text(label))
                 .child(if updating {
-                    motion::spin_slow(icon("icons/loader-circle.svg", 14.0, theme.text_tertiary))
+                    motion::spin_slow(icon("icons/loader-circle.svg", 20.0, theme.text))
                 } else {
-                    icon("icons/download.svg", 14.0, theme.accent).into_any_element()
+                    icon("icons/download.svg", 20.0, theme.accent).into_any_element()
                 })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();
@@ -695,7 +697,7 @@ impl Waku {
                 "sidebar.new_task",
                 shortcut = crate::platform::primary_shortcut("⌘N", "Ctrl+N")
             )))
-            .child(icon("icons/compose.svg", 14.0, theme.text_tertiary))
+            .child(icon("icons/compose.svg", 20.0, theme.text))
             // The titlebar drags the window from a mouse-down; a press here
             // must stay a click.
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
