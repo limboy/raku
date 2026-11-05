@@ -1678,7 +1678,8 @@ fn sidebar_session_menu_items(
         MenuItem::Separator,
         MenuItem::new(tr!("common.remove"), move |_, cx| {
             let _ = remove_waku.update(cx, |waku, cx| waku.remove_session(session_id, cx));
-        }),
+        })
+        .destructive(),
     ]
 }
 

@@ -2528,7 +2528,8 @@ impl Waku {
                                 this.remove_queued_message(session_id, message_id, cx);
                             });
                         })
-                        .icon("icons/trash.svg"),
+                        .icon("icons/trash.svg")
+                        .destructive(),
                     ]
                 },
             );

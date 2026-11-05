@@ -93,6 +93,8 @@ pub enum MenuItem {
         /// Shown greyed and inert. Preferred over omitting the row when the
         /// action is temporarily unavailable, so the menu keeps a stable shape.
         disabled: bool,
+        /// Drawn in the danger color, for actions that destroy data.
+        destructive: bool,
         #[allow(clippy::type_complexity)]
         on_click: Rc<dyn Fn(&mut Window, &mut App)>,
     },
@@ -125,6 +127,7 @@ impl MenuItem {
             icon: None,
             selected: false,
             disabled: false,
+            destructive: false,
             on_click: Rc::new(on_click),
         }
     }
@@ -164,6 +167,13 @@ impl MenuItem {
     pub fn disabled(mut self, value: bool) -> Self {
         if let Self::Entry { disabled, .. } = &mut self {
             *disabled = value;
+        }
+        self
+    }
+
+    pub fn destructive(mut self) -> Self {
+        if let Self::Entry { destructive, .. } = &mut self {
+            *destructive = true;
         }
         self
     }
@@ -1103,10 +1113,10 @@ impl RenderOnce for MenuCard {
                 .iter()
                 .take(*parent_index)
                 .map(|item| match item {
-                    MenuItem::Separator => 9.0,
+                    MenuItem::Separator => SEPARATOR_HEIGHT,
                     MenuItem::Header(_) => 22.0,
                     MenuItem::Entry { .. } | MenuItem::Submenu { .. } | MenuItem::Custom { .. } => {
-                        26.0
+                        ROW_HEIGHT
                     }
                 })
                 .sum::<f32>()
@@ -1116,11 +1126,11 @@ impl RenderOnce for MenuCard {
             .id(self.id)
             .min_w(px(176.0))
             .max_w(px(320.0))
-            .py(px(4.0))
-            .rounded(px(9.0))
+            .py(px(CARD_PADDING))
+            .rounded(px(CARD_RADIUS))
             .border_1()
             .border_color(theme.border_strong)
-            .bg(theme.raised)
+            .bg(theme.menu)
             .shadow_lg()
             .flex()
             .flex_col();
@@ -1178,11 +1188,11 @@ impl RenderOnce for MenuCard {
                 .occlude()
                 .min_w(px(176.0))
                 .max_w(px(320.0))
-                .py(px(4.0))
-                .rounded(px(9.0))
+                .py(px(CARD_PADDING))
+                .rounded(px(CARD_RADIUS))
                 .border_1()
                 .border_color(theme.border_strong)
-                .bg(theme.raised)
+                .bg(theme.menu)
                 .shadow_lg()
                 .flex()
                 .flex_col();
@@ -1217,6 +1227,16 @@ impl RenderOnce for MenuCard {
     }
 }
 
+/// Card and row geometry, modeled on the native macOS menu: a generously
+/// rounded card, highlights inset from its edge, and dividers that start at
+/// the label column rather than spanning the card.
+const CARD_PADDING: f32 = 5.0;
+const CARD_RADIUS: f32 = 12.0;
+const ROW_PADDING: f32 = 10.0;
+const ROW_HEIGHT: f32 = 28.0;
+const ROW_RADIUS: f32 = 7.0;
+const SEPARATOR_HEIGHT: f32 = 9.0;
+
 fn render_menu_item(
     item: MenuItem,
     index: usize,
@@ -1228,14 +1248,15 @@ fn render_menu_item(
     cx: &mut App,
 ) -> AnyElement {
     match item {
+        // Inset to the label column, like a native macOS menu.
         MenuItem::Separator => div()
-            .my(px(4.0))
-            .mx(px(6.0))
+            .my(px((SEPARATOR_HEIGHT - 1.0) / 2.0))
+            .mx(px(CARD_PADDING + ROW_PADDING))
             .h(px(1.0))
             .bg(theme.border)
             .into_any_element(),
         MenuItem::Header(label) => div()
-            .px(px(10.0))
+            .px(px(CARD_PADDING + ROW_PADDING))
             .pt(px(6.0))
             .pb(px(2.0))
             .text_size(sp(12.5))
@@ -1249,12 +1270,13 @@ fn render_menu_item(
             icon: item_icon,
             selected,
             disabled,
+            destructive,
             on_click,
         } => {
-            let color = match (disabled, selected) {
+            let color = match (disabled, destructive) {
                 (true, _) => theme.text_ghost,
-                (false, true) => theme.text,
-                (false, false) => theme.text_secondary,
+                (false, true) => theme.danger,
+                (false, false) => theme.text,
             };
             let entry = row(
                 index,
@@ -1291,7 +1313,7 @@ fn render_menu_item(
             row(index, highlighted, theme, handle, None)
                 .cursor_default()
                 .hover(move |element| element.bg(hover))
-                .text_color(theme.text_secondary)
+                .text_color(theme.text)
                 .on_hover(move |hovered, window, _| {
                     if *hovered {
                         open_submenu(&hover_handle, index, false);
@@ -1318,7 +1340,11 @@ fn render_menu_item(
                 }
                 // Non-interactive rows still need the row's insets so they
                 // line up with the entries around them.
-                None => div().mx(px(4.0)).px(px(8.0)).child(body).into_any_element(),
+                None => div()
+                    .mx(px(CARD_PADDING))
+                    .px(px(ROW_PADDING))
+                    .child(body)
+                    .into_any_element(),
             }
         }
     }
@@ -1374,15 +1400,15 @@ fn row(
     let highlight = theme.overlay_strong;
     div()
         .id(index)
-        .mx(px(4.0))
-        .px(px(8.0))
-        .min_h(px(26.0))
-        .rounded(px(6.0))
+        .mx(px(CARD_PADDING))
+        .px(px(ROW_PADDING))
+        .min_h(px(ROW_HEIGHT))
+        .rounded(px(ROW_RADIUS))
         .flex()
         .items_center()
         .gap(px(8.0))
-        .text_size(sp(12.5))
-        .line_height(sp(15.0))
+        .text_size(sp(13.0))
+        .line_height(sp(16.0))
         .when(highlighted, |element| element.bg(highlight))
         .when_some(on_click, |element, on_click| {
             element

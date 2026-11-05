@@ -47,6 +47,8 @@ pub struct Theme {
     pub sidebar_item_background: Hsla,
     pub surface: Hsla,
     pub raised: Hsla,
+    /// Context and dropdown menu cards.
+    pub menu: Hsla,
     pub composer: Hsla,
     pub inset: Hsla,
     /// Terminal screen surface: paper-white in light mode, near-black in dark.
@@ -110,6 +112,7 @@ impl Theme {
             sidebar_item_background: hsla(0.0, 0.0, 0.941, 0.06),
             surface: rgb(0x1A1A1A).into(),
             raised: rgb(0x232323).into(),
+            menu: rgb(0x232323).into(),
             composer: rgb(0x212121).into(),
             inset: rgb(0x151515).into(),
             terminal: rgb(0x151515).into(),
@@ -156,6 +159,7 @@ impl Theme {
             sidebar_item_background: hsla(0.0, 0.0, 0.0, 0.10),
             surface: rgb(0xFFFFFF).into(),
             raised: rgb(0xF3F3F3).into(),
+            menu: rgb(0xFEFEFE).into(),
             composer: rgb(0xFFFFFF).into(),
             inset: rgb(0xE5E5E5).into(),
             terminal: rgb(0xFFFFFF).into(),
