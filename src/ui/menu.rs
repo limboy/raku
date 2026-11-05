@@ -51,6 +51,7 @@ const MENU_CONTEXT: &str = "WakuMenu";
 
 /// Vertical gap between a trigger and its anchored card.
 const TRIGGER_GAP: f32 = 4.0;
+const SUBMENU_OVERLAP: f32 = 4.0;
 
 /// A text field inside an open panel, such as a picker's filter box.
 ///
@@ -229,6 +230,8 @@ pub struct ContextMenuHandle {
     /// The trigger's bounds as of the last frame, so a dropdown can align under
     /// it. Recorded by a zero-cost canvas inside the trigger.
     trigger_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// A flyout sits outside the main card's hitbox but belongs to its menu.
+    submenu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Notified with the new open state whenever the menu toggles, in order.
     /// The composer's caret preservation is one of these; a site can add its
     /// own on top.
@@ -243,6 +246,7 @@ impl ContextMenuHandle {
             trigger_focus: cx.focus_handle(),
             focus: cx.focus_handle(),
             trigger_bounds: Rc::new(Cell::new(None)),
+            submenu_bounds: Rc::new(Cell::new(None)),
             on_toggle: Rc::new(Vec::new()),
         }
     }
@@ -299,6 +303,7 @@ impl ContextMenuHandle {
     }
 
     pub fn close(&self, window: &mut Window, cx: &mut App) {
+        self.submenu_bounds.set(None);
         let was_open = {
             let mut state = self.state.borrow_mut();
             let was_open = state.open.is_some();
@@ -322,6 +327,14 @@ impl ContextMenuHandle {
     /// and it runs after this capture-phase listener. Closing here first would
     /// make that handler see a closed menu and reopen it.
     fn dismiss_on_down_out(&self, event: &MouseDownEvent, window: &mut Window, cx: &mut App) {
+        if self.state.borrow().active_submenu.is_some()
+            && self
+                .submenu_bounds
+                .get()
+                .is_some_and(|bounds| bounds.contains(&event.position))
+        {
+            return;
+        }
         let on_toggling_trigger = self.state.borrow().trigger_click_toggles
             && event.button == MouseButton::Left
             && self
@@ -342,6 +355,7 @@ impl ContextMenuHandle {
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.submenu_bounds.set(None);
         let was_open = {
             let mut state = self.state.borrow_mut();
             let was_open = state.open.is_some();
@@ -404,7 +418,10 @@ fn open_menu(
 /// against its containing block, so `size_full` inside a padded trigger reports
 /// the *content* box and the menu ends up indented by the trigger's padding.
 fn trigger_bounds_probe(handle: &ContextMenuHandle) -> impl IntoElement {
-    let bounds = handle.trigger_bounds.clone();
+    bounds_probe(handle.trigger_bounds.clone())
+}
+
+fn bounds_probe(bounds: Rc<Cell<Option<Bounds<Pixels>>>>) -> impl IntoElement {
     canvas(
         move |probe: Bounds<Pixels>, _, _| bounds.set(Some(probe)),
         |_, _, _, _| (),
@@ -572,15 +589,56 @@ fn resolve_floating_placement(
     }
 }
 
+/// Place the flyout beside the already positioned main card. Its size must
+/// never participate in the main card's viewport fitting.
+fn resolve_submenu_bounds(
+    parent: Bounds<Pixels>,
+    surface_size: Size<Pixels>,
+    offset: Pixels,
+    viewport: Bounds<Pixels>,
+    margin: Pixels,
+) -> Bounds<Pixels> {
+    let left = viewport.left() + margin;
+    let right = viewport.right() - margin;
+    let top = viewport.top() + margin;
+    let bottom = viewport.bottom() - margin;
+    let right_x = parent.right() - px(SUBMENU_OVERLAP);
+    let left_x = parent.left() + px(SUBMENU_OVERLAP) - surface_size.width;
+    let right_space = right - right_x;
+    let left_space = parent.left() + px(SUBMENU_OVERLAP) - left;
+    let x = if surface_size.width <= right_space || right_space >= left_space {
+        right_x
+    } else {
+        left_x
+    };
+    Bounds::new(
+        Point::new(
+            x.clamp(left, (right - surface_size.width).max(left)),
+            (parent.top() + offset).clamp(top, (bottom - surface_size.height).max(top)),
+        ),
+        surface_size,
+    )
+}
+
+enum FloatingAnchor {
+    Trigger {
+        bounds: Bounds<Pixels>,
+        preferred: MenuAlign,
+        gap: Pixels,
+    },
+    Submenu {
+        parent_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+        offset: Pixels,
+    },
+}
+
 /// A measured, trigger-aware deferred surface. This mirrors GPUI's
 /// `Anchored` element lifecycle, but resolves placement from the trigger's
 /// rectangle instead of a single point so vertical flips remain attached to
 /// the correct edge.
 struct FloatingSurface {
     child: AnyElement,
-    trigger: Bounds<Pixels>,
-    preferred: MenuAlign,
-    gap: Pixels,
+    anchor: FloatingAnchor,
     margin: Pixels,
 }
 
@@ -598,9 +656,27 @@ impl FloatingSurface {
     ) -> Self {
         Self {
             child,
-            trigger,
-            preferred,
-            gap,
+            anchor: FloatingAnchor::Trigger {
+                bounds: trigger,
+                preferred,
+                gap,
+            },
+            margin,
+        }
+    }
+
+    fn submenu(
+        child: AnyElement,
+        parent_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+        offset: Pixels,
+        margin: Pixels,
+    ) -> Self {
+        Self {
+            child,
+            anchor: FloatingAnchor::Submenu {
+                parent_bounds,
+                offset,
+            },
             margin,
         }
     }
@@ -650,15 +726,35 @@ impl Element for FloatingSurface {
         let surface_size = window.layout_bounds(request_layout.child_layout_id).size;
         let viewport = Bounds::new(Point::default(), window.viewport_size());
         let margin = self.margin + window.client_inset().unwrap_or(px(0.0));
-        let placement = resolve_floating_placement(
-            self.trigger,
-            surface_size,
-            viewport,
-            self.preferred,
-            self.gap,
-            margin,
-        );
-        let offset = placement.bounds.origin - bounds.origin;
+        let placement = match &self.anchor {
+            FloatingAnchor::Trigger {
+                bounds,
+                preferred,
+                gap,
+            } => {
+                resolve_floating_placement(
+                    *bounds,
+                    surface_size,
+                    viewport,
+                    *preferred,
+                    *gap,
+                    margin,
+                )
+                .bounds
+            }
+            FloatingAnchor::Submenu {
+                parent_bounds,
+                offset,
+            } => resolve_submenu_bounds(
+                // The main card's probe runs before this sibling prepaints.
+                parent_bounds.get().unwrap_or(bounds),
+                surface_size,
+                *offset,
+                viewport,
+                margin,
+            ),
+        };
+        let offset = placement.origin - bounds.origin;
         let offset = Point::new(offset.x.round(), offset.y.round());
         window.with_element_offset(offset, |window| self.child.prepaint(window, cx));
     }
@@ -974,6 +1070,8 @@ struct MenuCard {
 impl RenderOnce for MenuCard {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = Theme::current(cx);
+        let parent_bounds = Rc::new(Cell::new(None));
+        self.handle.submenu_bounds.set(None);
         let item_builder: Rc<dyn Fn(&mut App) -> Vec<MenuItem>> = {
             let handle = self.handle.clone();
             let base_items = self.items.clone();
@@ -1026,6 +1124,10 @@ impl RenderOnce for MenuCard {
             .shadow_lg()
             .flex()
             .flex_col();
+        #[cfg(test)]
+        {
+            root_card = root_card.debug_selector(|| "MENU_ROOT".into());
+        }
 
         for (index, item) in items.into_iter().enumerate() {
             root_card = root_card.child(render_menu_item(
@@ -1041,6 +1143,7 @@ impl RenderOnce for MenuCard {
         }
 
         let mut surface = div()
+            .relative()
             .occlude()
             .track_focus(&self.handle.focus)
             .key_context(MENU_CONTEXT)
@@ -1065,14 +1168,14 @@ impl RenderOnce for MenuCard {
                     on_menu_key(&handle, &focusable, &items, event, window, cx);
                 }
             })
-            .child(root_card);
+            .child(root_card)
+            .child(bounds_probe(parent_bounds.clone()));
 
         if let Some((parent_index, submenu_items)) = submenu {
             let offset = submenu_offset.unwrap_or(0.0);
             let mut submenu_card = div()
                 .id(SharedString::from(format!("submenu-{parent_index}")))
-                .mt(px(offset))
-                .ml(px(-4.0))
+                .occlude()
                 .min_w(px(176.0))
                 .max_w(px(320.0))
                 .py(px(4.0))
@@ -1083,6 +1186,10 @@ impl RenderOnce for MenuCard {
                 .shadow_lg()
                 .flex()
                 .flex_col();
+            #[cfg(test)]
+            {
+                submenu_card = submenu_card.debug_selector(|| "MENU_SUBMENU".into());
+            }
             for (index, item) in submenu_items.into_iter().enumerate() {
                 submenu_card = submenu_card.child(render_menu_item(
                     item,
@@ -1095,7 +1202,16 @@ impl RenderOnce for MenuCard {
                     cx,
                 ));
             }
-            surface = surface.child(submenu_card);
+            surface = surface.child(FloatingSurface::submenu(
+                div()
+                    .relative()
+                    .child(submenu_card)
+                    .child(bounds_probe(self.handle.submenu_bounds.clone()))
+                    .into_any_element(),
+                parent_bounds,
+                px(offset),
+                px(8.0),
+            ));
         }
         surface
     }
@@ -1477,6 +1593,11 @@ mod tests {
         activated: Rc<Cell<bool>>,
     }
 
+    struct ContextSubmenuHarness {
+        handle: ContextMenuHandle,
+        activated: Rc<Cell<bool>>,
+    }
+
     #[test]
     fn floating_surface_keeps_a_preferred_side_that_fits() {
         let placement = resolve_floating_placement(
@@ -1613,6 +1734,29 @@ mod tests {
                     })]
                 },
             )
+        }
+    }
+
+    impl Render for ContextSubmenuHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let activated = self.activated.clone();
+            context_menu(div().size_full(), "file-menu", &self.handle, move |_| {
+                let activated = activated.clone();
+                vec![
+                    MenuItem::new("Attach as context", |_, _| {}),
+                    MenuItem::submenu("Copy", move |_| {
+                        let activated = activated.clone();
+                        vec![
+                            MenuItem::new("Absolute path", |_, _| {}).disabled(true),
+                            MenuItem::new("Relative path", move |_, _| activated.set(true)),
+                            MenuItem::new("Filename", |_, _| {}),
+                        ]
+                    }),
+                    MenuItem::Separator,
+                    MenuItem::new("Open in Default App", |_, _| {}),
+                    MenuItem::new("Show in File Manager", |_, _| {}),
+                ]
+            })
         }
     }
 
@@ -1778,6 +1922,62 @@ mod tests {
 
         assert!(activated.get());
         assert!(!handle.is_open());
+    }
+
+    #[gpui::test]
+    fn hovering_a_submenu_keeps_the_parent_menu_in_place(cx: &mut TestAppContext) {
+        let handle = cx.update(ContextMenuHandle::new);
+        let activated = Rc::new(Cell::new(false));
+        let (_, window) = cx.add_window_view(|_, _| ContextSubmenuHarness {
+            handle: handle.clone(),
+            activated: activated.clone(),
+        });
+        window.simulate_resize(size(px(800.0), px(600.0)));
+
+        for position in [
+            point(px(40.0), px(160.0)),
+            point(px(740.0), px(160.0)),
+            point(px(740.0), px(570.0)),
+        ] {
+            activated.set(false);
+            window.simulate_mouse_down(position, MouseButton::Right, Modifiers::none());
+            window.run_until_parked();
+            let before = window.debug_bounds("MENU_ROOT").expect("parent menu");
+            window.simulate_mouse_move(
+                point(before.left() + px(20.0), before.top() + px(44.0)),
+                None,
+                Modifiers::none(),
+            );
+            window.run_until_parked();
+
+            assert_eq!(handle.state.borrow().active_submenu, Some(1));
+            let parent = window.debug_bounds("MENU_ROOT").expect("parent menu");
+            let submenu = window.debug_bounds("MENU_SUBMENU").expect("copy submenu");
+            assert_eq!(parent, before, "opening a flyout must not move its parent");
+            assert!(submenu.left() >= px(8.0));
+            assert!(submenu.right() <= px(792.0));
+            assert!(submenu.top() >= px(8.0));
+            assert!(submenu.bottom() <= px(592.0));
+            if position.x > px(400.0) {
+                assert!(submenu.right() <= parent.left() + px(4.0));
+            } else {
+                assert!(submenu.left() >= parent.right() - px(4.0));
+            }
+
+            window.simulate_mouse_down(
+                point(submenu.left() + px(20.0), submenu.top() + px(18.0)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            assert!(handle.is_open(), "a disabled submenu item must not dismiss");
+            window.simulate_mouse_down(
+                point(submenu.left() + px(20.0), submenu.top() + px(44.0)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            assert!(activated.get(), "submenu entries remain clickable");
+            assert!(!handle.is_open());
+        }
     }
 
     fn items() -> Vec<MenuItem> {

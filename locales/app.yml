@@ -1579,6 +1579,14 @@ files.could_not_save:
   en: "Could not save %{path}: %{error}"
 files.actions:
   en: File actions
+files.attach_as_context:
+  en: Attach as context
+files.absolute_path:
+  en: Absolute path
+files.relative_path:
+  en: Relative path
+files.filename:
+  en: Filename
 files.open_in_default_app:
   en: Open in Default App
 files.preview_markdown:

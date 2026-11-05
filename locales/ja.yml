@@ -809,6 +809,10 @@ files.could_not_save_opening: "%{path} を保存できませんでした：ま�
 files.could_not_save_read_only: "%{path} を保存できませんでした：このファイルは編集できません"
 files.could_not_save: "%{path} を保存できませんでした：%{error}"
 files.actions: ファイル操作
+files.attach_as_context: コンテキストとして添付
+files.absolute_path: 絶対パス
+files.relative_path: 相対パス
+files.filename: ファイル名
 files.open_in_default_app: デフォルトのアプリで開く
 files.preview_markdown: Markdown をプレビュー
 files.edit_markdown_source: ソースを編集

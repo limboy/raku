@@ -771,6 +771,10 @@ files.could_not_save_opening: "无法保存 %{path}：文件仍在打开"
 files.could_not_save_read_only: "无法保存 %{path}：文件不可编辑"
 files.could_not_save: "无法保存 %{path}：%{error}"
 files.actions: 文件操作
+files.attach_as_context: 添加为上下文
+files.absolute_path: 绝对路径
+files.relative_path: 相对路径
+files.filename: 文件名
 files.open_in_default_app: 用默认应用打开
 files.preview_markdown: 预览 Markdown
 files.edit_markdown_source: 编辑源码

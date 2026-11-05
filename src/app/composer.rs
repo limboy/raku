@@ -1556,6 +1556,29 @@ impl Waku {
         window.focus(&focus, cx);
     }
 
+    /// Add a workspace file using the same relative `@` reference as autocomplete.
+    pub(super) fn attach_file_as_context(
+        &mut self,
+        relative_path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let content = self.composer.read(cx).content(cx);
+        let end = content.len();
+        let separator = if content.is_empty() || content.ends_with(char::is_whitespace) {
+            ""
+        } else {
+            " "
+        };
+        let mention = format!("{separator}@{relative_path} ");
+        self.composer.update(cx, |input, cx| {
+            input.replace_range(end..end, &mention, cx);
+        });
+        let focus = self.composer.read(cx).focus();
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
     fn stage_attachment_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> bool {
         if paths.is_empty() {
             return false;

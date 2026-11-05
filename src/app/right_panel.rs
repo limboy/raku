@@ -27,6 +27,45 @@ fn file_menu_items(path: PathBuf) -> Vec<MenuItem> {
     ]
 }
 
+fn working_tree_file_menu_items(
+    path: PathBuf,
+    relative_path: String,
+    waku: WeakEntity<Waku>,
+) -> Vec<MenuItem> {
+    let attach_path = relative_path.clone();
+    let copy_path = path.clone();
+    let mut items = vec![
+        MenuItem::new(tr!("files.attach_as_context"), move |window, cx| {
+            let _ = waku.update(cx, |waku, cx| {
+                waku.attach_file_as_context(&attach_path, window, cx);
+            });
+        }),
+        MenuItem::submenu(tr!("common.copy"), move |_| {
+            let absolute_path = copy_path.to_string_lossy().into_owned();
+            let relative_path = relative_path.clone();
+            let filename = copy_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            vec![
+                MenuItem::new(tr!("files.absolute_path"), move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(absolute_path.clone()));
+                }),
+                MenuItem::new(tr!("files.relative_path"), move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(relative_path.clone()));
+                }),
+                MenuItem::new(tr!("files.filename"), move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(filename.clone()));
+                }),
+            ]
+        }),
+        MenuItem::Separator,
+    ];
+    items.extend(file_menu_items(path));
+    items
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AttachmentFile {
     path: PathBuf,
@@ -3442,6 +3481,8 @@ impl Waku {
             let menu = self.menu_handle(menu_id.clone(), cx);
             let keyboard_menu = menu.clone();
             let keyboard_path = relative_path.clone();
+            let menu_relative_path = relative_path.clone();
+            let waku = cx.entity().downgrade();
             let row = row
                 .track_focus(menu.trigger_focus_handle())
                 .tab_index(0)
@@ -3460,7 +3501,11 @@ impl Waku {
                     }
                 }));
             context_menu(row, menu_id, &menu, move |_| {
-                file_menu_items(absolute_path.clone())
+                working_tree_file_menu_items(
+                    absolute_path.clone(),
+                    menu_relative_path.clone(),
+                    waku.clone(),
+                )
             })
             .into_any_element()
         }
