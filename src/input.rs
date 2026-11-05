@@ -674,6 +674,9 @@ pub struct TextInput {
     /// up to [`AUTO_HEIGHT_MAX`] before it scrolls; otherwise a
     /// multi-line field inherits the embedding view's metrics.
     auto_height: bool,
+    /// Text size an auto-height field renders at, replacing its 13.5px
+    /// default. The line height follows at `size + 8`.
+    auto_height_text_size: Option<Pixels>,
     /// Image and file pastes surface as [`MediaPaste`] instead of being
     /// swallowed by the text path.
     accepts_media_paste: bool,
@@ -779,6 +782,7 @@ impl TextInput {
             read_only: false,
             submit_on_enter: false,
             auto_height: false,
+            auto_height_text_size: None,
             accepts_media_paste: false,
             accepts_text_snippet_paste: false,
             accepts_session_link_paste: false,
@@ -948,6 +952,16 @@ impl TextInput {
     /// edge instead of floating next to the text.
     pub fn set_padding_x(&mut self, padding: Pixels) {
         self.padding_x = padding;
+    }
+
+    /// Render an auto-height field's text at `size`, with an 8px leading
+    /// over it, instead of the default 13.5px on 22px.
+    pub fn set_auto_height_text_size(&mut self, size: Pixels, cx: &mut Context<Self>) {
+        if self.auto_height_text_size == Some(size) {
+            return;
+        }
+        self.auto_height_text_size = Some(size);
+        cx.notify();
     }
 
     /// Make the focusing click select the whole content on release, the way a
@@ -2920,8 +2934,10 @@ impl Render for TextInput {
                     .overflow_y_scroll()
                     .track_scroll(&scroll_handle)
                     .px(padding_x)
-                    .line_height(sp(22.0))
-                    .text_size(sp(13.5))
+                    .map(|field| match self.auto_height_text_size {
+                        Some(size) => field.line_height(size + px(8.0)).text_size(size),
+                        None => field.line_height(sp(22.0)).text_size(sp(13.5)),
+                    })
             })
             // A single-line field never wraps: the overlong remainder slides
             // horizontally under this clipped viewport to follow the caret —
@@ -3124,6 +3140,12 @@ impl ComposerInput {
         self.input
             .update(cx, |input, _| input.set_padding_x(padding));
         self
+    }
+
+    /// Forwarded [`TextInput::set_auto_height_text_size`].
+    pub fn set_text_size(&self, size: Pixels, cx: &mut App) {
+        self.input
+            .update(cx, |input, cx| input.set_auto_height_text_size(size, cx));
     }
 
     pub fn focus(&self) -> FocusHandle {

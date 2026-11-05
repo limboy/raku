@@ -1,6 +1,7 @@
 use super::composer::next_picker_highlight;
 use super::*;
 use crate::ui::ActivationExt;
+use waku_client::persistence::TranscriptFontSize;
 
 gpui::actions!(
     waku_settings,
@@ -425,30 +426,30 @@ impl Waku {
             },
         );
 
-        let selected_ui_font_size = self.state.ui_font_size;
+        let selected_transcript_font_size = self.state.transcript_font_size;
         let weak = cx.entity().downgrade();
-        let ui_font_size_handle = self.menu_handle("ui-font-size-selector", cx);
-        let ui_font_size_selector = dropdown_menu(
-            MenuChip::new("ui-font-size-selector")
-                .label(font_size_label(selected_ui_font_size))
+        let transcript_font_size_handle = self.menu_handle("transcript-font-size-selector", cx);
+        let transcript_font_size_selector = dropdown_menu(
+            MenuChip::new("transcript-font-size-selector")
+                .label(transcript_font_size_label(selected_transcript_font_size))
                 .outlined()
-                .selected(ui_font_size_handle.is_open())
+                .selected(transcript_font_size_handle.is_open())
                 .w(px(116.0))
                 .justify_between(),
-            "ui-font-size-selector-menu",
-            &ui_font_size_handle,
+            "transcript-font-size-selector-menu",
+            &transcript_font_size_handle,
             MenuAlign::BelowRight,
             move |_| {
-                FONT_SIZES
+                TranscriptFontSize::ALL
                     .into_iter()
                     .map(|size| {
                         let weak = weak.clone();
-                        MenuItem::new(font_size_label(size), move |window, cx| {
+                        MenuItem::new(transcript_font_size_label(size), move |_, cx| {
                             let _ = weak.update(cx, |this, cx| {
-                                this.set_ui_font_size(size, window, cx);
+                                this.set_transcript_font_size(size, cx);
                             });
                         })
-                        .selected(size == selected_ui_font_size)
+                        .selected(size == selected_transcript_font_size)
                     })
                     .collect()
             },
@@ -601,7 +602,7 @@ impl Waku {
                                     .text_size(sp(13.5))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.text)
-                                    .child(tr!("settings.ui_font_size")),
+                                    .child(tr!("settings.transcript_font_size")),
                             )
                             .child(
                                 div()
@@ -609,10 +610,10 @@ impl Waku {
                                     .text_size(sp(12.5))
                                     .line_height(sp(18.0))
                                     .text_color(theme.text_secondary)
-                                    .child(tr!("settings.ui_font_size_description")),
+                                    .child(tr!("settings.transcript_font_size_description")),
                             ),
                     )
-                    .child(ui_font_size_selector),
+                    .child(transcript_font_size_selector),
             )
             .child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
             .child(
@@ -649,17 +650,17 @@ impl Waku {
             .into_any_element()
     }
 
-    fn set_ui_font_size(&mut self, size: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let size = waku_client::persistence::sanitized_ui_font_size(size);
-        if self.state.ui_font_size == size {
+    fn set_transcript_font_size(&mut self, size: TranscriptFontSize, cx: &mut Context<Self>) {
+        if self.state.transcript_font_size == size {
             return;
         }
-        self.state.ui_font_size = size;
-        // Chrome is authored in `sp` rems; the rem size is the setting.
-        window.set_rem_size(px(size));
+        self.state.transcript_font_size = size;
+        // The composer's text follows the transcript's.
+        let text_size = px(size.px());
+        self.composer
+            .update(cx, |composer, cx| composer.set_text_size(text_size, cx));
         self.remeasure_font_sized_surfaces();
         self.save();
-        window.refresh();
         cx.notify();
     }
 
@@ -1230,6 +1231,15 @@ impl Waku {
 /// hold values outside this list; they render as-is and simply select
 /// nothing here.
 const FONT_SIZES: [f32; 8] = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0];
+
+fn transcript_font_size_label(size: TranscriptFontSize) -> String {
+    match size {
+        TranscriptFontSize::Small => tr!("settings.font_size_small"),
+        TranscriptFontSize::Medium => tr!("settings.font_size_medium"),
+        TranscriptFontSize::Large => tr!("settings.font_size_large"),
+    }
+    .to_string()
+}
 
 fn font_size_label(size: f32) -> String {
     if size.fract() == 0.0 {

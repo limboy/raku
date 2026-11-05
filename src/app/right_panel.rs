@@ -4359,7 +4359,10 @@ impl Waku {
         let ctx = MarkdownCtx::new(
             format!("file-preview-{relative_path}"),
             &palette,
-            MarkdownMetrics::document(self.state.ui_font_size, self.state.code_font_size),
+            MarkdownMetrics::document(
+                waku_client::persistence::DEFAULT_UI_FONT_SIZE,
+                self.state.code_font_size,
+            ),
             self.file_preview_selection.clone(),
         )
         .with_math_enabled(self.state.render_math)

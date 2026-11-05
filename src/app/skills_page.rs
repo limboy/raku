@@ -1099,7 +1099,7 @@ impl Waku {
             let ctx = MarkdownCtx::new(
                 format!("skill-md-{}", skill.row_key),
                 &palette,
-                self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
+                self.chrome_markdown_metrics(MarkdownMetrics::COMPACT),
                 self.skills_selection.clone(),
             )
             .with_math_enabled(self.state.render_math)

@@ -154,18 +154,18 @@ impl Metrics {
         block_gap: 7.0,
     };
 
-    /// The UI and code font sizes the constants above were authored against.
+    /// The prose and code font sizes the constants above were authored against.
     /// [`Metrics::scaled`] is the identity at these values, so the settings'
     /// defaults reproduce the authored transcript exactly.
     const AUTHORED_UI_FONT_SIZE: f32 = 14.0;
     const AUTHORED_CODE_FONT_SIZE: f32 = 13.0;
 
-    /// These metrics rescaled to the user's font settings: prose follows the
-    /// UI font size, code spans and blocks follow the code font size, and each
+    /// These metrics rescaled to a prose size (the transcript setting, or the
+    /// fixed chrome size elsewhere) and the code font size setting; each
     /// surface keeps its authored proportions. Values land on half pixels so
     /// scaled text stays as crisp as the authored sizes.
-    pub fn scaled(self, ui_font_size: f32, code_font_size: f32) -> Self {
-        let ui = ui_font_size / Self::AUTHORED_UI_FONT_SIZE;
+    pub fn scaled(self, prose_font_size: f32, code_font_size: f32) -> Self {
+        let ui = prose_font_size / Self::AUTHORED_UI_FONT_SIZE;
         let code = code_font_size / Self::AUTHORED_CODE_FONT_SIZE;
         let half = |value: f32| (value * 2.0).round() / 2.0;
         Self {
@@ -177,8 +177,8 @@ impl Metrics {
         }
     }
 
-    /// Document scale for a full-page reading surface: prose at the user's UI
-    /// font size and code at the code font size, keeping [`Metrics::BODY`]'s
+    /// Document scale for a full-page reading surface: prose at the given
+    /// size and code at the code font size, keeping [`Metrics::BODY`]'s
     /// proportions.
     pub fn document(text_size: f32, code_text_size: f32) -> Self {
         Self {
