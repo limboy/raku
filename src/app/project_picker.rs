@@ -544,8 +544,6 @@ impl Waku {
                                     .bg(theme.surface)
                                     .flex()
                                     .items_center()
-                                    .gap(px(8.0))
-                                    .child(icon("icons/search.svg", 12.0, theme.text_secondary))
                                     .child(div().flex_1().min_w_0().child(search.clone())),
                             ),
                     )
