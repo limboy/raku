@@ -586,10 +586,16 @@ impl Waku {
                                 name_font,
                             )),
                     )
+                    // Provider-reported hints can be a whole usage line; cap
+                    // and truncate so the description and scope badge stay
+                    // on the row.
                     .when_some(command.argument_hint.clone(), |element, hint| {
                         element.child(
                             div()
-                                .flex_none()
+                                .flex_shrink(1.0)
+                                .min_w_0()
+                                .max_w(px(180.0))
+                                .truncate()
                                 .text_size(sp(12.5))
                                 .text_color(theme.text_ghost)
                                 .child(hint),
