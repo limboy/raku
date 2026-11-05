@@ -1369,10 +1369,22 @@ fn track_pointer_highlight(
 ) -> gpui::Stateful<gpui::Div> {
     row.when(!disabled, |row| {
         row.on_hover(move |hovered, window, _| {
+            let mut state = handle.state.borrow_mut();
             if !*hovered {
+                // Leaving a row clears the highlight it took, like a native
+                // menu. Only clear our own index so a hover-in on the next row
+                // that lands first is not undone.
+                let slot = if in_submenu {
+                    &mut state.submenu_highlighted
+                } else {
+                    &mut state.highlighted
+                };
+                if *slot == Some(index) {
+                    *slot = None;
+                    window.refresh();
+                }
                 return;
             }
-            let mut state = handle.state.borrow_mut();
             if in_submenu {
                 state.submenu_highlighted = Some(index);
             } else {
