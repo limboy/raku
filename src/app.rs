@@ -363,6 +363,20 @@ fn sanitize_panel_width(width: f32, default: f32, min: f32, max: f32) -> f32 {
     }
 }
 
+/// How far short of the display's visible area a frame may fall and still
+/// count as filling it. AppKit's `zoom:` treats a frame within a few points of
+/// the standard frame as already zoomed, and a zoom animation reports frames
+/// that close on its way in.
+const NEAR_FILL_TOLERANCE: f32 = 48.0;
+
+/// Whether a window of `size` (nearly) fills `visible` — a maximized window,
+/// or one mid-way through a zoom animation, rather than a floating frame the
+/// user chose.
+pub(crate) fn nearly_fills(size: gpui::Size<Pixels>, visible: gpui::Size<Pixels>) -> bool {
+    f32::from(size.width) >= f32::from(visible.width) - NEAR_FILL_TOLERANCE
+        && f32::from(size.height) >= f32::from(visible.height) - NEAR_FILL_TOLERANCE
+}
+
 fn persisted_window_state(
     bounds: Bounds<Pixels>,
     maximized: bool,

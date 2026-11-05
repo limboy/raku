@@ -161,6 +161,19 @@ fn restored_window_placement(cx: &App) -> (WindowBounds, Option<gpui::DisplayId>
         return centered(cx);
     };
     let anchor_size = anchor.bounds().size;
+    let visible = anchor.visible_bounds();
+    // A maximized window opens at its floating frame and is then zoomed, and
+    // `zoom:` toggles: from a frame that already (nearly) fills the display it
+    // zooms *out*, leaving the window just short of the right and bottom
+    // edges. A saved frame that nearly fills the display is a maximized
+    // window (or a zoom caught mid-animation), so reopen it maximized from a
+    // real floating frame it can zoom in from.
+    if crate::app::nearly_fills(size(px(saved.width), px(saved.height)), visible.size) {
+        let width = DEFAULT_WINDOW_WIDTH.min(f32::from(visible.size.width) * 0.8);
+        let height = DEFAULT_WINDOW_HEIGHT.min(f32::from(visible.size.height) * 0.8);
+        let bounds = Bounds::centered_at(visible.center(), size(px(width), px(height)));
+        return (WindowBounds::Maximized(bounds), display_id);
+    }
     let width = saved.width.max(MIN_WINDOW_WIDTH);
     let height = saved.height.max(MIN_WINDOW_HEIGHT);
     let x = saved.x.clamp(
