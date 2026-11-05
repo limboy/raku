@@ -1650,6 +1650,7 @@ impl Waku {
             is_image,
             blob_reference: Some(reference),
             pasted_text: None,
+            session_id: None,
         });
         true
     }
@@ -1795,6 +1796,7 @@ impl Waku {
                         is_image: false,
                         blob_reference: Some(attachment.reference),
                         pasted_text: Some(text),
+                        session_id: None,
                     };
                     if waku.selected_composer_draft_key() == draft_owner {
                         waku.composer_attachments.push(staged);
@@ -1846,6 +1848,18 @@ impl Waku {
         prompt: &str,
         cx: &mut Context<Self>,
     ) -> Option<ComposerSubmission> {
+        if self.session_link_import_pending() {
+            // Enter consumes the field before emitting Submit. Keep the draft
+            // intact while its conversation snapshot is being materialized.
+            if self.composer.read(cx).content(cx).is_empty() {
+                self.composer.update(cx, |composer, cx| {
+                    composer.set_content(prompt.to_owned(), cx);
+                });
+            }
+            self.show_toast(tr!("session.attaching"));
+            cx.notify();
+            return None;
+        }
         if self.execute_local_composer_command(prompt, cx) {
             return None;
         }
@@ -2070,21 +2084,28 @@ impl Waku {
         for (index, attachment) in self.composer_attachments.iter().enumerate() {
             let menu = self.menu_handle(format!("composer-attachment-{index}-menu"), cx);
             let can_reveal = true;
+            let preview_name = attachment
+                .session_id
+                .map(|_| format!("{}.md", attachment.name));
             let preview_file = right_panel::AttachmentFile::for_preview(
                 &attachment.path,
                 attachment.blob_reference.as_deref(),
-                &attachment.name,
+                preview_name.as_deref().unwrap_or(&attachment.name),
                 attachment.is_dir,
                 attachment.is_image,
             );
             let reveal_path = attachment.path.clone();
 
-            if let Some(text) = attachment.pasted_text.as_deref() {
+            if attachment.pasted_text.is_some() || attachment.session_id.is_some() {
+                let text = attachment.pasted_text.as_deref().unwrap_or_default();
+                let session_id = attachment.session_id;
                 let title = attachment.name.clone();
-                let detail_id = super::components::pasted_text_view_id(
-                    attachment.blob_reference.as_deref(),
-                    text,
-                );
+                let detail_id = session_id.unwrap_or_else(|| {
+                    super::components::pasted_text_view_id(
+                        attachment.blob_reference.as_deref(),
+                        text,
+                    )
+                });
                 let detail_name = title.clone();
                 let detail_text = SharedString::from(text);
                 let key_name = title.clone();
@@ -2124,38 +2145,48 @@ impl Waku {
                             cx.stop_propagation();
                         }
                     }));
-                let tile = super::components::pasted_text_chip(&theme, &title)
-                    .id(SharedString::from(format!("composer-attachment-{index}")))
-                    .pr(px(4.0))
-                    .track_focus(menu.trigger_focus_handle())
-                    .tab_index(0)
-                    .focus_visible(|style| style.border_color(theme.accent))
-                    .tooltip(Tooltip::text(title.clone()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.open_pasted_text(
+                let tile = if session_id.is_some() {
+                    super::components::session_link_chip(&theme, &title)
+                } else {
+                    super::components::pasted_text_chip(&theme, &title)
+                }
+                .id(SharedString::from(format!("composer-attachment-{index}")))
+                .pr(px(4.0))
+                .track_focus(menu.trigger_focus_handle())
+                .tab_index(0)
+                .focus_visible(|style| style.border_color(theme.accent))
+                .tooltip(Tooltip::text(if session_id.is_some() {
+                    tr!("session.open", name = title)
+                } else {
+                    title.to_string()
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.open_text_attachment(
+                        session_id,
+                        detail_id,
+                        detail_name.clone(),
+                        detail_text.clone(),
+                        cx,
+                    );
+                }))
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                    let key = event.keystroke.key.as_str();
+                    if matches!(key, "enter" | "space") {
+                        this.open_text_attachment(
+                            session_id,
                             detail_id,
-                            detail_name.clone(),
-                            detail_text.clone(),
+                            key_name.clone(),
+                            key_text.clone(),
                             cx,
                         );
-                    }))
-                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                        let key = event.keystroke.key.as_str();
-                        if matches!(key, "enter" | "space") {
-                            this.open_pasted_text(
-                                detail_id,
-                                key_name.clone(),
-                                key_text.clone(),
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        } else if key == "f10" && event.keystroke.modifiers.shift {
-                            key_menu.open_context_menu(window, cx);
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .child(remove);
+                        cx.stop_propagation();
+                    } else if key == "f10" && event.keystroke.modifiers.shift {
+                        key_menu.open_context_menu(window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .child(remove);
 
                 // Expanding back into the field is no longer the primary
                 // action, but it is the only way to edit the pasted text, so
@@ -2167,14 +2198,22 @@ impl Waku {
                     &menu,
                     move |_| {
                         let expand_weak = expand_weak.clone();
-                        let mut items = vec![MenuItem::new(
-                            tr!("composer.show_in_text_field"),
-                            move |window, cx| {
-                                let _ = expand_weak.update(cx, |this, cx| {
-                                    this.expand_pasted_text_snippet(index, window, cx);
-                                });
-                            },
-                        )];
+                        let mut items = if let Some(session_id) = session_id {
+                            super::session_links::session_link_menu_items(
+                                session_id,
+                                preview_file.clone(),
+                                expand_weak.clone(),
+                            )
+                        } else {
+                            vec![MenuItem::new(
+                                tr!("composer.show_in_text_field"),
+                                move |window, cx| {
+                                    let _ = expand_weak.update(cx, |this, cx| {
+                                        this.expand_pasted_text_snippet(index, window, cx);
+                                    });
+                                },
+                            )]
+                        };
                         items.extend(image_preview::attachment_menu_items(
                             reveal_path.clone(),
                             can_reveal,
@@ -2595,7 +2634,14 @@ impl Waku {
         // reads as unavailable and the submission path refuses too, so
         // `enter` cannot slip past a disabled control.
         let no_providers = self.model_picker_has_no_providers();
-        let can_send = has_draft && !no_providers;
+        let attaching_session = !self.session_link_imports.is_empty()
+            && session.is_some_and(|session| {
+                let owner = crate::persistence::ComposerDraftKey::for_session(session);
+                self.session_link_imports
+                    .iter()
+                    .any(|(_, draft)| *draft == owner)
+            });
+        let can_send = has_draft && !no_providers && !attaching_session;
         let (autocomplete, autocomplete_actionable) =
             match self.render_composer_autocomplete(window, cx) {
                 Some((element, actionable)) => (Some(element), actionable),

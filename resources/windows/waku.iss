@@ -88,6 +88,11 @@ Name: "{userdesktop}\Waku"; Filename: "{app}\waku.exe"; Tasks: desktopicon
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\waku"; ValueType: string; ValueName: ""; ValueData: "URL:Waku Session"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\waku"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\waku\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\waku.exe"" ""%1"""
+
 [Run]
 ; No skipifsilent: this is also how the updater's silent run brings Waku back.
 Filename: "{app}\waku.exe"; Description: "{cm:LaunchProgram,Waku}"; Flags: nowait postinstall

@@ -11,6 +11,11 @@ pub const APP_ID: &str = "sh.waku.dev";
 pub const APP_ID: &str = "sh.waku";
 
 #[cfg(debug_assertions)]
+pub const URL_SCHEME: &str = "waku-debug";
+#[cfg(not(debug_assertions))]
+pub const URL_SCHEME: &str = "waku";
+
+#[cfg(debug_assertions)]
 pub const DATA_DIRECTORY_NAME: &str = "Waku Debug";
 #[cfg(not(debug_assertions))]
 pub const DATA_DIRECTORY_NAME: &str = "Waku";

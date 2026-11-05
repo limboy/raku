@@ -1773,6 +1773,12 @@ fn message_fingerprint(message: &Message, position: usize) -> u64 {
         fold(fingerprint(&attachment.name));
         fold(u64::from(attachment.is_dir));
         fold(u64::from(attachment.is_image));
+        if let Some(session_id) = attachment.session_id {
+            fold(1);
+            fold(fingerprint(&session_id.to_string()));
+        } else {
+            fold(0);
+        }
         if let Some(reference) = &attachment.blob_reference {
             fold(1);
             fold(fingerprint(reference));
@@ -2227,6 +2233,7 @@ mod tests {
                 is_image: true,
                 blob_reference: None,
                 pasted_text: None,
+                session_id: None,
             }],
         };
         let mut drafts = ComposerDrafts::default();
@@ -2491,6 +2498,7 @@ mod tests {
             is_image: true,
             blob_reference: Some("waku-blob:abcdef.png".to_owned()),
             pasted_text: None,
+            session_id: None,
         };
         state.sessions[0].begin_turn_with_presentation(
             "compare @/tmp/reference.png",
@@ -2505,6 +2513,45 @@ mod tests {
         assert_eq!(message.visible_content(), "compare");
         assert_eq!(message.attachments, vec![attachment]);
 
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn session_link_attachments_persist_and_changes_invalidate_the_message_row() {
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let source = Uuid::new_v4();
+        let attachment = MessageAttachment {
+            path: "/attachments/session.md".into(),
+            mention: "/attachments/session.md".into(),
+            name: "Earlier conversation".into(),
+            is_dir: false,
+            is_image: false,
+            blob_reference: Some(format!("waku-attachment:{}", Uuid::new_v4())),
+            pasted_text: None,
+            session_id: Some(source),
+        };
+        state.sessions[0].begin_turn_with_presentation(
+            "Continue @/attachments/session.md",
+            Some("Continue".into()),
+            vec![attachment.clone()],
+        );
+        store.save(&mut state).unwrap();
+        let restored = load_hydrated(&store);
+        assert_eq!(
+            restored.sessions[0].messages[0].attachments,
+            vec![attachment]
+        );
+
+        let replacement = Uuid::new_v4();
+        state.sessions[0].messages[0].attachments[0].session_id = Some(replacement);
+        state.mark_session_dirty(state.sessions[0].id);
+        store.save(&mut state).unwrap();
+        let restored = load_hydrated(&store);
+        let message = &restored.sessions[0].messages[0];
+        assert_eq!(message.visible_content(), "Continue");
+        assert_eq!(message.attachments[0].session_id, Some(replacement));
         fs::remove_dir_all(directory).ok();
     }
 
@@ -2691,6 +2738,7 @@ mod tests {
                     is_image: true,
                     blob_reference: Some(reference),
                     pasted_text: None,
+                    session_id: None,
                 }],
             },
         );

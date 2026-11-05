@@ -1619,6 +1619,7 @@ fn sidebar_session_menu_items(
             move |_| {
                 let copy_conversation_waku = copy_waku.clone();
                 let copy_all_waku = copy_waku.clone();
+                let copy_deeplink_waku = copy_waku.clone();
                 vec![
                     MenuItem::new(tr!("session.copy_conversation"), move |_, cx| {
                         let _ = copy_conversation_waku.update(cx, |waku, cx| {
@@ -1636,6 +1637,11 @@ fn sidebar_session_menu_items(
                                 crate::session_export::ExportScope::All,
                                 cx,
                             );
+                        });
+                    }),
+                    MenuItem::new(tr!("session.copy_deeplink"), move |_, cx| {
+                        let _ = copy_deeplink_waku.update(cx, |waku, cx| {
+                            waku.copy_session_deeplink(session_id, cx);
                         });
                     }),
                 ]
@@ -2281,7 +2287,7 @@ mod tests {
             MenuItem::Submenu { label, items, .. } => {
                 assert_eq!(label, tr!("common.copy").as_str());
                 let sub_items = cx.update(|cx| items(cx));
-                assert_eq!(sub_items.len(), 2);
+                assert_eq!(sub_items.len(), 3);
                 match &sub_items[0] {
                     MenuItem::Entry { label, .. } => {
                         assert_eq!(label, tr!("session.copy_conversation").as_str())
@@ -2293,6 +2299,12 @@ mod tests {
                         assert_eq!(label, tr!("session.copy_all").as_str())
                     }
                     _ => panic!("expected copy all entry"),
+                }
+                match &sub_items[2] {
+                    MenuItem::Entry { label, .. } => {
+                        assert_eq!(label, tr!("session.copy_deeplink").as_str())
+                    }
+                    _ => panic!("expected copy deeplink entry"),
                 }
             }
             _ => panic!("expected copy submenu"),

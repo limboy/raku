@@ -12,6 +12,7 @@ impl From<&ComposerAttachment> for crate::persistence::ComposerDraftAttachment {
             is_image: attachment.is_image,
             blob_reference: attachment.blob_reference.clone(),
             pasted_text: attachment.pasted_text.clone(),
+            session_id: attachment.session_id,
         }
     }
 }
@@ -27,6 +28,7 @@ impl From<crate::persistence::ComposerDraftAttachment> for ComposerAttachment {
             is_image: attachment.is_image,
             blob_reference: attachment.blob_reference,
             pasted_text: attachment.pasted_text,
+            session_id: attachment.session_id,
         }
     }
 }
@@ -41,6 +43,7 @@ impl From<ComposerAttachment> for MessageAttachment {
             is_image: attachment.is_image,
             blob_reference: attachment.blob_reference,
             pasted_text: attachment.pasted_text,
+            session_id: attachment.session_id,
         }
     }
 }
@@ -56,6 +59,7 @@ impl From<MessageAttachment> for ComposerAttachment {
             is_image: attachment.is_image,
             blob_reference: attachment.blob_reference,
             pasted_text: attachment.pasted_text,
+            session_id: attachment.session_id,
         }
     }
 }

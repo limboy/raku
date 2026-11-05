@@ -574,6 +574,10 @@ pub struct MediaPaste(pub Vec<ClipboardEntry>);
 #[derive(Clone, Debug)]
 pub struct TextSnippetPaste(pub String);
 
+/// A complete Waku session link, staged only by the main composer.
+#[derive(Clone, Debug)]
+pub struct SessionLinkPaste(pub uuid::Uuid);
+
 pub const PASTED_TEXT_LINE_THRESHOLD: usize = 10;
 pub const PASTED_TEXT_CHAR_THRESHOLD: usize = 1000;
 
@@ -676,6 +680,7 @@ pub struct TextInput {
     /// Long text pastes surface as [`TextSnippetPaste`] instead of being
     /// inserted directly into the text field.
     accepts_text_snippet_paste: bool,
+    accepts_session_link_paste: bool,
     /// Escape clears the field when it has content; an empty field lets the
     /// keystroke fall through to the surface's own escape.
     clear_on_escape: bool,
@@ -776,6 +781,7 @@ impl TextInput {
             auto_height: false,
             accepts_media_paste: false,
             accepts_text_snippet_paste: false,
+            accepts_session_link_paste: false,
             clear_on_escape: false,
             select_all_on_focus_click: false,
             focus_click_select_all: false,
@@ -1804,6 +1810,12 @@ impl TextInput {
         let Some(text) = clipboard.text() else {
             return;
         };
+        if self.accepts_session_link_paste
+            && let Some(session_id) = crate::session_link::session_id(&text)
+        {
+            cx.emit(SessionLinkPaste(session_id));
+            return;
+        }
         if self.accepts_text_snippet_paste && is_pasted_text_snippet(&text) {
             cx.emit(TextSnippetPaste(text));
             return;
@@ -2125,6 +2137,7 @@ fn word_range_at(content: &str, offset: usize) -> Range<usize> {
 impl EventEmitter<InputEvent> for TextInput {}
 impl EventEmitter<MediaPaste> for TextInput {}
 impl EventEmitter<TextSnippetPaste> for TextInput {}
+impl EventEmitter<SessionLinkPaste> for TextInput {}
 
 impl EntityInputHandler for TextInput {
     fn text_for_range(
@@ -3027,6 +3040,9 @@ pub struct ComposerAttachmentPaste(pub Vec<ClipboardEntry>);
 #[derive(Clone, Debug)]
 pub struct ComposerTextSnippetPaste(pub String);
 
+#[derive(Clone, Debug)]
+pub struct ComposerSessionLinkPaste(pub uuid::Uuid);
+
 /// The prompt composer, built on [`TextInput`]: a self-sizing multi-line
 /// field where Enter submits the trimmed prompt and clears, the primary
 /// modifier + Enter steers it into the running turn instead, and image or
@@ -3072,6 +3088,9 @@ impl ComposerInput {
             cx.subscribe(&input, |_, _, event: &TextSnippetPaste, cx| {
                 cx.emit(ComposerTextSnippetPaste(event.0.clone()));
             }),
+            cx.subscribe(&input, |_, _, event: &SessionLinkPaste, cx| {
+                cx.emit(ComposerSessionLinkPaste(event.0));
+            }),
         ];
         Self {
             input,
@@ -3088,6 +3107,14 @@ impl ComposerInput {
     pub fn text_snippet_paste(self, cx: &mut Context<Self>) -> Self {
         self.input
             .update(cx, |input, _| input.set_text_snippet_paste(true));
+        self
+    }
+
+    /// Keep session links as attachments in the main composer. Historical
+    /// message editors and other text fields retain ordinary paste behavior.
+    pub fn session_link_paste(self, cx: &mut Context<Self>) -> Self {
+        self.input
+            .update(cx, |input, _| input.accepts_session_link_paste = true);
         self
     }
 
@@ -3202,6 +3229,7 @@ impl Focusable for ComposerInput {
 impl EventEmitter<ComposerEvent> for ComposerInput {}
 impl EventEmitter<ComposerAttachmentPaste> for ComposerInput {}
 impl EventEmitter<ComposerTextSnippetPaste> for ComposerInput {}
+impl EventEmitter<ComposerSessionLinkPaste> for ComposerInput {}
 
 #[cfg(test)]
 mod tests {
@@ -3218,12 +3246,12 @@ mod tests {
 
     use super::TokenClass;
     use super::{
-        ComposerEvent, ComposerInput, ComposerTextSnippetPaste, DeleteToLineEnd, DeleteToLineStart,
-        DeleteToParagraphEnd, EditHistory, FieldMode, SearchPaint, TextInput, UNDO_GROUP_INTERVAL,
-        UNDO_HISTORY_CAP, cursor_should_be_visible, input_text_runs, is_pasted_text_snippet,
-        media_paste_entries, next_word_boundary, pasted_text_for_mode, pasted_text_title,
-        previous_word_boundary, single_line_scroll, trimmed_splice, visual_row_count,
-        word_range_at,
+        ComposerEvent, ComposerInput, ComposerSessionLinkPaste, ComposerTextSnippetPaste,
+        DeleteToLineEnd, DeleteToLineStart, DeleteToParagraphEnd, EditHistory, FieldMode,
+        SearchPaint, TextInput, UNDO_GROUP_INTERVAL, UNDO_HISTORY_CAP, cursor_should_be_visible,
+        input_text_runs, is_pasted_text_snippet, media_paste_entries, next_word_boundary,
+        pasted_text_for_mode, pasted_text_title, previous_word_boundary, single_line_scroll,
+        trimmed_splice, visual_row_count, word_range_at,
     };
 
     struct InputHarness {
@@ -3288,7 +3316,11 @@ mod tests {
     ) -> (Entity<ComposerInput>, &'a mut gpui::VisualTestContext) {
         cx.update(super::init);
         let (harness, cx) = cx.add_window_view(|window, cx| {
-            let composer = cx.new(|cx| ComposerInput::new(window, cx).text_snippet_paste(cx));
+            let composer = cx.new(|cx| {
+                ComposerInput::new(window, cx)
+                    .text_snippet_paste(cx)
+                    .session_link_paste(cx)
+            });
             ComposerHarness { composer }
         });
         let composer = cx.read_entity(&harness, |harness, _| harness.composer.clone());
@@ -4321,6 +4353,51 @@ mod tests {
         cx.simulate_keystrokes("secondary-v");
         cx.read_entity(&composer, |composer, cx| {
             assert_eq!(composer.content(cx), text)
+        });
+    }
+
+    #[gpui::test]
+    fn session_links_are_attachments_only_in_the_main_composer(cx: &mut TestAppContext) {
+        let id = uuid::Uuid::new_v4();
+        let link = crate::session_link::url(id);
+        let (composer, cx) = setup_snippet_composer(cx);
+        let links: Rc<RefCell<Vec<uuid::Uuid>>> = Rc::default();
+        let sink = links.clone();
+        cx.update(|_, cx| {
+            composer.update(cx, |composer, cx| {
+                composer.set_content("keep this draft", cx)
+            });
+            cx.subscribe(&composer, move |_, event: &ComposerSessionLinkPaste, _| {
+                sink.borrow_mut().push(event.0);
+            })
+            .detach();
+            cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+        });
+        cx.simulate_keystrokes("secondary-a secondary-v");
+        assert_eq!(links.borrow().as_slice(), &[id]);
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), "keep this draft");
+        });
+
+        // A prose paste stays in the field and does not turn a referenced URL
+        // into an attachment behind the user's back.
+        let prose = format!("See {link}");
+        cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(prose.clone())));
+        cx.simulate_keystrokes("secondary-v");
+        assert_eq!(links.borrow().as_slice(), &[id]);
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), prose)
+        });
+    }
+
+    #[gpui::test]
+    fn a_historical_message_editor_pastes_session_links_as_text(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        let link = crate::session_link::url(uuid::Uuid::new_v4());
+        cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(link.clone())));
+        cx.simulate_keystrokes("secondary-v");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), link)
         });
     }
 

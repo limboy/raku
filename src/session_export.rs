@@ -227,9 +227,14 @@ fn write_attachments(out: &mut String, attachments: &[MessageAttachment]) {
     }
     out.push_str("Attachments:\n\n");
     for attachment in attachments {
-        let url = url::Url::from_file_path(&attachment.path)
-            .map(|url| url.to_string())
-            .unwrap_or_else(|_| attachment.mention.clone());
+        let url = attachment
+            .session_id
+            .map(crate::session_link::url)
+            .unwrap_or_else(|| {
+                url::Url::from_file_path(&attachment.path)
+                    .map(|url| url.to_string())
+                    .unwrap_or_else(|_| attachment.mention.clone())
+            });
         let prefix = if attachment.is_image { "!" } else { "" };
         writeln!(
             out,
@@ -433,6 +438,7 @@ mod tests {
             is_image: true,
             blob_reference: None,
             pasted_text: None,
+            session_id: None,
         });
         let out = markdown(&session, ExportScope::Conversation).unwrap();
         for included in [
@@ -459,6 +465,28 @@ mod tests {
         ] {
             assert!(!out.contains(excluded), "unexpected {excluded}");
         }
+    }
+
+    #[test]
+    fn session_link_attachments_export_with_the_original_link() {
+        let mut session = session();
+        let source = Uuid::new_v4();
+        session.messages[0].attachments.push(MessageAttachment {
+            path: "/attachments/snapshot.md".into(),
+            mention: "/attachments/snapshot.md".into(),
+            name: "Original conversation".into(),
+            is_dir: false,
+            is_image: false,
+            blob_reference: Some(format!("waku-attachment:{}", Uuid::new_v4())),
+            pasted_text: None,
+            session_id: Some(source),
+        });
+        let exported = markdown(&session, ExportScope::Conversation).unwrap();
+        assert!(exported.contains(&format!(
+            "[Original conversation](<{}>)",
+            crate::session_link::url(source)
+        )));
+        assert!(!exported.contains("/attachments/snapshot.md"));
     }
 
     #[test]

@@ -469,6 +469,14 @@ pub(super) struct MessageRender<'a> {
 /// the snippet's first line, truncated. Callers add identity, focus, and click
 /// handling; the composer adds its remove control inside the same row.
 pub(super) fn pasted_text_chip(theme: &Theme, title: &SharedString) -> Div {
+    text_attachment_chip(theme, title, "icons/file.svg")
+}
+
+pub(super) fn session_link_chip(theme: &Theme, title: &SharedString) -> Div {
+    text_attachment_chip(theme, title, "icons/external-link.svg")
+}
+
+fn text_attachment_chip(theme: &Theme, title: &SharedString, icon_path: &'static str) -> Div {
     div()
         .h(px(28.0))
         .min_h(px(28.0))
@@ -483,7 +491,7 @@ pub(super) fn pasted_text_chip(theme: &Theme, title: &SharedString) -> Div {
         .gap(px(6.0))
         .cursor_default()
         .hover(|element| element.bg(theme.overlay))
-        .child(icon("icons/file.svg", 13.0, theme.text_secondary))
+        .child(icon(icon_path, 13.0, theme.text_secondary))
         .child(
             div()
                 .min_w_0()
@@ -535,9 +543,12 @@ fn render_sent_message_attachments(
         let Some(menu) = attachment_menus.get(index) else {
             continue;
         };
-        if let Some(text) = attachment.pasted_text.as_deref() {
+        if attachment.pasted_text.is_some() || attachment.session_id.is_some() {
+            let text = attachment.pasted_text.as_deref().unwrap_or_default();
+            let session_id = attachment.session_id;
             let name = SharedString::from(attachment.name.clone());
-            let id = pasted_text_view_id(attachment.blob_reference.as_deref(), text);
+            let id = session_id
+                .unwrap_or_else(|| pasted_text_view_id(attachment.blob_reference.as_deref(), text));
             let click_name = name.clone();
             let click_text = SharedString::from(text);
             let key_name = name.clone();
@@ -545,38 +556,82 @@ fn render_sent_message_attachments(
             let click_waku = waku.clone();
             let key_waku = waku.clone();
             let key_menu = menu.clone();
-            let chip = pasted_text_chip(theme, &name)
-                .id(SharedString::from(format!(
-                    "message-{message_id}-attachment-{index}"
-                )))
-                .track_focus(menu.trigger_focus_handle())
-                .tab_index(0)
-                .focus_visible(|style| style.border_color(theme.accent))
-                .tooltip(Tooltip::text(name.clone()))
-                .on_click(move |_, _, cx| {
-                    let _ = click_waku.update(cx, |this, cx| {
-                        this.open_pasted_text(id, click_name.clone(), click_text.clone(), cx);
+            let chip = if session_id.is_some() {
+                session_link_chip(theme, &name)
+            } else {
+                pasted_text_chip(theme, &name)
+            }
+            .id(SharedString::from(format!(
+                "message-{message_id}-attachment-{index}"
+            )))
+            .track_focus(menu.trigger_focus_handle())
+            .tab_index(0)
+            .focus_visible(|style| style.border_color(theme.accent))
+            .tooltip(Tooltip::text(if session_id.is_some() {
+                tr!("session.open", name = name)
+            } else {
+                name.to_string()
+            }))
+            .on_click(move |_, _, cx| {
+                let _ = click_waku.update(cx, |this, cx| {
+                    this.open_text_attachment(
+                        session_id,
+                        id,
+                        click_name.clone(),
+                        click_text.clone(),
+                        cx,
+                    );
+                });
+                cx.stop_propagation();
+            })
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                if matches!(key, "enter" | "space") {
+                    let _ = key_waku.update(cx, |this, cx| {
+                        this.open_text_attachment(
+                            session_id,
+                            id,
+                            key_name.clone(),
+                            key_text.clone(),
+                            cx,
+                        );
                     });
                     cx.stop_propagation();
-                })
-                .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                    let key = event.keystroke.key.as_str();
-                    if matches!(key, "enter" | "space") {
-                        let _ = key_waku.update(cx, |this, cx| {
-                            this.open_pasted_text(id, key_name.clone(), key_text.clone(), cx);
-                        });
-                        cx.stop_propagation();
-                    } else if key == "f10" && event.keystroke.modifiers.shift {
-                        key_menu.open_context_menu(window, cx);
-                        cx.stop_propagation();
-                    }
-                });
+                } else if key == "f10" && event.keystroke.modifiers.shift {
+                    key_menu.open_context_menu(window, cx);
+                    cx.stop_propagation();
+                }
+            });
             let reveal_path = attachment.path.clone();
+            let menu_waku = waku.clone();
+            let preview_name = session_id.map(|_| format!("{}.md", attachment.name));
+            let preview_file = right_panel::AttachmentFile::for_preview(
+                &attachment.path,
+                attachment.blob_reference.as_deref(),
+                preview_name.as_deref().unwrap_or(&attachment.name),
+                attachment.is_dir,
+                attachment.is_image,
+            );
             row = row.child(context_menu(
                 chip,
                 SharedString::from(format!("message-{message_id}-attachment-{index}-menu")),
                 menu,
-                move |_| image_preview::attachment_menu_items(reveal_path.clone(), can_reveal),
+                move |_| {
+                    let mut items = session_id
+                        .map(|session_id| {
+                            super::session_links::session_link_menu_items(
+                                session_id,
+                                preview_file.clone(),
+                                menu_waku.clone(),
+                            )
+                        })
+                        .unwrap_or_default();
+                    items.extend(image_preview::attachment_menu_items(
+                        reveal_path.clone(),
+                        can_reveal,
+                    ));
+                    items
+                },
             ));
             continue;
         }

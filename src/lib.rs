@@ -40,6 +40,7 @@ mod platform;
 mod query;
 mod review_diff;
 mod session_export;
+mod session_link;
 mod terminal;
 mod theme;
 mod ui;
@@ -200,7 +201,23 @@ impl WakuApplicationExt for Application {
 pub fn run() {
     let daemon = crate::daemon::start_process()
         .unwrap_or_else(|error| panic!("failed to start Waku daemon: {error:#}"));
-    gpui_platform::application()
+    // Install the handler before launching so a cold-open URL survives while
+    // the main window loads. Other platforms deliver desktop URL launches as
+    // command-line arguments instead of macOS open-url events.
+    let (session_links_tx, session_links_rx) = smol::channel::unbounded();
+    for session_id in std::env::args()
+        .skip(1)
+        .filter_map(|arg| session_link::session_id(&arg))
+    {
+        let _ = session_links_tx.try_send(session_id);
+    }
+    let application = gpui_platform::application();
+    application.on_open_urls(move |urls| {
+        for session_id in urls.iter().filter_map(|url| session_link::session_id(url)) {
+            let _ = session_links_tx.try_send(session_id);
+        }
+    });
+    application
         .with_assets(crate::assets::Assets)
         .with_main_window_reopen()
         .run(move |cx: &mut App| {
@@ -381,6 +398,17 @@ pub fn run() {
                     },
                 )
                 .expect("failed to open Waku window");
+
+            cx.spawn(async move |cx| {
+                while let Ok(session_id) = session_links_rx.recv().await {
+                    let _ = window.update(cx, |waku, window, cx| {
+                        waku.open_session_link(session_id, cx);
+                        window.activate_window();
+                        cx.activate(true);
+                    });
+                }
+            })
+            .detach();
 
             cx.on_system_notification_response({
                 let window = window;

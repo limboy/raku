@@ -1461,6 +1461,9 @@ pub struct MessageAttachment {
     /// Ephemeral or persisted content of pasted text converted to a snippet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pasted_text: Option<String>,
+    /// Original session represented by a conversation snapshot attachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3839,6 +3842,7 @@ mod tests {
             is_image: true,
             blob_reference: Some("waku-blob:ab/reference.png".to_owned()),
             pasted_text: None,
+            session_id: None,
         };
 
         session.begin_turn_with_presentation(

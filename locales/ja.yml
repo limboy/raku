@@ -11,6 +11,11 @@ session.export_conversation: 会話をエクスポート
 session.export_all: すべてエクスポート
 session.copy_conversation: 会話をコピー
 session.copy_all: すべてコピー
+session.copy_deeplink: ディープリンクをコピー
+session.attaching: セッションを添付中…
+session.open: "セッションを開く: %{name}"
+session.open_snapshot: 会話のスナップショットを開く
+errors.attach_session: "セッションを添付できませんでした: %{error}"
 session.pin: ピン留め
 session.unpin: ピン留めを解除
 session.exported: "セッションを %{path} にエクスポートしました"

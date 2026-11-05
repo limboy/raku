@@ -24,8 +24,8 @@ use crate::composer_complete::{FileEntry, SlashCommand};
 use crate::driver::{self, DriverHandle, DriverStartOptions, SessionOptions};
 use crate::git_branch::BranchSnapshot;
 use crate::input::{
-    ComposerAttachmentPaste, ComposerEvent, ComposerInput, ComposerTextSnippetPaste, InputEvent,
-    TextInput,
+    ComposerAttachmentPaste, ComposerEvent, ComposerInput, ComposerSessionLinkPaste,
+    ComposerTextSnippetPaste, InputEvent, TextInput,
 };
 use crate::md;
 use crate::model::{
@@ -270,6 +270,8 @@ struct ComposerAttachment {
     blob_reference: Option<String>,
     /// Ephemeral or restored content of pasted text staged as a snippet.
     pasted_text: Option<String>,
+    /// Session opened by this chip; `path` holds its provider-readable snapshot.
+    session_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug)]
@@ -1244,6 +1246,7 @@ pub struct Waku {
     /// Files dropped onto the composer, drawn as chips above the input and
     /// drained into the next submission.
     composer_attachments: Vec<ComposerAttachment>,
+    session_link_imports: Vec<(Uuid, crate::persistence::ComposerDraftKey)>,
     /// Window-modal expansion of an image attachment. The path is already
     /// cached attachment metadata; render never probes the filesystem.
     image_preview: Option<image_preview::ImagePreviewState>,
@@ -1636,6 +1639,7 @@ mod right_panel;
 mod runtime;
 mod save_status;
 mod session_export;
+mod session_links;
 mod sessions;
 mod settings;
 mod shell_runs;
@@ -1915,6 +1919,7 @@ impl Waku {
         let composer = cx.new(|cx| {
             ComposerInput::new(window, cx)
                 .text_snippet_paste(cx)
+                .session_link_paste(cx)
                 .padding_x(px(14.0), cx)
         });
         let user_input_answer = cx
@@ -2326,7 +2331,9 @@ impl Waku {
                         // the text field is empty. Preserve the shortcut's
                         // previous no-op behavior until that draft is sent or
                         // cleared.
-                        if this.composer_attachments.is_empty() {
+                        if this.composer_attachments.is_empty()
+                            && !this.session_link_import_pending()
+                        {
                             this.steer_oldest_queued_message(cx);
                         }
                     }
@@ -2375,6 +2382,14 @@ impl Waku {
                 &composer,
                 |this: &mut Self, _, event: &ComposerTextSnippetPaste, cx| {
                     this.stage_pasted_text_snippet(event.0.clone(), cx);
+                },
+            )
+            .detach();
+
+            cx.subscribe(
+                &composer,
+                |this: &mut Self, _, event: &ComposerSessionLinkPaste, cx| {
+                    this.stage_session_link(event.0, cx);
                 },
             )
             .detach();
@@ -2731,6 +2746,7 @@ impl Waku {
                 composer_sources_stale: false,
                 composer_autocomplete: autocomplete::AutocompleteUi::new(),
                 composer_attachments,
+                session_link_imports: Vec::new(),
                 image_preview: None,
                 image_preview_generation: 0,
                 remote_images: RefCell::new(HashMap::new()),

@@ -22,6 +22,16 @@ session.copy_conversation:
   en: Copy Conversation
 session.copy_all:
   en: Copy All
+session.copy_deeplink:
+  en: Copy Deeplink
+session.attaching:
+  en: Attaching session…
+session.open:
+  en: "Open session: %{name}"
+session.open_snapshot:
+  en: Open Conversation Snapshot
+errors.attach_session:
+  en: "Could not attach session: %{error}"
 session.pin:
   en: Pin
 session.unpin:

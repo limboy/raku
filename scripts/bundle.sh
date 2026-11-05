@@ -40,11 +40,13 @@ case "$profile" in
   debug)
     app_name="Waku Debug"
     bundle_identifier="sh.waku.dev"
+    url_scheme="waku-debug"
     icon_file="AppIconDev.icns"
     ;;
   release)
     app_name="Waku"
     bundle_identifier="sh.waku"
+    url_scheme="waku"
     icon_file="AppIcon.icns"
     ;;
   *)
@@ -118,6 +120,8 @@ plutil -replace CFBundleDisplayName -string "$app_name" "$contents/Info.plist"
 plutil -replace CFBundleExecutable -string "$app_name" "$contents/Info.plist"
 plutil -replace CFBundleIdentifier -string "$bundle_identifier" "$contents/Info.plist"
 plutil -replace CFBundleName -string "$app_name" "$contents/Info.plist"
+plutil -replace CFBundleURLTypes.0.CFBundleURLName -string "$bundle_identifier.session" "$contents/Info.plist"
+plutil -replace CFBundleURLTypes.0.CFBundleURLSchemes -json "[\"$url_scheme\"]" "$contents/Info.plist"
 # Finder info and resource forks on copied resources make codesign reject the
 # bundle as "detritus"; strip extended attributes before signing.
 xattr -cr "$bundle"

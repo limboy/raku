@@ -117,6 +117,8 @@ pub struct ComposerDraftAttachment {
     pub blob_reference: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pasted_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -329,6 +331,7 @@ mod tests {
             is_image: false,
             blob_reference: Some("waku-attachment:snippet".into()),
             pasted_text: Some(text.into()),
+            session_id: None,
         }
     }
 

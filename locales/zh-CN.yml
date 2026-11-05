@@ -11,6 +11,11 @@ session.export_conversation: 导出对话
 session.export_all: 导出全部内容
 session.copy_conversation: 复制对话
 session.copy_all: 复制全部内容
+session.copy_deeplink: 复制深度链接
+session.attaching: 正在附加会话…
+session.open: "打开会话：%{name}"
+session.open_snapshot: 打开对话快照
+errors.attach_session: "无法附加会话：%{error}"
 session.pin: 置顶
 session.unpin: 取消置顶
 session.exported: "会话已导出到 %{path}"
