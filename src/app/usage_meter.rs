@@ -244,21 +244,6 @@ impl Raku {
         let provider = session.provider;
         let waiting_for_context = session.context_usage_pending;
         let context = session.context_usage.filter(|_| !waiting_for_context);
-        let session_id = session.id;
-        let compact_enabled = session.provider.capabilities().compaction.manual
-            && !session.is_busy()
-            && session.active_compaction.is_none()
-            && session.provider_cursor.is_some();
-        let compact_visible = session.provider.capabilities().compaction.manual;
-        let compact_running = session.active_compaction.is_some();
-        let compact_disabled_reason = if session.is_busy() {
-            tr!("compaction.busy")
-        } else {
-            tr!("compaction.no_history")
-        };
-        let compact_focus =
-            self.transcript_control_focus(format!("compact-context-{session_id}"), cx);
-        let compact_owner = cx.entity().downgrade();
         let theme = Theme::current(cx);
         let key = self.plan_usage_key_for_session(session);
         let usage_url = plan_usage_settings_url(provider, self.model_for_session(session));
@@ -372,69 +357,7 @@ impl Raku {
                     plan_loading,
                     cx,
                 );
-                let mut content = panel;
-                if compact_visible {
-                    let theme = Theme::current(cx);
-                    let click_owner = compact_owner.clone();
-                    let key_owner = compact_owner.clone();
-                    let click_handle = handle.clone();
-                    let key_handle = handle.clone();
-                    content = content.child(
-                        div().child(
-                            div()
-                                .id("compact-context-action")
-                                .track_focus(&compact_focus)
-                                .tab_index(0)
-                                .tab_stop(compact_enabled)
-                                .min_h(px(30.0))
-                                .px(px(9.0))
-                                .rounded(px(5.0))
-                                .border_1()
-                                .border_color(theme.border_strong)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(sp(12.0))
-                                .text_color(if compact_enabled {
-                                    theme.text
-                                } else {
-                                    theme.text_tertiary
-                                })
-                                .focus_visible(|style| style.bg(theme.overlay))
-                                .when(compact_enabled, |button| {
-                                    button.hover(|style| style.bg(theme.overlay))
-                                })
-                                .when(!compact_enabled, |button| {
-                                    button.tooltip(Tooltip::text(compact_disabled_reason.clone()))
-                                })
-                                .child(tr!(if compact_running {
-                                    "activity.compacting_context"
-                                } else {
-                                    "compaction.action"
-                                }))
-                                .on_click(move |_, window, cx| {
-                                    if compact_enabled {
-                                        click_handle.close(window, cx);
-                                        let _ = click_owner.update(cx, |this, cx| {
-                                            this.request_session_compaction(session_id, None, cx)
-                                        });
-                                    }
-                                })
-                                .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                                    if compact_enabled
-                                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                    {
-                                        key_handle.close(window, cx);
-                                        let _ = key_owner.update(cx, |this, cx| {
-                                            this.request_session_compaction(session_id, None, cx)
-                                        });
-                                        cx.stop_propagation();
-                                    }
-                                }),
-                        ),
-                    );
-                }
-                content.into_any_element()
+                panel.into_any_element()
             },
         ))
     }

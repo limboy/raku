@@ -424,6 +424,20 @@ impl Raku {
         let Some(row) = rows.get(index) else {
             return;
         };
+        // `/compact` runs immediately: the typed trigger token is removed so
+        // the popup and its text disappear with the command.
+        if let AutocompleteRow::Command(scored) = row
+            && scored.item.scope == composer_complete::CommandScope::Builtin
+            && scored.item.name == "compact"
+        {
+            self.composer.update(cx, |input, cx| {
+                input.replace_range(trigger.range.clone(), "", cx);
+            });
+            if let Some(session_id) = self.selected_session().map(|session| session.id) {
+                self.request_session_compaction(session_id, None, cx);
+            }
+            return;
+        }
         let insert = match row {
             AutocompleteRow::Command(scored) => {
                 let composer_text = composer_complete::command_composer_text(&scored.item);
