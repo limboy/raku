@@ -1215,8 +1215,9 @@ fn handle_pi_message(
         let prompt_response = matches!(pending.lock().get(id), Some(PendingResponse::Prompt));
         if prompt_response {
             let success = value.get("success").and_then(Value::as_bool) == Some(true);
-            let local_only =
-                value.pointer("/data/agentInvoked").and_then(Value::as_bool) == Some(false);
+            let local_only = value.pointer("/data/agentInvoked").and_then(Value::as_bool)
+                == Some(false)
+                || value.pointer("/data/disposition").and_then(Value::as_str) == Some("handled");
             if success && !local_only {
                 // Pi may acknowledge a prompt before reporting that an
                 // extension handled it locally. Retain the id for that second
@@ -2044,6 +2045,52 @@ mod tests {
         assert!(
             matches!(event_rx.recv().unwrap(), DriverEvent::TextDelta(text) if text == "/compact\n\n")
         );
+        assert!(matches!(
+            event_rx.recv().unwrap(),
+            DriverEvent::TurnFinished { success: true, .. }
+        ));
+        assert!(event_rx.try_recv().is_err());
+        assert!(pending.lock().is_empty());
+    }
+
+    /// Newer `pi` builds report local-only completion as `disposition:
+    /// "handled"` instead of the older `agentInvoked: false`. A command like
+    /// `/curator` that answers in one response (no separate `agentInvoked`
+    /// follow-up) must still settle the turn instead of hanging forever.
+    #[test]
+    fn disposition_handled_settles_the_turn_without_an_agent_invoked_field() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        send_prompt(&mut Vec::new(), &pending, &mut 0, "/curator").unwrap();
+        for frame in [
+            json!({
+                "type": "message_start",
+                "message": {
+                    "role": "custom",
+                    "customType": "curator-config",
+                    "content": [{"type": "text", "text": "Curator disabled — web_search will return raw results"}],
+                    "display": true,
+                },
+            }),
+            json!({
+                "id": "raku-1",
+                "type": "response",
+                "command": "prompt",
+                "success": true,
+                "data": {"disposition": "handled"},
+            }),
+            json!({"type": "agent_settled"}),
+        ] {
+            handle_pi_message(
+                PiFlavor::Pi,
+                frame,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
         assert!(matches!(
             event_rx.recv().unwrap(),
             DriverEvent::TurnFinished { success: true, .. }
