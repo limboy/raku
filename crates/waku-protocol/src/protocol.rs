@@ -19,7 +19,7 @@ use crate::skills::SkillsCatalog;
 use crate::usage::PlanUsage;
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "WAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "WAKU_DAEMON_ADDRESS";
@@ -267,6 +267,10 @@ pub struct WireDriverStartOptions {
     pub provider_cursor: Option<Value>,
     #[serde(default)]
     pub plan_mode: bool,
+    /// Restrict the agent to reading the project (side chats). Overrides the
+    /// interactive access mode with a read-only tool allowlist.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

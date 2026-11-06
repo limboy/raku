@@ -780,6 +780,12 @@ pub struct AgentSession {
     pub context_usage_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_event_cursor: Option<RuntimeEventCursor>,
+    /// Set when this session is a read-only side chat branched off another
+    /// session. Side chats never appear in task lists; they are reached from
+    /// their parent's side-chat popover and quoted-text links. Stored as a
+    /// list column so a skeleton knows it is a side chat before hydration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_chat: Option<SideChatOrigin>,
     /// Read-only compatibility field for v1 state files. New saves omit it.
     #[serde(default, skip_serializing)]
     pub provider_session_id: Option<String>,
@@ -822,8 +828,79 @@ fn is_detail_loaded(detail_loaded: &bool) -> bool {
     *detail_loaded
 }
 
+/// First line of the hidden context a side chat's first prompt carries.
+pub const SIDE_CHAT_CONTEXT_PREFIX: &str = "[Side chat context]";
+/// Ends that context; the user's own question follows it.
+pub const SIDE_CHAT_QUESTION_MARKER: &str = "\nTheir question:\n";
+
+/// The user's own words in a provider prompt: for a side chat's first prompt,
+/// the question after its hidden conversation context; otherwise the prompt.
+/// Session naming uses this so a title describes the question, not the
+/// borrowed conversation.
+pub fn side_chat_question(prompt: &str) -> &str {
+    if !prompt.starts_with(SIDE_CHAT_CONTEXT_PREFIX) {
+        return prompt;
+    }
+    prompt
+        .rsplit_once(SIDE_CHAT_QUESTION_MARKER)
+        .map_or(prompt, |(_, question)| question)
+}
+
+/// Where a side chat branched from: its parent task and, when it was started
+/// from selected transcript text, the quoted excerpt.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SideChatOrigin {
+    pub parent_session_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<SideChatAnchor>,
+}
+
+/// Selected text in a parent message that a side chat is about.
+///
+/// `spans` locate the selection inside the message's rendered text elements
+/// (the transcript selection's element index and byte range), which is what
+/// lets the transcript draw the quote's dashed link. `quote` is the plain
+/// selected text, kept for labels and as the side chat's context.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SideChatAnchor {
+    pub message_id: Uuid,
+    pub quote: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<SideChatAnchorSpan>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SideChatAnchorSpan {
+    /// Rendered text element index within the message row.
+    pub index: usize,
+    pub start: usize,
+    pub end: usize,
+}
+
 impl AgentSession {
     pub const DEFAULT_TITLE: &'static str = "New task";
+
+    pub fn is_side_chat(&self) -> bool {
+        self.side_chat.is_some()
+    }
+
+    /// A started task that belongs in task lists: sidebar, task switcher,
+    /// command palette and project activity. Side chats never do.
+    pub fn is_listed_task(&self) -> bool {
+        self.has_started() && !self.is_side_chat()
+    }
+
+    /// An unsent New Task draft that New Task may reuse. A side chat that has
+    /// not sent its first message is not a draft.
+    pub fn is_task_draft(&self) -> bool {
+        !self.has_started() && !self.is_side_chat()
+    }
+
+    pub fn side_chat_parent(&self) -> Option<Uuid> {
+        self.side_chat
+            .as_ref()
+            .map(|origin| origin.parent_session_id)
+    }
 
     pub fn new(project_id: Uuid, provider: ProviderKind) -> Self {
         let now = unix_time();
@@ -853,6 +930,7 @@ impl AgentSession {
             active_compaction: None,
             context_usage_pending: false,
             runtime_event_cursor: None,
+            side_chat: None,
             provider_session_id: None,
             messages: Vec::new(),
             transcript_blocks: Vec::new(),
@@ -892,6 +970,7 @@ impl AgentSession {
             active_compaction: self.active_compaction.clone(),
             context_usage_pending: false,
             runtime_event_cursor: None,
+            side_chat: self.side_chat.clone(),
             provider_session_id: None,
             messages: Vec::new(),
             transcript_blocks: Vec::new(),
@@ -1312,6 +1391,25 @@ impl AgentSession {
         id
     }
 
+    /// Report a failed turn: a plain headline, styled as an error, with the
+    /// provider's reason kept as optional detail. A detail that only repeats
+    /// the headline is dropped.
+    pub fn push_error_message(
+        &mut self,
+        headline: impl Into<String>,
+        detail: Option<String>,
+    ) -> Uuid {
+        let headline = headline.into();
+        let detail = detail
+            .map(|detail| detail.trim().to_owned())
+            .filter(|detail| !detail.is_empty() && *detail != headline);
+        let id = self.push_message(MessageRole::Assistant, headline);
+        if let Some(message) = self.messages.last_mut() {
+            message.error = Some(MessageError { detail });
+        }
+        id
+    }
+
     pub fn push_user_message_with_presentation(
         &mut self,
         content: impl Into<String>,
@@ -1481,6 +1579,19 @@ pub struct Message {
     pub attachments: Vec<MessageAttachment>,
     pub created_at: u64,
     pub streaming: bool,
+    /// Set when this reply reports a failed turn rather than model output.
+    /// `content` holds the plain headline ("Pi could not complete this
+    /// turn"); the error carries the provider's raw reason, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<MessageError>,
+}
+
+/// What went wrong behind a failed turn's reply.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MessageError {
+    /// The provider's own error text, shown on request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl Message {
@@ -1494,6 +1605,7 @@ impl Message {
             attachments: Vec::new(),
             created_at: unix_time(),
             streaming: false,
+            error: None,
         }
     }
 
@@ -3714,6 +3826,28 @@ pub fn compact_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn side_chat_question_strips_only_the_hidden_context() {
+        let prompt = format!(
+            "{SIDE_CHAT_CONTEXT_PREFIX}\n<conversation>\nUser: a\n</conversation>\n{}还推荐哪些相机 app？",
+            SIDE_CHAT_QUESTION_MARKER
+        );
+        assert_eq!(side_chat_question(&prompt), "还推荐哪些相机 app？");
+        assert_eq!(side_chat_question("plain prompt"), "plain prompt");
+    }
+
+    #[test]
+    fn error_replies_keep_a_plain_headline_and_distinct_detail() {
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Pi);
+        session.push_error_message("Pi could not complete this turn", Some("  429: overloaded \n".into()));
+        session.push_error_message("Pi could not complete this turn", Some("Pi could not complete this turn".into()));
+        let first = &session.messages[0];
+        assert_eq!(first.role, MessageRole::Assistant);
+        assert_eq!(first.content, "Pi could not complete this turn");
+        assert_eq!(first.error.as_ref().unwrap().detail.as_deref(), Some("429: overloaded"));
+        assert_eq!(session.messages[1].error.as_ref().unwrap().detail, None);
+    }
 
     #[test]
     fn legacy_plan_access_mode_loads_as_supervised() {

@@ -433,6 +433,7 @@ impl Waku {
             })
             .or_else(|| self.toast_selection.selection.borrow().selected_text())
             .or_else(|| self.skills_selection.selection.borrow().selected_text())
+            .or_else(|| self.side_chat.selection.selection.borrow().selected_text())
             .or_else(|| self.transcript_selection.selection.borrow().selected_text());
         match selected {
             Some(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
@@ -1374,6 +1375,11 @@ impl Waku {
                     if let Some(highlights) = self.transcript_search_highlights(message_index) {
                         ctx = ctx.with_search_highlights(highlights);
                     }
+                    // Quotes that started a side chat: dashed and clickable,
+                    // once the message has settled into its final layout.
+                    if !message.streaming {
+                        ctx = ctx.with_inline_anchors(self.side_chat_anchors_for(message.id));
+                    }
                     // Human and assistant messages share the Markdown path.
                     // Parse only visible rows rather than doing work for every
                     // driver delta or every off-screen prompt.
@@ -1402,6 +1408,11 @@ impl Waku {
                             ctx: &ctx,
                             menu,
                             waku,
+                            error_expanded: self.expanded_error_details.contains(&message.id),
+                            error_focus: self.transcript_control_focus(
+                                format!("message-error-details-{}", message.id),
+                                cx,
+                            ),
                         },
                         window,
                         cx,

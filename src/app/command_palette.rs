@@ -130,7 +130,7 @@ fn session_search_candidates(
         .collect::<HashMap<_, _>>();
     sessions
         .iter()
-        .filter(|session| session.has_started())
+        .filter(|session| session.is_listed_task())
         .enumerate()
         .map(|(order, session)| {
             let label = session.display_title().to_owned();

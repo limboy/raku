@@ -11,6 +11,11 @@ impl Waku {
             .sessions
             .iter()
             .find(|session| session.id == session_id)?;
+        // Side chats answer quick questions in a visible panel; they never
+        // announce themselves as finished tasks.
+        if session.is_side_chat() {
+            return None;
+        }
         let other_project = self.state.selected_project != Some(session.project_id);
         if cx.active_window().is_some() && !other_project {
             return None;
@@ -223,6 +228,7 @@ impl Waku {
                 }
             }
             DriverEvent::AutoTitleUpdated(title) => {
+                // A quoted side chat's explicit title still wins in display.
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.set_auto_title(title);
                 }
@@ -655,7 +661,7 @@ impl Waku {
                     },
                 );
                 let previous_kinds = self.snapshot_selected_transcript_rows(session_id);
-                runtime.last_driver_error = None;
+                let driver_error = runtime.last_driver_error.take();
                 // A settled turn moved the account's rate-limit needles; ask
                 // that provider's plan meter to refresh once its backoff
                 // allows.
@@ -714,16 +720,20 @@ impl Waku {
                     } else {
                         SessionStatus::Failed
                     };
-                    if needs_fallback {
+                    if needs_fallback && success {
                         session.push_message(
                             MessageRole::Assistant,
-                            summary.unwrap_or_else(|| {
-                                if success {
-                                    tr!("session.turn_completed")
-                                } else {
-                                    tr!("session.stopped_before_response")
-                                }
-                            }),
+                            summary.unwrap_or_else(|| tr!("session.turn_completed")),
+                        );
+                    } else if needs_fallback {
+                        // A failed turn without a reply reads as a plain
+                        // headline in error style. The provider's own reason
+                        // stays one disclosure away: the toast is transient,
+                        // arrives only after the provider's retries, and never
+                        // reaches a task that is not selected or a side chat.
+                        session.push_error_message(
+                            summary.unwrap_or_else(|| tr!("session.stopped_before_response")),
+                            driver_error,
                         );
                     }
                 }
@@ -809,7 +819,11 @@ impl Waku {
                         session.status = SessionStatus::Failed;
                     }
                     if should_append {
-                        session.push_message(MessageRole::Assistant, error);
+                        let provider = session.provider.display_name();
+                        session.push_error_message(
+                            tr!("errors.provider_complete_turn", provider = provider),
+                            Some(error),
+                        );
                     }
                 }
             }
@@ -824,17 +838,18 @@ impl Waku {
                 runtime.pending_user_input = None;
                 self.clear_blocking_plan(session_id);
                 let needs_fallback = !self.turn_has_assistant_message(session_id);
-                let failure_message = runtime
-                    .last_driver_error
-                    .take()
-                    .unwrap_or_else(|| tr!("session.codex_exited_before_response"));
+                let failure_detail = runtime.last_driver_error.take();
                 let should_finish_turn = if let Some(session) = self.state.session_mut(session_id)
                     && session.status.is_busy()
                 {
                     session.status = SessionStatus::Failed;
                     session.updated_at = unix_time();
                     if needs_fallback {
-                        session.push_message(MessageRole::Assistant, failure_message);
+                        let provider = session.provider.display_name();
+                        session.push_error_message(
+                            tr!("errors.provider_stopped_before_response", provider = provider),
+                            failure_detail,
+                        );
                     }
                     true
                 } else {

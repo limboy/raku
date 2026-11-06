@@ -1035,6 +1035,7 @@ impl Waku {
             .child(info)
             .child(diff)
             .child(self.render_right_panel_toggle(cx))
+            .children(self.render_side_chat_trigger(cx))
             .into_any_element()
     }
 

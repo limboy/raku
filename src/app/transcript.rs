@@ -65,31 +65,7 @@ impl Waku {
         let value = self
             .selected_session()
             .map(|session| {
-                let model_label = session
-                    .messages
-                    .get(message_index)
-                    .and_then(|message| message.turn_id)
-                    .and_then(|turn_id| session.turns.iter().find(|turn| turn.id == turn_id))
-                    .and_then(|turn| {
-                        let model = turn.model.as_deref()?;
-                        let name = self.model_display_name(session.provider, Some(model));
-                        let effort = turn.reasoning_effort.as_deref().map(|effort| {
-                            self.provider_probe(session.provider)
-                                .and_then(|probe| probe.model(model))
-                                .and_then(|model| {
-                                    model
-                                        .reasoning_efforts
-                                        .iter()
-                                        .find(|option| option.id == effort)
-                                })
-                                .map(|option| option.label.as_str())
-                                .unwrap_or(effort)
-                        });
-                        Some(SharedString::from(match effort {
-                            Some(effort) => format!("{name} · {effort}"),
-                            None => name,
-                        }))
-                    });
+                let model_label = self.turn_model_label(session, message_index);
                 AssistantResponseFooter {
                     copy_content: assistant_response_footer(session, message_index)
                         .map(SharedString::from),
@@ -389,6 +365,35 @@ impl Waku {
     ///
     /// Appends keep the reader's place (or the pinned tail); shrinking resets
     /// the view.
+    /// "Model · effort" for the turn a message belongs to, as response
+    /// footers show it.
+    pub(super) fn turn_model_label(
+        &self,
+        session: &AgentSession,
+        message_index: usize,
+    ) -> Option<SharedString> {
+        let turn_id = session.messages.get(message_index)?.turn_id?;
+        let turn = session.turns.iter().find(|turn| turn.id == turn_id)?;
+        let model = turn.model.as_deref()?;
+        let name = self.model_display_name(session.provider, Some(model));
+        let effort = turn.reasoning_effort.as_deref().map(|effort| {
+            self.provider_probe(session.provider)
+                .and_then(|probe| probe.model(model))
+                .and_then(|model| {
+                    model
+                        .reasoning_efforts
+                        .iter()
+                        .find(|option| option.id == effort)
+                })
+                .map(|option| option.label.as_str())
+                .unwrap_or(effort)
+        });
+        Some(SharedString::from(match effort {
+            Some(effort) => format!("{name} · {effort}"),
+            None => name,
+        }))
+    }
+
     pub(super) fn sync_transcript_rows(&self) {
         // The fold is cached; the list-state reconciliation below is not. It
         // has to run every time because `active_transcript_rows` can switch

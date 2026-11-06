@@ -34,6 +34,18 @@ function splitTitleLanguage(text: string): { request: string; language?: string 
 }
 
 /** Commands keep their own semantics and do not describe the task. */
+// Mirrors waku_protocol::model::side_chat_question: a side chat's first
+// prompt carries borrowed conversation context ahead of the user's question,
+// and the title should describe the question.
+const SIDE_CHAT_CONTEXT_PREFIX = "[Side chat context]";
+const SIDE_CHAT_QUESTION_MARKER = "\nTheir question:\n";
+
+function sideChatQuestion(text: string): string {
+  if (!text.startsWith(SIDE_CHAT_CONTEXT_PREFIX)) return text;
+  const index = text.lastIndexOf(SIDE_CHAT_QUESTION_MARKER);
+  return index < 0 ? text : text.slice(index + SIDE_CHAT_QUESTION_MARKER.length);
+}
+
 function isOrdinaryRequest(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
@@ -92,12 +104,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", (event, ctx) => {
     const { request, language } = splitTitleLanguage(event.text);
     const stripped = request !== event.text;
+    const titleRequest = sideChatQuestion(request);
 
     if (
       !attempted &&
       event.source !== "extension" &&
       !event.streamingBehavior &&
-      isOrdinaryRequest(request)
+      isOrdinaryRequest(titleRequest)
     ) {
       attempted = true;
       try {
@@ -107,7 +120,15 @@ export default function (pi: ExtensionAPI) {
         const fresh =
           !pi.getSessionName() && !hasUserMessage(ctx.sessionManager.getBranch());
         if (model && fresh) {
-          void generateTitle(pi, registry, model, sessionId, request, language, controller.signal);
+          void generateTitle(
+            pi,
+            registry,
+            model,
+            sessionId,
+            titleRequest,
+            language,
+            controller.signal,
+          );
         }
       } catch {
         // Naming must never interfere with the request itself.

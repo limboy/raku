@@ -2023,3 +2023,63 @@ compaction.waiting_usage:
   en: "Updates after next reply"
 compaction.history_archived:
   en: "Earlier messages have been archived to free up context. You can continue the conversation; the model will use the archived history as needed."
+menu.toggle_side_chat:
+  en: "Toggle Side Chat"
+side_chat.title:
+  en: "Side chat"
+side_chat.menu_item:
+  en: "Side chat"
+side_chat.placeholder:
+  en: "Ask a side question…"
+side_chat.loading:
+  en: "Loading side chat…"
+side_chat.no_provider:
+  en: "No provider is available for side chats. Install Pi or enable a provider in Settings."
+side_chat.missing:
+  en: "Side chat unavailable"
+side_chat.missing_description:
+  en: "This side chat was deleted."
+side_chat.empty_description:
+  en: "Side chats can read the project but never change it, and the main agent never sees them."
+side_chat.stop:
+  en: "Stop"
+side_chat.send:
+  en: "Send"
+side_chat.queued:
+  en: "%{count} queued"
+side_chat.thinking:
+  en: "Thinking…"
+side_chat.replying:
+  en: "Replying…"
+side_chat.delete:
+  en: "Delete side chat"
+side_chat.popover_tooltip:
+  en: "Side chats"
+side_chat.popover_tooltip_replying:
+  en: "Side chats — replying"
+side_chat.from_selections:
+  en: "From selections"
+side_chat.selection_hint:
+  en: "Select text in the conversation and right-click to ask about it in a side chat."
+side_chat.settings_title:
+  en: "Side Chat"
+side_chat.provider:
+  en: "Provider"
+side_chat.provider_description:
+  en: "Automatic uses a DeepSeek model through Pi when available. Now: %{model}"
+side_chat.model:
+  en: "Model"
+side_chat.model_description:
+  en: "Used for new side chats."
+side_chat.automatic:
+  en: "Automatic"
+side_chat.read_only_description:
+  en: "Side chats can read and search the project's files but cannot edit files, run commands, or use MCP tools. They never add messages to the task's conversation."
+errors.start_agent_headline:
+  en: "Could not start %{provider}"
+errors.provider_stopped_before_response:
+  en: "%{provider} stopped before responding"
+message_error.details:
+  en: "Details"
+message_error.hide_details:
+  en: "Hide details"

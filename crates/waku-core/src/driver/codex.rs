@@ -151,6 +151,7 @@ impl CodexDriver {
             context_window: _,
             agent_preset: _,
             provider_cursor,
+            read_only,
         } = options;
         let provider_session_id = match provider_cursor {
             Some(ProviderResumeCursor::Codex { thread_id }) => Some(thread_id),
@@ -251,8 +252,18 @@ impl CodexDriver {
                 // one of those is a new value here rather than a new process.
                 // The permission policy is deliberately not in that set — see
                 // `apply_options`.
-                let (approval_policy, sandbox, approvals_reviewer) =
-                    codex_permissions(mode);
+                let (approval_policy, sandbox, approvals_reviewer) = if read_only {
+                    // A side chat never asks: anything outside the read-only
+                    // sandbox simply fails.
+                    ("never", "read-only", "user")
+                } else {
+                    codex_permissions(mode)
+                };
+                let developer_instructions = if read_only {
+                    super::SIDE_CHAT_INSTRUCTIONS
+                } else {
+                    super::USER_RUN_INSTRUCTIONS
+                };
                 let mut model = model;
                 let mut reasoning_effort = reasoning_effort;
                 let mut service_tier = service_tier;
@@ -268,7 +279,7 @@ impl CodexDriver {
                         "approvalPolicy": approval_policy,
                         "sandbox": sandbox,
                         "approvalsReviewer": approvals_reviewer,
-                        "developerInstructions": super::USER_RUN_INSTRUCTIONS
+                        "developerInstructions": developer_instructions
                     });
                     if let Some(model) = model.as_deref() {
                         params["model"] = json!(model);
@@ -288,7 +299,7 @@ impl CodexDriver {
                         "sandbox": sandbox,
                         "approvalsReviewer": approvals_reviewer,
                         "serviceName": "waku",
-                        "developerInstructions": super::USER_RUN_INSTRUCTIONS
+                        "developerInstructions": developer_instructions
                     });
                     if let Some(model) = model.as_deref() {
                         params["model"] = json!(model);
@@ -343,7 +354,7 @@ impl CodexDriver {
                                 let mut title = writer_title_generation.lock();
                                 if title.enabled && !title.launched && title.pending.is_none() {
                                     title.pending = Some(CodexTitleRequest {
-                                        prompt: text.clone(),
+                                        prompt: crate::model::side_chat_question(&text).to_owned(),
                                     });
                                 }
                             }
@@ -3117,6 +3128,7 @@ mod tests {
                 provider_cursor: Some(ProviderResumeCursor::Codex {
                     thread_id: "thread-original".into(),
                 }),
+                read_only: false,
             },
             events,
         )
@@ -3182,6 +3194,7 @@ mod tests {
                     context_window: None,
                     agent_preset: None,
                     provider_cursor: Some(cursor),
+                    read_only: false,
                 },
                 events,
             )
@@ -3267,6 +3280,7 @@ mod tests {
                     context_window: None,
                     agent_preset: None,
                     provider_cursor: cursor,
+                    read_only: false,
                 },
                 events,
             )

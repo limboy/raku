@@ -466,6 +466,11 @@ maps into each CLI's own vocabulary.
 
 Pi accepts Full access only and always runs wide open (`--approve`).
 
+Side chats use a separate read-only execution policy (`DriverStartOptions::read_only`)
+that overrides the access mode: Pi gets a read and web-search tool allowlist with
+MCP disabled, Claude gets `Read,Grep,Glob,WebSearch,WebFetch` under `dontAsk`, and Codex runs with
+approval `never` in the `read-only` sandbox. See [side-chat.md](side-chat.md).
+
 Codex and Claude can route Supervised permission requests to Waku. Pi has no
 permission system.
 

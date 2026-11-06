@@ -335,6 +335,20 @@ pub struct SearchHighlights {
     pub active: Option<TextSearchMatch>,
 }
 
+/// A range of one rendered text element that links to something Waku owns,
+/// such as the side chat started from that quote. It is drawn with a dashed
+/// underline and behaves like a link: click, Tab focus, and Enter all route
+/// `target` through the context's link handler.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InlineAnchor {
+    /// The element's ordinal within its row, as in [`TextKey::index`].
+    pub index: usize,
+    pub range: Range<usize>,
+    pub target: Rc<str>,
+}
+
+pub type InlineAnchors = Rc<[InlineAnchor]>;
+
 /// Flatten inline runs for shaping. Pure given the palette and base weight.
 pub fn flatten(
     runs: &[InlineRun],
@@ -701,6 +715,7 @@ pub struct Ctx<'a> {
     math_enabled: bool,
     math_menu: Option<ContextMenuHandle>,
     wrap_math_menu: bool,
+    anchors: Option<InlineAnchors>,
     now: Instant,
 }
 
@@ -728,6 +743,7 @@ impl<'a> Ctx<'a> {
             math_enabled: true,
             math_menu: None,
             wrap_math_menu: false,
+            anchors: None,
             now: Instant::now(),
         }
     }
@@ -760,6 +776,12 @@ impl<'a> Ctx<'a> {
 
     pub fn with_search_highlights(mut self, highlights: SearchHighlights) -> Self {
         self.search = Some(highlights);
+        self
+    }
+
+    /// Draw dashed, clickable anchors over ranges of this row's text.
+    pub fn with_inline_anchors(mut self, anchors: Option<InlineAnchors>) -> Self {
+        self.anchors = anchors.filter(|anchors| !anchors.is_empty());
         self
     }
 
@@ -805,6 +827,7 @@ impl<'a> Ctx<'a> {
             math_enabled: self.math_enabled,
             math_menu: self.math_menu.clone(),
             wrap_math_menu: self.wrap_math_menu,
+            anchors: self.anchors.clone(),
             now: Instant::now(),
         }
     }
@@ -892,6 +915,8 @@ fn text_element_with_selection(
     active_search_match_wash: Hsla,
     link_focus_color: Hsla,
     block_break: bool,
+    dashed: Vec<Range<usize>>,
+    dashed_color: Hsla,
 ) -> AnyElement {
     let styled = StyledText::new(flat.text.clone()).with_runs(runs);
     let layout = styled.layout().clone();
@@ -962,6 +987,11 @@ fn text_element_with_selection(
                             BorderStyle::default(),
                         ));
                     }
+                }
+            }
+            for range in &dashed {
+                for rect in range_rects(&layout, range, 0.0, 0.0) {
+                    paint_dashed_underline(window, rect, dashed_color);
                 }
             }
             if let Some(range) = selection.selection.borrow().wash_range(&key) {
@@ -1046,8 +1076,44 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
         }
         None => flat.runs.clone(),
     };
+    let anchors = ctx
+        .anchors
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|anchor| {
+            anchor.index == key.index
+                && !anchor.range.is_empty()
+                && anchor.range.end <= flat.text.len()
+                && flat.text.is_char_boundary(anchor.range.start)
+                && flat.text.is_char_boundary(anchor.range.end)
+        })
+        .collect::<Vec<_>>();
+    let anchored = (!anchors.is_empty()).then(|| {
+        // Anchors join the element's links so click, Tab and Enter reuse the
+        // link path. Only the rare anchored element pays for this copy.
+        let mut links = flat.links.clone();
+        links.extend(
+            anchors
+                .iter()
+                .map(|anchor| (anchor.range.clone(), anchor.target.to_string())),
+        );
+        links.sort_by_key(|(range, _)| range.start);
+        FlatText {
+            text: flat.text.clone(),
+            runs: flat.runs.clone(),
+            links,
+            code_ranges: flat.code_ranges.clone(),
+            math: flat.math.clone(),
+            active_link: Some(flat.active_link.clone().unwrap_or_default()),
+        }
+    });
+    let dashed = anchors
+        .iter()
+        .map(|anchor| anchor.range.clone())
+        .collect::<Vec<_>>();
     text_element_with_selection(
-        flat,
+        anchored.as_ref().unwrap_or(flat),
         runs,
         key,
         ctx.selection.clone(),
@@ -1059,7 +1125,26 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
         ctx.palette.active_search_match,
         ctx.palette.accent,
         ctx.take_block_break(),
+        dashed,
+        ctx.palette.accent,
     )
+}
+
+/// A 1px dashed rule along the bottom of one wrapped row of an anchor.
+fn paint_dashed_underline(window: &mut Window, rect: Bounds<Pixels>, color: Hsla) {
+    const DASH: f32 = 3.0;
+    const GAP: f32 = 2.0;
+    let y = rect.bottom() - px(1.0);
+    let end = rect.right();
+    let mut x = rect.left();
+    while x < end {
+        let width = (end - x).min(px(DASH));
+        window.paint_quad(gpui::fill(
+            Bounds::new(point(x, y), size(width, px(1.0))),
+            color,
+        ));
+        x += px(DASH + GAP);
+    }
 }
 
 /// A selectable styled line outside the markdown block renderer.
@@ -1089,6 +1174,8 @@ pub fn selectable_flat_text(
         gpui::transparent_black(),
         selection_wash,
         block_break,
+        Vec::new(),
+        gpui::transparent_black(),
     )
 }
 

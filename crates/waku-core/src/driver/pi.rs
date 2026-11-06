@@ -182,6 +182,26 @@ fn configure_pi_title_command(
     }
 }
 
+/// Tools a side chat may use: Pi's built-ins that only read, plus the web
+/// tools of the `pi-web-access` extension (search, fetch, stored results,
+/// source checks). Names an installation does not register are ignored.
+/// `--approve` stays harmless because nothing here can write, run a command,
+/// or reach MCP.
+const PI_READ_ONLY_TOOLS: &str =
+    "read,grep,find,ls,web_search,fetch_content,get_search_content,source_check";
+
+fn configure_pi_read_only_command(command: &mut std::process::Command) {
+    command.args([
+        "--tools",
+        PI_READ_ONLY_TOOLS,
+        "--no-mcp",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--append-system-prompt",
+        super::SIDE_CHAT_INSTRUCTIONS,
+    ]);
+}
+
 impl PiDriver {
     pub fn start(
         options: DriverStartOptions,
@@ -199,6 +219,7 @@ impl PiDriver {
             context_window: _,
             agent_preset: _,
             provider_cursor,
+            read_only,
         } = options;
         flavor.provider().validate_access_mode(mode)?;
         let resume_session_file = match provider_cursor {
@@ -226,7 +247,11 @@ impl PiDriver {
 
         let mut command = crate::command_env::command(&binary);
         command.args(["--mode", "rpc", flavor.full_access_arg()]);
-        command.args(["--append-system-prompt", super::USER_RUN_INSTRUCTIONS]);
+        if read_only {
+            configure_pi_read_only_command(&mut command);
+        } else {
+            command.args(["--append-system-prompt", super::USER_RUN_INSTRUCTIONS]);
+        }
         if flavor.skips_version_check_by_env() {
             command.env("PI_SKIP_VERSION_CHECK", "1");
         }
@@ -1818,6 +1843,23 @@ fn tool_title(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_read_only_side_chat_allows_only_reading_tools() {
+        let mut command = std::process::Command::new("/usr/bin/true");
+        configure_pi_read_only_command(&mut command);
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].starts_with("read,grep,find,ls,web_search"))
+        );
+        assert!(arguments.contains(&"--no-mcp".to_owned()));
+        assert!(arguments.contains(&"--no-skills".to_owned()));
+    }
     use crate::model::RuntimeMode;
     use crossbeam_channel::TryRecvError;
 
@@ -2087,6 +2129,7 @@ mod tests {
                 context_window: None,
                 agent_preset: None,
                 provider_cursor: None,
+                read_only: false,
             },
             events,
         )
@@ -2843,6 +2886,32 @@ mod tests {
             event_rx.recv().unwrap(),
             DriverEvent::TurnFinished { success: true, .. }
         ));
+    }
+
+    #[test]
+    fn exhausted_auto_retry_reports_the_provider_error() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        let error = r#"429: {"type":"server_error","message":"overloaded"}"#;
+        let failed = json!({"role": "assistant", "content": [], "stopReason": "error", "errorMessage": error});
+        for value in [
+            json!({"type": "agent_start"}),
+            json!({"type": "turn_start"}),
+            json!({"type": "message_start", "message": failed}),
+            json!({"type": "message_end", "message": failed}),
+            json!({"type": "turn_end", "message": failed}),
+            json!({"type": "agent_end"}),
+            json!({"type": "auto_retry_start", "attempt": 1, "errorMessage": error}),
+            json!({"type": "agent_start"}),
+            json!({"type": "message_end", "message": failed}),
+            json!({"type": "agent_end"}),
+            json!({"type": "auto_retry_end", "success": false, "attempt": 1, "finalError": error}),
+            json!({"type": "agent_settled"}),
+        ] {
+            handle_pi_message(PiFlavor::Pi, value, &pending, &commands, &events, &mut state);
+        }
+        let emitted = event_rx.try_iter().collect::<Vec<_>>();
+        assert!(emitted.iter().any(|event| matches!(event, DriverEvent::Error(message) if message == error)));
     }
 
     #[test]

@@ -134,6 +134,11 @@ impl Selection {
             .map(|span| span.range.clone())
     }
 
+    /// Resolved spans in document order.
+    pub fn spans(&self) -> &[Span] {
+        &self.spans
+    }
+
     /// The full selected text, or `None` when nothing is selected.
     pub fn selected_text(&self) -> Option<String> {
         (!self.is_empty()).then(|| self.text())

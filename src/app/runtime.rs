@@ -149,6 +149,7 @@ pub(super) fn merge_remote_session_catalog(
 /// Perform every blocking operation between accepting a submission and
 /// starting its provider. This function is called only from the background
 /// executor; the UI thread owns applying the returned workspace afterward.
+#[allow(clippy::too_many_arguments)]
 fn prepare_submission(
     workspace_client: waku_client::WorkspaceClient,
     project: Project,
@@ -157,6 +158,7 @@ fn prepare_submission(
     session_id: Uuid,
     prompt: &str,
     turn_count: usize,
+    side_chat: bool,
 ) -> anyhow::Result<PreparedSubmission> {
     let driver_start = match driver_start {
         Some(Err(error)) => {
@@ -198,16 +200,22 @@ fn prepare_submission(
     // Every turn gets its own immutable starting snapshot. Reusing the prior
     // response's ending ref would attribute branch switches or terminal edits
     // made between turns to the next response.
-    let checkpoint_warning = workspace_ack(
-        &workspace_client,
-        waku_client::WorkspaceOperation::CaptureTurnStart {
-            cwd: project_path.to_path_buf(),
-            session_id,
-            turn_count,
-        },
-    )
-    .err()
-    .map(|error| tr!("errors.capture_pre_turn_checkpoint", error = error));
+    // A read-only side chat cannot change the workspace, so it takes no
+    // snapshot and leaves the parent's checkpoint history alone.
+    let checkpoint_warning = (!side_chat)
+        .then(|| {
+            workspace_ack(
+                &workspace_client,
+                waku_client::WorkspaceOperation::CaptureTurnStart {
+                    cwd: project_path.to_path_buf(),
+                    session_id,
+                    turn_count,
+                },
+            )
+            .err()
+        })
+        .flatten()
+        .map(|error| tr!("errors.capture_pre_turn_checkpoint", error = error));
 
     // Process startup can synchronously resolve executables, bind sockets,
     // and spawn children. It belongs behind the same animated preparation
@@ -756,6 +764,7 @@ impl Waku {
             snapshot.sessions,
             |session_id| runtime_ids.contains(&session_id),
         );
+        self.invalidate_side_chat_index();
         for session_id in &removed {
             self.state.pinned_session_ids.remove(session_id);
             self.runtime_attach_pending.remove(session_id);
@@ -940,6 +949,7 @@ impl Waku {
             if !session.status.is_busy() {
                 return;
             }
+            let side_chat = session.is_side_chat();
             session.status = SessionStatus::Idle;
             let interrupted_turn_count = session
                 .turns
@@ -950,7 +960,7 @@ impl Waku {
                     turn.completed_at = Some(unix_time());
                     turn.turn_count
                 });
-            if let Some(turn_count) = interrupted_turn_count {
+            if let Some(turn_count) = interrupted_turn_count.filter(|_| !side_chat) {
                 let project_path = session
                     .workspace
                     .path()
@@ -1037,18 +1047,21 @@ impl Waku {
         outcome: crate::analytics::TurnOutcome,
     ) -> Option<(Uuid, usize)> {
         let event = self.active_turn_finished_event(session_id, outcome);
+        // A side chat answers in a panel the user is looking at; it never
+        // marks its task or project as having unread work.
         let project_id = self
             .state
             .sessions
             .iter()
             .find(|session| session.id == session_id)
+            .filter(|session| !session.is_side_chat())
             .map(|session| session.project_id);
         let result = self
             .state
             .session_mut(session_id)?
             .finish_active_turn(status);
         if result.is_some() {
-            if status == TurnStatus::Completed {
+            if status == TurnStatus::Completed && project_id.is_some() {
                 if let Some(project_id) = project_id {
                     if self.state.selected_project != Some(project_id) {
                         self.finished_project_ids.insert(project_id);
@@ -1485,6 +1498,9 @@ impl Waku {
             .sessions
             .iter()
             .find(|session| session.id == session_id)
+            // Side chats cannot change the workspace, so there is nothing to
+            // checkpoint or rewind.
+            .filter(|session| !session.is_side_chat())
             .and_then(|session| {
                 session
                     .turns
@@ -2521,6 +2537,7 @@ impl Waku {
                 context_window,
                 agent_preset: session.agent_preset.clone(),
                 provider_cursor: session.provider_cursor.clone(),
+                read_only: session.is_side_chat(),
             },
             event_wake: self.event_wake_tx.clone(),
             daemon: self.daemon.clone(),
@@ -2609,6 +2626,7 @@ impl Waku {
                         session_id,
                         &naming_prompt,
                         next_turn_count,
+                        false,
                     )
                 })
                 .await;
@@ -3165,6 +3183,7 @@ impl Waku {
         };
         let next_turn_count = session.turns.len();
         let workspace = session.workspace.clone();
+        let side_chat = session.is_side_chat();
         let driver_start = (!self.runtimes.contains_key(&session_id)).then(|| {
             let provisional_cwd = self
                 .workspace_path_for_session(session)
@@ -3198,6 +3217,7 @@ impl Waku {
                         session_id,
                         &preparation_prompt,
                         next_turn_count,
+                        side_chat,
                     )
                 })
                 .await;
@@ -3345,10 +3365,13 @@ impl Waku {
             Ok(driver) => driver.prompt(driver_prompt),
             Err(error) => {
                 failed_to_start = true;
-                let message = tr!("errors.start_agent", error = error);
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.status = SessionStatus::Failed;
-                    session.push_message(MessageRole::Assistant, message);
+                    let provider = session.provider.display_name();
+                    session.push_error_message(
+                        tr!("errors.start_agent_headline", provider = provider),
+                        Some(format!("{error:#}")),
+                    );
                 }
                 self.finish_active_turn_with_analytics(
                     session_id,

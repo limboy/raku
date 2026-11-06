@@ -39,6 +39,19 @@ pub(crate) const USER_RUN_INSTRUCTIONS: &str = concat!(
     "without stating clearly what they will do."
 );
 
+/// System instructions for a read-only side chat. The transport also removes
+/// every tool that could modify the project; this tells the model why.
+pub(crate) const SIDE_CHAT_INSTRUCTIONS: &str = concat!(
+    "You are a side-chat assistant inside Waku. The user is asking a side question about a ",
+    "conversation they are having with a separate coding agent; you do not share its session. ",
+    "Their first message gives you that conversation. Treat it as context you both already ",
+    "share: answer from it directly, and refer to it naturally rather than describing it. ",
+    "When the question needs more than the conversation contains, search: read and search ",
+    "project files, or search and fetch the web when your tools allow it. You cannot modify files, run ",
+    "commands, or take actions; if the user asks for a change, explain what to change instead. ",
+    "Answer concisely."
+);
+
 /// Provider events remain synchronous to send from reader threads, while the
 /// bounded wake channel lets the UI sleep until at least one event is ready.
 /// Multiple provider writes coalesce into one wake without ever blocking the
@@ -209,6 +222,9 @@ pub struct DriverStartOptions {
     pub context_window: Option<String>,
     pub agent_preset: Option<String>,
     pub provider_cursor: Option<ProviderResumeCursor>,
+    /// Side-chat execution policy: the agent may read and search the project
+    /// but has no tools that modify files, run commands, or reach MCP servers.
+    pub read_only: bool,
 }
 
 /// The subset of `DriverStartOptions` a user can change without starting a new
@@ -267,6 +283,7 @@ mod tests {
                     context_window: None,
                     agent_preset: None,
                     provider_cursor: None,
+                    read_only: false,
                 },
                 events,
             );

@@ -155,7 +155,7 @@ fn selected_sidebar_sessions<'a>(
     };
     let mut sessions = sessions
         .iter()
-        .filter(|session| session.has_started() && project_ids.contains(&session.project_id))
+        .filter(|session| session.is_listed_task() && project_ids.contains(&session.project_id))
         .collect::<Vec<_>>();
     sort_sidebar_sessions(&mut sessions, ordering);
     sessions
@@ -888,7 +888,7 @@ impl Waku {
             }
         }
         for session in &self.state.sessions {
-            if !session.has_started() {
+            if !session.is_listed_task() {
                 continue;
             }
             fingerprint = mix_uuid(fingerprint, session.id);
@@ -1027,7 +1027,7 @@ impl Waku {
             .state
             .sessions
             .iter()
-            .any(|session| session.id == session_id && session.has_started())
+            .any(|session| session.id == session_id && session.is_listed_task())
         {
             return;
         }

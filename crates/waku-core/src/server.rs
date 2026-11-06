@@ -1662,6 +1662,7 @@ mod tests {
                         context_window: None,
                         agent_preset: None,
                         provider_cursor: None,
+                        read_only: false,
                     },
                 },
             )
@@ -1729,6 +1730,7 @@ mod tests {
                         context_window: None,
                         agent_preset: None,
                         provider_cursor: None,
+                        read_only: false,
                     },
                 },
             )
@@ -2264,6 +2266,7 @@ mod tests {
             context_window: None,
             agent_preset: None,
             provider_cursor: None,
+            read_only: false,
         }
     }
 }

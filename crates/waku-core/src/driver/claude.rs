@@ -239,6 +239,39 @@ fn start_claude_title_refresh(
     );
 }
 
+/// Built-in Claude tools a read-only side chat may use: project reads and
+/// web lookups. None of them write, and they are pre-approved so `dontAsk`
+/// does not deny them.
+const READ_ONLY_TOOLS: &str = "Read,Grep,Glob,WebSearch,WebFetch";
+
+fn configure_read_only_command(command: &mut Command) {
+    command.args([
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--thinking-display",
+        "summarized",
+        "--replay-user-messages",
+        // Only the read tools exist, they are pre-approved, and anything else
+        // that would prompt is denied instead of reaching the user.
+        "--tools",
+        READ_ONLY_TOOLS,
+        "--allowedTools",
+        READ_ONLY_TOOLS,
+        "--permission-mode",
+        "dontAsk",
+        // No MCP servers and no skills or slash commands: either could act.
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--append-system-prompt",
+        super::SIDE_CHAT_INSTRUCTIONS,
+    ]);
+}
+
 fn configure_stream_command(command: &mut Command, mode: RuntimeMode, plan_mode: bool) {
     command.args([
         "-p",
@@ -290,6 +323,7 @@ impl ClaudeDriver {
             context_window,
             agent_preset: _,
             provider_cursor,
+            read_only,
         } = options;
         let (resume_session_id, resume_at) = match provider_cursor {
             Some(ProviderResumeCursor::Claude {
@@ -313,7 +347,11 @@ impl ClaudeDriver {
 
         let mut command = crate::command_env::command(&binary);
         command.current_dir(&cwd);
-        configure_stream_command(&mut command, mode, plan_mode);
+        if read_only {
+            configure_read_only_command(&mut command);
+        } else {
+            configure_stream_command(&mut command, mode, plan_mode);
+        }
         let launch_model = wire_model(model.as_deref(), context_window.as_deref());
         if let Some(model) = launch_model.as_deref() {
             command.args(["--model", model]);
@@ -446,7 +484,12 @@ impl ClaudeDriver {
                                 // A native control request runs alongside the
                                 // turn. Never wait for its response here, and
                                 // never fail the user's turn over naming.
-                                let _ = write_line(&mut stdin, &session_title_request(&text));
+                                // A side chat names its question, not the
+                                // conversation context its first prompt carries.
+                                let _ = write_line(
+                                    &mut stdin,
+                                    &session_title_request(crate::model::side_chat_question(&text)),
+                                );
                             }
                             written
                         }
@@ -2230,6 +2273,32 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_side_chat_has_only_pre_approved_read_tools() {
+        let mut command = Command::new("/usr/bin/true");
+        configure_read_only_command(&mut command);
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let has_pair = |flag: &str, value: &str| {
+            arguments
+                .windows(2)
+                .any(|pair| pair[0] == flag && pair[1] == value)
+        };
+        assert!(has_pair("--tools", "Read,Grep,Glob,WebSearch,WebFetch"));
+        assert!(has_pair("--allowedTools", "Read,Grep,Glob,WebSearch,WebFetch"));
+        assert!(has_pair("--permission-mode", "dontAsk"));
+        assert!(arguments.contains(&"--strict-mcp-config".to_owned()));
+        assert!(arguments.contains(&"--disable-slash-commands".to_owned()));
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("skip-permissions"))
+        );
+        assert!(!arguments.contains(&"--permission-prompt-tool".to_owned()));
+    }
+
+    #[test]
     fn a_full_access_session_can_still_launch_into_plan_mode() {
         let arguments = |mode, plan_mode| {
             let mut command = Command::new("/usr/bin/true");
@@ -2308,6 +2377,7 @@ mod tests {
                         session_id: Uuid::new_v4().to_string(),
                         resume_at: None,
                     }),
+                    read_only: false,
                 },
                 events,
             )
@@ -2582,6 +2652,7 @@ mod tests {
                 context_window: None,
                 agent_preset: None,
                 provider_cursor: None,
+                read_only: false,
             },
             events,
         )
@@ -2650,6 +2721,7 @@ mod tests {
                 context_window: None,
                 agent_preset: None,
                 provider_cursor: None,
+                read_only: false,
             },
             events,
         )

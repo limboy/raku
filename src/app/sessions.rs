@@ -243,7 +243,7 @@ impl Waku {
             .state
             .sessions
             .iter()
-            .find(|session| session.project_id == project_id && !session.has_started())
+            .find(|session| session.project_id == project_id && session.is_task_draft())
             .map(|session| session.id)
         {
             self.state.refresh_new_session_model_selection(draft_id);
@@ -267,6 +267,19 @@ impl Waku {
             self.show_toast(tr!("session.response_fork_in_progress"));
             cx.notify();
             return;
+        }
+        if self
+            .state
+            .sessions
+            .iter()
+            .any(|session| session.id == session_id && session.is_side_chat())
+        {
+            self.remove_side_chat(session_id, cx);
+            return;
+        }
+        // Side chats branch off this task and go with it.
+        for side_chat_id in self.side_chat_ids_for(session_id) {
+            self.remove_side_chat(side_chat_id, cx);
         }
         self.finished_session_ids.remove(&session_id);
         let Some(index) = self
@@ -347,7 +360,7 @@ impl Waku {
                 .state
                 .sessions
                 .iter()
-                .filter(|session| session.project_id == project_id)
+                .filter(|session| session.project_id == project_id && !session.is_side_chat())
                 .max_by_key(|session| session.updated_at)
                 .map(|session| session.id);
             if let Some(session_id) = next_session {
@@ -788,6 +801,13 @@ impl Waku {
         }
         if self.message_edit.is_some() {
             self.cancel_message_edit(window, cx);
+            return;
+        }
+        // Escape in a side chat's composer leaves the side chat; it must
+        // never arm a stop of the main task's turn.
+        if self.side_chat.composer.read(cx).focus().is_focused(window) {
+            let focus = self.composer_focus(cx);
+            window.focus(&focus, cx);
             return;
         }
         let Some(target) = self.selected_escape_stop_target() else {
@@ -1305,6 +1325,12 @@ impl Waku {
         let Some(session_id) = self.state.selected_session else {
             return;
         };
+        self.cancel_session_turn(session_id, cx);
+    }
+
+    /// Stop `session_id`'s running turn, whether or not it is the selected
+    /// task. Side chats stop through here from their own panel.
+    pub(super) fn cancel_session_turn(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
         // Worktree/checkpoint preparation has no safe interrupt contract. The
         // composer deliberately shows a spinner rather than Stop until the
         // provider runtime exists, and the keyboard action follows the same
@@ -1696,7 +1722,7 @@ impl Waku {
             .sessions
             .iter()
             .find(|session| {
-                !session.has_started()
+                session.is_task_draft()
                     && self.state.projects.iter().any(|project| {
                         project.id == session.project_id
                             && project.is_projectless()

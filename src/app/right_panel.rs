@@ -1203,6 +1203,7 @@ impl RightPanelSurface {
             Self::File(path) => path.rsplit('/').next().unwrap_or(path).to_owned(),
             Self::AttachmentFile(attachment) => attachment.name.to_string(),
             Self::PastedText { name, .. } => name.to_string(),
+            Self::SideChat { title, .. } => title.to_string(),
         }
     }
 
@@ -1216,6 +1217,7 @@ impl RightPanelSurface {
             Self::File(path) => file_icon_for_path(path),
             Self::AttachmentFile(attachment) => file_icon_for_path(&attachment.name),
             Self::PastedText { .. } => "icons/file.svg",
+            Self::SideChat { .. } => "icons/ant/messages.svg",
         }
     }
 }
@@ -1259,6 +1261,9 @@ fn reusable_surface_index(
                 surface,
                 RightPanelSurface::PastedText { id: candidate, .. } if candidate == id
             )
+        }),
+        RightPanelSurface::SideChat { id, .. } => surfaces.iter().position(|surface| {
+            matches!(surface, RightPanelSurface::SideChat { id: candidate, .. } if candidate == id)
         }),
         RightPanelSurface::Files
         | RightPanelSurface::Diff
@@ -2382,6 +2387,10 @@ mod tests {
 
 impl Waku {
     pub(super) fn open_transcript_link(&mut self, target: &str, cx: &mut Context<Self>) -> bool {
+        if side_chat::side_chat_link_target(target).is_some() {
+            // Routed with a window by the markdown link handler.
+            return true;
+        }
         match transcript_link_route(target, self.selected_workspace_path()) {
             TranscriptLinkRoute::ProjectFile(relative_path) => {
                 self.open_right_panel_surface(RightPanelSurface::Files, cx);
@@ -2793,7 +2802,7 @@ impl Waku {
         self.open_right_panel_surface(RightPanelSurface::AttachmentFile(attachment), cx);
     }
 
-    fn close_right_panel_surface(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn close_right_panel_surface(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.right_panel_surfaces.len() {
             return;
         }
@@ -2989,6 +2998,9 @@ impl Waku {
             Some(RightPanelSurface::PastedText { id, text, .. }) => self
                 .render_right_panel_pasted_text(id, &text, window, cx)
                 .into_any_element(),
+            Some(RightPanelSurface::SideChat { id, .. }) => {
+                self.render_side_chat_surface(id, window, cx)
+            }
             Some(RightPanelSurface::Browser(browser_id)) => {
                 let browser = self.ensure_right_panel_browser(browser_id, window, cx);
                 if self
@@ -3171,6 +3183,10 @@ impl Waku {
                     .right_panel_browsers
                     .get(browser_id)
                     .and_then(|browser| browser.read(cx).tab_label())
+                    .unwrap_or_else(|| surface.label()),
+                // A side chat's title can arrive after its tab opened.
+                RightPanelSurface::SideChat { id, .. } => self
+                    .side_chat_title(*id)
                     .unwrap_or_else(|| surface.label()),
                 _ => {
                     right_panel_tab_label(&surface, self.right_panel_files_selected_path.as_deref())

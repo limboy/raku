@@ -753,7 +753,7 @@ fn visible_project_entries(
     let mut last_changed = HashMap::<Uuid, u64>::with_capacity(projects.len());
     let mut project_status = HashMap::<Uuid, SessionStatus>::with_capacity(projects.len());
     for session in sessions {
-        if !session.has_started() {
+        if !session.is_listed_task() {
             continue;
         }
         let timestamp = session.last_reply_at.unwrap_or(session.created_at);

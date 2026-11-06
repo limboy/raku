@@ -681,6 +681,7 @@ impl Backend for WakuBackend {
                         .map(serde_json::from_value)
                         .transpose()
                         .context("daemon received an invalid provider cursor")?,
+                    read_only: options.read_only,
                 };
                 let (wake, _wake_events) = smol::channel::bounded(1);
                 let (event_sender, event_receiver) = driver::event_channel(wake);
@@ -1173,6 +1174,7 @@ impl WakuBackend {
                 context_window: source.context_window.clone(),
                 agent_preset: source.agent_preset.clone(),
                 provider_cursor: source.provider_cursor.clone(),
+                read_only: false,
             },
             event_sender,
         )?;
@@ -1251,6 +1253,7 @@ impl WakuBackend {
                 context_window: source.context_window.clone(),
                 agent_preset: source.agent_preset.clone(),
                 provider_cursor: source.provider_cursor.clone(),
+                read_only: false,
             },
             event_sender,
         )?;

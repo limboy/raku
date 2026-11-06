@@ -178,7 +178,7 @@ impl Waku {
         .detach();
     }
 
-    fn show_message_copied(&mut self, message_id: Uuid, cx: &mut Context<Self>) {
+    pub(super) fn show_message_copied(&mut self, message_id: Uuid, cx: &mut Context<Self>) {
         self.copied_message_generation = self.copied_message_generation.wrapping_add(1);
         let generation = self.copied_message_generation;
         self.copied_message_feedback.insert(message_id, generation);
@@ -234,7 +234,6 @@ pub(super) fn render_message_footer(
         .text_size(sp(12.5))
         .line_height(sp(14.0))
         .text_color(footer_color)
-        .when(!align_right, |element| element.ml_auto())
         .child(format_message_time(footer_time));
     let key_copy_content = copy_content.clone();
     let key_copy_waku = copy_waku.clone();
@@ -463,6 +462,10 @@ pub(super) struct MessageRender<'a> {
     pub(super) ctx: &'a MarkdownCtx<'a>,
     pub(super) menu: ContextMenuHandle,
     pub(super) waku: gpui::WeakEntity<Waku>,
+    /// Whether a failed turn's provider detail is disclosed, and the focus
+    /// handle of its disclosure control.
+    pub(super) error_expanded: bool,
+    pub(super) error_focus: FocusHandle,
 }
 
 /// The one-line chip a pasted text attachment renders as: a document icon and
@@ -816,6 +819,120 @@ fn render_markdown_message_body<'a>(
         })
 }
 
+/// A failed turn's reply: the plain headline in error style, with the
+/// provider's own reason one disclosure away for anyone who wants it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_error_reply(
+    message_id: Uuid,
+    headline: &str,
+    error: &crate::model::MessageError,
+    expanded: bool,
+    focus: FocusHandle,
+    waku: gpui::WeakEntity<Waku>,
+    theme: &Theme,
+    ctx: &MarkdownCtx,
+) -> AnyElement {
+    let headline_row = div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_start()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex_none()
+                .pt(px(3.0))
+                .child(icon("icons/alert.svg", 14.0, theme.danger)),
+        )
+        .child(div().min_w_0().flex_1().child(md::render::plain_text(
+            headline.to_owned(),
+            md::render::SANS_FAMILY,
+            FontWeight::NORMAL,
+            theme.danger,
+            ctx,
+        )));
+    let Some(detail) = error.detail.clone() else {
+        return headline_row.into_any_element();
+    };
+    let click_waku = waku.clone();
+    let key_waku = waku;
+    let toggle = div()
+        .id(SharedString::from(format!("message-error-details-{message_id}")))
+        .track_focus(&focus)
+        .tab_index(0)
+        .ml(px(18.0))
+        .h(px(22.0))
+        .px(px(4.0))
+        .rounded(px(5.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(3.0))
+        .cursor_pointer()
+        .text_size(sp(12.0))
+        .text_color(theme.text_tertiary)
+        .hover(|style| style.bg(theme.overlay).text_color(theme.text_secondary))
+        .focus_visible(|style| style.border_1().border_color(theme.accent))
+        .child(icon(
+            if expanded {
+                "icons/chevron-down.svg"
+            } else {
+                "icons/chevron-right.svg"
+            },
+            11.0,
+            theme.text_tertiary,
+        ))
+        .child(if expanded {
+            tr!("message_error.hide_details")
+        } else {
+            tr!("message_error.details")
+        })
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            let _ = click_waku.update(cx, |this, cx| this.toggle_message_error(message_id, cx));
+        })
+        .on_key_down(move |event: &KeyDownEvent, _, cx| {
+            if !event.keystroke.modifiers.modified()
+                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+            {
+                cx.stop_propagation();
+                let _ = key_waku.update(cx, |this, cx| this.toggle_message_error(message_id, cx));
+            }
+        });
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(4.0))
+        .child(headline_row)
+        .child(toggle)
+        .when(expanded, |column| {
+            column.child(
+                div()
+                    .ml(px(22.0))
+                    .w_full()
+                    .min_w_0()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(theme.danger_soft)
+                    .text_size(sp(12.0))
+                    .line_height(sp(18.0))
+                    .child(md::render::plain_text(
+                        detail,
+                        md::render::MONO_FAMILY,
+                        FontWeight::NORMAL,
+                        theme.text_secondary,
+                        ctx,
+                    )),
+            )
+        })
+        .into_any_element()
+}
+
 pub(super) fn render_message(
     params: MessageRender,
     window: &mut Window,
@@ -838,6 +955,8 @@ pub(super) fn render_message(
         ctx,
         menu,
         waku,
+        error_expanded,
+        error_focus,
     } = params;
 
     let content = message.visible_content().to_owned();
@@ -1151,7 +1270,19 @@ pub(super) fn render_message(
         }
         MessageRole::Assistant => {
             let group_name = SharedString::from(format!("assistant-message-{message_id}"));
-            let body = render_markdown_message_body(&content, markdown, theme, ctx);
+            let body = match &message.error {
+                Some(error) => render_error_reply(
+                    message_id,
+                    &content,
+                    error,
+                    error_expanded,
+                    error_focus,
+                    waku.clone(),
+                    theme,
+                    ctx,
+                ),
+                None => render_markdown_message_body(&content, markdown, theme, ctx),
+            };
             let mut column = div()
                 .w_full()
                 .min_w_0()
@@ -1208,7 +1339,7 @@ pub(super) fn render_message(
         element.id(message_id),
         SharedString::from(format!("message-menu-{message_id}")),
         &menu,
-        move |_cx| message_menu_items(&selection, &menu_waku),
+        move |_cx| message_menu_items(message_id, &selection, &menu_waku),
     )
 }
 
@@ -1216,24 +1347,35 @@ pub(super) fn render_message(
 /// transcript selection to the composer — and stages each selection as its own
 /// pasted-text snippet, so repeated adds accumulate like repeated pastes. An
 /// empty selection yields no menu at all.
+///
+/// "Side chat" asks a read-only side agent about the selection without
+/// touching this task's conversation; the quote then links to that chat.
 fn message_menu_items(
+    message_id: Uuid,
     selection: &TranscriptSelection,
     waku: &gpui::WeakEntity<Waku>,
 ) -> Vec<MenuItem> {
     let Some(selected) = selection.selection.borrow().selected_text() else {
         return Vec::new();
     };
-    let waku = waku.clone();
+    let add_waku = waku.clone();
+    let side_waku = waku.clone();
     vec![
         MenuItem::new(tr!("common.add_to_chat"), move |window, cx| {
             let text = selected.clone();
-            let _ = waku.update(cx, |this, cx| {
+            let _ = add_waku.update(cx, |this, cx| {
                 this.stage_pasted_text_snippet(text, cx);
                 let focus = this.composer.read(cx).focus();
                 window.focus(&focus, cx);
             });
         })
         .icon("icons/plus.svg"),
+        MenuItem::new(tr!("side_chat.menu_item"), move |window, cx| {
+            let _ = side_waku.update(cx, |this, cx| {
+                this.start_side_chat_from_selection(message_id, window, cx);
+            });
+        })
+        .icon("icons/ant/message-plus.svg"),
     ]
 }
 

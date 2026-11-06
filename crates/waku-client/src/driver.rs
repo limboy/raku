@@ -137,6 +137,9 @@ pub struct DriverStartOptions {
     pub context_window: Option<String>,
     pub agent_preset: Option<String>,
     pub provider_cursor: Option<ProviderResumeCursor>,
+    /// Side-chat execution policy: the agent may read and search the project
+    /// but has no tools that modify files, run commands, or reach MCP servers.
+    pub read_only: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

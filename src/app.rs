@@ -208,6 +208,7 @@ enum SettingsPage {
     Providers,
     Skills,
     Backups,
+    SideChat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -510,6 +511,12 @@ enum RightPanelSurface {
         id: Uuid,
         name: SharedString,
         text: SharedString,
+    },
+    /// A read-only side chat branched off the task. The title is captured
+    /// when the tab opens, like a background-work tab's.
+    SideChat {
+        id: Uuid,
+        title: SharedString,
     },
 }
 
@@ -1325,6 +1332,8 @@ pub struct Waku {
     /// Per-item disclosure overrides. Reasoning starts open while live; tool
     /// details start closed, so the stored bool must preserve either choice.
     expanded_activity_items: HashMap<Uuid, bool>,
+    /// Failed-turn replies whose provider detail is disclosed.
+    expanded_error_details: HashSet<Uuid>,
     /// Settled turns whose folded work the user has reopened.
     expanded_turns: HashSet<Uuid>,
     /// Per-response file cards the user expanded beyond their three-file
@@ -1602,6 +1611,8 @@ pub struct Waku {
     markdown_image_renderer: md::render::ImageRenderer,
     /// Transcript-wide text selection, spanning messages and tool output.
     transcript_selection: TranscriptSelection,
+    /// Read-only side chats: shared composer, drafts, lists and indexes.
+    side_chat: side_chat::SideChatState,
     /// Programmatic focus for the transcript canvas. Clicking the transcript
     /// moves focus here so the shared find action can distinguish it from the
     /// right-panel file editor without putting the canvas in the tab order.
@@ -1659,6 +1670,7 @@ mod session_links;
 mod sessions;
 mod settings;
 mod shell_runs;
+mod side_chat;
 mod sidebar;
 mod skills_page;
 mod streaming;
@@ -1921,7 +1933,7 @@ impl Waku {
             task_count: state
                 .sessions
                 .iter()
-                .filter(|session| session.has_started())
+                .filter(|session| session.is_listed_task())
                 .count(),
             project_count: state
                 .projects
@@ -1937,6 +1949,12 @@ impl Waku {
                 .session_link_paste(cx)
                 .padding_x(px(14.0), cx);
             composer.set_text_size(transcript_text_size, cx);
+            composer
+        });
+        let side_chat_composer = cx.new(|cx| {
+            let mut composer = ComposerInput::new(window, cx).padding_x(px(12.0), cx);
+            composer.set_text_size(transcript_text_size, cx);
+            composer.set_placeholder(tr!("side_chat.placeholder"), cx);
             composer
         });
         let user_input_answer = cx
@@ -2371,6 +2389,20 @@ impl Waku {
             .detach();
 
             cx.subscribe(
+                &side_chat_composer,
+                |this: &mut Self, _, event: &ComposerEvent, cx| match event {
+                    ComposerEvent::Submit(prompt) | ComposerEvent::SubmitSteer(prompt) => {
+                        this.submit_side_chat(prompt.clone(), cx);
+                    }
+                    ComposerEvent::SteerQueued
+                    | ComposerEvent::Edited
+                    | ComposerEvent::Focus
+                    | ComposerEvent::BackspaceOnEmpty => {}
+                },
+            )
+            .detach();
+
+            cx.subscribe(
                 &user_input_answer,
                 |this: &mut Self, input, event: &InputEvent, cx| match event {
                     InputEvent::Submit(answer) => {
@@ -2658,7 +2690,12 @@ impl Waku {
 
             let markdown_link_handler: md::render::LinkHandler = {
                 let waku = cx.entity().downgrade();
-                Rc::new(move |target, _, cx| {
+                Rc::new(move |target, window, cx| {
+                    if let Some(side_chat) = side_chat::side_chat_link_target(target) {
+                        let _ =
+                            waku.update(cx, |waku, cx| waku.open_side_chat(side_chat, window, cx));
+                        return;
+                    }
                     let handled = waku
                         .update(cx, |waku, cx| waku.open_transcript_link(target, cx))
                         .unwrap_or(false);
@@ -2790,6 +2827,7 @@ impl Waku {
                 save_outcomes,
                 activities_expanded: HashMap::new(),
                 expanded_activity_items: HashMap::new(),
+                expanded_error_details: HashSet::new(),
                 expanded_turns: HashSet::new(),
                 expanded_changed_files: HashSet::new(),
                 transcript_control_focuses: RefCell::new(HashMap::new()),
@@ -2938,6 +2976,7 @@ impl Waku {
                 markdown_link_handler,
                 markdown_image_renderer,
                 transcript_selection: TranscriptSelection::default(),
+                side_chat: side_chat::SideChatState::new(side_chat_composer),
                 transcript_focus: cx.focus_handle(),
                 transcript_search: None,
                 toast_selection: TranscriptSelection::default(),

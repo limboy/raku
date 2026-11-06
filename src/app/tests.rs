@@ -1987,6 +1987,7 @@ fn settings_navigation_contains_only_supported_pages() {
     let expected = vec![
         SettingsPage::Appearance,
         SettingsPage::Providers,
+        SettingsPage::SideChat,
         SettingsPage::Skills,
         SettingsPage::Backups,
     ];

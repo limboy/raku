@@ -179,7 +179,9 @@ impl TitleLanguageContext {
             // legacy XML context is upgraded instead of forwarded unchanged.
             prompt = original.to_owned();
         }
-        let Some(language) = predominant_language(&prompt) else {
+        // A side chat's first prompt is mostly borrowed conversation; its
+        // title follows the language of the user's own question.
+        let Some(language) = predominant_language(crate::model::side_chat_question(&prompt)) else {
             return prompt;
         };
         if self.pending.swap(false, Ordering::AcqRel) {
@@ -373,6 +375,7 @@ mod tests {
                     context_window: None,
                     agent_preset: None,
                     provider_cursor: None,
+                    read_only: false,
                 },
                 events,
             )

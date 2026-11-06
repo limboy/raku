@@ -1157,7 +1157,7 @@ impl StateStore {
         let mut sessions = connection
             .prepare(
                 "SELECT id, project_id, title, auto_title, provider, model, status,
-                        created_at, updated_at, last_reply_at, active_compaction
+                        created_at, updated_at, last_reply_at, active_compaction, side_chat
                  FROM sessions ORDER BY updated_at",
             )
             .map_err(to_io_error)?;
@@ -1176,6 +1176,7 @@ impl StateStore {
                     row.get::<_, i64>(8)?,
                     row.get::<_, Option<i64>>(9)?,
                     row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             })
             .map_err(to_io_error)?
@@ -1280,7 +1281,7 @@ impl StateStore {
         let mut statement = connection
             .prepare(
                 "SELECT id, turn_id, role, content, display_content, attachments,
-                        created_at, streaming
+                        created_at, streaming, error
                  FROM messages WHERE session_id = ?1 ORDER BY position",
             )
             .map_err(to_io_error)?;
@@ -1295,6 +1296,7 @@ impl StateStore {
                     row.get::<_, String>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, i64>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })
             .map_err(to_io_error)?
@@ -1526,6 +1528,7 @@ type SessionColumns = (
     i64,
     Option<i64>,
     Option<String>,
+    Option<String>,
 );
 
 /// Builds a list-only session from its columns. `messages`,
@@ -1546,6 +1549,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         updated_at,
         last_reply_at,
         active_compaction,
+        side_chat,
     ) = row;
     Some(AgentSession {
         id: Uuid::parse_str(&id).ok()?,
@@ -1573,6 +1577,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         active_compaction,
         context_usage_pending: false,
         runtime_event_cursor: None,
+        side_chat: side_chat.and_then(|json| serde_json::from_str(&json).ok()),
         provider_session_id: None,
         messages: Vec::new(),
         transcript_blocks: Vec::new(),
@@ -1591,10 +1596,12 @@ type MessageColumns = (
     String,
     i64,
     i64,
+    Option<String>,
 );
 
 fn message_from_row(row: MessageColumns) -> Option<Message> {
-    let (id, turn_id, role, content, display_content, attachments, created_at, streaming) = row;
+    let (id, turn_id, role, content, display_content, attachments, created_at, streaming, error) =
+        row;
     Some(Message {
         id: Uuid::parse_str(&id).ok()?,
         turn_id: turn_id.as_deref().and_then(|id| Uuid::parse_str(id).ok()),
@@ -1605,6 +1612,7 @@ fn message_from_row(row: MessageColumns) -> Option<Message> {
             .unwrap_or_default(),
         created_at: created_at as u64,
         streaming: streaming != 0,
+        error: error.and_then(|error| serde_json::from_str(&error).ok()),
     })
 }
 
@@ -1622,8 +1630,8 @@ fn session_data(session: &AgentSession) -> io::Result<String> {
 
 const UPSERT_MESSAGE: &str = "INSERT INTO messages(
          id, session_id, turn_id, position, role, content, display_content,
-         attachments, created_at, streaming
-     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         attachments, created_at, streaming, error
+     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
      ON CONFLICT(id) DO UPDATE SET
          session_id = excluded.session_id,
          turn_id    = excluded.turn_id,
@@ -1633,7 +1641,8 @@ const UPSERT_MESSAGE: &str = "INSERT INTO messages(
          display_content = excluded.display_content,
          attachments = excluded.attachments,
          created_at = excluded.created_at,
-         streaming  = excluded.streaming";
+         streaming  = excluded.streaming,
+         error      = excluded.error";
 
 /// Replaces a session's messages with the given list.
 ///
@@ -1700,6 +1709,11 @@ fn write_messages(
                     Value::Text(attachments),
                     Value::Integer(message.created_at as i64),
                     Value::Integer(i64::from(message.streaming)),
+                    message
+                        .error
+                        .as_ref()
+                        .and_then(|error| serde_json::to_string(error).ok())
+                        .map_or(Value::Null, Value::Text),
                 ]),
             )
             .map_err(to_io_error)?;
@@ -1760,6 +1774,13 @@ fn message_fingerprint(message: &Message, position: usize) -> u64 {
     tail[..remainder.len()].copy_from_slice(remainder);
     fold(u64::from_le_bytes(tail));
     fold(bytes.len() as u64);
+    match &message.error {
+        Some(error) => {
+            fold(2);
+            fold(fingerprint(error.detail.as_deref().unwrap_or_default()));
+        }
+        None => fold(3),
+    }
     if let Some(display_content) = &message.display_content {
         fold(1);
         fold(fingerprint(display_content));
@@ -1793,8 +1814,8 @@ fn message_fingerprint(message: &Message, position: usize) -> u64 {
 /// listing sessions never has to deserialize a transcript.
 const UPSERT_SESSION: &str = "INSERT INTO sessions(
          id, project_id, title, auto_title, provider, model, status,
-         created_at, updated_at, last_reply_at, active_compaction
-     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         created_at, updated_at, last_reply_at, active_compaction, side_chat
+     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
      ON CONFLICT(id) DO UPDATE SET
          project_id    = excluded.project_id,
          title         = excluded.title,
@@ -1805,7 +1826,8 @@ const UPSERT_SESSION: &str = "INSERT INTO sessions(
          created_at    = excluded.created_at,
          updated_at    = excluded.updated_at,
          last_reply_at = excluded.last_reply_at,
-         active_compaction = excluded.active_compaction";
+         active_compaction = excluded.active_compaction,
+         side_chat     = excluded.side_chat";
 
 const INSERT_PROJECT: &str = "INSERT INTO projects(id, name, path, position, created_at)
      VALUES(?1, ?2, ?3, ?4, ?5)
@@ -1847,6 +1869,11 @@ fn session_params(session: &AgentSession) -> Vec<rusqlite::types::Value> {
         session
             .active_compaction
             .clone()
+            .map_or(Value::Null, Value::Text),
+        session
+            .side_chat
+            .as_ref()
+            .and_then(|origin| serde_json::to_string(origin).ok())
             .map_or(Value::Null, Value::Text),
     ]
 }
@@ -1953,6 +1980,66 @@ mod tests {
             assert_eq!(stored_provider, provider);
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn error_replies_keep_their_detail_through_a_reload() {
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let session = &mut state.sessions[0];
+        session.begin_turn("question");
+        session.push_error_message("Pi could not complete this turn", Some("429: overloaded".into()));
+        session.finish_active_turn(crate::model::TurnStatus::Failed);
+        session.status = SessionStatus::Failed;
+        let id = session.id;
+        store.save(&mut state).unwrap();
+        let reopened = store_in(&directory);
+        let mut loaded = reopened.load().unwrap();
+        let session = loaded.session_mut(id).unwrap();
+        reopened.hydrate(session).unwrap();
+        let reply = session.messages.last().unwrap();
+        assert_eq!(reply.content, "Pi could not complete this turn");
+        assert_eq!(
+            reply.error.as_ref().and_then(|error| error.detail.as_deref()),
+            Some("429: overloaded")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn side_chat_origin_survives_a_list_only_reload() {
+        use waku_protocol::model::{SideChatAnchor, SideChatAnchorSpan, SideChatOrigin};
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let parent = state.sessions[0].id;
+        let message_id = Uuid::new_v4();
+        let session = &mut state.sessions[0];
+        session.begin_turn("side question");
+        session.finish_active_turn(crate::model::TurnStatus::Completed);
+        session.status = SessionStatus::Idle;
+        let origin = SideChatOrigin {
+            parent_session_id: parent,
+            anchor: Some(SideChatAnchor {
+                message_id,
+                quote: "the quoted text".into(),
+                spans: vec![SideChatAnchorSpan {
+                    index: 2,
+                    start: 4,
+                    end: 19,
+                }],
+            }),
+        };
+        session.side_chat = Some(origin.clone());
+        let id = session.id;
+        store.save(&mut state).unwrap();
+        let loaded = store_in(&directory).load().unwrap();
+        let session = loaded.sessions.iter().find(|s| s.id == id).unwrap();
+        assert!(!session.detail_loaded);
+        assert_eq!(session.side_chat.as_ref(), Some(&origin));
+        assert_eq!(session.list_projection().side_chat.as_ref(), Some(&origin));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

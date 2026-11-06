@@ -297,6 +297,12 @@ pub struct AppSettings {
     pub code_font_size: f32,
     pub render_math: bool,
     pub backup_directory: Option<PathBuf>,
+    /// Provider and model for read-only side chats. `None` resolves to a
+    /// DeepSeek model discovered through Pi, then Pi's own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side_chat_provider: Option<ProviderKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side_chat_model: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -311,6 +317,8 @@ impl Default for AppSettings {
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
             backup_directory: None,
+            side_chat_provider: None,
+            side_chat_model: None,
         }
     }
 }
@@ -475,6 +483,10 @@ pub struct PersistedState {
     pub render_math: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup_directory: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_chat_provider: Option<ProviderKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_chat_model: Option<String>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
     #[serde(default = "default_right_panel_visibility")]
@@ -546,6 +558,8 @@ impl PersistedState {
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
             backup_directory: None,
+            side_chat_provider: None,
+            side_chat_model: None,
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -768,6 +782,8 @@ impl PersistedState {
             code_font_size: self.code_font_size,
             render_math: self.render_math,
             backup_directory: self.backup_directory.clone(),
+            side_chat_provider: self.side_chat_provider,
+            side_chat_model: self.side_chat_model.clone(),
         };
         settings.normalize_desktop_defaults();
         settings
@@ -811,6 +827,8 @@ impl PersistedState {
         self.code_font_size = sanitized_code_font_size(settings.code_font_size);
         self.render_math = settings.render_math;
         self.backup_directory = settings.backup_directory;
+        self.side_chat_provider = settings.side_chat_provider;
+        self.side_chat_model = settings.side_chat_model;
     }
 
     fn apply_app_state(&mut self, app_state: AppState) {

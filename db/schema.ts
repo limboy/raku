@@ -38,6 +38,8 @@ export const sessions = sqliteTable(
     status: text("status").notNull(),
     /** Maintenance can be busy without a provider turn. Needed before hydration. */
     activeCompaction: text("active_compaction"),
+    /** Side-chat origin JSON (parent task, quoted anchor); null for tasks. Needed before hydration. */
+    sideChat: text("side_chat"),
     /** Session creation time, unix seconds. */
     createdAt: integer("created_at").notNull(),
     /** Any mutation, unix seconds — including title edits and truncation. */
@@ -75,6 +77,8 @@ export const messages = sqliteTable(
     attachments: text("attachments").notNull().default("[]"),
     createdAt: integer("created_at").notNull(),
     streaming: integer("streaming", { mode: "boolean" }).notNull(),
+    /** JSON MessageError when the reply reports a failed turn; null otherwise. */
+    error: text("error"),
   },
   (table) => [index("messages_by_session").on(table.sessionId, table.position)],
 );

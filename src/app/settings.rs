@@ -14,7 +14,7 @@ const SETTINGS_POPUP_MAX_HEIGHT: f32 = 760.0;
 const SETTINGS_CONTEXT: &str = "Settings";
 
 /// The remaining settings sections, in navigation order.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str); 4] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
     (
         SettingsPage::Appearance,
         "settings.appearance",
@@ -24,6 +24,11 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str); 4] = [
         SettingsPage::Providers,
         "settings.providers",
         "icons/bot.svg",
+    ),
+    (
+        SettingsPage::SideChat,
+        "side_chat.settings_title",
+        "icons/ant/messages.svg",
     ),
     (SettingsPage::Skills, "settings.skills", "icons/package.svg"),
     (
@@ -331,6 +336,7 @@ impl Waku {
             SettingsPage::Providers => tr!("settings.providers"),
             SettingsPage::Skills => tr!("settings.skills"),
             SettingsPage::Backups => tr!("settings.backups"),
+            SettingsPage::SideChat => tr!("side_chat.settings_title"),
         };
         let header = div()
             .h(px(58.0))
@@ -356,6 +362,7 @@ impl Waku {
                     SettingsPage::Appearance => self.render_appearance_settings(cx),
                     SettingsPage::Providers => self.render_providers_settings(cx),
                     SettingsPage::Backups => self.render_backup_settings(cx),
+                    SettingsPage::SideChat => self.render_side_chat_settings(cx),
                     SettingsPage::Skills => unreachable!(),
                 });
             div()
@@ -1134,7 +1141,7 @@ impl Waku {
                 .state
                 .sessions
                 .iter()
-                .filter(|session| session.provider == provider && !session.has_started())
+                .filter(|session| session.provider == provider && session.is_task_draft())
                 .map(|session| session.id)
                 .collect::<Vec<_>>();
             for id in draft_ids {

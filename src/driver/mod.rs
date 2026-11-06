@@ -40,6 +40,7 @@ pub(crate) fn start_remote(
                 .provider_cursor
                 .map(serde_json::to_value)
                 .transpose()?,
+            read_only: options.read_only,
         },
     };
     let capabilities = match client.request(session_id, runtime_id, command) {
