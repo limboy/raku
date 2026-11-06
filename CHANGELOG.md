@@ -16,6 +16,13 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.4.3] - 2026-11-06
+
+- Add Option-arrow session navigation in the sidebar
+- Run /compact from the slash menu instead of a popover button
+- Increase the header session title font size
+- Fix Pi hanging on locally-handled commands like /curator
+
 ## [2.4.2] - 2026-11-06
 
 - Show the finished dot on the No project row
