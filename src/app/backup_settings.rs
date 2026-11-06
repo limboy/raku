@@ -10,7 +10,7 @@ const AUTOMATIC_BACKUP_RETRY: u64 = 5 * 60;
 
 pub(super) struct BackupSettings {
     latest: Option<BackupInfo>,
-    focus: [FocusHandle; 3],
+    focus: [FocusHandle; 4],
     automatic_task: Option<gpui::Task<()>>,
     automatic_generation: u64,
     generation: u64,
@@ -212,6 +212,27 @@ impl Waku {
         .detach();
     }
 
+    /// Clearing the directory is the off state: with no destination, the
+    /// automatic scheduler never starts and nothing is listed.
+    fn turn_off_backups(&mut self, cx: &mut Context<Self>) {
+        if self.backup_settings.busy.is_some()
+            || self.backup_settings.staged
+            || self.state.backup_directory.is_none()
+        {
+            return;
+        }
+        self.state.backup_directory = None;
+        self.backup_settings.latest = None;
+        self.backup_settings.loading = false;
+        self.backup_settings.message = None;
+        self.backup_settings.error = None;
+        // Invalidate in-flight list results and stop the scheduler.
+        self.backup_settings.generation = self.backup_settings.generation.wrapping_add(1);
+        self.schedule_automatic_backups(cx);
+        self.save();
+        cx.notify();
+    }
+
     fn reveal_backup_directory(&self, cx: &App) {
         if let Some(directory) = self.state.backup_directory.as_ref() {
             crate::platform::reveal_in_file_manager(directory, cx);
@@ -409,6 +430,14 @@ impl Waku {
             theme,
         )
         .on_activation(cx, |this, _, cx| this.reveal_backup_directory(cx));
+        let turn_off = backup_button(
+            "backup-turn-off",
+            tr!("backup.turn_off"),
+            &ui.focus[3],
+            unavailable || self.state.backup_directory.is_none(),
+            theme,
+        )
+        .on_activation(cx, |this, _, cx| this.turn_off_backups(cx));
         let restore = backup_button(
             "backup-restore",
             tr!("backup.restore"),
@@ -494,7 +523,8 @@ impl Waku {
                             .flex_wrap()
                             .child(choose)
                             .child(reveal)
-                            .child(restore),
+                            .child(restore)
+                            .child(turn_off),
                     )
                     .child(div().h(px(1.0)).bg(theme.border))
                     .child(

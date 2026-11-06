@@ -1968,6 +1968,8 @@ backup.choose_directory:
   en: "Choose Directory"
 backup.no_directory:
   en: "Choose a directory to save your backup."
+backup.turn_off:
+  en: "Turn Off Backups"
 backup.restore:
   en: "Restore"
 backup.empty:
