@@ -109,7 +109,7 @@ impl Preview {
         // follows the same global observer and background rendering path.
         #[cfg(not(test))]
         crate::platform::set_window_appearance(window, Some(Theme::current(cx).is_dark));
-        cx.observe_global_in::<crate::theme::ActiveWakuTheme>(window, |_, window, cx| {
+        cx.observe_global_in::<crate::theme::ActiveRakuTheme>(window, |_, window, cx| {
             #[cfg(test)]
             let _ = window;
             #[cfg(not(test))]

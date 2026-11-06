@@ -574,7 +574,7 @@ pub struct MediaPaste(pub Vec<ClipboardEntry>);
 #[derive(Clone, Debug)]
 pub struct TextSnippetPaste(pub String);
 
-/// A complete Waku session link, staged only by the main composer.
+/// A complete Raku session link, staged only by the main composer.
 #[derive(Clone, Debug)]
 pub struct SessionLinkPaste(pub uuid::Uuid);
 

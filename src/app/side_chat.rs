@@ -15,7 +15,7 @@ use crate::model::{SideChatAnchor, SideChatAnchorSpan, SideChatOrigin};
 
 pub(super) const SIDE_CHAT_MENU_ID: &str = "side-chats";
 /// Private link scheme the transcript's quote anchors route through.
-const SIDE_CHAT_LINK_PREFIX: &str = "waku-side-chat:";
+const SIDE_CHAT_LINK_PREFIX: &str = "raku-side-chat:";
 /// Bound on the parent transcript a first side-chat prompt carries.
 const SNAPSHOT_LIMIT: usize = 32 * 1024;
 /// Bound on a quoted excerpt.
@@ -298,7 +298,7 @@ fn side_chat_quote_chip(theme: &Theme, key: &str, quote: &str) -> Stateful<Div> 
         .tooltip(Tooltip::text(full))
 }
 
-impl Waku {
+impl Raku {
     pub(super) fn invalidate_side_chat_index(&self) {
         self.side_chat.index.borrow_mut().take();
     }
@@ -1169,8 +1169,8 @@ impl Waku {
         let color = theme.text_tertiary;
         let click_content = SharedString::from(copy_content);
         let key_content = click_content.clone();
-        let click_waku = cx.entity().downgrade();
-        let key_waku = click_waku.clone();
+        let click_raku = cx.entity().downgrade();
+        let key_raku = click_raku.clone();
         let copy = div()
             .id(SharedString::from(format!("side-chat-copy-{message_id}")))
             .track_focus(&focus)
@@ -1200,7 +1200,7 @@ impl Waku {
             ))
             .on_click(move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(click_content.to_string()));
-                let _ = click_waku.update(cx, |this, cx| this.show_message_copied(message_id, cx));
+                let _ = click_raku.update(cx, |this, cx| this.show_message_copied(message_id, cx));
             })
             .on_key_down(move |event: &KeyDownEvent, _, cx| {
                 if !event.keystroke.modifiers.modified()
@@ -1208,7 +1208,7 @@ impl Waku {
                 {
                     cx.write_to_clipboard(ClipboardItem::new_string(key_content.to_string()));
                     let _ =
-                        key_waku.update(cx, |this, cx| this.show_message_copied(message_id, cx));
+                        key_raku.update(cx, |this, cx| this.show_message_copied(message_id, cx));
                     cx.stop_propagation();
                 }
             });
@@ -1417,7 +1417,7 @@ impl Waku {
     }
 }
 
-impl Waku {
+impl Raku {
     // ── Settings ──────────────────────────────────────────────────────────
 
     pub(super) fn render_side_chat_settings(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1635,11 +1635,11 @@ struct SideChatCardEntry {
 }
 
 impl SideChatCardEntry {
-    fn from_session(session: &AgentSession, waku: &Waku) -> Self {
+    fn from_session(session: &AgentSession, raku: &Raku) -> Self {
         Self {
             id: Some(session.id),
             title: side_chat_display_title(session),
-            replying: session.is_busy() || waku.submission_preparations.contains(&session.id),
+            replying: session.is_busy() || raku.submission_preparations.contains(&session.id),
         }
     }
 }
@@ -1649,7 +1649,7 @@ fn render_side_chat_card_row(
     standard: bool,
     focus: FocusHandle,
     handle: ContextMenuHandle,
-    weak: WeakEntity<Waku>,
+    weak: WeakEntity<Raku>,
     theme: &Theme,
 ) -> AnyElement {
     let key = entry

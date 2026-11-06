@@ -1,23 +1,23 @@
 # Provider integrations
 
-How Waku talks to each coding agent: the process it launches, the wire protocol
+How Raku talks to each coding agent: the process it launches, the wire protocol
 it speaks, how long that process lives, and what has to be emulated because the
 CLI does not offer it.
 
 How each of them names a session — which are read from the provider, which are
-polled off disk, and the one Waku generates itself — is in
+polled off disk, and the one Raku generates itself — is in
 [titles.md](titles.md).
 
 Every provider is reached through the same driver abstraction in
-[driver/mod.rs](../crates/waku-core/src/driver/mod.rs). There are three
+[driver/mod.rs](../crates/raku-core/src/driver/mod.rs). There are three
 transport implementations behind three providers, and **every one of them holds a
 session that spans the whole conversation**:
 
 | Transport | File | Providers |
 | --- | --- | --- |
-| Codex app-server (JSON-RPC over stdio) | [driver/codex.rs](../crates/waku-core/src/driver/codex.rs) | Codex CLI |
-| Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/waku-core/src/driver/pi.rs) | Pi |
-| Claude streaming-input session (NDJSON over stdio) | [driver/claude.rs](../crates/waku-core/src/driver/claude.rs) | Claude Code |
+| Codex app-server (JSON-RPC over stdio) | [driver/codex.rs](../crates/raku-core/src/driver/codex.rs) | Codex CLI |
+| Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/raku-core/src/driver/pi.rs) | Pi |
+| Claude streaming-input session (NDJSON over stdio) | [driver/claude.rs](../crates/raku-core/src/driver/claude.rs) | Claude Code |
 
 ## The driver contract
 
@@ -26,7 +26,7 @@ session that spans the whole conversation**:
 `DriverControl` and receives `DriverEvent`s on a `crossbeam` channel that the
 frame loop drains.
 
-Inputs ([driver/mod.rs:67](../crates/waku-core/src/driver/mod.rs#L79)):
+Inputs ([driver/mod.rs:67](../crates/raku-core/src/driver/mod.rs#L79)):
 
 ```rust
 pub struct DriverStartOptions {
@@ -36,7 +36,7 @@ pub struct DriverStartOptions {
 }
 ```
 
-Outputs ([model.rs:973](../crates/waku-core/src/model.rs)): `Connected`,
+Outputs ([model.rs:973](../crates/raku-core/src/model.rs)): `Connected`,
 `AvailableCommands`, `TurnStarted`, `TextDelta`, `ReasoningDelta`, `Activity`,
 `RichActivity`, `Permission`, `SteerAccepted`, `SteerRejected`,
 `TurnFinished`, `Error`, `ProcessExited`.
@@ -50,17 +50,17 @@ composer and starts a fresh turn once the current one settles.
 
 Every driver normalizes its tool events into one `ActivityItem`
 (`Reasoning | Command | FileChange | Search | Plan | Tool`) via
-[driver/activity.rs](../crates/waku-core/src/driver/activity.rs), so the transcript renders
+[driver/activity.rs](../crates/raku-core/src/driver/activity.rs), so the transcript renders
 provider-agnostic rows. Tool titles prefer a `title` argument when the tool
 supplies one, then fall back to the command, the query, or a de-camel-cased
 tool name.
 
 ### Capability ownership
 
-[capabilities.rs](../crates/waku-protocol/src/capabilities.rs) separates three
+[capabilities.rs](../crates/raku-protocol/src/capabilities.rs) separates three
 sources of truth:
 
-- `ProviderKind::capabilities()` is the exhaustive declaration of Waku's
+- `ProviderKind::capabilities()` is the exhaustive declaration of Raku's
   provider-level support: interactive access modes, conversation actions,
   compaction, model discovery, goals and plan mode.
   UI visibility, command discovery and daemon validation read this declaration.
@@ -73,7 +73,7 @@ sources of truth:
   This wire shape is protocol version 15.
 
 All lookups read in-memory data. Declaring conversation rollback/fork means
-Waku offers the action, including native session helpers; it does not promise
+Raku offers the action, including native session helpers; it does not promise
 the transport itself can perform it.
 
 The access menu lists only the provider's supported modes. A mode inherited
@@ -90,7 +90,7 @@ the source and forked tasks keep their selected interactive mode.
 
 ### Context compaction
 
-Compaction belongs to the provider's native session. Waku offers a manual
+Compaction belongs to the provider's native session. Raku offers a manual
 `/compact` command, a usage-panel action, and a command-palette action for
 Codex, Claude Code, and Pi. Pi and Claude accept optional focus instructions;
 Codex rejects that argument instead of silently discarding it.
@@ -131,7 +131,7 @@ automatic thresholds remain owned by the installed CLI.
 
 A driver is created lazily per session by `ensure_driver`
 ([src/app/runtime.rs:927](../src/app/runtime.rs#L1016)) and stored in
-`Waku::runtimes` keyed by session id. Runtimes are per session, not per view:
+`Raku::runtimes` keyed by session id. Runtimes are per session, not per view:
 switching sessions in the sidebar does not touch them, so a background session
 keeps streaming into its transcript.
 
@@ -145,7 +145,7 @@ A runtime — and with it that session's provider process — is dropped when:
 | A rewind or branch leaves the driver on a stale native session | [src/app/runtime.rs](../src/app/runtime.rs) |
 | The driver reports `ProcessExited` (the handler returns `false`, so the runtime is not reinserted) | [src/app/streaming.rs:352](../src/app/streaming.rs#L352) |
 | Nobody has touched the session for 30 minutes | `reap_idle_sessions`, [src/app/runtime.rs](../src/app/runtime.rs) |
-| Waku quits | `cx.quit()` |
+| Raku quits | `cx.quit()` |
 
 Stop drops the runtime for Codex, whose app-server owns its provider process
 tree; the next prompt resumes the native thread (`thread/resume`). Every other
@@ -229,10 +229,10 @@ turned out to already serve a session protocol; nobody had looked.
 ## Codex CLI
 
 **Launch** — `codex app-server --stdio`
-([driver/codex.rs:164](../crates/waku-core/src/driver/codex.rs#L164)).
+([driver/codex.rs:164](../crates/raku-core/src/driver/codex.rs#L164)).
 
 **Protocol** — newline-delimited JSON-RPC over stdio, genuinely bidirectional:
-Codex can send Waku requests (approvals) and Waku answers them by id. Three
+Codex can send Raku requests (approvals) and Raku answers them by id. Three
 threads: writer (owns stdin and the command queue), reader (parses stdout),
 stderr collector; a fourth waits on the process and emits `ProcessExited`.
 
@@ -257,7 +257,7 @@ retained because `thread/fork` needs a `lastTurnId`.
 `approvalPolicy`, `approvalsReviewer`, `sandboxPolicy`, and optional `model`,
 `effort`, `serviceTier`.
 
-**Inbound stream** ([driver/codex.rs:851](../crates/waku-core/src/driver/codex.rs#L882)):
+**Inbound stream** ([driver/codex.rs:851](../crates/raku-core/src/driver/codex.rs#L882)):
 
 | Method | Becomes |
 | --- | --- |
@@ -274,14 +274,14 @@ retained because `thread/fork` needs a `lastTurnId`.
 request becomes a `Permission` event with `accept` / `acceptForSession` /
 `decline`, and the answer is written back as a JSON-RPC *response*:
 `{"id": <original>, "result": {"decision": …}}`. Because JSON-RPC ids are
-per-peer, the reader only treats method-less messages as replies to Waku's own
-requests ([driver/codex.rs:779](../crates/waku-core/src/driver/codex.rs#L809)).
+per-peer, the reader only treats method-less messages as replies to Raku's own
+requests ([driver/codex.rs:779](../crates/raku-core/src/driver/codex.rs#L809)).
 
 **Cancel** — `turn/interrupt {threadId, turnId}`.
 
 **Image generation** — native `imageGeneration` items become ordered,
 standalone image rows. The provider keeps control of model/account capability
-and feature enablement. Waku handles both base64 `result` and the newer saved
+and feature enablement. Raku handles both base64 `result` and the newer saved
 file output (`fileId` / `savedPath`), copies the bytes into its blob store on
 the daemon worker, and sends short references to the desktop. Generation
 failures and image quota exhaustion remain visible. Completed images stay
@@ -304,24 +304,24 @@ response channel and blocks up to 15 s.
 (`U+E200`/`U+E201`/`U+E202`). They are buffered across deltas and rewritten into
 markdown links against the `webSearch` results captured earlier in the turn;
 unknown markers are dropped. Private control markers never reach the transcript
-([driver/codex.rs:660](../crates/waku-core/src/driver/codex.rs#L690)).
+([driver/codex.rs:660](../crates/raku-core/src/driver/codex.rs#L690)).
 
 **Models** — a throwaway app-server, `model/list` paged via `nextCursor`, up to
-32 pages ([model_catalog.rs:367](../crates/waku-core/src/model_catalog.rs#L367)).
+32 pages ([model_catalog.rs:367](../crates/raku-core/src/model_catalog.rs#L367)).
 
 ---
 
 ## Pi
 
-Pi speaks an NDJSON request/response protocol over stdio ([pi.rs](../crates/waku-core/src/driver/pi.rs)):
+Pi speaks an NDJSON request/response protocol over stdio ([pi.rs](../crates/raku-core/src/driver/pi.rs)):
 
 **Launch** — `pi --mode rpc --approve` with `PI_SKIP_VERSION_CHECK=1`.
 
 **Protocol** — NDJSON over stdio, request/response rather than JSON-RPC:
-Waku stamps each request with a string id (`waku-<n>`) and Pi answers with
+Raku stamps each request with a string id (`raku-<n>`) and Pi answers with
 `{"type": "response", "id", "success", "data"}`. Everything else on the stream
 is an unsolicited event. Requests are issued synchronously by the writer thread
-with a 10 s timeout ([pi.rs](../crates/waku-core/src/driver/pi.rs));
+with a 10 s timeout ([pi.rs](../crates/raku-core/src/driver/pi.rs));
 events keep flowing on the reader thread meanwhile. The handshake gets 30 s
 instead: the agent does not answer at all until it has finished loading its
 extensions, resources and — when model networking is on — its model catalog,
@@ -339,7 +339,7 @@ both go into the cursor, and resume needs the **file path**, not just the id.
 
 **Per turn** — `{"type": "prompt", "message": …}`.
 
-**Inbound stream** ([pi.rs](../crates/waku-core/src/driver/pi.rs)):
+**Inbound stream** ([pi.rs](../crates/raku-core/src/driver/pi.rs)):
 
 | Event | Becomes |
 | --- | --- |
@@ -349,7 +349,7 @@ both go into the cursor, and resume needs the **file path**, not just the id.
 | `tool_execution_start` / `_update` / `_end` | `RichActivity` |
 | `auto_retry_end` | clears or sets the failure flag |
 | `agent_settled` | `TurnFinished`, then resets stream state |
-| `extension_ui_request` | auto-cancelled — Waku has no UI for extension prompts |
+| `extension_ui_request` | auto-cancelled — Raku has no UI for extension prompts |
 
 **Access modes** — Full access only, enforced at driver start rather than
 degraded silently: any other selection fails with "currently supports Full
@@ -380,7 +380,7 @@ such before launch. Pi maps reasoning levels through a per-model `thinkingLevelM
 **Launch** — `claude -p --input-format stream-json --output-format stream-json
 --verbose --include-partial-messages --replay-user-messages
 --permission-prompt-tool stdio --permission-mode <mode>`
-([driver/claude.rs](../crates/waku-core/src/driver/claude.rs)), plus `--model`, `--effort`,
+([driver/claude.rs](../crates/raku-core/src/driver/claude.rs)), plus `--model`, `--effort`,
 and `--session-id` or `--resume`.
 
 This is the transport the Claude Agent SDK's `query()` drives; the SDK is a
@@ -405,13 +405,13 @@ as newline-delimited user messages on stdin.
 | `stream_event` → `text_delta`, `thinking_delta` | `TextDelta`, `ReasoningDelta` |
 | `assistant` content blocks | `tool_use` → `RichActivity`; text and thinking only as a fallback when no delta of that kind streamed |
 | `user` with `tool_result` | completes the matching activity |
-| `user` with `isReplay: true` | ignored — Waku's own prompt echoed by `--replay-user-messages` |
+| `user` with `isReplay: true` | ignored — Raku's own prompt echoed by `--replay-user-messages` |
 | `result` | `TurnFinished` |
 | `system` status/thinking-token notices, `rate_limit_event` | ignored |
 
 **Approvals** — `control_request` / `subtype: "can_use_tool"` carries the tool
 name, input, `tool_use_id`, the `blocked_path` that tripped the check, and
-`permission_suggestions`. Waku answers with a `control_response` whose result is
+`permission_suggestions`. Raku answers with a `control_response` whose result is
 `{"behavior":"allow"}` or `{"behavior":"deny","message":…}`. Outside Supervised it
 answers allow itself.
 
@@ -428,17 +428,17 @@ instruction while a Bash `sleep` ran: the same turn's reply honored it.
 models keeps the session. The permission posture is a launch flag and still
 restarts.
 
-**Native checkpoints** — after each turn Waku reads Claude's own transcript at
+**Native checkpoints** — after each turn Raku reads Claude's own transcript at
 `$CLAUDE_CONFIG_DIR/projects/**/<session>.jsonl`, walks the `parentUuid` chain to
 find the active branch, and records the latest message uuid as the turn's
-`provider_resume_at` ([claude_session.rs](../crates/waku-core/src/claude_session.rs)). That
+`provider_resume_at` ([claude_session.rs](../crates/raku-core/src/claude_session.rs)). That
 per-turn checkpoint is what makes rewind and branch possible. Because Claude
 accepts a caller-chosen `--session-id`, the cursor exists before the first turn
 does.
 
 **Rewind and branch** — `claude_session::fork_session_at` rewrites the JSONL
 transcript into a *new* session file, truncated at the checkpoint and re-keyed
-with fresh uuids; the returned id map is applied to Waku's retained turns.
+with fresh uuids; the returned id map is applied to Raku's retained turns.
 Rewinding to turn zero clears the cursor and starts clean. The CLI also exposes
 `--fork-session` (with `--resume`), which likely replaces this hand-rolled
 rewrite — unverified, and the reason it is still hand-rolled is that the flag was
@@ -446,18 +446,18 @@ found after the fork code was written.
 
 **Models** — the sessionless SDK `initialize` control response publishes the
 same account- and configuration-aware list used by `/model`, including custom
-routes resolved through CC Switch. Waku probes it in the background and caches
+routes resolved through CC Switch. Raku probes it in the background and caches
 the last successful catalog; the curated list is only the startup/failure
-fallback ([model_catalog.rs](../crates/waku-core/src/model_catalog.rs)).
+fallback ([model_catalog.rs](../crates/raku-core/src/model_catalog.rs)).
 
 ---
 
 ## Access modes across providers
 
-Waku's `RuntimeMode` (Supervised / Auto-accept edits / Auto / Full access)
+Raku's `RuntimeMode` (Supervised / Auto-accept edits / Auto / Full access)
 maps into each CLI's own vocabulary.
 
-| Waku | Codex (`approvalPolicy` / `sandbox` / reviewer) | Claude `--permission-mode` |
+| Raku | Codex (`approvalPolicy` / `sandbox` / reviewer) | Claude `--permission-mode` |
 | --- | --- | --- |
 | Supervised | `untrusted` / `read-only` / `user` | `default` + `can_use_tool` reaches the user |
 | Auto-accept edits | `on-request` / `workspace-write` / `user` | `acceptEdits` |
@@ -471,7 +471,7 @@ that overrides the access mode: Pi gets a read and web-search tool allowlist wit
 MCP disabled, Claude gets `Read,Grep,Glob,WebSearch,WebFetch` under `dontAsk`, and Codex runs with
 approval `never` in the `read-only` sandbox. See [side-chat.md](side-chat.md).
 
-Codex and Claude can route Supervised permission requests to Waku. Pi has no
+Codex and Claude can route Supervised permission requests to Raku. Pi has no
 permission system.
 
 ## Plan mode
@@ -486,7 +486,7 @@ live session.
 | --- | --- | --- |
 | Enter / leave | `collaborationMode: {mode: "plan" \| "default", settings: {model, reasoning_effort, developer_instructions: null}}` on `turn/start` (experimental API). The mode sticks to the thread, so the first default turn after a plan turn — or on a resumed thread — names `default` explicitly | `--permission-mode plan` at launch, `set_permission_mode` mid-session. A Full access launch uses `--allow-dangerously-skip-permissions`, because `--dangerously-skip-permissions` overrides `plan` |
 | The plan | a `plan` item streamed with `item/plan/delta`, ending the turn | `ExitPlanMode` input `plan`, raised as a `can_use_tool` request that blocks the turn |
-| Approve | Waku leaves plan mode, then sends "Implement the plan." as the next turn | allow with `updatedPermissions: [{type: "setMode", mode: <access mode>, destination: "session"}]` — the agent continues in the same turn |
+| Approve | Raku leaves plan mode, then sends "Implement the plan." as the next turn | allow with `updatedPermissions: [{type: "setMode", mode: <access mode>, destination: "session"}]` — the agent continues in the same turn |
 | Revise | the user's reply is a new planning turn | deny with the reply as `message`; the agent replans in the same turn |
 
 Both plans reach the transcript as assistant text and raise
@@ -497,8 +497,8 @@ and Claude Code 2.1.316.
 
 ## Resume cursors
 
-`ProviderResumeCursor` ([model.rs](../crates/waku-protocol/src/model.rs)) is
-persisted with the session and is what makes a Waku task outlive its process:
+`ProviderResumeCursor` ([model.rs](../crates/raku-protocol/src/model.rs)) is
+persisted with the session and is what makes a Raku task outlive its process:
 
 | Provider | Cursor fields | Why |
 | --- | --- | --- |
@@ -518,24 +518,24 @@ own `docs/internals/providers.md`.
 **Its one structural difference: no provider is a per-turn process.** They
 hold a long-lived session; the transport differs, the lifetime does not.
 
-| Provider | T3 Code transport | Waku transport |
+| Provider | T3 Code transport | Raku transport |
 | --- | --- | --- |
 | Codex | `codex app-server` JSON-RPC (`packages/effect-codex-app-server`) | same |
 | Claude | `@anthropic-ai/claude-agent-sdk` `query()` with an `AsyncIterable` prompt queue | same protocol, spoken directly — the SDK is a wrapper around these flags |
 
 **They all hold a long-lived session**, and Claude reaches the same place
 without the SDK: there is no Rust Agent SDK, but the SDK is a wrapper around the
-`claude` CLI's own streaming-input protocol, which Waku speaks directly. No Node
+`claude` CLI's own streaming-input protocol, which Raku speaks directly. No Node
 sidecar and no npm dependency.
 
-Waku goes further: Pi, which T3 Code does not
+Raku goes further: Pi, which T3 Code does not
 support, is long-lived here too. Every provider holds a session.
 
-What the long-lived session buys, and what Waku pays for not having it:
+What the long-lived session buys, and what Raku pays for not having it:
 
-| Capability | T3 Code | Waku |
+| Capability | T3 Code | Raku |
 | --- | --- | --- |
-| Interactive approvals | Claude via the SDK's `canUseTool` (including `AskUserQuestion` and `ExitPlanMode`), Codex via `*requestApproval*` | Codex and Claude route requests into Waku |
+| Interactive approvals | Claude via the SDK's `canUseTool` (including `AskUserQuestion` and `ExitPlanMode`), Codex via `*requestApproval*` | Codex and Claude route requests into Raku |
 | Interrupt | `session/cancel`, `query.interrupt()` (plus `stopTask()` for runaway subagents) | Protocol interrupt everywhere |
 | Change model mid-session | `capabilities.sessionModelSwitch: "in-session"` → `session/set_model`, `query.setModel()` | Every transport keeps the session |
 | Mid-turn prompt | Queued into the live agent loop as a **steer**, same turn | `⌘↩` steers where the runtime reports support; otherwise queues a follow-up. Plain `Enter` queues a visible, editable follow-up |
@@ -546,13 +546,13 @@ The adapter contract itself is wider than `DriverControl`:
 `startSession` / `sendTurn` / `interruptTurn` / `respondToRequest` /
 `respondToUserInput` / `stopSession` / `listSessions` / `hasSession` /
 `readThread` / `rollbackThread` / `stopAll` / `streamEvents`, plus a declared
-`capabilities` record. Waku's equivalent surface is split between
+`capabilities` record. Raku's equivalent surface is split between
 `DriverControl` and the out-of-band `*_session.rs` helpers, which is why
-capabilities like "can Waku fork this provider's history?" live in
+capabilities like "can Raku fork this provider's history?" live in
 `ProviderKind::capabilities().conversation`, while transport support lives in
 `RuntimeCapabilities`.
 
-Note the parts that are *not* a gap. Waku's Codex path is the same app-server
+Note the parts that are *not* a gap. Raku's Codex path is the same app-server
 protocol against the same methods. Both projects normalize provider events into
 one canonical activity/event stream that the UI consumes provider-agnostically.
 Both keep a per-session resume cursor and both had to special-case Claude's
@@ -561,10 +561,10 @@ transcript uuid as a rewind checkpoint.
 ## Adding a provider
 
 1. Add the variant to `ProviderKind`
-   ([model.rs](../crates/waku-protocol/src/model.rs)) with `id`,
+   ([model.rs](../crates/raku-protocol/src/model.rs)) with `id`,
    `display_name`, `short_name` and `command`. Add its explicit declaration to
    `ProviderKind::capabilities()` in
-   [capabilities.rs](../crates/waku-protocol/src/capabilities.rs). The
+   [capabilities.rs](../crates/raku-protocol/src/capabilities.rs). The
    compiler's non-exhaustive-match errors are the reliable to-do list for
    everything that follows.
 2. Add a `ProviderResumeCursor` variant carrying whatever resume actually needs

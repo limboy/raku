@@ -17,7 +17,7 @@ const WORK_FRAME_CORNER_RADIUS: f32 = 8.0;
 #[derive(Clone, Debug)]
 struct ConversationNavigationRailSnapshot {
     visible: bool,
-    /// Shared with the `Waku` cache: the turns only change when the row-kinds
+    /// Shared with the `Raku` cache: the turns only change when the row-kinds
     /// fingerprint moves, so the per-frame equality check here is a pointer
     /// comparison rather than a walk over every turn's snippets.
     turns: Rc<Vec<TranscriptNavigationTurn>>,
@@ -52,7 +52,7 @@ impl Default for ConversationNavigationRailSnapshot {
 }
 
 pub(super) struct ConversationNavigationRail {
-    waku: Option<WeakEntity<Waku>>,
+    raku: Option<WeakEntity<Raku>>,
     snapshot: ConversationNavigationRailSnapshot,
     turn_list_state: ListState,
     turn_indexes: HashMap<Uuid, usize>,
@@ -70,7 +70,7 @@ impl ConversationNavigationRail {
             .with_uniform_item_height(px(NAVIGATION_RAIL_TURN_HEIGHT));
         turn_list_state.set_scroll_handler(|_, window, _| window.refresh());
         Self {
-            waku: None,
+            raku: None,
             snapshot: ConversationNavigationRailSnapshot::default(),
             turn_list_state,
             turn_indexes: HashMap::new(),
@@ -83,8 +83,8 @@ impl ConversationNavigationRail {
         }
     }
 
-    pub(super) fn set_waku(&mut self, waku: WeakEntity<Waku>) {
-        self.waku = Some(waku);
+    pub(super) fn set_raku(&mut self, raku: WeakEntity<Raku>) {
+        self.raku = Some(raku);
     }
 
     fn set_snapshot(
@@ -150,7 +150,7 @@ impl ConversationNavigationRail {
     }
 }
 
-impl Waku {
+impl Raku {
     // ── Transcript ─────────────────────────────────────────────────────────
 
     pub(super) fn transcript_control_focus(
@@ -813,15 +813,15 @@ impl ConversationNavigationRail {
     }
 
     fn activate_turn(&self, message_id: Uuid, cx: &mut Context<Self>) {
-        if let Some(waku) = &self.waku {
-            let _ = waku.update(cx, |waku, cx| {
-                waku.scroll_to_navigation_turn(message_id, cx)
+        if let Some(raku) = &self.raku {
+            let _ = raku.update(cx, |raku, cx| {
+                raku.scroll_to_navigation_turn(message_id, cx)
             });
         }
     }
 }
 
-impl Waku {
+impl Raku {
     fn scroll_to_navigation_turn(&mut self, message_id: Uuid, cx: &mut Context<Self>) {
         let row_index = self
             .navigation_turns()
@@ -1075,16 +1075,16 @@ impl Waku {
             .collect::<Vec<_>>();
         self.checkpoint_ref_prefetch
             .set(Some((session_id, generation)));
-        let workspace = waku_client::WorkspaceClient::new(self.daemon.client());
+        let workspace = raku_client::WorkspaceClient::new(self.daemon.client());
         cx.spawn(async move |this, cx| {
             let existing = cx
                 .background_executor()
                 .spawn(async move {
-                    match workspace.request(waku_client::WorkspaceOperation::SessionTurnRefs {
+                    match workspace.request(raku_client::WorkspaceOperation::SessionTurnRefs {
                         cwd: project_path,
                         session_id,
                     }) {
-                        Ok(waku_client::WorkspaceResult::TurnRefs { turn_counts }) => {
+                        Ok(raku_client::WorkspaceResult::TurnRefs { turn_counts }) => {
                             turn_counts.into_iter().collect::<HashSet<_>>()
                         }
                         Ok(_) | Err(_) => HashSet::new(),
@@ -1149,7 +1149,7 @@ impl Waku {
     /// prose stays at the fixed chrome size, code follows its setting.
     pub(super) fn chrome_markdown_metrics(&self, metrics: MarkdownMetrics) -> MarkdownMetrics {
         metrics.scaled(
-            waku_client::persistence::DEFAULT_UI_FONT_SIZE,
+            raku_client::persistence::DEFAULT_UI_FONT_SIZE,
             self.state.code_font_size,
         )
     }
@@ -1227,7 +1227,7 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::current(cx);
-        let waku = cx.entity().downgrade();
+        let raku = cx.entity().downgrade();
         // Both from the cache `sync_transcript_rows` refreshed at the top of
         // this frame. Recomputing the row list here would rebuild the whole
         // transcript's row kinds — several allocations proportional to the
@@ -1407,7 +1407,7 @@ impl Waku {
                             markdown: view,
                             ctx: &ctx,
                             menu,
-                            waku,
+                            raku,
                             error_expanded: self.expanded_error_details.contains(&message.id),
                             error_focus: self.transcript_control_focus(
                                 format!("message-error-details-{}", message.id),
@@ -2104,7 +2104,7 @@ impl Waku {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        use waku_protocol::compaction::{CompactionStatus, CompactionTrigger};
+        use raku_protocol::compaction::{CompactionStatus, CompactionTrigger};
         let item = activity.compaction.as_ref().expect("compaction row");
         if surface.part == ActivityClusterPart::Item {
             return div().into_any_element();
@@ -2789,7 +2789,7 @@ impl Waku {
                         let copied = self
                             .copied_activity_feedback
                             .contains_key(&(id, section_kind));
-                        let copy_waku = cx.entity().downgrade();
+                        let copy_raku = cx.entity().downgrade();
                         let copy_tooltip = SharedString::from(if copied {
                             tr!("common.copied")
                         } else {
@@ -2836,7 +2836,7 @@ impl Waku {
                                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                                     copy_content.clone(),
                                                 ));
-                                                let _ = copy_waku.update(cx, |this, cx| {
+                                                let _ = copy_raku.update(cx, |this, cx| {
                                                     this.show_activity_section_copied(
                                                         id,
                                                         section_kind,

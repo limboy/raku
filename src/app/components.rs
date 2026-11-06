@@ -150,7 +150,7 @@ fn format_message_time_at(created_at: u64, now: DateTime<Local>) -> String {
         .unwrap_or_default()
 }
 
-impl Waku {
+impl Raku {
     pub(super) fn control_was_copied(&self, control_id: &str) -> bool {
         self.copied_control_feedback.contains_key(control_id)
     }
@@ -215,11 +215,11 @@ pub(super) fn render_message_footer(
     user_message_control: Option<UserMessageControl>,
     model_label: Option<SharedString>,
     controls: Option<MessageFooterControls>,
-    waku: gpui::WeakEntity<Waku>,
+    raku: gpui::WeakEntity<Raku>,
 ) -> AnyElement {
     let theme = *theme;
     let message_id = message.id;
-    let copy_waku = waku.clone();
+    let copy_raku = raku.clone();
     let footer_color = if theme.is_dark {
         gpui::hsla(126.93 / 360.0, 0.000_000_1, 0.543_95, 1.0)
     } else {
@@ -236,7 +236,7 @@ pub(super) fn render_message_footer(
         .text_color(footer_color)
         .child(format_message_time(footer_time));
     let key_copy_content = copy_content.clone();
-    let key_copy_waku = copy_waku.clone();
+    let key_copy_raku = copy_raku.clone();
     let copy_button = div()
         .id(SharedString::from(format!("copy-message-{message_id}")))
         .w(px(27.0))
@@ -268,7 +268,7 @@ pub(super) fn render_message_footer(
         }))
         .on_click(move |_, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(copy_content.to_string()));
-            let _ = copy_waku.update(cx, |this, cx| {
+            let _ = copy_raku.update(cx, |this, cx| {
                 this.show_message_copied(message_id, cx);
             });
         })
@@ -277,7 +277,7 @@ pub(super) fn render_message_footer(
                 && matches!(event.keystroke.key.as_str(), "enter" | "space")
             {
                 cx.write_to_clipboard(ClipboardItem::new_string(key_copy_content.to_string()));
-                let _ = key_copy_waku.update(cx, |this, cx| {
+                let _ = key_copy_raku.update(cx, |this, cx| {
                     this.show_message_copied(message_id, cx);
                 });
                 cx.stop_propagation();
@@ -305,8 +305,8 @@ pub(super) fn render_message_footer(
     } else {
         footer = footer.child(copy_button);
         if let Some(action) = assistant_message_action {
-            let fork_waku = waku.clone();
-            let key_fork_waku = waku.clone();
+            let fork_raku = raku.clone();
+            let key_fork_raku = raku.clone();
             let fork_icon = if action.preparing {
                 motion::spin(icon("icons/loader-circle.svg", 14.0, footer_color))
             } else {
@@ -343,7 +343,7 @@ pub(super) fn render_message_footer(
                 fork_button
                     .hover(|element| element.bg(theme.overlay_strong))
                     .on_click(move |_, _, cx| {
-                        let _ = fork_waku.update(cx, |this, cx| {
+                        let _ = fork_raku.update(cx, |this, cx| {
                             this.fork_session_from_response(
                                 action.session_id,
                                 action.turn_count,
@@ -355,7 +355,7 @@ pub(super) fn render_message_footer(
                         if !event.keystroke.modifiers.modified()
                             && matches!(event.keystroke.key.as_str(), "enter" | "space")
                         {
-                            let _ = key_fork_waku.update(cx, |this, cx| {
+                            let _ = key_fork_raku.update(cx, |this, cx| {
                                 this.fork_session_from_response(
                                     action.session_id,
                                     action.turn_count,
@@ -386,7 +386,7 @@ pub(super) fn render_message_footer(
     }
 
     if let Some(UserMessageControl { action, focus }) = user_message_control {
-        let edit_waku = waku.clone();
+        let edit_raku = raku.clone();
         footer = footer.child(
             div()
                 .id(SharedString::from(format!(
@@ -407,7 +407,7 @@ pub(super) fn render_message_footer(
                 .child(icon("icons/pencil.svg", 14.0, footer_color))
                 .tooltip(Tooltip::text(tr_cow!("session.edit_prompt")))
                 .on_click(move |_, window, cx| {
-                    let _ = edit_waku.update(cx, |this, cx| {
+                    let _ = edit_raku.update(cx, |this, cx| {
                         this.begin_message_edit(action, window, cx);
                     });
                 })
@@ -415,7 +415,7 @@ pub(super) fn render_message_footer(
                     if !event.keystroke.modifiers.modified()
                         && matches!(event.keystroke.key.as_str(), "enter" | "space")
                     {
-                        let _ = waku.update(cx, |this, cx| {
+                        let _ = raku.update(cx, |this, cx| {
                             this.begin_message_edit(action, window, cx);
                         });
                         cx.stop_propagation();
@@ -453,7 +453,7 @@ pub(super) struct MessageRender<'a> {
     pub(super) attachment_menus: Vec<ContextMenuHandle>,
     pub(super) attachment_images: Vec<Option<Arc<gpui::Image>>>,
     /// Captured from the selected daemon before the virtualized row is built.
-    /// A row is laid out while the root `Waku` entity is already updating, so
+    /// A row is laid out while the root `Raku` entity is already updating, so
     /// it must not read that entity again just to decide whether Finder reveal
     /// is available.
     pub(super) attachments_can_reveal: bool,
@@ -461,7 +461,7 @@ pub(super) struct MessageRender<'a> {
     pub(super) markdown: Option<&'a MarkdownView>,
     pub(super) ctx: &'a MarkdownCtx<'a>,
     pub(super) menu: ContextMenuHandle,
-    pub(super) waku: gpui::WeakEntity<Waku>,
+    pub(super) raku: gpui::WeakEntity<Raku>,
     /// Whether a failed turn's provider detail is disclosed, and the focus
     /// handle of its disclosure control.
     pub(super) error_expanded: bool,
@@ -515,7 +515,7 @@ pub(super) fn pasted_text_view_id(reference: Option<&str>, text: &str) -> Uuid {
     use std::hash::{Hash as _, Hasher as _};
 
     reference
-        .and_then(|reference| reference.strip_prefix(waku_protocol::attachments::ATTACHMENT_SCHEME))
+        .and_then(|reference| reference.strip_prefix(raku_protocol::attachments::ATTACHMENT_SCHEME))
         .and_then(|id| id.parse().ok())
         .unwrap_or_else(|| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -530,7 +530,7 @@ fn render_sent_message_attachments(
     attachment_menus: &[ContextMenuHandle],
     attachment_images: &[Option<Arc<gpui::Image>>],
     can_reveal: bool,
-    waku: &gpui::WeakEntity<Waku>,
+    raku: &gpui::WeakEntity<Raku>,
     theme: &Theme,
 ) -> Option<AnyElement> {
     if attachments.is_empty() {
@@ -556,8 +556,8 @@ fn render_sent_message_attachments(
             let click_text = SharedString::from(text);
             let key_name = name.clone();
             let key_text = SharedString::from(text);
-            let click_waku = waku.clone();
-            let key_waku = waku.clone();
+            let click_raku = raku.clone();
+            let key_raku = raku.clone();
             let key_menu = menu.clone();
             let chip = if session_id.is_some() {
                 session_link_chip(theme, &name)
@@ -576,7 +576,7 @@ fn render_sent_message_attachments(
                 name.to_string()
             }))
             .on_click(move |_, _, cx| {
-                let _ = click_waku.update(cx, |this, cx| {
+                let _ = click_raku.update(cx, |this, cx| {
                     this.open_text_attachment(
                         session_id,
                         id,
@@ -590,7 +590,7 @@ fn render_sent_message_attachments(
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 if matches!(key, "enter" | "space") {
-                    let _ = key_waku.update(cx, |this, cx| {
+                    let _ = key_raku.update(cx, |this, cx| {
                         this.open_text_attachment(
                             session_id,
                             id,
@@ -606,7 +606,7 @@ fn render_sent_message_attachments(
                 }
             });
             let reveal_path = attachment.path.clone();
-            let menu_waku = waku.clone();
+            let menu_raku = raku.clone();
             let preview_name = session_id.map(|_| format!("{}.md", attachment.name));
             let preview_file = right_panel::AttachmentFile::for_preview(
                 &attachment.path,
@@ -625,7 +625,7 @@ fn render_sent_message_attachments(
                             super::session_links::session_link_menu_items(
                                 session_id,
                                 preview_file.clone(),
-                                menu_waku.clone(),
+                                menu_raku.clone(),
                             )
                         })
                         .unwrap_or_default();
@@ -673,8 +673,8 @@ fn render_sent_message_attachments(
         if attachment.is_image {
             let key_menu = menu.clone();
             if let Some(attachment_image) = attachment_image.as_ref() {
-                let preview_waku = waku.clone();
-                let key_waku = waku.clone();
+                let preview_raku = raku.clone();
+                let key_raku = raku.clone();
                 let preview_image = attachment_image.clone();
                 let key_image = attachment_image.clone();
                 let preview_name = SharedString::from(attachment.name.clone());
@@ -687,7 +687,7 @@ fn render_sent_message_attachments(
                         .size_full()
                         .cursor_default()
                         .on_click(move |_, window, cx| {
-                            let _ = preview_waku.update(cx, |this, cx| {
+                            let _ = preview_raku.update(cx, |this, cx| {
                                 this.open_image_preview(
                                     preview_image.clone(),
                                     preview_name.clone(),
@@ -706,7 +706,7 @@ fn render_sent_message_attachments(
                 tile = tile.on_key_down(move |event: &KeyDownEvent, window, cx| {
                     let key = event.keystroke.key.as_str();
                     if matches!(key, "enter" | "space") {
-                        let _ = key_waku.update(cx, |this, cx| {
+                        let _ = key_raku.update(cx, |this, cx| {
                             this.open_image_preview(
                                 key_image.clone(),
                                 key_name.clone(),
@@ -740,12 +740,12 @@ fn render_sent_message_attachments(
         } else {
             let key_menu = menu.clone();
             if let Some(preview_file) = preview_file.clone() {
-                let click_waku = waku.clone();
+                let click_raku = raku.clone();
                 tile = tile
                     .cursor_default()
                     .hover(|style| style.bg(theme.overlay))
                     .on_click(move |_, _, cx| {
-                        let _ = click_waku.update(cx, |this, cx| {
+                        let _ = click_raku.update(cx, |this, cx| {
                             this.open_attachment_file(preview_file.clone(), cx);
                         });
                         cx.stop_propagation();
@@ -771,14 +771,14 @@ fn render_sent_message_attachments(
                             .child(attachment.name.clone()),
                     ),
             );
-            let key_waku = waku.clone();
+            let key_raku = raku.clone();
             let key_file = preview_file;
             tile = tile.on_key_down(move |event: &KeyDownEvent, window, cx| {
                 if !event.keystroke.modifiers.modified()
                     && matches!(event.keystroke.key.as_str(), "enter" | "space")
                     && let Some(preview_file) = key_file.as_ref()
                 {
-                    let _ = key_waku.update(cx, |this, cx| {
+                    let _ = key_raku.update(cx, |this, cx| {
                         this.open_attachment_file(preview_file.clone(), cx);
                     });
                     cx.stop_propagation();
@@ -828,7 +828,7 @@ pub(super) fn render_error_reply(
     error: &crate::model::MessageError,
     expanded: bool,
     focus: FocusHandle,
-    waku: gpui::WeakEntity<Waku>,
+    raku: gpui::WeakEntity<Raku>,
     theme: &Theme,
     ctx: &MarkdownCtx,
 ) -> AnyElement {
@@ -854,8 +854,8 @@ pub(super) fn render_error_reply(
     let Some(detail) = error.detail.clone() else {
         return headline_row.into_any_element();
     };
-    let click_waku = waku.clone();
-    let key_waku = waku;
+    let click_raku = raku.clone();
+    let key_raku = raku;
     let toggle = div()
         .id(SharedString::from(format!(
             "message-error-details-{message_id}"
@@ -892,14 +892,14 @@ pub(super) fn render_error_reply(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, _, cx| {
             cx.stop_propagation();
-            let _ = click_waku.update(cx, |this, cx| this.toggle_message_error(message_id, cx));
+            let _ = click_raku.update(cx, |this, cx| this.toggle_message_error(message_id, cx));
         })
         .on_key_down(move |event: &KeyDownEvent, _, cx| {
             if !event.keystroke.modifiers.modified()
                 && matches!(event.keystroke.key.as_str(), "enter" | "space")
             {
                 cx.stop_propagation();
-                let _ = key_waku.update(cx, |this, cx| this.toggle_message_error(message_id, cx));
+                let _ = key_raku.update(cx, |this, cx| this.toggle_message_error(message_id, cx));
             }
         });
     div()
@@ -956,7 +956,7 @@ pub(super) fn render_message(
         markdown,
         ctx,
         menu,
-        waku,
+        raku,
         error_expanded,
         error_focus,
     } = params;
@@ -988,7 +988,7 @@ pub(super) fn render_message(
                 &attachment_menus,
                 &attachment_images,
                 attachments_can_reveal,
-                &waku,
+                &raku,
                 theme,
             ) {
                 column = column.child(attachments);
@@ -996,10 +996,10 @@ pub(super) fn render_message(
             if let Some(edit) = message_edit {
                 let can_submit = !edit.input.read(cx).content(cx).trim().is_empty()
                     || !message.attachments.is_empty();
-                let cancel_waku = waku.clone();
-                let cancel_key_waku = waku.clone();
-                let submit_waku = waku.clone();
-                let submit_key_waku = waku.clone();
+                let cancel_raku = raku.clone();
+                let cancel_key_raku = raku.clone();
+                let submit_raku = raku.clone();
+                let submit_key_raku = raku.clone();
                 column = column.child(
                     div()
                         .w_full()
@@ -1040,7 +1040,7 @@ pub(super) fn render_message(
                                         .hover(|element| element.bg(theme.overlay_strong))
                                         .child(tr_cow!("common.cancel"))
                                         .on_click(move |_, window, cx| {
-                                            let _ = cancel_waku.update(cx, |this, cx| {
+                                            let _ = cancel_raku.update(cx, |this, cx| {
                                                 this.cancel_message_edit(window, cx);
                                             });
                                         })
@@ -1051,7 +1051,7 @@ pub(super) fn render_message(
                                                     "enter" | "space"
                                                 )
                                             {
-                                                let _ = cancel_key_waku.update(cx, |this, cx| {
+                                                let _ = cancel_key_raku.update(cx, |this, cx| {
                                                     this.cancel_message_edit(window, cx);
                                                 });
                                                 cx.stop_propagation();
@@ -1097,7 +1097,7 @@ pub(super) fn render_message(
                                         .child(tr_cow!("session.edit_and_resend"))
                                         .on_click(move |_, _, cx| {
                                             if can_submit {
-                                                let _ = submit_waku.update(cx, |this, cx| {
+                                                let _ = submit_raku.update(cx, |this, cx| {
                                                     this.submit_message_edit(cx);
                                                 });
                                             }
@@ -1110,7 +1110,7 @@ pub(super) fn render_message(
                                                     "enter" | "space"
                                                 )
                                             {
-                                                let _ = submit_key_waku.update(cx, |this, cx| {
+                                                let _ = submit_key_raku.update(cx, |this, cx| {
                                                     this.submit_message_edit(cx);
                                                 });
                                                 cx.stop_propagation();
@@ -1184,7 +1184,7 @@ pub(super) fn render_message(
                                 let key_scroll = viewport.scroll_handle.clone();
                                 let key_menu = menu.clone();
                                 let key_selection = selection.clone();
-                                let key_owner = waku.entity_id();
+                                let key_owner = raku.entity_id();
                                 bubble
                                     .track_focus(menu.trigger_focus_handle())
                                     .tab_group()
@@ -1265,7 +1265,7 @@ pub(super) fn render_message(
                     user_message_control,
                     None,
                     None,
-                    waku.clone(),
+                    raku.clone(),
                 ));
             }
             column
@@ -1279,7 +1279,7 @@ pub(super) fn render_message(
                     error,
                     error_expanded,
                     error_focus,
-                    waku.clone(),
+                    raku.clone(),
                     theme,
                     ctx,
                 ),
@@ -1313,7 +1313,7 @@ pub(super) fn render_message(
                     None,
                     None,
                     None,
-                    waku.clone(),
+                    raku.clone(),
                 ));
             }
             column
@@ -1336,12 +1336,12 @@ pub(super) fn render_message(
         ),
     };
 
-    let menu_waku = waku.clone();
+    let menu_raku = raku.clone();
     context_menu(
         element.id(message_id),
         SharedString::from(format!("message-menu-{message_id}")),
         &menu,
-        move |_cx| message_menu_items(message_id, &selection, &menu_waku),
+        move |_cx| message_menu_items(message_id, &selection, &menu_raku),
     )
 }
 
@@ -1355,17 +1355,17 @@ pub(super) fn render_message(
 fn message_menu_items(
     message_id: Uuid,
     selection: &TranscriptSelection,
-    waku: &gpui::WeakEntity<Waku>,
+    raku: &gpui::WeakEntity<Raku>,
 ) -> Vec<MenuItem> {
     let Some(selected) = selection.selection.borrow().selected_text() else {
         return Vec::new();
     };
-    let add_waku = waku.clone();
-    let side_waku = waku.clone();
+    let add_raku = raku.clone();
+    let side_raku = raku.clone();
     vec![
         MenuItem::new(tr!("common.add_to_chat"), move |window, cx| {
             let text = selected.clone();
-            let _ = add_waku.update(cx, |this, cx| {
+            let _ = add_raku.update(cx, |this, cx| {
                 this.stage_pasted_text_snippet(text, cx);
                 let focus = this.composer.read(cx).focus();
                 window.focus(&focus, cx);
@@ -1373,7 +1373,7 @@ fn message_menu_items(
         })
         .icon("icons/plus.svg"),
         MenuItem::new(tr!("side_chat.menu_item"), move |window, cx| {
-            let _ = side_waku.update(cx, |this, cx| {
+            let _ = side_raku.update(cx, |this, cx| {
                 this.start_side_chat_from_selection(message_id, window, cx);
             });
         })
@@ -1973,7 +1973,7 @@ mod pasted_text_chip_tests {
     #[test]
     fn a_chip_reuses_the_tab_of_the_attachment_it_came_from() {
         let id = Uuid::new_v4();
-        let reference = format!("{}{id}", waku_protocol::attachments::ATTACHMENT_SCHEME);
+        let reference = format!("{}{id}", raku_protocol::attachments::ATTACHMENT_SCHEME);
 
         // A restored draft or a sent message carries the same reference, so
         // both reopen the one tab rather than stacking duplicates.
@@ -2088,7 +2088,7 @@ mod message_time_tests {
             true,
         )
         .with_tool_name(Some("search"))
-        .with_mcp_server(Some("waku_test"))
+        .with_mcp_server(Some("raku_test"))
         .with_arguments(Some("{}".into()));
         assert_eq!(activity_display_title(&activity), "Query the index");
         assert_eq!(
@@ -2096,7 +2096,7 @@ mod message_time_tests {
             vec![
                 ActivityDisclosureSection {
                     kind: ActivityDisclosureSectionKind::McpServer,
-                    content: "waku_test".into()
+                    content: "raku_test".into()
                 },
                 ActivityDisclosureSection {
                     kind: ActivityDisclosureSectionKind::ToolName,
@@ -2358,7 +2358,7 @@ mod message_time_tests {
         )
         .with_arguments(Some(
             serde_json::json!({
-                "patch": "*** Begin Patch\n*** Update File: /tmp/waku/src/app.rs\n@@\n-old\n+new\n+more\n*** End Patch"
+                "patch": "*** Begin Patch\n*** Update File: /tmp/raku/src/app.rs\n@@\n-old\n+new\n+more\n*** End Patch"
             })
             .to_string(),
         ));
@@ -2405,7 +2405,7 @@ mod message_time_tests {
             false,
         )
         .with_arguments(Some(
-            serde_json::json!({"filePath": "/tmp/waku/src/model.rs"}).to_string(),
+            serde_json::json!({"filePath": "/tmp/raku/src/model.rs"}).to_string(),
         ));
         assert_eq!(activity_display_title(&read), "Reading model.rs");
         read.complete = true;
@@ -2437,7 +2437,7 @@ mod message_time_tests {
             false,
         )
         .with_arguments(Some(
-            serde_json::json!({"path": "/tmp/waku/src"}).to_string(),
+            serde_json::json!({"path": "/tmp/raku/src"}).to_string(),
         ));
         assert_eq!(activity_display_title(&list), "Listing files in src");
 
@@ -2487,10 +2487,10 @@ mod message_time_tests {
             None,
             true,
         )
-        .with_arguments(Some(serde_json::json!({"query": "Waku GPUI"}).to_string()));
+        .with_arguments(Some(serde_json::json!({"query": "Raku GPUI"}).to_string()));
         assert_eq!(
             activity_display_title(&web_search),
-            "Searched the web for Waku GPUI"
+            "Searched the web for Raku GPUI"
         );
 
         let plan = ActivityItem::new(

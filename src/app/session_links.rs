@@ -1,7 +1,7 @@
 use super::*;
 use base64::Engine as _;
 
-impl Waku {
+impl Raku {
     pub(super) fn open_text_attachment(
         &mut self,
         session_id: Option<Uuid>,
@@ -80,13 +80,13 @@ impl Waku {
         let daemon = self.daemon.clone();
         self.session_link_imports.push((session_id, owner));
         cx.notify();
-        cx.spawn(async move |waku, cx| {
+        cx.spawn(async move |raku, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let session = match snapshot {
                         Some(session) => session,
-                        None => waku_client::persistence::hydrate_session(&daemon, session_id)?
+                        None => raku_client::persistence::hydrate_session(&daemon, session_id)?
                             .ok_or_else(|| anyhow::anyhow!(tr!("errors.export_session_missing")))?,
                     };
                     let markdown = crate::session_export::markdown(
@@ -100,15 +100,15 @@ impl Waku {
                     let response = daemon.client().request(
                         Uuid::nil(),
                         Uuid::nil(),
-                        waku_client::Command::ImportAttachment {
+                        raku_client::Command::ImportAttachment {
                             name: crate::session_export::suggested_filename(&session),
-                            upload: waku_client::attachments::AttachmentUpload::File {
+                            upload: raku_client::attachments::AttachmentUpload::File {
                                 data_base64: base64::engine::general_purpose::STANDARD
                                     .encode(markdown.as_bytes()),
                             },
                         },
                     )?;
-                    let waku_client::ResponsePayload::AttachmentStored { attachment } = response
+                    let raku_client::ResponsePayload::AttachmentStored { attachment } = response
                     else {
                         anyhow::bail!("the daemon returned an invalid attachment response");
                     };
@@ -125,21 +125,21 @@ impl Waku {
                     })
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| {
-                waku.session_link_imports
+            let _ = raku.update(cx, |raku, cx| {
+                raku.session_link_imports
                     .retain(|pending| *pending != (session_id, owner));
                 match result {
                     Ok(attachment) => {
-                        if waku.selected_composer_draft_key() == Some(owner) {
-                            waku.composer_attachments.push(attachment);
-                            waku.schedule_composer_draft_save(cx);
-                        } else if waku.state.sessions.iter().any(|session| {
+                        if raku.selected_composer_draft_key() == Some(owner) {
+                            raku.composer_attachments.push(attachment);
+                            raku.schedule_composer_draft_save(cx);
+                        } else if raku.state.sessions.iter().any(|session| {
                             crate::persistence::ComposerDraftKey::for_session(session) == owner
                         }) {
-                            waku.store_draft_attachment(Some(owner), attachment, cx);
+                            raku.store_draft_attachment(Some(owner), attachment, cx);
                         }
                     }
-                    Err(error) => waku.show_toast(tr!("errors.attach_session", error = error)),
+                    Err(error) => raku.show_toast(tr!("errors.attach_session", error = error)),
                 }
                 cx.notify();
             });
@@ -151,16 +151,16 @@ impl Waku {
 pub(super) fn session_link_menu_items(
     session_id: Uuid,
     preview: Option<right_panel::AttachmentFile>,
-    waku: WeakEntity<Waku>,
+    raku: WeakEntity<Raku>,
 ) -> Vec<MenuItem> {
-    let preview_waku = waku.clone();
+    let preview_raku = raku.clone();
     let mut items = vec![MenuItem::new(tr!("session.copy_deeplink"), move |_, cx| {
-        let _ = waku.update(cx, |waku, cx| waku.copy_session_deeplink(session_id, cx));
+        let _ = raku.update(cx, |raku, cx| raku.copy_session_deeplink(session_id, cx));
     })];
     if let Some(preview) = preview {
         items.push(MenuItem::new(tr!("session.open_snapshot"), move |_, cx| {
-            let _ = preview_waku.update(cx, |waku, cx| {
-                waku.open_attachment_file(preview.clone(), cx)
+            let _ = preview_raku.update(cx, |raku, cx| {
+                raku.open_attachment_file(preview.clone(), cx)
             });
         }));
     }

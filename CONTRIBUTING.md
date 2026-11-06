@@ -1,6 +1,6 @@
-# Contributing to Waku
+# Contributing to Raku
 
-Thanks for helping improve Waku. Bug reports, focused fixes, tests, and
+Thanks for helping improve Raku. Bug reports, focused fixes, tests, and
 well-scoped features are welcome.
 
 ## Development setup
@@ -32,9 +32,9 @@ bun install
 bun run dev
 ```
 
-On macOS the watcher builds and signs `target/debug/Waku Debug.app`; on Linux
-and Windows it builds `target/debug/waku`. In both cases the provider daemon remains an
-external `target/debug/waku-debug-daemon`: provider-only edits rebuild and
+On macOS the watcher builds and signs `target/debug/Raku Debug.app`; on Linux
+and Windows it builds `target/debug/raku`. In both cases the provider daemon remains an
+external `target/debug/raku-debug-daemon`: provider-only edits rebuild and
 hot-swap that process without relaunching the app, while desktop edits rebuild
 and relaunch the app normally. Keep that watcher running while you work. Do
 not start a second watcher or manually relaunch the debug app. Press `Ctrl-C`,
@@ -66,7 +66,7 @@ users run to install that archive. Point it at a local build to exercise it
 without publishing:
 
 ```sh
-WAKU_BUNDLE_PATH=target/release/waku-<version>-<target>.tar.gz \
+RAKU_BUNDLE_PATH=target/release/raku-<version>-<target>.tar.gz \
   sh website/public/install.sh
 ```
 
@@ -81,9 +81,9 @@ bun scripts/bundle-windows.ts
 ```
 
 Both land under `target/release`. The zip holds the two executables side by
-side beneath one versioned directory — the layout Waku needs to find its
+side beneath one versioned directory — the layout Raku needs to find its
 daemon — and the installer is built from
-[`resources/windows/waku.iss`](resources/windows/waku.iss), so Inno Setup 6.3
+[`resources/windows/raku.iss`](resources/windows/raku.iss), so Inno Setup 6.3
 or newer must be installed (`choco install innosetup`) — the architecture
 gate uses identifiers added in 6.3. Set `WINDOWS_CERTIFICATE`
 (base64 `.pfx`) and `WINDOWS_CERTIFICATE_PASSWORD` to Authenticode-sign them;
@@ -112,7 +112,7 @@ Run the focused checks relevant to your change, then run the full baseline
 before opening a pull request:
 
 ```sh
-cargo fmt --package waku --package waku-protocol --package waku-client --package waku-core --package waku-daemon -- --check
+cargo fmt --package raku --package raku-protocol --package raku-client --package raku-core --package raku-daemon -- --check
 cargo check
 cargo test
 ```
@@ -148,7 +148,7 @@ your responses in your own words.
   future.
 
 AI-assisted contributions are welcome. This policy aims to prevent low-effort
-submissions and preserve Waku's standards for code quality, performance, and
+submissions and preserve Raku's standards for code quality, performance, and
 maintainability.
 
 ## License

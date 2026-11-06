@@ -1,7 +1,7 @@
 use super::*;
 use crate::session_export::{self, ExportScope};
 
-impl Waku {
+impl Raku {
     pub(super) fn export_conversation_action(
         &mut self,
         _: &crate::ExportConversation,
@@ -61,7 +61,7 @@ impl Waku {
             return;
         };
         let snapshot = (session.clone(), self.daemon.clone());
-        cx.spawn(async move |waku, cx| {
+        cx.spawn(async move |raku, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -69,19 +69,19 @@ impl Waku {
                     let session = if session.detail_loaded {
                         session
                     } else {
-                        waku_client::persistence::hydrate_session(&daemon, session_id)?
+                        raku_client::persistence::hydrate_session(&daemon, session_id)?
                             .ok_or_else(|| anyhow::anyhow!(tr!("errors.export_session_missing")))?
                     };
                     session_export::markdown(&session, scope)
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| {
+            let _ = raku.update(cx, |raku, cx| {
                 match result {
                     Ok(markdown) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(markdown));
-                        waku.show_success_toast(tr!("session.copied"));
+                        raku.show_success_toast(tr!("session.copied"));
                     }
-                    Err(error) => waku.show_toast(tr!("errors.copy_session", error = error)),
+                    Err(error) => raku.show_toast(tr!("errors.copy_session", error = error)),
                 }
                 cx.notify();
             });
@@ -108,13 +108,13 @@ impl Waku {
             .or_else(dirs::home_dir)
             .unwrap_or_default();
         let path = cx.prompt_for_new_path(&directory, Some(&filename));
-        cx.spawn(async move |waku, cx| {
+        cx.spawn(async move |raku, cx| {
             let path = match path.await {
                 Ok(Ok(Some(path))) => path,
                 Ok(Ok(None)) | Err(_) => return,
                 Ok(Err(error)) => {
-                    let _ = waku.update(cx, |waku, cx| {
-                        waku.show_toast(tr!("errors.export_session", error = error));
+                    let _ = raku.update(cx, |raku, cx| {
+                        raku.show_toast(tr!("errors.export_session", error = error));
                         cx.notify();
                     });
                     return;
@@ -122,14 +122,14 @@ impl Waku {
             };
             // Capture the target by id after the save panel closes. Switching
             // sessions while a panel is open must never export the new selection.
-            let Ok(snapshot) = waku.update(cx, |waku, _| {
-                let session = waku
+            let Ok(snapshot) = raku.update(cx, |raku, _| {
+                let session = raku
                     .state
                     .sessions
                     .iter()
                     .find(|session| session.id == session_id)?
                     .clone();
-                Some((session, waku.daemon.clone()))
+                Some((session, raku.daemon.clone()))
             }) else {
                 return;
             };
@@ -141,7 +141,7 @@ impl Waku {
                     let session = if session.detail_loaded {
                         session
                     } else {
-                        waku_client::persistence::hydrate_session(&daemon, session_id)?
+                        raku_client::persistence::hydrate_session(&daemon, session_id)?
                             .ok_or_else(|| anyhow::anyhow!(tr!("errors.export_session_missing")))?
                     };
                     let markdown = session_export::markdown(&session, scope)?;
@@ -149,12 +149,12 @@ impl Waku {
                     anyhow::Ok(path)
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| {
+            let _ = raku.update(cx, |raku, cx| {
                 match result {
                     Ok(path) => {
-                        waku.show_success_toast(tr!("session.exported", path = path.display()))
+                        raku.show_success_toast(tr!("session.exported", path = path.display()))
                     }
-                    Err(error) => waku.show_toast(tr!("errors.export_session", error = error)),
+                    Err(error) => raku.show_toast(tr!("errors.export_session", error = error)),
                 }
                 cx.notify();
             });
@@ -166,7 +166,7 @@ impl Waku {
 fn write_export(path: &Path, markdown: &str) -> std::io::Result<()> {
     use std::io::Write as _;
 
-    let temporary = path.with_file_name(format!(".waku-export-{}.tmp", Uuid::new_v4()));
+    let temporary = path.with_file_name(format!(".raku-export-{}.tmp", Uuid::new_v4()));
     let result = (|| {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn export_replaces_files_and_removes_temporary_files_when_saving_fails() {
-        let directory = std::env::temp_dir().join(format!("waku-export-test-{}", Uuid::new_v4()));
+        let directory = std::env::temp_dir().join(format!("raku-export-test-{}", Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("session.md");
         std::fs::write(&path, "old export").unwrap();

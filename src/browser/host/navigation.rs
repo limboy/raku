@@ -133,7 +133,7 @@ define_class!(
     pub struct NavigationRelay;
 
     /// Stands in as the webview's navigation delegate so failures reach
-    /// Waku. wry's own delegate implements the policy, commit, finish
+    /// Raku. wry's own delegate implements the policy, commit, finish
     /// and download callbacks and none of the failure ones; every
     /// selector this class lacks is forwarded to it unchanged, and
     /// `respondsToSelector:` answers for both, so WebKit sees one

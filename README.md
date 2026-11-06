@@ -1,8 +1,8 @@
-# Waku
+# Raku
 
 > Forked from [waku.sh](https://waku.sh) ([egoist/waku](https://github.com/egoist/waku)).
 
-Waku is a fast, native macOS app for working with local coding agents. Built
+Raku is a fast, native macOS app for working with local coding agents. Built
 in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui),
 it keeps all projects, sessions, transcripts, and state on your machine.
 
@@ -10,28 +10,28 @@ it keeps all projects, sessions, transcripts, and state on your machine.
 
 Download the latest build from [GitHub Releases](https://github.com/limboy/raku/releases/latest):
 
-- **macOS (Apple Silicon):** Download and open `Waku-<version>.dmg`.
+- **macOS (Apple Silicon):** Download and open `Raku-<version>.dmg`.
 
 ## Updates
 
 Release builds check for signed updates from GitHub Releases in the background.
 When an update is available, an **Install update** icon appears at the top of
 the sidebar. Click it—or focus it and press Enter or Space—to install and
-relaunch Waku. You can also run **Check for Updates…** from the app menu at any
+relaunch Raku. You can also run **Check for Updates…** from the app menu at any
 time.
 
 Updates use Sparkle. Development builds keep automatic updates disabled.
 
 ## Supported agents
 
-Waku works with:
+Raku works with:
 
 - Claude Code
 - Codex CLI
 - Pi
 
-Install and authenticate at least one supported agent CLI before starting Waku.
-Waku detects available CLIs automatically and uses each provider's native
+Install and authenticate at least one supported agent CLI before starting Raku.
+Raku detects available CLIs automatically and uses each provider's native
 structured protocol and session continuity.
 
 ## Highlights
@@ -46,27 +46,27 @@ structured protocol and session continuity.
 
 ## Architecture
 
-The native desktop connects to a child `waku-daemon` process over loopback.
-Provider sessions run in [`waku-core`](crates/waku-core), behind the
+The native desktop connects to a child `raku-daemon` process over loopback.
+Provider sessions run in [`raku-core`](crates/raku-core), behind the
 authenticated, versioned WebSocket contract in
-[`waku-protocol`](crates/waku-protocol). Waku Desktop depends on
-[`waku-client`](crates/waku-client), not on the daemon implementation. The
+[`raku-protocol`](crates/raku-protocol). Raku Desktop depends on
+[`raku-client`](crates/raku-client), not on the daemon implementation. The
 daemon owns task SQLite data, uploaded attachments, provider-native session
 forks, and all workspace filesystem and Git operations; paths returned by it
 always refer to the local machine. The desktop retains only presentation state
 and a disposable preview cache.
 
-Projectless task workspaces live under `~/.waku/projects/<date>/<slug>`. The
-daemon moves workspaces created by the older `~/.waku/<date>/<slug>` layout on
+Projectless task workspaces live under `~/.raku/projects/<date>/<slug>`. The
+daemon moves workspaces created by the older `~/.raku/<date>/<slug>` layout on
 first load.
 
 Configuration ownership is separate too: the Release desktop writes
-`~/.waku/app.json`, while Debug stays isolated at `temp/app.json`. Daemon
-provider settings live in `~/.waku/settings.json`.
+`~/.raku/app.json`, while Debug stays isolated at `temp/app.json`. Daemon
+provider settings live in `~/.raku/settings.json`.
 
-Release apps bundle and sign `waku-daemon`. Development keeps the daemon at
-`target/debug/waku-debug-daemon`, allowing provider-only edits to rebuild and
-replace the daemon without relaunching Waku Debug.
+Release apps bundle and sign `raku-daemon`. Development keeps the daemon at
+`target/debug/raku-debug-daemon`, allowing provider-only edits to rebuild and
+replace the daemon without relaunching Raku Debug.
 
 ## Development
 
@@ -96,10 +96,10 @@ archive length, and signature before publishing.
 
 Release setup uses repository Actions secrets for the Developer ID
 certificate, App Store Connect API key, and `SPARKLE_PRIVATE_KEY`. Local macOS
-releases use Waku's dedicated `sh.waku.updates` Keychain account. See
+releases use Raku's dedicated `sh.waku.updates` Keychain account. See
 [RELEASING.md](RELEASING.md) for the complete secret list, key export commands,
 notarization, and release steps.
 
 ## License
 
-Waku is licensed under the [GNU General Public License v3.0 only](LICENSE).
+Raku is licensed under the [GNU General Public License v3.0 only](LICENSE).

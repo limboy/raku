@@ -52,7 +52,7 @@ const PLAN_USAGE_REFRESH: Duration = Duration::from_secs(300);
 const PLAN_USAGE_REFRESH_STALE: Duration = Duration::from_secs(30);
 const PLAN_USAGE_RETRY: Duration = Duration::from_secs(90);
 
-impl Waku {
+impl Raku {
     pub(super) fn plan_usage_key_for_session(
         &self,
         session: &AgentSession,
@@ -138,7 +138,7 @@ impl Waku {
                     let result = match daemon.request(
                         Uuid::nil(),
                         Uuid::nil(),
-                        waku_client::Command::FetchPlanUsage {
+                        raku_client::Command::FetchPlanUsage {
                             provider,
                             binary_override,
                             cli_version: claude_version,
@@ -146,7 +146,7 @@ impl Waku {
                             session_file: None,
                         },
                     ) {
-                        Ok(waku_client::ResponsePayload::PlanUsage { usage }) => Ok(usage),
+                        Ok(raku_client::ResponsePayload::PlanUsage { usage }) => Ok(usage),
                         Ok(_) => Err(anyhow::anyhow!(
                             "the daemon returned an invalid plan usage response"
                         )),

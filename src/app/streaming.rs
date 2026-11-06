@@ -1,8 +1,8 @@
 use super::*;
 
-impl Waku {
+impl Raku {
     /// Title for a turn-end banner, or `None` when the user is already
-    /// looking at the task's project. A banner is due when Waku is in the
+    /// looking at the task's project. A banner is due when Raku is in the
     /// background, or when the task belongs to a project other than the
     /// selected one — the sidebar dot alone is easy to miss there.
     fn turn_end_notification_title(&self, session_id: Uuid, cx: &App) -> Option<String> {
@@ -394,7 +394,7 @@ impl Waku {
                 }
             }
             DriverEvent::CompactionUpdated(item) => {
-                use waku_protocol::compaction::CompactionStatus;
+                use raku_protocol::compaction::CompactionStatus;
                 let completed = item.status != CompactionStatus::Running;
                 let succeeded = item.status == CompactionStatus::Completed;
                 let resume_queue = matches!(

@@ -5,23 +5,23 @@
  * something calls `setSessionName`. This extension fills that gap: when the
  * first ordinary request of an unnamed session arrives, it asks the session's
  * current model for a short title in the background and stores it with
- * `pi.setSessionName`. Pi then emits `session_info_changed`, which Waku already
+ * `pi.setSessionName`. Pi then emits `session_info_changed`, which Raku already
  * shows as the provider title, and the name persists in Pi's own session file.
  *
- * Waku appends a title-language note to the first request (see
- * `crates/waku-core/src/driver/title_language.rs`). The note exists only for
+ * Raku appends a title-language note to the first request (see
+ * `crates/raku-core/src/driver/title_language.rs`). The note exists only for
  * naming, so this extension strips it before the agent sees the request and
  * uses it to choose the title language.
  *
  * Titling is best-effort and silent: the agent run never waits for it, and a
- * failure leaves Waku's prompt-derived fallback in place. Nothing here writes
- * to stderr, because Waku surfaces stderr lines that mention errors.
+ * failure leaves Raku's prompt-derived fallback in place. Nothing here writes
+ * to stderr, because Raku surfaces stderr lines that mention errors.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-// Keep in sync with CONTEXT_* in crates/waku-core/src/driver/title_language.rs.
+// Keep in sync with CONTEXT_* in crates/raku-core/src/driver/title_language.rs.
 const TITLE_LANGUAGE_CONTEXT =
-  /\n\n\[\[waku-session-title-language=[a-z]{3}\]\]\nAutomatic session titles MUST use ([^,\n]+), unless [^\n]*\n\[\[\/waku-session-title-language\]\]$/;
+  /\n\n\[\[raku-session-title-language=[a-z]{3}\]\]\nAutomatic session titles MUST use ([^,\n]+), unless [^\n]*\n\[\[\/raku-session-title-language\]\]$/;
 
 const REQUEST_SAMPLE_CHARS = 2_000;
 const TITLE_MAX_CHARS = 60;
@@ -34,7 +34,7 @@ function splitTitleLanguage(text: string): { request: string; language?: string 
 }
 
 /** Commands keep their own semantics and do not describe the task. */
-// Mirrors waku_protocol::model::side_chat_question: a side chat's first
+// Mirrors raku_protocol::model::side_chat_question: a side chat's first
 // prompt carries borrowed conversation context ahead of the user's question,
 // and the title should describe the question.
 const SIDE_CHAT_CONTEXT_PREFIX = "[Side chat context]";
@@ -184,6 +184,6 @@ async function generateTitle(
       pi.setSessionName(title);
     }
   } catch {
-    // Best-effort: Waku keeps its prompt-derived title.
+    // Best-effort: Raku keeps its prompt-derived title.
   }
 }

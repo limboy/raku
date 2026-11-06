@@ -46,7 +46,7 @@ mod theme;
 mod ui;
 mod updater;
 
-pub use waku_client::{
+pub use raku_client::{
     checkpoint, command_env, composer_complete, git_branch, git_commit, i18n, identity, model,
     model_catalog, persistence, projectless, skills, usage, worktree,
 };
@@ -56,10 +56,10 @@ use gpui::{
     WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, point, px, size,
 };
 
-use crate::app::Waku;
+use crate::app::Raku;
 use crate::identity::{APP_ID, APP_NAME};
 actions!(
-    waku,
+    raku,
     [
         Quit,
         About,
@@ -194,11 +194,11 @@ fn restored_window_placement(cx: &App) -> (WindowBounds, Option<gpui::DisplayId>
     (window_bounds, display_id)
 }
 
-trait WakuApplicationExt {
+trait RakuApplicationExt {
     fn with_main_window_reopen(self) -> Self;
 }
 
-impl WakuApplicationExt for Application {
+impl RakuApplicationExt for Application {
     fn with_main_window_reopen(self) -> Self {
         self.on_reopen(|cx| {
             if let Some(window) = cx.windows().into_iter().next() {
@@ -213,8 +213,9 @@ impl WakuApplicationExt for Application {
 }
 
 pub fn run() {
+    raku_client::legacy_data::migrate();
     let daemon = crate::daemon::start_process()
-        .unwrap_or_else(|error| panic!("failed to start Waku daemon: {error:#}"));
+        .unwrap_or_else(|error| panic!("failed to start Raku daemon: {error:#}"));
     // Install the handler before launching so a cold-open URL survives while
     // the main window loads. Other platforms deliver desktop URL launches as
     // command-line arguments instead of macOS open-url events.
@@ -279,12 +280,12 @@ pub fn run() {
                 KeyBinding::new("secondary-shift-j", ToggleSideChat, None),
                 KeyBinding::new("secondary-k", ToggleCommandPalette, None),
                 KeyBinding::new("secondary-alt-shift-f", ToggleFpsCounter, None),
-                KeyBinding::new("secondary-[", NavigateBack, Some("Waku")),
-                KeyBinding::new("secondary-]", NavigateForward, Some("Waku")),
-                KeyBinding::new("ctrl-tab", SwitchTaskForward, Some("Waku")),
-                KeyBinding::new("ctrl-shift-tab", SwitchTaskBackward, Some("Waku")),
-                KeyBinding::new("ctrl-escape", CancelTaskSwitch, Some("Waku")),
-                KeyBinding::new("ctrl-shift-escape", CancelTaskSwitch, Some("Waku")),
+                KeyBinding::new("secondary-[", NavigateBack, Some("Raku")),
+                KeyBinding::new("secondary-]", NavigateForward, Some("Raku")),
+                KeyBinding::new("ctrl-tab", SwitchTaskForward, Some("Raku")),
+                KeyBinding::new("ctrl-shift-tab", SwitchTaskBackward, Some("Raku")),
+                KeyBinding::new("ctrl-escape", CancelTaskSwitch, Some("Raku")),
+                KeyBinding::new("ctrl-shift-escape", CancelTaskSwitch, Some("Raku")),
                 KeyBinding::new("down", SwitchTaskForward, Some("TaskSwitcher")),
                 KeyBinding::new("right", SwitchTaskForward, Some("TaskSwitcher")),
                 KeyBinding::new("up", SwitchTaskBackward, Some("TaskSwitcher")),
@@ -297,23 +298,23 @@ pub fn run() {
                 KeyBinding::new("secondary-/", ToggleModelPicker, None),
                 KeyBinding::new("secondary-p", ToggleProjectPicker, None),
                 KeyBinding::new("secondary-u", ToggleUsagePanel, None),
-                KeyBinding::new("secondary-shift-p", TogglePlanMode, Some("Waku")),
+                KeyBinding::new("secondary-shift-p", TogglePlanMode, Some("Raku")),
                 KeyBinding::new("secondary-s", SaveFile, None),
-                KeyBinding::new("escape", CancelTurn, Some("Waku")),
-                KeyBinding::new("secondary-c", CopySelection, Some("Waku")),
+                KeyBinding::new("escape", CancelTurn, Some("Raku")),
+                KeyBinding::new("secondary-c", CopySelection, Some("Raku")),
                 // Find and replace in the right panel's file editor, on the
                 // conventional VS Code bindings. The primary shortcut + G cycles matches from
                 // the editor without moving focus to the bar.
-                KeyBinding::new("secondary-f", OpenFind, Some("Waku")),
+                KeyBinding::new("secondary-f", OpenFind, Some("Raku")),
                 // The text input's macOS-style Ctrl-F caret binding is more
-                // specific than Waku's root context. Reassert the platform
+                // specific than Raku's root context. Reassert the platform
                 // primary shortcut for inputs inside this window so Ctrl-F
                 // remains find-in-page on Linux/Windows while Cmd-F keeps the
                 // native behavior on macOS.
-                KeyBinding::new("secondary-f", OpenFind, Some("Waku > TextInput")),
-                KeyBinding::new("secondary-alt-f", OpenFindReplace, Some("Waku")),
-                KeyBinding::new("secondary-g", FindNext, Some("Waku")),
-                KeyBinding::new("secondary-shift-g", FindPrevious, Some("Waku")),
+                KeyBinding::new("secondary-f", OpenFind, Some("Raku > TextInput")),
+                KeyBinding::new("secondary-alt-f", OpenFindReplace, Some("Raku")),
+                KeyBinding::new("secondary-g", FindNext, Some("Raku")),
+                KeyBinding::new("secondary-shift-g", FindPrevious, Some("Raku")),
                 // Scoped to the editor pane: escape closes the bar there and
                 // falls through to CancelTurn anywhere else.
                 KeyBinding::new("escape", CloseFind, Some("FileEditorPane")),
@@ -331,7 +332,7 @@ pub fn run() {
                 KeyBinding::new("secondary-alt-r", ToggleFindRegex, Some("FileEditorPane")),
                 KeyBinding::new("shift-enter", FindPrevious, Some("FindBar")),
                 KeyBinding::new("secondary-alt-enter", ReplaceAllMatches, Some("FindBar")),
-                // Browser surface. Deeper than "Waku", so while focus is on the
+                // Browser surface. Deeper than "Raku", so while focus is on the
                 // page or its address bar the browser reads the platform's
                 // conventional navigation shortcuts; the same keys elsewhere
                 // keep their app meanings. The clipboard trio is rebound
@@ -373,7 +374,7 @@ pub fn run() {
                             // Windows creates the window without `WS_CAPTION`
                             // either way; asking for the transparent titlebar
                             // is what extends the client area over the frame
-                            // so Waku's own header can host the caption
+                            // so Raku's own header can host the caption
                             // buttons and drag region.
                             appears_transparent: cfg!(any(
                                 target_os = "macos",
@@ -386,7 +387,7 @@ pub fn run() {
                             traffic_light_position: cfg!(target_os = "macos")
                                 .then(|| point(px(16.0), px(17.0))),
                         }),
-                        // Waku moves its custom macOS titlebar explicitly. Keep
+                        // Raku moves its custom macOS titlebar explicitly. Keep
                         // the NSWindow movable so native controls and Window-menu
                         // tiling remain enabled.
                         is_movable: true,
@@ -399,7 +400,7 @@ pub fn run() {
                         app_id: Some(APP_ID.to_owned()),
                         // GPUI defaults to compositor/server decorations. If a
                         // Wayland compositor declines them, it reports the
-                        // client fallback and Waku renders that frame itself.
+                        // client fallback and Raku renders that frame itself.
                         #[cfg(target_os = "linux")]
                         icon: crate::platform::linux_app_icon(),
                         window_bounds: Some(window_bounds),
@@ -409,18 +410,18 @@ pub fn run() {
                     },
                     move |window, cx| {
                         crate::platform::configure_main_window_close_behavior(window, cx);
-                        let waku = Waku::new(window, cx, daemon);
-                        let composer_focus = waku.read(cx).composer_focus(cx);
+                        let raku = Raku::new(window, cx, daemon);
+                        let composer_focus = raku.read(cx).composer_focus(cx);
                         window.focus(&composer_focus, cx);
-                        waku
+                        raku
                     },
                 )
-                .expect("failed to open Waku window");
+                .expect("failed to open Raku window");
 
             cx.spawn(async move |cx| {
                 while let Ok(session_id) = session_links_rx.recv().await {
-                    let _ = window.update(cx, |waku, window, cx| {
-                        waku.open_session_link(session_id, cx);
+                    let _ = window.update(cx, |raku, window, cx| {
+                        raku.open_session_link(session_id, cx);
                         window.activate_window();
                         cx.activate(true);
                     });
@@ -436,8 +437,8 @@ pub fn run() {
                         return;
                     };
                     window
-                        .update(cx, |waku, window, cx| {
-                            waku.open_task_from_notification(session_id, cx);
+                        .update(cx, |raku, window, cx| {
+                            raku.open_task_from_notification(session_id, cx);
                             window.activate_window();
                             cx.activate(true);
                         })

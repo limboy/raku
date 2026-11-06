@@ -123,7 +123,7 @@ fn diagram(source: &str, colors: &Colors, cancel: Arc<AtomicBool>) -> Result<Dia
                 .map_err(|error| javascript_error(&ctx, error))?;
             let render: Function = ctx
                 .globals()
-                .get("wakuRenderMermaid")
+                .get("rakuRenderMermaid")
                 .map_err(|error| javascript_error(&ctx, error))?;
             render
                 .call::<_, String>((source, colors))

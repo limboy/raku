@@ -12,7 +12,7 @@ fn new_task_runtime_mode(current: Option<&AgentSession>, remembered: RuntimeMode
         .unwrap_or(remembered)
 }
 
-impl Waku {
+impl Raku {
     pub(crate) fn open_task_from_notification(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
         self.select_session(session_id, cx);
     }
@@ -111,11 +111,11 @@ impl Waku {
             return;
         }
         let daemon = self.daemon.clone();
-        cx.spawn(async move |waku, cx| {
+        cx.spawn(async move |raku, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    match waku_client::persistence::hydrate_session(&daemon, session_id)? {
+                    match raku_client::persistence::hydrate_session(&daemon, session_id)? {
                         Some(session) => Ok(session),
                         None => {
                             anyhow::bail!("the task no longer exists")
@@ -123,11 +123,11 @@ impl Waku {
                     }
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| {
-                waku.session_hydrations.remove(&session_id);
+            let _ = raku.update(cx, |raku, cx| {
+                raku.session_hydrations.remove(&session_id);
                 match result {
                     Ok(session) => {
-                        let replaced = if let Some(existing) = waku
+                        let replaced = if let Some(existing) = raku
                             .state
                             .sessions
                             .iter_mut()
@@ -138,28 +138,28 @@ impl Waku {
                         } else {
                             false
                         };
-                        let pending = waku
+                        let pending = raku
                             .pending_session_activation
                             .filter(|pending| pending.session_id == session_id);
                         if pending.is_some() {
-                            waku.pending_session_activation = None;
+                            raku.pending_session_activation = None;
                         }
                         if replaced && let Some(pending) = pending {
-                            waku.finish_session_activation(session_id, pending.transition, cx);
-                        } else if waku.state.selected_session == Some(session_id) {
-                            waku.reset_visible_state();
-                            waku.reset_transcript_rows(waku.transcript_row_count());
-                            waku.refresh_composer_sources(cx);
+                            raku.finish_session_activation(session_id, pending.transition, cx);
+                        } else if raku.state.selected_session == Some(session_id) {
+                            raku.reset_visible_state();
+                            raku.reset_transcript_rows(raku.transcript_row_count());
+                            raku.refresh_composer_sources(cx);
                         }
                     }
                     Err(error) => {
-                        if waku
+                        if raku
                             .pending_session_activation
                             .is_some_and(|pending| pending.session_id == session_id)
                         {
-                            waku.pending_session_activation = None;
+                            raku.pending_session_activation = None;
                         }
-                        waku.show_toast(tr!("errors.open_session", error = error));
+                        raku.show_toast(tr!("errors.open_session", error = error));
                     }
                 }
                 cx.notify();
@@ -342,10 +342,10 @@ impl Waku {
             }
         }
         if let Some(project_path) = project_path {
-            let workspace = waku_client::WorkspaceClient::new(self.daemon.client());
+            let workspace = raku_client::WorkspaceClient::new(self.daemon.client());
             cx.background_executor()
                 .spawn(async move {
-                    let _ = workspace.request(waku_client::WorkspaceOperation::DeleteSessionRefs {
+                    let _ = workspace.request(raku_client::WorkspaceOperation::DeleteSessionRefs {
                         cwd: project_path,
                         session_id,
                     });
@@ -591,7 +591,7 @@ impl Waku {
     /// as on screen and keeps its full width here: the slide narrows the
     /// container that clips it, so nothing inside reflows on the way out.
     /// What the panel actually occupies this frame is
-    /// [`Waku::sidebar_rendered_width`] / [`Waku::right_panel_rendered_width`].
+    /// [`Raku::sidebar_rendered_width`] / [`Raku::right_panel_rendered_width`].
     pub(super) fn effective_panel_widths(&self, window: &Window) -> (f32, f32) {
         fitted_panel_widths(
             f32::from(window.viewport_size().width),
@@ -1192,16 +1192,16 @@ impl Waku {
                 {
                     runtime.options_generation = runtime.options_generation.wrapping_add(1);
                     let driver = runtime.driver.clone();
-                    cx.spawn(async move |waku, cx| {
+                    cx.spawn(async move |raku, cx| {
                         let applied = cx
                             .background_executor()
                             .spawn(async move { driver.apply_options(options) })
                             .await;
-                        let _ = waku.update(cx, |waku, cx| {
+                        let _ = raku.update(cx, |raku, cx| {
                             if !applied {
-                                waku.reset_session_runtime(session_id);
+                                raku.reset_session_runtime(session_id);
                             }
-                            waku.send_plan_implementation(session_id, prompt, cx);
+                            raku.send_plan_implementation(session_id, prompt, cx);
                         });
                     })
                     .detach();
@@ -1413,7 +1413,7 @@ impl Waku {
         // A provider runtime owns its process tree. Normally Stop closes that
         // tree and the next prompt resumes the same provider thread with a
         // fresh runtime. A detached process or subagent is the exception: its
-        // provider must remain resident so Waku can keep observing and
+        // provider must remain resident so Raku can keep observing and
         // stopping it.
         if retain_runtime && keep_runtime {
             if let Some(runtime) = runtime.take() {
@@ -1736,31 +1736,31 @@ impl Waku {
             return;
         }
 
-        let workspace = waku_client::WorkspaceClient::new(self.daemon.client());
-        cx.spawn(async move |waku, cx| {
+        let workspace = raku_client::WorkspaceClient::new(self.daemon.client());
+        cx.spawn(async move |raku, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     match workspace.request(
-                        waku_client::WorkspaceOperation::CreateProjectlessWorkspace {
+                        raku_client::WorkspaceOperation::CreateProjectlessWorkspace {
                             prompt: None,
                         },
                     )? {
-                        waku_client::WorkspaceResult::ProjectlessWorkspace { cwd } => Ok(cwd),
+                        raku_client::WorkspaceResult::ProjectlessWorkspace { cwd } => Ok(cwd),
                         _ => anyhow::bail!("the daemon returned an invalid projectless response"),
                     }
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| match result {
+            let _ = raku.update(cx, |raku, cx| match result {
                 Ok(cwd) => {
                     let mut project = Project::from_path(cwd);
                     project.name = Project::PROJECTLESS_NAME.to_owned();
                     let project_id = project.id;
-                    waku.state.projects.push(project);
-                    waku.create_session_for(project_id, cx);
+                    raku.state.projects.push(project);
+                    raku.create_session_for(project_id, cx);
                 }
                 Err(error) => {
-                    waku.show_toast(tr!("errors.create_projectless_task", error = error));
+                    raku.show_toast(tr!("errors.create_projectless_task", error = error));
                     cx.notify();
                 }
             });

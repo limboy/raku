@@ -119,7 +119,7 @@ pub(crate) fn markdown(session: &AgentSession, scope: ExportScope) -> anyhow::Re
 }
 
 fn write_activity(out: &mut String, activity: &ActivityItem) {
-    use waku_protocol::compaction::{CompactionStatus, CompactionTrigger};
+    use raku_protocol::compaction::{CompactionStatus, CompactionTrigger};
     let title = if activity.reasoning.is_some() {
         "Reasoning"
     } else {
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn full_export_preserves_compaction_details_and_interrupted_status() {
-        use waku_protocol::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
+        use raku_protocol::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
         let mut session = session();
         let mut item = ContextCompaction::new("compact", Some(CompactionTrigger::Manual), 1000);
         item.summary = Some("Keep the architecture constraint".into());

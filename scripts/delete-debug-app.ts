@@ -8,7 +8,7 @@ import { createInterface } from "node:readline/promises";
 const projectRoot = resolve(import.meta.dir, "..");
 const userHome = homedir();
 const library = join(userHome, "Library");
-const debugBundleIdentifiers = ["sh.waku.dev", "codes.waku.dev"];
+const debugBundleIdentifiers = ["sh.raku.dev", "codes.raku.dev"];
 
 type Target = {
   path: string;
@@ -22,7 +22,7 @@ function addCandidate(path: string): void {
 }
 
 function isDebugDiagnostic(name: string): boolean {
-  return /^Waku Debug[-_.]/.test(name);
+  return /^Raku Debug[-_.]/.test(name);
 }
 
 async function addMatchingChildren(
@@ -64,28 +64,28 @@ async function existingTargets(): Promise<Target[]> {
 
 // Checkout-local state and build artifacts. Keep the release cache intact.
 addCandidate(join(projectRoot, "temp"));
-addCandidate(join(projectRoot, "target", "debug", "Waku Debug.app"));
+addCandidate(join(projectRoot, "target", "debug", "Raku Debug.app"));
 
 if (process.env.CARGO_TARGET_DIR) {
   addCandidate(
     join(
       resolve(projectRoot, process.env.CARGO_TARGET_DIR),
       "debug",
-      "Waku Debug.app",
+      "Raku Debug.app",
     ),
   );
 }
 
 // Debug app bundles that may have been copied outside the checkout.
-addCandidate(join(userHome, "Applications", "Waku Debug.app"));
-addCandidate("/Applications/Waku Debug.app");
+addCandidate(join(userHome, "Applications", "Raku Debug.app"));
+addCandidate("/Applications/Raku Debug.app");
 
-// Debug-only app data. The release app uses Waku/sh.waku and is not included.
-addCandidate(join(library, "Application Support", "Waku Debug"));
-addCandidate(join(library, "Caches", "Waku Debug"));
-addCandidate(join(library, "Logs", "Waku Debug"));
+// Debug-only app data. The release app uses Raku/sh.raku and is not included.
+addCandidate(join(library, "Application Support", "Raku Debug"));
+addCandidate(join(library, "Caches", "Raku Debug"));
+addCandidate(join(library, "Logs", "Raku Debug"));
 
-// codes.waku.dev was Waku Debug's bundle ID before sh.waku.dev.
+// codes.raku.dev was Raku Debug's bundle ID before sh.raku.dev.
 for (const bundleIdentifier of debugBundleIdentifiers) {
   for (const path of [
     join(library, "Application Support", bundleIdentifier),
@@ -127,18 +127,18 @@ await addMatchingChildren(
 
 const targets = await existingTargets();
 if (targets.length === 0) {
-  console.log("No Waku Debug files or directories found.");
+  console.log("No Raku Debug files or directories found.");
   process.exit(0);
 }
 
 console.log(
-  "The following Waku Debug paths, including directory contents, will be permanently deleted:\n",
+  "The following Raku Debug paths, including directory contents, will be permanently deleted:\n",
 );
 for (const target of targets) {
   console.log(`  [${target.kind}] ${target.path}`);
 }
 
-const runningProcesses = ["Waku Debug"].filter(
+const runningProcesses = ["Raku Debug"].filter(
   (name) =>
     Bun.spawnSync(["/usr/bin/pgrep", "-x", name], {
       stdout: "ignore",

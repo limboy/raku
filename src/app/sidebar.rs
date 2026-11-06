@@ -3,11 +3,11 @@ use gpui::{KeyBinding, actions};
 
 use super::*;
 
-actions!(waku_sidebar, [CancelSessionRename]);
+actions!(raku_sidebar, [CancelSessionRename]);
 
 /// Select a session by its zero-based position in the sidebar history.
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
-#[action(namespace = waku_sidebar, no_json)]
+#[action(namespace = raku_sidebar, no_json)]
 pub(super) struct SelectSidebarSession(pub usize);
 
 const SESSION_SHORTCUT_COUNT: usize = 9;
@@ -26,7 +26,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(
             &format!("secondary-{}", index + 1),
             SelectSidebarSession(index),
-            Some("Waku"),
+            Some("Raku"),
         )
     }));
 }
@@ -315,7 +315,7 @@ fn reveal_sidebar_list_row(list: &ListState, rows: &[SidebarRow], index: usize) 
     }
 }
 
-impl Waku {
+impl Raku {
     pub(super) fn start_sidebar_date_clock(&mut self, cx: &mut Context<Self>) {
         // One task owns all refreshes, so a superseded pass cannot land late.
         self.sidebar_date_task = Some(cx.spawn(async move |this, cx| {
@@ -1204,7 +1204,7 @@ impl Waku {
                 )))
                 .into_any_element()
         };
-        let waku = cx.entity().downgrade();
+        let raku = cx.entity().downgrade();
         let menu = self.menu_handle(format!("session-{session_id}"), cx);
         let row_focus = menu.trigger_focus_handle().clone();
         let keyboard_menu = menu.clone();
@@ -1334,7 +1334,7 @@ impl Waku {
                 div().w_full().child(row),
                 SharedString::from(format!("session-menu-{session_id}")),
                 &menu,
-                move |_| sidebar_session_menu_items(session_id, pinned, waku.clone()),
+                move |_| sidebar_session_menu_items(session_id, pinned, raku.clone()),
             )
         };
 
@@ -1590,17 +1590,17 @@ pub(super) fn sidebar_session_indicates_finished(
 fn sidebar_session_menu_items(
     session_id: Uuid,
     pinned: bool,
-    waku: WeakEntity<Waku>,
+    raku: WeakEntity<Raku>,
 ) -> Vec<MenuItem> {
-    let pin_waku = waku.clone();
-    let rename_waku = waku.clone();
-    let copy_waku = waku.clone();
-    let export_waku = waku.clone();
-    let remove_waku = waku;
+    let pin_raku = raku.clone();
+    let rename_raku = raku.clone();
+    let copy_raku = raku.clone();
+    let export_raku = raku.clone();
+    let remove_raku = raku;
     vec![
         MenuItem::new(tr!("common.rename"), move |window, cx| {
-            let _ = rename_waku.update(cx, |waku, cx| {
-                waku.begin_session_rename(session_id, window, cx);
+            let _ = rename_raku.update(cx, |raku, cx| {
+                raku.begin_session_rename(session_id, window, cx);
             });
         }),
         MenuItem::Separator,
@@ -1611,20 +1611,20 @@ fn sidebar_session_menu_items(
                 tr!("session.pin")
             },
             move |_, cx| {
-                let _ = pin_waku.update(cx, |waku, cx| waku.toggle_session_pin(session_id, cx));
+                let _ = pin_raku.update(cx, |raku, cx| raku.toggle_session_pin(session_id, cx));
             },
         ),
         MenuItem::Separator,
         MenuItem::submenu(tr!("common.copy"), {
-            let copy_waku = copy_waku.clone();
+            let copy_raku = copy_raku.clone();
             move |_| {
-                let copy_conversation_waku = copy_waku.clone();
-                let copy_all_waku = copy_waku.clone();
-                let copy_deeplink_waku = copy_waku.clone();
+                let copy_conversation_raku = copy_raku.clone();
+                let copy_all_raku = copy_raku.clone();
+                let copy_deeplink_raku = copy_raku.clone();
                 vec![
                     MenuItem::new(tr!("session.copy_conversation"), move |_, cx| {
-                        let _ = copy_conversation_waku.update(cx, |waku, cx| {
-                            waku.copy_session(
+                        let _ = copy_conversation_raku.update(cx, |raku, cx| {
+                            raku.copy_session(
                                 session_id,
                                 crate::session_export::ExportScope::Conversation,
                                 cx,
@@ -1632,8 +1632,8 @@ fn sidebar_session_menu_items(
                         });
                     }),
                     MenuItem::new(tr!("session.copy_all"), move |_, cx| {
-                        let _ = copy_all_waku.update(cx, |waku, cx| {
-                            waku.copy_session(
+                        let _ = copy_all_raku.update(cx, |raku, cx| {
+                            raku.copy_session(
                                 session_id,
                                 crate::session_export::ExportScope::All,
                                 cx,
@@ -1641,22 +1641,22 @@ fn sidebar_session_menu_items(
                         });
                     }),
                     MenuItem::new(tr!("session.copy_deeplink"), move |_, cx| {
-                        let _ = copy_deeplink_waku.update(cx, |waku, cx| {
-                            waku.copy_session_deeplink(session_id, cx);
+                        let _ = copy_deeplink_raku.update(cx, |raku, cx| {
+                            raku.copy_session_deeplink(session_id, cx);
                         });
                     }),
                 ]
             }
         }),
         MenuItem::submenu(tr!("common.export"), {
-            let export_waku = export_waku.clone();
+            let export_raku = export_raku.clone();
             move |_| {
-                let export_conversation_waku = export_waku.clone();
-                let export_all_waku = export_waku.clone();
+                let export_conversation_raku = export_raku.clone();
+                let export_all_raku = export_raku.clone();
                 vec![
                     MenuItem::new(tr!("session.export_conversation"), move |_, cx| {
-                        let _ = export_conversation_waku.update(cx, |waku, cx| {
-                            waku.export_session(
+                        let _ = export_conversation_raku.update(cx, |raku, cx| {
+                            raku.export_session(
                                 session_id,
                                 crate::session_export::ExportScope::Conversation,
                                 cx,
@@ -1664,8 +1664,8 @@ fn sidebar_session_menu_items(
                         });
                     }),
                     MenuItem::new(tr!("session.export_all"), move |_, cx| {
-                        let _ = export_all_waku.update(cx, |waku, cx| {
-                            waku.export_session(
+                        let _ = export_all_raku.update(cx, |raku, cx| {
+                            raku.export_session(
                                 session_id,
                                 crate::session_export::ExportScope::All,
                                 cx,
@@ -1677,7 +1677,7 @@ fn sidebar_session_menu_items(
         }),
         MenuItem::Separator,
         MenuItem::new(tr!("common.remove"), move |_, cx| {
-            let _ = remove_waku.update(cx, |waku, cx| waku.remove_session(session_id, cx));
+            let _ = remove_raku.update(cx, |raku, cx| raku.remove_session(session_id, cx));
         })
         .destructive(),
     ]
@@ -2085,7 +2085,7 @@ mod tests {
 
     #[test]
     fn no_project_history_includes_every_projectless_workspace() {
-        let root = Path::new("/tmp/.waku/projects");
+        let root = Path::new("/tmp/.raku/projects");
         let projects = vec![
             Project::from_path(PathBuf::from("/work/ordinary")),
             Project::from_path(root.join("2026-10-29/first")),
@@ -2118,7 +2118,7 @@ mod tests {
 
     #[test]
     fn projectless_sidebar_projects_are_paths_under_the_workspace_root() {
-        let root = Path::new("/tmp/.waku/projects");
+        let root = Path::new("/tmp/.raku/projects");
         let projectless = Project {
             id: Uuid::from_u128(1),
             name: "Task".to_owned(),

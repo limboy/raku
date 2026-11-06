@@ -1,10 +1,10 @@
 use super::composer::next_picker_highlight;
 use super::*;
 use crate::ui::ActivationExt;
-use waku_client::persistence::TranscriptFontSize;
+use raku_client::persistence::TranscriptFontSize;
 
 gpui::actions!(
-    waku_settings,
+    raku_settings,
     [CloseSettings, NextSettingsFocus, PreviousSettingsFocus]
 );
 
@@ -63,7 +63,7 @@ fn settings_popup_size(viewport_width: f32, viewport_height: f32) -> (f32, f32) 
     )
 }
 
-impl Waku {
+impl Raku {
     pub(super) fn open_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
         self.settings_page = Some(page);
         // Each page starts at its own top; a scroll position carried over
@@ -672,7 +672,7 @@ impl Waku {
     }
 
     fn set_code_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
-        let size = waku_client::persistence::sanitized_code_font_size(size);
+        let size = raku_client::persistence::sanitized_code_font_size(size);
         if self.state.code_font_size == size {
             return;
         }

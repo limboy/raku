@@ -1,11 +1,11 @@
 ---
 name: release
-description: Cut a Waku release — pick the version, write the CHANGELOG section, bump Cargo.toml, tag and push, watch the Release workflow, recover from known CI failures, and verify the published update feed. Use when the user asks to release, ship, or publish a new Waku version.
+description: Cut a Raku release — pick the version, write the CHANGELOG section, bump Cargo.toml, tag and push, watch the Release workflow, recover from known CI failures, and verify the published update feed. Use when the user asks to release, ship, or publish a new Raku version.
 argument-hint: "[patch|minor|major|<x.y.z>]"
 disable-model-invocation: true
 ---
 
-# Release Waku
+# Release Raku
 
 [RELEASING.md](../../../RELEASING.md) is the full reference (secrets, signing,
 notarization). This skill is the procedure. Where they disagree, trust
@@ -33,7 +33,7 @@ Stop and report if any check fails.
   Compare `git tag -l 'v*' --sort=-v:refname | head -5` with
   `gh release list -R limboy/raku -L 5`.
 - Something to release: `git log --oneline <published>..HEAD` has commits
-  other than `Release Waku …`.
+  other than `Release Raku …`.
 - Tests are green on HEAD:
   `gh run list -R limboy/raku -w test.yml -b main -L 1 --json headSha,status,conclusion`.
   If the latest run is for an older commit or still running, say so and ask
@@ -81,12 +81,12 @@ Stop and report if any check fails.
   `crates/*` packages stay at `0.1.0`.
 - `cargo update --workspace --offline` to sync `Cargo.lock`.
 - `git diff --stat` touches exactly `CHANGELOG.md`, `Cargo.toml`, and
-  `Cargo.lock`, and the lockfile diff is only the `waku` version line.
+  `Cargo.lock`, and the lockfile diff is only the `raku` version line.
 
 ## 5. Confirm, commit, tag, push
 
 - Show the user the version, the notes, and the commits being released, and
-  get an explicit go-ahead through the agent's question tool so Waku shows
+  get an explicit go-ahead through the agent's question tool so Raku shows
   the question sheet: `AskUserQuestion` in Claude Code,
   `request_user_input_async` in Codex. Do not ask in prose, and do not push
   until the answer arrives.
@@ -94,7 +94,7 @@ Stop and report if any check fails.
 
   ```sh
   git add CHANGELOG.md Cargo.toml Cargo.lock
-  git commit -m "Release Waku <x.y.z>"
+  git commit -m "Release Raku <x.y.z>"
   git tag v<x.y.z>
   git push origin main
   git push origin v<x.y.z>
@@ -134,11 +134,11 @@ Read `gh run view <id> -R limboy/raku --log-failed | tail -80` and match:
   from the user's account:
 
   ```sh
-  D=$(mktemp -d /tmp/waku-v<x.y.z>-XXXX)
+  D=$(mktemp -d /tmp/raku-v<x.y.z>-XXXX)
   gh run download <id> -R limboy/raku -n macos -D "$D"
   gh release create v<x.y.z> -R limboy/raku --verify-tag --latest \
-    --title v<x.y.z> --notes-file "$D/Waku-<x.y.z>.md" \
-    "$D/Waku-<x.y.z>.dmg" "$D/Waku-<x.y.z>.zip" "$D/Waku-<x.y.z>.md" "$D/appcast.xml"
+    --title v<x.y.z> --notes-file "$D/Raku-<x.y.z>.md" \
+    "$D/Raku-<x.y.z>.dmg" "$D/Raku-<x.y.z>.zip" "$D/Raku-<x.y.z>.md" "$D/appcast.xml"
   ```
 
   A manual publish skips the workflow's R2 sync step. If
@@ -150,7 +150,7 @@ Read `gh run view <id> -R limboy/raku --log-failed | tail -80` and match:
 ## 8. Verify and report
 
 - `gh release view v<x.y.z> -R limboy/raku --json isDraft,assets -q '{isDraft, assets: [.assets[].name]}'`:
-  not a draft, with `Waku-<x.y.z>.dmg`, `Waku-<x.y.z>.zip`, `Waku-<x.y.z>.md`,
+  not a draft, with `Raku-<x.y.z>.dmg`, `Raku-<x.y.z>.zip`, `Raku-<x.y.z>.md`,
   and `appcast.xml`.
 - `gh api repos/limboy/raku/releases/latest -q .tag_name` is `v<x.y.z>`.
   (`gh release view` has no `isLatest` field.)

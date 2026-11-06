@@ -19,10 +19,10 @@ SideChatAnchor { message_id, quote, spans: Vec<SideChatAnchorSpan { index, start
 ```
 
 - **Spans** use the transcript selection's coordinates: the text element's ordinal within the message row (`TextKey::index`) and a byte range. The transcript turns them into `md::render::InlineAnchor`s.
-- **Anchor links.** The dashed underline is painted in the text element's canvas underlay, because GPUI underlines have no dashed style. Each anchor joins the element's links under a private `waku-side-chat:<id>` target, so click, Tab focus and Enter reuse the link path.
+- **Anchor links.** The dashed underline is painted in the text element's canvas underlay, because GPUI underlines have no dashed style. Each anchor joins the element's links under a private `raku-side-chat:<id>` target, so click, Tab focus and Enter reuse the link path.
 - **Stale anchors.** An anchor whose range no longer fits its message is not drawn. The side chat itself stays reachable from the popover.
 - **Persistence.** The origin is stored in the nullable `sessions.side_chat` JSON column (migration `0006_side_chat`), so a list-only startup knows which sessions are side chats before hydration.
-- **Lookups.** Waku keeps a parent → side chats index and a message → anchors index. Both are rebuilt only when side chats are created, deleted or synced, never per frame.
+- **Lookups.** Raku keeps a parent → side chats index and a message → anchors index. Both are rebuilt only when side chats are created, deleted or synced, never per frame.
 - **Hidden from task lists.** `AgentSession::is_listed_task` and `is_task_draft` keep side chats out of the following:
   - the sidebar
   - the task switcher
@@ -59,10 +59,10 @@ A side chat uses effort `low` when the model offers it.
 | Provider | Launch |
 | --- | --- |
 | Pi | `--tools read,grep,find,ls,web_search,fetch_content,get_search_content,source_check --no-mcp --no-skills --no-prompt-templates`. The web tools come from the `pi-web-access` extension when it is installed; unregistered names are ignored. The title extension is not loaded. |
-| Claude Code | `--tools Read,Grep,Glob,WebSearch,WebFetch --allowedTools Read,Grep,Glob,WebSearch,WebFetch --permission-mode dontAsk --strict-mcp-config --disable-slash-commands`. Waku requests no title and runs no title polling. |
-| Codex | approval `never`, sandbox `read-only` on the thread and on every turn. Web search follows the user's Codex configuration. No Waku title turn. |
+| Claude Code | `--tools Read,Grep,Glob,WebSearch,WebFetch --allowedTools Read,Grep,Glob,WebSearch,WebFetch --permission-mode dontAsk --strict-mcp-config --disable-slash-commands`. Raku requests no title and runs no title polling. |
+| Codex | approval `never`, sandbox `read-only` on the thread and on every turn. Web search follows the user's Codex configuration. No Raku title turn. |
 
-All three replace Waku's run-block instructions with `SIDE_CHAT_INSTRUCTIONS`, which tell the model to answer from the shared conversation first and to search project files or the web when the question needs more.
+All three replace Raku's run-block instructions with `SIDE_CHAT_INSTRUCTIONS`, which tell the model to answer from the shared conversation first and to search project files or the web when the question needs more.
 
 The policy was verified against the real CLIs:
 

@@ -84,7 +84,7 @@ enum ProjectPickerAction {
     NoProject,
 }
 
-impl Waku {
+impl Raku {
     /// The primary shortcut + P opens the sidebar's project selector,
     /// revealing a hidden sidebar first so the picker has a trigger to drop
     /// from.
@@ -518,7 +518,7 @@ impl Waku {
                             return;
                         };
                         // Close before applying: the toggle observer updates
-                        // `Waku`, so it cannot run inside the update below.
+                        // `Raku`, so it cannot run inside the update below.
                         if !matches!(action, ProjectPickerAction::Remove(_)) {
                             confirm_popover.close(window, cx);
                             window.refresh();
@@ -999,7 +999,7 @@ mod tests {
             project("crow-companion"),
             project("speech-to-subtitle"),
             project("crow"),
-            project("waku-crow-sync"),
+            project("raku-crow-sync"),
         ];
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
         let sessions = vec![session(&projects[0], 80), session(&projects[2], 20)];
@@ -1015,7 +1015,7 @@ mod tests {
         // namesakes, and the non-matching project is gone.
         assert_eq!(
             names(&entries),
-            vec!["crow", "crow-companion", "waku-crow-sync"]
+            vec!["crow", "crow-companion", "raku-crow-sync"]
         );
 
         let entries = visible_project_entries(
@@ -1060,7 +1060,7 @@ mod tests {
 
     #[test]
     fn removed_projects_stay_out_of_the_picker_even_with_recent_activity_or_search() {
-        let projects = vec![project("crow"), project("waku")];
+        let projects = vec![project("crow"), project("raku")];
         let sessions = vec![session(&projects[0], 80), session(&projects[1], 20)];
         let mut removed = HashSet::from([projects[0].id]);
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
@@ -1072,7 +1072,7 @@ mod tests {
             "",
             &mut matcher,
         );
-        assert_eq!(names(&entries), vec!["waku"]);
+        assert_eq!(names(&entries), vec!["raku"]);
         assert!(
             visible_project_entries(
                 &projects,

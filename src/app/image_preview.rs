@@ -9,7 +9,7 @@ use gpui::{KeyBinding, actions};
 use super::*;
 use crate::ui::image::{TRANSCRIPT_IMAGE_MAX_HEIGHT, TRANSCRIPT_IMAGE_MAX_WIDTH, fitted_image};
 
-actions!(waku_image_preview, [DismissImagePreview]);
+actions!(raku_image_preview, [DismissImagePreview]);
 
 const IMAGE_PREVIEW_CONTEXT: &str = "ImagePreview";
 const IMAGE_PREVIEW_ANIMATION_DURATION: Duration = Duration::from_millis(140);
@@ -36,7 +36,7 @@ pub(super) struct ImagePreviewState {
 
 #[derive(IntoElement)]
 struct TranscriptImage {
-    waku: gpui::WeakEntity<Waku>,
+    raku: gpui::WeakEntity<Raku>,
     id: SharedString,
     reference: String,
     name: SharedString,
@@ -48,15 +48,15 @@ struct TranscriptImage {
 impl gpui::RenderOnce for TranscriptImage {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = Theme::current(cx);
-        let waku = self.waku.clone();
-        waku.update(cx, |waku, cx| {
-            waku.render_transcript_image(self, &theme, cx)
+        let raku = self.raku.clone();
+        raku.update(cx, |raku, cx| {
+            raku.render_transcript_image(self, &theme, cx)
         })
         .unwrap_or_else(|_| div().into_any_element())
     }
 }
 
-pub(super) fn markdown_image_renderer(waku: gpui::WeakEntity<Waku>) -> md::render::ImageRenderer {
+pub(super) fn markdown_image_renderer(raku: gpui::WeakEntity<Raku>) -> md::render::ImageRenderer {
     Rc::new(move |id, reference, alt| {
         let source_path = image_path_for_reference(reference);
         let max_size = gpui::size(
@@ -64,8 +64,8 @@ pub(super) fn markdown_image_renderer(waku: gpui::WeakEntity<Waku>) -> md::rende
             px(TRANSCRIPT_IMAGE_MAX_HEIGHT),
         );
         if source_path.is_none()
-            && !waku_protocol::blob::is_reference(reference)
-            && !reference.starts_with(waku_protocol::attachments::ATTACHMENT_SCHEME)
+            && !raku_protocol::blob::is_reference(reference)
+            && !reference.starts_with(raku_protocol::attachments::ATTACHMENT_SCHEME)
             && !reference.starts_with("data:image/")
             && !reference.starts_with("https://")
             && !reference.starts_with("http://")
@@ -82,7 +82,7 @@ pub(super) fn markdown_image_renderer(waku: gpui::WeakEntity<Waku>) -> md::rende
             alt.to_owned()
         };
         TranscriptImage {
-            waku: waku.clone(),
+            raku: raku.clone(),
             id: SharedString::from(format!("{id}-control")),
             reference: reference.to_owned(),
             name: name.into(),
@@ -116,29 +116,29 @@ fn image_from_bytes(bytes: Vec<u8>, format: Option<gpui::ImageFormat>) -> Option
 fn image_menu_items(
     image: &Arc<gpui::Image>,
     source_path: Option<PathBuf>,
-    waku: &gpui::WeakEntity<Waku>,
+    raku: &gpui::WeakEntity<Raku>,
 ) -> Vec<MenuItem> {
     let add_image = image.clone();
-    let add_waku = waku.clone();
+    let add_raku = raku.clone();
     let reveal_image = image.clone();
-    let reveal_waku = waku.clone();
+    let reveal_raku = raku.clone();
     image_action_menu_items(
         image,
         Rc::new(move |window, cx| {
-            let _ = add_waku.update(cx, |waku, cx| {
-                if waku.image_preview.is_some() {
-                    waku.close_image_preview(window, cx);
+            let _ = add_raku.update(cx, |raku, cx| {
+                if raku.image_preview.is_some() {
+                    raku.close_image_preview(window, cx);
                 }
-                waku.stage_pasted_attachments(
+                raku.stage_pasted_attachments(
                     vec![ClipboardEntry::Image((*add_image).clone())],
                     cx,
                 );
-                window.focus(&waku.composer_focus(cx), cx);
+                window.focus(&raku.composer_focus(cx), cx);
             });
         }),
         Rc::new(move |_, cx| {
-            let _ = reveal_waku.update(cx, |waku, cx| {
-                waku.reveal_transcript_image(reveal_image.clone(), source_path.clone(), cx);
+            let _ = reveal_raku.update(cx, |raku, cx| {
+                raku.reveal_transcript_image(reveal_image.clone(), source_path.clone(), cx);
             });
         }),
     )
@@ -186,7 +186,7 @@ pub(super) fn attachment_menu_items(path: PathBuf, can_reveal: bool) -> Vec<Menu
     ]
 }
 
-impl Waku {
+impl Raku {
     /// Resolve one daemon-owned image for a visible row. Frames consult only
     /// in-memory state; the first miss starts a deduplicated background RPC and
     /// a later notification lets GPUI render the returned bytes from memory.
@@ -204,11 +204,11 @@ impl Waku {
             };
         }
         let attachment_reference =
-            reference.starts_with(waku_protocol::attachments::ATTACHMENT_SCHEME);
+            reference.starts_with(raku_protocol::attachments::ATTACHMENT_SCHEME);
         let inline_image = reference.starts_with("data:image/");
         let source_path = image_path_for_reference(reference);
         let web_image = reference.starts_with("https://") || reference.starts_with("http://");
-        if !waku_protocol::blob::is_reference(reference)
+        if !raku_protocol::blob::is_reference(reference)
             && !attachment_reference
             && !inline_image
             && source_path.is_none()
@@ -235,7 +235,7 @@ impl Waku {
         let daemon_path = daemon_path.map(Path::to_path_buf);
         let daemon = self.daemon.clone();
         let http = cx.http_client();
-        cx.spawn(async move |waku, cx| {
+        cx.spawn(async move |raku, cx| {
             let image = cx
                 .background_executor()
                 .spawn(async move {
@@ -278,7 +278,7 @@ impl Waku {
                             .ok()?;
                         return image_from_bytes(bytes, response_format.or(format));
                     }
-                    let bytes = waku_client::persistence::read_remote_reference(
+                    let bytes = raku_client::persistence::read_remote_reference(
                         &fetch_reference,
                         daemon_path.as_deref(),
                         &daemon,
@@ -286,8 +286,8 @@ impl Waku {
                     image_from_bytes(bytes, format)
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| {
-                waku.remote_images.borrow_mut().insert(
+            let _ = raku.update(cx, |raku, cx| {
+                raku.remote_images.borrow_mut().insert(
                     cache_key,
                     image.map_or(RemoteImageState::Unavailable, RemoteImageState::Ready),
                 );
@@ -305,7 +305,7 @@ impl Waku {
         cx: &mut Context<Self>,
     ) {
         let daemon = self.daemon.clone();
-        cx.spawn(async move |waku, cx| {
+        cx.spawn(async move |raku, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -315,20 +315,20 @@ impl Waku {
                     match daemon.client().request(
                         Uuid::nil(),
                         Uuid::nil(),
-                        waku_client::Command::StoreBlob {
+                        raku_client::Command::StoreBlob {
                             mime_type: image.format.mime_type().into(),
                             bytes: image.bytes.clone(),
                         },
                     )? {
-                        waku_client::ResponsePayload::BlobStored { path, .. } => Ok(path),
+                        raku_client::ResponsePayload::BlobStored { path, .. } => Ok(path),
                         _ => anyhow::bail!("the daemon returned an invalid blob response"),
                     }
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| match result {
+            let _ = raku.update(cx, |raku, cx| match result {
                 Ok(path) => crate::platform::reveal_in_file_manager(&path, cx),
                 Err(error) => {
-                    waku.show_toast(error.to_string());
+                    raku.show_toast(error.to_string());
                     cx.notify();
                 }
             });
@@ -418,7 +418,7 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         TranscriptImage {
-            waku: cx.entity().downgrade(),
+            raku: cx.entity().downgrade(),
             id: format!("activity-image-{activity_id}-{index}").into(),
             reference: reference.to_owned(),
             name: tr!("activity.image_output").into(),
@@ -436,7 +436,7 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let TranscriptImage {
-            waku,
+            raku,
             id,
             reference,
             name,
@@ -509,7 +509,7 @@ impl Waku {
                 tile,
                 SharedString::from(format!("{id}-context-menu")),
                 &menu,
-                move |_| image_menu_items(&image, source_path.clone(), &waku),
+                move |_| image_menu_items(&image, source_path.clone(), &raku),
             );
         } else {
             let unavailable = matches!(
@@ -611,7 +611,7 @@ impl Waku {
         let keyboard_menu = image_menu.clone();
         let menu_image = preview.image.clone();
         let menu_path = preview.source_path.clone();
-        let menu_waku = cx.entity().downgrade();
+        let menu_raku = cx.entity().downgrade();
 
         let close = div()
             .id("image-preview-close")
@@ -679,7 +679,7 @@ impl Waku {
             "image-preview-context-menu",
             &image_menu,
             IMAGE_PREVIEW_PRIORITY + 1,
-            move |_| image_menu_items(&menu_image, menu_path.clone(), &menu_waku),
+            move |_| image_menu_items(&menu_image, menu_path.clone(), &menu_raku),
         );
         let content = div()
             .relative()

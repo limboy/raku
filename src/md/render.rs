@@ -335,7 +335,7 @@ pub struct SearchHighlights {
     pub active: Option<TextSearchMatch>,
 }
 
-/// A range of one rendered text element that links to something Waku owns,
+/// A range of one rendered text element that links to something Raku owns,
 /// such as the side chat started from that quote. It is drawn with a dashed
 /// underline and behaves like a link: click, Tab focus, and Enter all route
 /// `target` through the context's link handler.

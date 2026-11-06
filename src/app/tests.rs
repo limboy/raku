@@ -425,7 +425,7 @@ fn task_notification_tags_route_to_the_corresponding_task() {
     let tag = task_notification_tag(session_id);
 
     assert_eq!(task_id_from_notification_tag(&tag), Some(session_id));
-    assert_eq!(task_id_from_notification_tag("waku-task:not-a-uuid"), None);
+    assert_eq!(task_id_from_notification_tag("raku-task:not-a-uuid"), None);
     assert_eq!(task_id_from_notification_tag(&session_id.to_string()), None);
 }
 
@@ -2235,7 +2235,7 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
 
 #[test]
 fn compaction_milestones_survive_folding_roundtrip_and_later_activity() {
-    use waku_protocol::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
+    use raku_protocol::compaction::{CompactionStatus, CompactionTrigger, ContextCompaction};
     let mut session = AgentSession::new(uuid::Uuid::new_v4(), ProviderKind::Codex);
     session.begin_turn("Keep the public API stable");
     push_transcript_activity(
@@ -2381,13 +2381,13 @@ fn image_generation_repeated_in_the_answer_folds_without_losing_history() {
             None,
             true,
         )
-        .with_output(Some("/tmp/waku images/flying cat.jpg".into()))
+        .with_output(Some("/tmp/raku images/flying cat.jpg".into()))
         .with_image_urls(vec!["waku-blob:20396cfb694f8312.jpg".into()]),
         false,
     );
     session.push_message(
         MessageRole::Assistant,
-        "已为您生成图片：\n\n![在空中飞翔的猫](file:///tmp/waku%20images/flying%20cat.jpg)\n\n图片已保存。",
+        "已为您生成图片：\n\n![在空中飞翔的猫](file:///tmp/raku%20images/flying%20cat.jpg)\n\n图片已保存。",
     );
 
     let (running, _) = folded_transcript_rows(&session, &HashSet::new());

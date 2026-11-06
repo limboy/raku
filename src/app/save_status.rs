@@ -6,7 +6,7 @@
 //! backoff, and keeps a banner up until a later save covering it succeeds.
 
 use super::*;
-use waku_client::persistence::PendingTaskStateSave;
+use raku_client::persistence::PendingTaskStateSave;
 
 const SAVE_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const SAVE_RETRY_MAX: Duration = Duration::from_secs(30);
@@ -96,7 +96,7 @@ pub(super) fn spawn_task_state_save_waiter(
 ) -> Sender<(u64, PendingTaskStateSave)> {
     let (saves, pending) = unbounded::<(u64, PendingTaskStateSave)>();
     std::thread::Builder::new()
-        .name("waku-task-state-save".into())
+        .name("raku-task-state-save".into())
         .spawn(move || {
             for (sequence, save) in pending {
                 let session_ids = save.session_ids().to_vec();
@@ -118,7 +118,7 @@ pub(super) fn spawn_task_state_save_waiter(
     saves
 }
 
-impl Waku {
+impl Raku {
     /// Applies finished saves. Returns whether the warning changed.
     pub(super) fn drain_save_outcomes(&mut self, cx: &mut Context<Self>) -> bool {
         let was_failing = self.save_status.failure().is_some();

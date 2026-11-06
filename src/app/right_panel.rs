@@ -30,14 +30,14 @@ fn file_menu_items(path: PathBuf) -> Vec<MenuItem> {
 fn working_tree_file_menu_items(
     path: PathBuf,
     relative_path: String,
-    waku: WeakEntity<Waku>,
+    raku: WeakEntity<Raku>,
 ) -> Vec<MenuItem> {
     let attach_path = relative_path.clone();
     let copy_path = path.clone();
     let mut items = vec![
         MenuItem::new(tr!("files.attach_as_context"), move |window, cx| {
-            let _ = waku.update(cx, |waku, cx| {
-                waku.attach_file_as_context(&attach_path, window, cx);
+            let _ = raku.update(cx, |raku, cx| {
+                raku.attach_file_as_context(&attach_path, window, cx);
             });
         }),
         MenuItem::submenu(tr!("common.copy"), move |_| {
@@ -299,7 +299,7 @@ pub(super) fn file_icon_for_path(path: &str) -> &'static str {
 fn review_diff_gap_icon_path(direction: crate::review_diff::ExpansionDirection) -> &'static str {
     match direction {
         // Pierre's direction attributes and rendered chevrons are inverted by
-        // CSS. Waku names the data operation directly, so encode the resulting
+        // CSS. Raku names the data operation directly, so encode the resulting
         // visual here: reveal-from-start points down; reveal-from-end points up.
         crate::review_diff::ExpansionDirection::Start => "icons/chevron-down.svg",
         crate::review_diff::ExpansionDirection::End => "icons/chevron-up.svg",
@@ -984,7 +984,7 @@ impl From<FileImageSource> for gpui::ImageSource {
 /// GPUI's asset cache handles decoding without putting it on the frame path.
 fn file_image_source(bytes: Vec<u8>, path: &str) -> anyhow::Result<FileImageSource> {
     anyhow::ensure!(
-        bytes.len() <= waku_protocol::attachments::MAX_ATTACHMENT_BYTES,
+        bytes.len() <= raku_protocol::attachments::MAX_ATTACHMENT_BYTES,
         "image exceeds 32 MB"
     );
     if is_svg_file(path) {
@@ -1044,16 +1044,16 @@ impl LoadedRightPanelFile {
 }
 
 /// Reads text or image bytes from the daemon. Only called on a worker by
-/// [`Waku::read_right_panel_file_into_editor`], never directly from a frame.
+/// [`Raku::read_right_panel_file_into_editor`], never directly from a frame.
 fn read_right_panel_file(
-    workspace: &waku_client::WorkspaceClient,
+    workspace: &raku_client::WorkspaceClient,
     project_path: &Path,
     relative_path: &str,
 ) -> LoadedRightPanelFile {
     if is_image_file(relative_path) && !is_svg_file(relative_path) {
         let image = (|| -> anyhow::Result<FileImageSource> {
-            let waku_client::WorkspaceResult::FileBytes { bytes } =
-                workspace.request(waku_client::WorkspaceOperation::ReadFileBytes {
+            let raku_client::WorkspaceResult::FileBytes { bytes } =
+                workspace.request(raku_client::WorkspaceOperation::ReadFileBytes {
                     root: project_path.to_path_buf(),
                     relative_path: PathBuf::from(relative_path),
                 })?
@@ -1068,11 +1068,11 @@ fn read_right_panel_file(
             image: Some(image.map_err(|error| error.to_string())),
         };
     }
-    match workspace.request(waku_client::WorkspaceOperation::ReadTextFile {
+    match workspace.request(raku_client::WorkspaceOperation::ReadTextFile {
         root: project_path.to_path_buf(),
         relative_path: PathBuf::from(relative_path),
     }) {
-        Ok(waku_client::WorkspaceResult::TextFile { content }) => {
+        Ok(raku_client::WorkspaceResult::TextFile { content }) => {
             if is_svg_file(relative_path) {
                 LoadedRightPanelFile::svg(content)
             } else {
@@ -1095,21 +1095,21 @@ fn read_right_panel_file(
 
 fn read_attachment_file(
     attachment: &AttachmentFile,
-    request: impl FnOnce(waku_client::Command) -> anyhow::Result<waku_client::ResponsePayload>,
+    request: impl FnOnce(raku_client::Command) -> anyhow::Result<raku_client::ResponsePayload>,
 ) -> (String, bool) {
     let read = (|| -> anyhow::Result<String> {
         if let Some(reference) = attachment.reference.as_ref() {
-            let command = if waku_protocol::blob::is_reference(reference) {
-                waku_client::Command::ReadBlob {
+            let command = if raku_protocol::blob::is_reference(reference) {
+                raku_client::Command::ReadBlob {
                     reference: reference.clone(),
                 }
             } else {
-                waku_client::Command::ReadAttachment {
+                raku_client::Command::ReadAttachment {
                     reference: reference.clone(),
                     path: attachment.path.clone(),
                 }
             };
-            let waku_client::ResponsePayload::BlobData { bytes } = request(command)? else {
+            let raku_client::ResponsePayload::BlobData { bytes } = request(command)? else {
                 anyhow::bail!("the daemon returned an invalid attachment response");
             };
             return attachment_text(bytes);
@@ -1125,10 +1125,10 @@ fn read_attachment_file(
             .path
             .file_name()
             .context("invalid attachment name")?;
-        let waku_client::ResponsePayload::Workspace {
-            result: waku_client::WorkspaceResult::TextFile { content },
-        } = request(waku_client::Command::Workspace {
-            operation: waku_client::WorkspaceOperation::ReadTextFile {
+        let raku_client::ResponsePayload::Workspace {
+            result: raku_client::WorkspaceResult::TextFile { content },
+        } = request(raku_client::Command::Workspace {
+            operation: raku_client::WorkspaceOperation::ReadTextFile {
                 root: root.to_owned(),
                 relative_path: PathBuf::from(name),
             },
@@ -1309,7 +1309,7 @@ fn fade_safe_tab_offset(
 fn tab_scroll_reveal_guard(
     scroll_handle: ScrollHandle,
     tab_index: usize,
-    waku: WeakEntity<Waku>,
+    raku: WeakEntity<Raku>,
 ) -> impl IntoElement {
     canvas(
         move |_, window, _| {
@@ -1330,7 +1330,7 @@ fn tab_scroll_reveal_guard(
             }
 
             window.on_next_frame(move |_, cx| {
-                let _ = waku.update(cx, |this, cx| {
+                let _ = raku.update(cx, |this, cx| {
                     if this.right_panel_pending_tab_reveal == Some(tab_index) {
                         this.right_panel_pending_tab_reveal = None;
                         cx.notify();
@@ -1519,7 +1519,7 @@ mod tests {
         )
         .unwrap();
         let (text, writable) = read_attachment_file(&attachment, |command| {
-            let waku_client::Command::ReadAttachment {
+            let raku_client::Command::ReadAttachment {
                 reference: actual,
                 path,
             } = command
@@ -1528,7 +1528,7 @@ mod tests {
             };
             assert_eq!(actual, reference);
             assert_eq!(path, attachment.path);
-            Ok(waku_client::ResponsePayload::BlobData {
+            Ok(raku_client::ResponsePayload::BlobData {
                 bytes: "\u{feff}# Report\n修复 #14\n".as_bytes().to_vec(),
             })
         });
@@ -1547,9 +1547,9 @@ mod tests {
         )
         .unwrap();
         let (text, writable) = read_attachment_file(&attachment, |command| {
-            let waku_client::Command::Workspace {
+            let raku_client::Command::Workspace {
                 operation:
-                    waku_client::WorkspaceOperation::ReadTextFile {
+                    raku_client::WorkspaceOperation::ReadTextFile {
                         root,
                         relative_path,
                     },
@@ -1559,8 +1559,8 @@ mod tests {
             };
             assert_eq!(root, Path::new("/outside/project"));
             assert_eq!(relative_path, Path::new("notes.txt"));
-            Ok(waku_client::ResponsePayload::Workspace {
-                result: waku_client::WorkspaceResult::TextFile {
+            Ok(raku_client::ResponsePayload::Workspace {
+                result: raku_client::WorkspaceResult::TextFile {
                     content: "literal *text*\n".into(),
                 },
             })
@@ -1998,11 +1998,11 @@ mod tests {
 
     #[test]
     fn working_tree_only_descends_into_expanded_directories() {
-        let root = std::env::temp_dir().join(format!("waku-working-tree-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("raku-working-tree-{}", Uuid::new_v4()));
         std::fs::create_dir_all(root.join("src/nested")).unwrap();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
-        std::fs::write(root.join("README.md"), "# Waku\n").unwrap();
+        std::fs::write(root.join("README.md"), "# Raku\n").unwrap();
 
         let collapsed = visible_working_tree_entries(&root, &HashSet::new());
         assert_eq!(
@@ -2385,7 +2385,7 @@ mod tests {
     }
 }
 
-impl Waku {
+impl Raku {
     pub(super) fn open_transcript_link(&mut self, target: &str, cx: &mut Context<Self>) -> bool {
         if side_chat::side_chat_link_target(target).is_some() {
             // Routed with a window by the markdown link handler.
@@ -3603,7 +3603,7 @@ impl Waku {
             let keyboard_menu = menu.clone();
             let keyboard_path = relative_path.clone();
             let menu_relative_path = relative_path.clone();
-            let waku = cx.entity().downgrade();
+            let raku = cx.entity().downgrade();
             let row = row
                 .track_focus(menu.trigger_focus_handle())
                 .tab_index(0)
@@ -3625,7 +3625,7 @@ impl Waku {
                 working_tree_file_menu_items(
                     absolute_path.clone(),
                     menu_relative_path.clone(),
-                    waku.clone(),
+                    raku.clone(),
                 )
             })
             .into_any_element()
@@ -4050,10 +4050,10 @@ impl Waku {
         let epoch = editor.read_epoch;
         let state_id = editor.state.entity_id();
         let client = self.daemon.client();
-        let workspace = waku_client::WorkspaceClient::new(client.clone());
+        let workspace = raku_client::WorkspaceClient::new(client.clone());
         let reading_attachment = attachment.is_some();
 
-        cx.spawn(async move |waku, cx| {
+        cx.spawn(async move |raku, cx| {
             let read = cx
                 .background_executor()
                 .spawn({
@@ -4076,10 +4076,10 @@ impl Waku {
                     }
                 })
                 .await;
-            waku.update(cx, |waku, cx| {
-                if waku.state.selected_session != session_id
+            raku.update(cx, |raku, cx| {
+                if raku.state.selected_session != session_id
                     || !reading_attachment
-                        && waku.selected_workspace_path() != project_path.as_deref()
+                        && raku.selected_workspace_path() != project_path.as_deref()
                 {
                     // Restoring a session clears its in-flight flags before
                     // reading afresh. A stale result must not touch the editor
@@ -4091,7 +4091,7 @@ impl Waku {
                     writable,
                     image,
                 } = read;
-                let Some(editor) = waku.right_panel_file_editors.get_mut(&relative_path) else {
+                let Some(editor) = raku.right_panel_file_editors.get_mut(&relative_path) else {
                     return;
                 };
                 // A save landed while the read was in flight, so this text
@@ -4337,7 +4337,7 @@ impl Waku {
             let epoch = editor.image_epoch;
             let session_id = self.state.selected_session;
             let relative_path = relative_path.to_owned();
-            cx.spawn(async move |waku, cx| {
+            cx.spawn(async move |raku, cx| {
                 let image = cx
                     .background_executor()
                     .spawn(async move {
@@ -4345,11 +4345,11 @@ impl Waku {
                             .map_err(|error| error.to_string())
                     })
                     .await;
-                let _ = waku.update(cx, |waku, cx| {
-                    if waku.state.selected_session != session_id {
+                let _ = raku.update(cx, |raku, cx| {
+                    if raku.state.selected_session != session_id {
                         return;
                     }
-                    let Some(editor) = waku.right_panel_file_editors.get_mut(&relative_path) else {
+                    let Some(editor) = raku.right_panel_file_editors.get_mut(&relative_path) else {
                         return;
                     };
                     if editor.state.entity_id() != state_id || editor.image_epoch != epoch {
@@ -4396,7 +4396,7 @@ impl Waku {
             format!("file-preview-{relative_path}"),
             &palette,
             MarkdownMetrics::document(
-                waku_client::persistence::DEFAULT_UI_FONT_SIZE,
+                raku_client::persistence::DEFAULT_UI_FONT_SIZE,
                 self.state.code_font_size,
             ),
             self.file_preview_selection.clone(),
@@ -4513,8 +4513,8 @@ impl Waku {
         } else {
             return;
         };
-        let workspace = waku_client::WorkspaceClient::new(self.daemon.client());
-        cx.spawn(async move |waku, cx| {
+        let workspace = raku_client::WorkspaceClient::new(self.daemon.client());
+        cx.spawn(async move |raku, cx| {
             let result = cx
                 .background_executor()
                 .spawn({
@@ -4522,20 +4522,20 @@ impl Waku {
                     let relative_path = relative_path.clone();
                     let content = content.clone();
                     async move {
-                        match workspace.request(waku_client::WorkspaceOperation::WriteTextFile {
+                        match workspace.request(raku_client::WorkspaceOperation::WriteTextFile {
                             root: project_path,
                             relative_path: PathBuf::from(relative_path),
                             content,
                         })? {
-                            waku_client::WorkspaceResult::Ack => Ok(()),
+                            raku_client::WorkspaceResult::Ack => Ok(()),
                             _ => anyhow::bail!("the daemon returned an invalid file response"),
                         }
                     }
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| {
-                if waku.state.selected_session != Some(session_id)
-                    || waku
+            let _ = raku.update(cx, |raku, cx| {
+                if raku.state.selected_session != Some(session_id)
+                    || raku
                         .selected_workspace_path()
                         .is_none_or(|path| path != project_path)
                 {
@@ -4543,7 +4543,7 @@ impl Waku {
                 }
                 match result {
                     Ok(()) => {
-                        if let Some(editor) = waku.right_panel_file_editors.get_mut(&relative_path)
+                        if let Some(editor) = raku.right_panel_file_editors.get_mut(&relative_path)
                             && editor.read_epoch == epoch
                         {
                             let current = editor.state.read(cx).content();
@@ -4551,7 +4551,7 @@ impl Waku {
                             editor.dirty = current != content;
                         }
                     }
-                    Err(error) => waku.show_toast(tr!(
+                    Err(error) => raku.show_toast(tr!(
                         "files.could_not_save",
                         path = relative_path,
                         error = error.to_string()
@@ -5495,7 +5495,7 @@ impl Waku {
         }
         let files = self.mention_file_index.clone();
         let collapsed = self.right_panel_files_filter_collapsed_paths.clone();
-        cx.spawn(async move |waku, cx| {
+        cx.spawn(async move |raku, cx| {
             let entries = cx
                 .background_executor()
                 .spawn({
@@ -5503,14 +5503,14 @@ impl Waku {
                     async move { filtered_working_tree_entries(&root, &files, &filter, &collapsed) }
                 })
                 .await;
-            waku.update(cx, |waku, cx| {
-                if waku.right_panel_files_filter_generation == generation
-                    && waku
+            raku.update(cx, |raku, cx| {
+                if raku.right_panel_files_filter_generation == generation
+                    && raku
                         .selected_workspace_path()
                         .is_some_and(|path| path == root)
                 {
-                    waku.reset_right_panel_files_list(entries.len());
-                    waku.right_panel_filtered_working_tree = Some(entries);
+                    raku.reset_right_panel_files_list(entries.len());
+                    raku.right_panel_filtered_working_tree = Some(entries);
                     cx.notify();
                 }
             })
@@ -5554,18 +5554,18 @@ impl Waku {
             Query::Pending => {}
             Query::Missing(token) => {
                 let expanded = self.right_panel_expanded_paths.clone();
-                let workspace = waku_client::WorkspaceClient::new(self.daemon.client());
-                cx.spawn(async move |waku, cx| {
+                let workspace = raku_client::WorkspaceClient::new(self.daemon.client());
+                cx.spawn(async move |raku, cx| {
                     let entries = cx
                         .background_executor()
                         .spawn({
                             let path = project_path.clone();
                             async move {
-                                match workspace.request(waku_client::WorkspaceOperation::ListTree {
+                                match workspace.request(raku_client::WorkspaceOperation::ListTree {
                                     root: path,
                                     expanded_paths: expanded.into_iter().collect(),
                                 }) {
-                                    Ok(waku_client::WorkspaceResult::WorkingTree { entries }) => {
+                                    Ok(raku_client::WorkspaceResult::WorkingTree { entries }) => {
                                         entries
                                             .into_iter()
                                             .map(|entry| WorkingTreeEntry {
@@ -5585,22 +5585,22 @@ impl Waku {
                             }
                         })
                         .await;
-                    waku.update(cx, |waku, cx| {
-                        if waku.working_trees.fulfill(token, entries.clone())
-                            && waku
+                    raku.update(cx, |raku, cx| {
+                        if raku.working_trees.fulfill(token, entries.clone())
+                            && raku
                                 .selected_workspace_path()
                                 .is_some_and(|path| path == project_path)
                         {
-                            waku.right_panel_working_tree = entries;
-                            if waku
+                            raku.right_panel_working_tree = entries;
+                            if raku
                                 .right_panel_files_filter
                                 .read(cx)
                                 .content()
                                 .trim()
                                 .is_empty()
                             {
-                                waku.reset_right_panel_files_list(
-                                    waku.right_panel_working_tree.len(),
+                                raku.reset_right_panel_files_list(
+                                    raku.right_panel_working_tree.len(),
                                 );
                             }
                             cx.notify();
@@ -5714,20 +5714,20 @@ impl Waku {
         self.right_panel_diff_error = None;
         cx.notify();
 
-        let workspace = waku_client::WorkspaceClient::new(self.daemon.client());
-        cx.spawn(async move |waku, cx| {
+        let workspace = raku_client::WorkspaceClient::new(self.daemon.client());
+        cx.spawn(async move |raku, cx| {
             let result = cx
                 .background_executor()
                 .spawn({
                     let project_path = project_path.clone();
                     async move {
                         match workspace.request(
-                            waku_client::WorkspaceOperation::CollectReviewDiff {
+                            raku_client::WorkspaceOperation::CollectReviewDiff {
                                 cwd: project_path,
                                 source: crate::review_diff::wire_source(source),
                             },
                         )? {
-                            waku_client::WorkspaceResult::ReviewDiff { data } => {
+                            raku_client::WorkspaceResult::ReviewDiff { data } => {
                                 Ok(crate::review_diff::parse_collected(
                                     source,
                                     &data.numstat,
@@ -5740,54 +5740,54 @@ impl Waku {
                     }
                 })
                 .await;
-            waku.update(cx, |waku, cx| {
-                let still_current = waku.state.selected_session == Some(session_id)
-                    && waku.right_panel_diff_generation == generation
-                    && waku.right_panel_diff_source == source
-                    && waku
+            raku.update(cx, |raku, cx| {
+                let still_current = raku.state.selected_session == Some(session_id)
+                    && raku.right_panel_diff_generation == generation
+                    && raku.right_panel_diff_source == source
+                    && raku
                         .selected_workspace_path()
                         .is_some_and(|path| path == project_path);
                 if !still_current {
                     return;
                 }
 
-                waku.right_panel_diff_loading = false;
+                raku.right_panel_diff_loading = false;
                 match result {
                     Ok(snapshot) => {
-                        waku.right_panel_diff_selection.clear();
+                        raku.right_panel_diff_selection.clear();
                         let directories = review_diff_directory_paths(&snapshot.files);
                         if had_snapshot {
-                            waku.right_panel_diff_expanded_paths
+                            raku.right_panel_diff_expanded_paths
                                 .retain(|path| directories.contains(path));
-                            waku.right_panel_diff_expanded_paths
+                            raku.right_panel_diff_expanded_paths
                                 .extend(directories.difference(&previous_directories).cloned());
                         } else {
-                            waku.right_panel_diff_expanded_paths = directories;
+                            raku.right_panel_diff_expanded_paths = directories;
                         }
-                        waku.right_panel_diff_selected_file = selected_path
+                        raku.right_panel_diff_selected_file = selected_path
                             .as_deref()
                             .and_then(|path| {
                                 snapshot.files.iter().position(|file| file.path == path)
                             })
                             .or_else(|| (!snapshot.files.is_empty()).then_some(0));
-                        let reveal = waku.right_panel_diff_reveal_path.take().and_then(|path| {
+                        let reveal = raku.right_panel_diff_reveal_path.take().and_then(|path| {
                             snapshot.files.iter().position(|file| file.path == path)
                         });
                         let line_count = snapshot.lines.len();
-                        waku.right_panel_diff_snapshot = Some(Arc::new(snapshot));
-                        waku.right_panel_diff_error = None;
-                        waku.right_panel_diff_list_state.reset(line_count);
+                        raku.right_panel_diff_snapshot = Some(Arc::new(snapshot));
+                        raku.right_panel_diff_error = None;
+                        raku.right_panel_diff_list_state.reset(line_count);
                         if let Some(file_index) = reveal {
-                            waku.select_right_panel_diff_file(file_index, cx);
+                            raku.select_right_panel_diff_file(file_index, cx);
                         }
-                        waku.sync_right_panel_diff_tree_rows(cx);
+                        raku.sync_right_panel_diff_tree_rows(cx);
                     }
                     Err(error) => {
                         let message = error.to_string();
-                        if waku.right_panel_diff_snapshot.is_some() {
-                            waku.show_toast(tr!("diff.refresh_failed", error = message));
+                        if raku.right_panel_diff_snapshot.is_some() {
+                            raku.show_toast(tr!("diff.refresh_failed", error = message));
                         } else {
-                            waku.right_panel_diff_error = Some(message);
+                            raku.right_panel_diff_error = Some(message);
                         }
                     }
                 }

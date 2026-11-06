@@ -26,7 +26,7 @@ function resolveCss(value, variables, depth = 0) {
   return result;
 }
 
-function wakuRenderMermaid(source, colors) {
+function rakuRenderMermaid(source, colors) {
   const variables = {
     '--pele-bg': colors.background,
     '--pele-fg': colors.text,
@@ -69,7 +69,7 @@ function wakuRenderMermaid(source, colors) {
     limit: 50000,
     outputLimit: 2000000,
     maxEdges: 2000,
-    idPrefix: 'waku-mermaid',
+    idPrefix: 'raku-mermaid',
   });
   result.svg = result.svg.replace(
     /\s(?:style|fill|stroke|color|font-family|font-weight|rx|ry|stroke-width)="[^"]*"/g,

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Waku. This file is the **source of truth for the release
+All notable changes to Raku. This file is the **source of truth for the release
 notes shown in the in-app updater**: [`scripts/release.ts`](scripts/release.ts)
 extracts the section whose heading matches the version being released
 (`Cargo.toml`) and publishes it next to the update, so Sparkle shows it in
@@ -34,7 +34,7 @@ the original feature bullet instead of adding separate entries for them.
 - Add image and SVG previews and file context actions to the right sidebar
 - Add session deeplinks that paste as conversation attachments
 - Open a file's diff from the changed-files card
-- Notify when another project's turn finishes while Waku is frontmost, prefixed with the project name
+- Notify when another project's turn finishes while Raku is frontmost, prefixed with the project name
 - Steer Codex async question answers into the running turn instead of queuing them
 - Replace the UI font size setting with a transcript font size (Small, Medium, Large)
 - Restyle context menus after native macOS menus, and keep them anchored to the cursor
@@ -144,7 +144,7 @@ the original feature bullet instead of adding separate entries for them.
 
 - Install signed updates directly from GitHub Releases using the install icon at the top of the sidebar, with native update flows on macOS, Linux, and Windows
 - Add Antigravity CLI support alongside Claude Code, Codex CLI, DeepSeek, Oh My Pi, OpenCode, and Pi; retire the Kimi, Amp, Cursor, Fx, and Grok integrations
-- Focus Waku on native desktop workflows with local agent sessions and storage; remove the web and mobile clients and remote daemon access
+- Focus Raku on native desktop workflows with local agent sessions and storage; remove the web and mobile clients and remote daemon access
 - Add native context compaction across providers, automatic task titles for Oh My Pi, and collapsible text snippet attachments for long pastes
 - Pin tasks, see ongoing and unread completed tasks in the project picker, and browse session history grouped by date
 - Export conversations as Markdown, copy task details from session menus, and restore daily backups with a clean relaunch
@@ -156,7 +156,7 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [0.1.20]
 
-- Support the OpenCode 2.0 release, which now installs as `opencode`: OpenCode runs on its shared background service, OpenCode 2 beta and OpenCode 1 tasks continue as OpenCode tasks, and OpenCode's free models work in Waku tasks
+- Support the OpenCode 2.0 release, which now installs as `opencode`: OpenCode runs on its shared background service, OpenCode 2 beta and OpenCode 1 tasks continue as OpenCode tasks, and OpenCode's free models work in Raku tasks
 - Fix rewinding or branching an OpenCode task after steering it mid-turn, which forked OpenCode's conversation at the wrong turn
 - Fix OpenCode tasks going silent when the OpenCode service restarts; a turn it interrupted now continues in place once the service is back
 - Fix Cursor model discovery and options so the pickers list every model the Cursor CLI advertises, with its reasoning effort, fast mode, and context window
@@ -185,9 +185,9 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [0.1.16]
 
-- Import and continue conversations started in agent CLIs with `/resume` or the command palette across every provider, in both Waku and Waku Web
+- Import and continue conversations started in agent CLIs with `/resume` or the command palette across every provider, in both Raku and Raku Web
 - Linux: add signed in-app updates with clean relaunch and automatic rollback
-- Copy Waku task IDs and agent CLI thread IDs from task info or the command palette
+- Copy Raku task IDs and agent CLI thread IDs from task info or the command palette
 - Keep each response's actions and changed-file summary after its final tool activity
 - Keep the selected task visible when navigating the sidebar
 - Let nested transcript and command-output scrollers hand wheel gestures to the page only at their boundaries
@@ -195,7 +195,7 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [0.1.15]
 
-- Codex thread goals: type /goal to set a persistent objective the task keeps pursuing — before or after the first message — with its autonomous pursuit streaming into the transcript, a status chip showing live budget or elapsed time, and a dialog to edit, pause, resume, or clear the goal (also in Waku Web)
+- Codex thread goals: type /goal to set a persistent objective the task keeps pursuing — before or after the first message — with its autonomous pursuit streaming into the transcript, a status chip showing live budget or elapsed time, and a dialog to edit, pause, resume, or clear the goal (also in Raku Web)
 - Discover provider-native slash commands and skills from installed agent CLIs, including multiline YAML descriptions
 - Add reasoning effort selection for Grok
 - Reconnect remote daemon sessions automatically after connection interruptions
@@ -271,7 +271,7 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [0.1.0]
 
-- Add standalone Waku daemon and browser client
+- Add standalone Raku daemon and browser client
 - Add Linux support (X11 and Wayland, you need to build from source for now)
 - Answer agent questions directly in the composer
 - Redesign queued follow-ups as composer cards with per-message steering

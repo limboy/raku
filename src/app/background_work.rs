@@ -134,18 +134,18 @@ impl BackgroundSummaryTarget {
     fn open(
         &self,
         session_id: Uuid,
-        waku: &mut Waku,
+        raku: &mut Raku,
         _window: &mut Window,
-        cx: &mut Context<Waku>,
+        cx: &mut Context<Raku>,
     ) {
-        if waku.state.selected_session == Some(session_id) {
-            waku.open_background_work_surface(session_id, self.0.clone(), cx);
+        if raku.state.selected_session == Some(session_id) {
+            raku.open_background_work_surface(session_id, self.0.clone(), cx);
         }
     }
 
-    fn stop(&self, session_id: Uuid, waku: &mut Waku, cx: &mut Context<Waku>) {
-        if waku.state.selected_session == Some(session_id) {
-            waku.stop_background_work(session_id, self.0.clone(), cx);
+    fn stop(&self, session_id: Uuid, raku: &mut Raku, cx: &mut Context<Raku>) {
+        if raku.state.selected_session == Some(session_id) {
+            raku.stop_background_work(session_id, self.0.clone(), cx);
         }
     }
 }
@@ -617,7 +617,7 @@ fn work_elapsed(item: &BackgroundWorkItem) -> String {
     }
 }
 
-impl Waku {
+impl Raku {
     pub(super) fn background_output_refresh_delay(&self) -> Option<Duration> {
         self.background_work
             .values()
@@ -1385,7 +1385,7 @@ fn render_background_summary_card(
     session_id: Uuid,
     environment: Option<EnvironmentSummary>,
     entries: Vec<BackgroundSummaryEntry>,
-    weak: WeakEntity<Waku>,
+    weak: WeakEntity<Raku>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -1598,8 +1598,8 @@ fn render_background_summary_card(
                     let Some(state) = state.upgrade() else {
                         return;
                     };
-                    let same_session = weak.upgrade().is_some_and(|waku| {
-                        waku.read(cx)
+                    let same_session = weak.upgrade().is_some_and(|raku| {
+                        raku.read(cx)
                             .selected_session()
                             .map(|session| session.id)
                             .unwrap_or_else(Uuid::nil)
@@ -1623,7 +1623,7 @@ fn render_background_summary_card(
 fn render_environment_summary_section(
     environment: EnvironmentSummary,
     handle: ContextMenuHandle,
-    weak: WeakEntity<Waku>,
+    weak: WeakEntity<Raku>,
     theme: &Theme,
 ) -> Div {
     let section = div().w_full().flex().flex_col().gap_0().child(
@@ -1767,7 +1767,7 @@ fn render_background_summary_row(
     entry: BackgroundSummaryEntry,
     session_id: Uuid,
     handle: ContextMenuHandle,
-    weak: WeakEntity<Waku>,
+    weak: WeakEntity<Raku>,
     theme: &Theme,
 ) -> Stateful<Div> {
     let id = entry.target.control_id();

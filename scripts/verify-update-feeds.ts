@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { appPublicKey, parseAppcast } from "./appcast-windows.ts";
 
 const updateAssets = (version: string) =>
-  [["appcast.xml", `Waku-${version}.zip`]] as const;
+  [["appcast.xml", `Raku-${version}.zip`]] as const;
 
 export async function verifyUpdateFeeds(
   assetsDir: string,
@@ -55,10 +55,10 @@ export async function verifyUpdateFeeds(
 
 if (import.meta.main) {
   const [assetsDir, version] = process.argv.slice(2);
-  const prefix = process.env.WAKU_DOWNLOAD_URL_PREFIX;
+  const prefix = process.env.RAKU_DOWNLOAD_URL_PREFIX;
   if (!assetsDir || !version || !prefix) {
     throw new Error(
-      "usage: WAKU_DOWNLOAD_URL_PREFIX=<release-url> bun scripts/verify-update-feeds.ts <assets-dir> <version>",
+      "usage: RAKU_DOWNLOAD_URL_PREFIX=<release-url> bun scripts/verify-update-feeds.ts <assets-dir> <version>",
     );
   }
   await verifyUpdateFeeds(assetsDir, version, prefix, await appPublicKey());

@@ -1,18 +1,18 @@
 [package]
-name = "waku"
+name = "raku"
 version = "2.3.0"
 edition = "2024"
 description = "A fast, native control plane for local coding agents"
 license = "GPL-3.0-only"
 
 [workspace]
-members = ["crates/waku-client", "crates/waku-core", "crates/waku-daemon", "crates/waku-protocol"]
+members = ["crates/raku-client", "crates/raku-core", "crates/raku-daemon", "crates/raku-protocol"]
 default-members = [
   ".",
-  "crates/waku-client",
-  "crates/waku-core",
-  "crates/waku-daemon",
-  "crates/waku-protocol",
+  "crates/raku-client",
+  "crates/raku-core",
+  "crates/raku-daemon",
+  "crates/raku-protocol",
 ]
 resolver = "2"
 
@@ -41,8 +41,8 @@ unicode-segmentation = "1.12"
 unicode-linebreak = "0.1.5"
 url = "2"
 uuid = { version = "1.18", features = ["v4", "serde"] }
-waku-client = { path = "crates/waku-client" }
-waku-protocol = { path = "crates/waku-protocol" }
+raku-client = { path = "crates/raku-client" }
+raku-protocol = { path = "crates/raku-protocol" }
 # CJK-friendly emphasis is upstream but not yet in the 0.13 release line.
 pulldown-cmark = { git = "https://github.com/pulldown-cmark/pulldown-cmark", rev = "29d6cfa042b6c1fbb5702fc320f130edd2684271" }
 # Native, offline math typesetting; all layout and raster work runs on workers.
@@ -161,7 +161,7 @@ embed-resource = "3.0"
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6"
 # The browser surface. WebView2 is evergreen on Windows 10 and in-box on 11.
-# Waku drives it through `webview2-com` rather than wry because it needs the
+# Raku drives it through `webview2-com` rather than wry because it needs the
 # *composition* controller, which renders into a DirectComposition visual
 # instead of a child HWND — see `browser::host` for why, and note that only
 # the environment can create one, so it cannot be reached from wry's
@@ -177,7 +177,7 @@ windows = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.61"
-# GPUI does not read the Windows animation preference, so Waku asks
+# GPUI does not read the Windows animation preference, so Raku asks
 # `SystemParametersInfoW` itself. Same major version as the one already in the
 # graph through GPUI.
 windows-sys = { version = "0.61", features = [

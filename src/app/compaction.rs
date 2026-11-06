@@ -1,5 +1,5 @@
 use super::*;
-use waku_protocol::compaction::{CompactionRequest, CompactionTrigger, ContextCompaction};
+use raku_protocol::compaction::{CompactionRequest, CompactionTrigger, ContextCompaction};
 
 pub(super) fn compact_invocation(prompt: &str) -> Option<Option<&str>> {
     let invocation = prompt.trim().strip_prefix('/')?;
@@ -36,7 +36,7 @@ fn validate_compaction_request(
     Ok(())
 }
 
-impl Waku {
+impl Raku {
     pub(super) fn request_session_compaction(
         &mut self,
         session_id: Uuid,

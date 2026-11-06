@@ -7,7 +7,7 @@ pub(super) struct AssistantResponseFooter {
     pub model_label: Option<SharedString>,
 }
 
-impl Waku {
+impl Raku {
     /// One list row per message plus each ordered non-message turn block.
     pub(super) fn transcript_row_count(&self) -> usize {
         self.refresh_transcript_row_kinds()
@@ -1149,7 +1149,7 @@ fn answer_image_references(
     fn collect(block: &Block, references: &mut HashSet<String>) {
         match block {
             Block::Image { url, .. }
-                if !url.starts_with(waku_protocol::attachments::ATTACHMENT_SCHEME) =>
+                if !url.starts_with(raku_protocol::attachments::ATTACHMENT_SCHEME) =>
             {
                 references.insert(image_reference_identity(url));
             }

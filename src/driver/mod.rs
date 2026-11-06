@@ -1,4 +1,4 @@
-//! Desktop proxy for the provider runtime owned by `waku-daemon`.
+//! Desktop proxy for the provider runtime owned by `raku-daemon`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,15 +8,15 @@ use crate::model::{
 };
 use crossbeam_channel::{Sender, bounded, select};
 use parking_lot::Mutex;
-use waku_protocol::capabilities::RuntimeCapabilities;
+use raku_protocol::capabilities::RuntimeCapabilities;
 
-pub use waku_client::driver::{
+pub use raku_client::driver::{
     DriverControl, DriverEventSender, DriverHandle, DriverStartOptions, SessionOptions,
     event_channel,
 };
 
 pub(crate) fn start_remote(
-    daemon: waku_client::DaemonSupervisor,
+    daemon: raku_client::DaemonSupervisor,
     session_id: uuid::Uuid,
     provider: ProviderKind,
     options: DriverStartOptions,
@@ -24,12 +24,12 @@ pub(crate) fn start_remote(
 ) -> anyhow::Result<DriverHandle> {
     let client = daemon.client();
     let runtime_id = uuid::Uuid::new_v4();
-    let command = waku_client::Command::Start {
-        options: waku_client::WireDriverStartOptions {
-            provider: waku_client::encode_enum(provider)?,
+    let command = raku_client::Command::Start {
+        options: raku_client::WireDriverStartOptions {
+            provider: raku_client::encode_enum(provider)?,
             binary: options.binary,
             cwd: options.cwd,
-            mode: waku_client::encode_enum(options.mode)?,
+            mode: raku_client::encode_enum(options.mode)?,
             plan_mode: options.plan_mode,
             model: options.model,
             reasoning_effort: options.reasoning_effort,
@@ -44,8 +44,8 @@ pub(crate) fn start_remote(
         },
     };
     let capabilities = match client.request(session_id, runtime_id, command) {
-        Ok(waku_client::ResponsePayload::Started { capabilities }) => capabilities,
-        Ok(_) => anyhow::bail!("Waku daemon returned an invalid start response"),
+        Ok(raku_client::ResponsePayload::Started { capabilities }) => capabilities,
+        Ok(_) => anyhow::bail!("Raku daemon returned an invalid start response"),
         Err(error) => return Err(error),
     };
     connect_remote(
@@ -60,8 +60,8 @@ pub(crate) fn start_remote(
 }
 
 pub(crate) fn attach_remote(
-    daemon: waku_client::DaemonSupervisor,
-    client: waku_client::DaemonClient,
+    daemon: raku_client::DaemonSupervisor,
+    client: raku_client::DaemonClient,
     session_id: uuid::Uuid,
     runtime_id: uuid::Uuid,
     capabilities: RuntimeCapabilities,
@@ -80,8 +80,8 @@ pub(crate) fn attach_remote(
 }
 
 fn connect_remote(
-    daemon: waku_client::DaemonSupervisor,
-    initial_client: waku_client::DaemonClient,
+    daemon: raku_client::DaemonSupervisor,
+    initial_client: raku_client::DaemonClient,
     session_id: uuid::Uuid,
     runtime_id: uuid::Uuid,
     capabilities: RuntimeCapabilities,
@@ -97,7 +97,7 @@ fn connect_remote(
     let forwarding_events = events.clone();
     let thread_initial_client = initial_client.clone();
     let spawn = std::thread::Builder::new()
-        .name(format!("waku-daemon-session-{session_id}"))
+        .name(format!("raku-daemon-session-{session_id}"))
         .spawn(move || {
             let mut client = thread_initial_client;
             let mut remote_events = client.subscribe(session_id, runtime_id);
@@ -121,10 +121,10 @@ fn connect_remote(
                                 epoch: sequenced.epoch,
                                 sequence: sequenced.sequence,
                             };
-                            let event = match waku_client::event_from_wire(sequenced.event) {
+                            let event = match raku_client::event_from_wire(sequenced.event) {
                                 Ok(event) => event,
                                 Err(error) => DriverEvent::Error(format!(
-                                    "Waku daemon sent an invalid event: {error}"
+                                    "Raku daemon sent an invalid event: {error}"
                                 )),
                             };
                             let process_exited = matches!(&event, DriverEvent::ProcessExited);
@@ -166,10 +166,10 @@ fn connect_remote(
                 let attached = replacement.request(
                     session_id,
                     uuid::Uuid::nil(),
-                    waku_client::Command::AttachSession,
+                    raku_client::Command::AttachSession,
                 );
                 match attached {
-                    Ok(waku_client::ResponsePayload::SessionRuntime {
+                    Ok(raku_client::ResponsePayload::SessionRuntime {
                         runtime_id: Some(attached_runtime_id),
                         ..
                     }) if attached_runtime_id == runtime_id => {
@@ -177,13 +177,13 @@ fn connect_remote(
                         client = replacement;
                         remote_events = client.subscribe(session_id, runtime_id);
                     }
-                    Ok(waku_client::ResponsePayload::SessionRuntime { .. }) => {
+                    Ok(raku_client::ResponsePayload::SessionRuntime { .. }) => {
                         let _ = forwarding_events.send(DriverEvent::ProcessExited);
                         break;
                     }
                     Ok(_) => {
                         let _ = forwarding_events.send(DriverEvent::Error(
-                            "Waku daemon returned an invalid runtime attachment response".into(),
+                            "Raku daemon returned an invalid runtime attachment response".into(),
                         ));
                         break;
                     }
@@ -213,7 +213,7 @@ fn connect_remote(
 }
 
 struct RemoteDriverControl {
-    client: Arc<Mutex<waku_client::DaemonClient>>,
+    client: Arc<Mutex<raku_client::DaemonClient>>,
     session_id: uuid::Uuid,
     runtime_id: uuid::Uuid,
     capabilities: RuntimeCapabilities,
@@ -223,23 +223,23 @@ struct RemoteDriverControl {
 }
 
 impl RemoteDriverControl {
-    fn notify(&self, command: waku_client::Command) {
+    fn notify(&self, command: raku_client::Command) {
         let client = self.client.lock().clone();
         if let Err(error) = client.notify(self.session_id, self.runtime_id, command) {
             let _ = self.events.send(DriverEvent::Error(format!(
-                "Waku daemon command failed: {error}"
+                "Raku daemon command failed: {error}"
             )));
         }
     }
 }
 
 impl DriverControl for RemoteDriverControl {
-    fn compact(&self, request: waku_protocol::compaction::CompactionRequest) {
-        self.notify(waku_client::Command::Compact { request });
+    fn compact(&self, request: raku_protocol::compaction::CompactionRequest) {
+        self.notify(raku_client::Command::Compact { request });
     }
 
     fn prompt(&self, prompt: String) {
-        self.notify(waku_client::Command::Prompt { prompt });
+        self.notify(raku_client::Command::Prompt { prompt });
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {
@@ -247,20 +247,20 @@ impl DriverControl for RemoteDriverControl {
     }
 
     fn steer(&self, prompt: String) {
-        self.notify(waku_client::Command::Steer { prompt });
+        self.notify(raku_client::Command::Steer { prompt });
     }
 
     fn cancel(&self) {
-        self.notify(waku_client::Command::Cancel);
+        self.notify(raku_client::Command::Cancel);
     }
 
     fn refresh_background_work(&self) {
-        self.notify(waku_client::Command::RefreshBackgroundWork);
+        self.notify(raku_client::Command::RefreshBackgroundWork);
     }
 
     fn stop_background_work(&self, key: BackgroundWorkKey, control_id: String) {
         match serde_json::to_value(key) {
-            Ok(key) => self.notify(waku_client::Command::StopBackgroundWork { key, control_id }),
+            Ok(key) => self.notify(raku_client::Command::StopBackgroundWork { key, control_id }),
             Err(error) => {
                 let _ = self.events.send(DriverEvent::Error(format!(
                     "could not encode background-work command: {error}"
@@ -270,7 +270,7 @@ impl DriverControl for RemoteDriverControl {
     }
 
     fn respond(&self, request_id: String, option_id: String) {
-        self.notify(waku_client::Command::Respond {
+        self.notify(raku_client::Command::Respond {
             request_id,
             option_id,
         });
@@ -279,29 +279,29 @@ impl DriverControl for RemoteDriverControl {
     fn respond_user_input(
         &self,
         request_id: String,
-        answers: Vec<waku_protocol::model::UserInputAnswer>,
+        answers: Vec<raku_protocol::model::UserInputAnswer>,
     ) {
-        self.notify(waku_client::Command::RespondUserInput {
+        self.notify(raku_client::Command::RespondUserInput {
             request_id,
             answers,
         });
     }
 
-    fn respond_plan(&self, request_id: String, decision: waku_protocol::model::PlanDecision) {
-        self.notify(waku_client::Command::RespondPlan {
+    fn respond_plan(&self, request_id: String, decision: raku_protocol::model::PlanDecision) {
+        self.notify(raku_client::Command::RespondPlan {
             request_id,
             decision,
         });
     }
 
-    fn goal(&self, operation: waku_protocol::model::GoalOperation) {
-        self.notify(waku_client::Command::Goal { operation });
+    fn goal(&self, operation: raku_protocol::model::GoalOperation) {
+        self.notify(raku_client::Command::Goal { operation });
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {
         let options = (|| {
-            Ok::<_, anyhow::Error>(waku_client::WireSessionOptions {
-                mode: waku_client::encode_enum(options.mode)?,
+            Ok::<_, anyhow::Error>(raku_client::WireSessionOptions {
+                mode: raku_client::encode_enum(options.mode)?,
                 plan_mode: options.plan_mode,
                 model: options.model,
                 reasoning_effort: options.reasoning_effort,
@@ -317,9 +317,9 @@ impl DriverControl for RemoteDriverControl {
             client.request(
                 self.session_id,
                 self.runtime_id,
-                waku_client::Command::ApplyOptions { options }
+                raku_client::Command::ApplyOptions { options }
             ),
-            Ok(waku_client::ResponsePayload::OptionsApplied { applied: true })
+            Ok(raku_client::ResponsePayload::OptionsApplied { applied: true })
         )
     }
 
@@ -328,13 +328,13 @@ impl DriverControl for RemoteDriverControl {
         match client.request(
             self.session_id,
             self.runtime_id,
-            waku_client::Command::Rollback { turns },
+            raku_client::Command::Rollback { turns },
         )? {
-            waku_client::ResponsePayload::Cursor { cursor } => cursor
+            raku_client::ResponsePayload::Cursor { cursor } => cursor
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(Into::into),
-            _ => anyhow::bail!("Waku daemon returned an invalid rollback response"),
+            _ => anyhow::bail!("Raku daemon returned an invalid rollback response"),
         }
     }
 
@@ -343,17 +343,17 @@ impl DriverControl for RemoteDriverControl {
         match client.request(
             self.session_id,
             self.runtime_id,
-            waku_client::Command::Fork { turns_to_remove },
+            raku_client::Command::Fork { turns_to_remove },
         )? {
-            waku_client::ResponsePayload::Cursor {
+            raku_client::ResponsePayload::Cursor {
                 cursor: Some(cursor),
             } => serde_json::from_value(cursor).map_err(Into::into),
-            _ => anyhow::bail!("Waku daemon returned an invalid fork response"),
+            _ => anyhow::bail!("Raku daemon returned an invalid fork response"),
         }
     }
 
     fn close(&self) {
-        self.notify(waku_client::Command::CloseSession);
+        self.notify(raku_client::Command::CloseSession);
     }
 }
 

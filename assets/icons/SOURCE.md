@@ -16,7 +16,7 @@ uses `ant/edit`, `terminal` uses `ant/prompt`, and `loader-circle` uses
 
 Seven specialized glyphs remain because the pack has no direct equivalents:
 the five search controls (`case-sensitive`, `whole-word`, `regex`, `replace`,
-and `replace-all`), the projectless `folder-dashed`, and Waku's six-spoke
+and `replace-all`), the projectless `folder-dashed`, and Raku's six-spoke
 `sparkle`. The search glyphs marked `lucide-static v1.69.0` come from
 [`lucide-static` 1.69.0](https://www.npmjs.com/package/lucide-static/v/1.69.0);
 their ISC and Feather MIT notices remain in [LICENSE-lucide.txt](LICENSE-lucide.txt).

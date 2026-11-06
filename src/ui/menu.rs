@@ -35,7 +35,7 @@ use gpui::{
 };
 
 actions!(
-    waku_menu,
+    raku_menu,
     [
         DismissMenu,
         SelectNextEntry,
@@ -47,7 +47,7 @@ actions!(
 );
 
 /// Key context the open menu declares, and the scope its bindings live in.
-const MENU_CONTEXT: &str = "WakuMenu";
+const MENU_CONTEXT: &str = "RakuMenu";
 
 /// Vertical gap between a trigger and its anchored card.
 const TRIGGER_GAP: f32 = 4.0;
@@ -60,7 +60,7 @@ const SUBMENU_OVERLAP: f32 = 4.0;
 /// be claimed from under the focused field, and only a binding can do that:
 /// `enter`, `tab`, and the arrows reach the field as *actions*, and an action
 /// consumes the keystroke before any `on_key_down` listener above it ever runs.
-const PANEL_FIELD_CONTEXT: &str = "WakuMenu > TextInput";
+const PANEL_FIELD_CONTEXT: &str = "RakuMenu > TextInput";
 
 /// Bind the menu's own keys. Called once at startup.
 ///
@@ -1297,7 +1297,7 @@ fn render_menu_item(
             track_pointer_highlight(entry, index, in_submenu, disabled, handle).into_any_element()
         }
         MenuItem::Submenu { label, items: _ } => {
-            // Waku currently exposes one flyout level. Keeping a nested
+            // Raku currently exposes one flyout level. Keeping a nested
             // submenu row inert prevents a child builder from accidentally
             // stealing the parent flyout's keyboard state.
             if in_submenu {

@@ -9,7 +9,7 @@ use gpui::{
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use gpui::{KeyDownEvent, WindowButton};
 
-use super::Waku;
+use super::Raku;
 use crate::theme::Theme;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::ui::{icon, tooltip::Tooltip};
@@ -29,7 +29,7 @@ pub(super) enum WindowControlSide {
     Right,
 }
 
-impl Waku {
+impl Raku {
     /// Draw the frame a Wayland compositor delegates back to the client.
     /// Server-decorated windows pass through untouched, so X11 and Wayland
     /// compositors that provide native chrome keep doing so.
@@ -170,7 +170,7 @@ impl Waku {
         }
     }
 
-    /// Render the window controls Waku owns: the desktop's configured button
+    /// Render the window controls Raku owns: the desktop's configured button
     /// order when GPUI had to fall back from server-side to client-side
     /// decorations, and the platform order on Windows.
     pub(super) fn render_client_window_controls(
@@ -232,7 +232,7 @@ fn client_window_button(
     enabled: bool,
     is_maximized: bool,
     theme: Theme,
-    cx: &mut Context<Waku>,
+    cx: &mut Context<Raku>,
 ) -> AnyElement {
     let (id, icon_path, label) = match button {
         WindowButton::Minimize => (

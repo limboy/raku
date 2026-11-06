@@ -59,7 +59,7 @@ fn history_entries(session: &AgentSession) -> Vec<&str> {
     entries
 }
 
-impl Waku {
+impl Raku {
     /// `(index, total)` while the composer still shows a recalled prompt.
     pub(super) fn composer_history_position(&self, cx: &App) -> Option<(usize, usize)> {
         let recall = self.composer_history.as_ref()?;

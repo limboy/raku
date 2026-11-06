@@ -18,14 +18,14 @@ afterEach(async () => {
 });
 
 async function releaseFixture() {
-  const directory = await mkdtemp(join(tmpdir(), "waku-update-feeds-"));
+  const directory = await mkdtemp(join(tmpdir(), "raku-update-feeds-"));
   directories.push(directory);
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicKeyBase64 = Buffer.from(
     publicKey.export({ format: "jwk" }).x!,
     "base64url",
   ).toString("base64");
-  const archive = `Waku-${version}.zip`;
+  const archive = `Raku-${version}.zip`;
   const bytes = Buffer.from("macOS release archive");
   const signature = sign(null, bytes, privateKey).toString("base64");
   // Sparkle uses an internal build number, distinct from the public version.
@@ -56,7 +56,7 @@ test(
   "rejects archive tampering even when the byte count is unchanged",
   async () => {
     const fixture = await releaseFixture();
-    const path = join(fixture.directory, `Waku-${version}.zip`);
+    const path = join(fixture.directory, `Raku-${version}.zip`);
     const bytes = Buffer.from(await Bun.file(path).arrayBuffer());
     bytes[0] = bytes[0]! ^ 1;
     await Bun.write(path, bytes);
@@ -80,7 +80,7 @@ test("rejects an archive URL from a different release", async () => {
 
 test("rejects a truncated download", async () => {
   const fixture = await releaseFixture();
-  await Bun.write(join(fixture.directory, `Waku-${version}.zip`), "truncated");
+  await Bun.write(join(fixture.directory, `Raku-${version}.zip`), "truncated");
   await expect(
     verifyUpdateFeeds(fixture.directory, version, prefix, fixture.publicKey),
   ).rejects.toThrow("wrong length");

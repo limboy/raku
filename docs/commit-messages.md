@@ -1,13 +1,13 @@
 # Commit-message generation
 
-When the commit dialog's message box is left empty, Waku generates the subject
+When the commit dialog's message box is left empty, Raku generates the subject
 line by running **the session's own agent CLI** once, headlessly. No coding
-agent exposes a commit-message endpoint and Waku holds no provider API key, so
+agent exposes a commit-message endpoint and Raku holds no provider API key, so
 the CLI binary is the only route to a model.
 
 Every provider gets the same prompt. The only per-provider code is the argument
 vector that puts its CLI into a one-shot, tool-free mode
-([`agent_arguments`](../crates/waku-core/src/git_commit.rs#L210)).
+([`agent_arguments`](../crates/raku-core/src/git_commit.rs#L210)).
 
 ## Which model
 
@@ -28,7 +28,7 @@ supported set for this model.
 
 Every other provider still runs on the session's own selection, captured when
 the dialog opens into an
-[`AgentInvocation`](../crates/waku-protocol/src/git.rs#L45) alongside the probed
+[`AgentInvocation`](../crates/raku-protocol/src/git.rs#L45) alongside the probed
 binary path ([commit_dialog.rs:129](../src/app/commit_dialog.rs#L129)):
 
 | Field | Source |
@@ -41,7 +41,7 @@ default.
 
 ## The prompt
 
-[`commit_prompt`](../crates/waku-core/src/git_commit.rs#L173) builds it from Git
+[`commit_prompt`](../crates/raku-core/src/git_commit.rs#L173) builds it from Git
 alone — no transcript, no session history:
 
 | Include unstaged | Status | Diff |
@@ -75,7 +75,7 @@ Where a provider is not simply "flags plus prompt":
 - **Claude Code** runs in `plan` permission mode with an empty `--tools` list,
   and `--no-session-persistence` keeps the run out of `~/.claude/projects`,
   where it would look like a task the user started. Haiku exposes no reasoning
-  tiers in Waku's catalog, but the CLI still accepts `--effort low` for it.
+  tiers in Raku's catalog, but the CLI still accepts `--effort low` for it.
 - **Codex** runs `exec` as an ephemeral read-only turn; `--skip-git-repo-check`
   lets a workspace that is not a repo root run. Effort rides on a `-c` config
   override because `codex exec` has no flag for it.
@@ -84,7 +84,7 @@ Where a provider is not simply "flags plus prompt":
   flag, so repo instructions cannot contradict the fixed prompt.
 
 `every_provider_uses_a_noninteractive_generation_mode`
-([git_commit.rs:691](../crates/waku-core/src/git_commit.rs#L691)) walks
+([git_commit.rs:691](../crates/raku-core/src/git_commit.rs#L691)) walks
 `ProviderKind::ALL` and asserts each of these, so a new provider cannot be added
 without choosing its headless shape.
 `claude_and_codex_generate_on_a_pinned_cheap_tier` guards the pins by passing
@@ -93,7 +93,7 @@ without choosing its headless shape.
 ## Normalizing the output
 
 CLIs disagree about what "one line and nothing else" means — preamble lines,
-code fences, ANSI under `NO_COLOR`. [`normalize_message`](../crates/waku-core/src/git_commit.rs#L349)
+code fences, ANSI under `NO_COLOR`. [`normalize_message`](../crates/raku-core/src/git_commit.rs#L349)
 strips ANSI, drops empty lines, bare ``` fences and `[tool]` / `[thinking]`
 lines, takes the **last** surviving line, then strips backticks, a
 `Commit message:` / `Commit subject:` prefix, wrapping quotes and a trailing

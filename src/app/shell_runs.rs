@@ -52,16 +52,16 @@ impl MessageRuns {
 
 /// Inline command terminals, keyed by message and block. In memory only.
 pub(super) struct ShellRuns {
-    waku: WeakEntity<Waku>,
+    raku: WeakEntity<Raku>,
     by_message: HashMap<Uuid, MessageRuns>,
     next_generation: u64,
     empty: Rc<HashMap<usize, CodeRunView>>,
 }
 
 impl ShellRuns {
-    pub(super) fn new(waku: WeakEntity<Waku>) -> Self {
+    pub(super) fn new(raku: WeakEntity<Raku>) -> Self {
         Self {
-            waku,
+            raku,
             by_message: HashMap::new(),
             next_generation: 0,
             empty: Rc::default(),
@@ -76,19 +76,19 @@ impl ShellRuns {
             .get(&message_id)
             .map(|runs| runs.snapshot.clone())
             .unwrap_or_else(|| self.empty.clone());
-        let waku = self.waku.clone();
+        let raku = self.raku.clone();
         CodeRunHooks {
             runs,
             run: Rc::new(move |ordinal, code, window, cx| {
-                let _ = waku.update(cx, |waku, cx| {
-                    waku.start_block_run(message_id, ordinal, code.to_string(), window, cx)
+                let _ = raku.update(cx, |raku, cx| {
+                    raku.start_block_run(message_id, ordinal, code.to_string(), window, cx)
                 });
             }),
         }
     }
 }
 
-impl Waku {
+impl Raku {
     fn start_block_run(
         &mut self,
         message_id: Uuid,
@@ -131,8 +131,8 @@ impl Waku {
         let terminal = cx.new(|cx| TerminalView::command(cwd, terminal_code, cx));
         let finished = cx.subscribe(
             &terminal,
-            move |waku, _, event: &TerminalCommandFinished, cx| {
-                waku.finish_block_run(message_id, ordinal, generation, event, cx);
+            move |raku, _, event: &TerminalCommandFinished, cx| {
+                raku.finish_block_run(message_id, ordinal, generation, event, cx);
             },
         );
         // Focus follows the command so a password prompt can be answered.

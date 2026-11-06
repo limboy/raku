@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::ui::ActivationExt;
-use waku_client::{Command, ResponsePayload};
-use waku_protocol::backup::{AUTOMATIC_BACKUP_LIMIT, BackupInfo, next_automatic_backup_at};
+use raku_client::{Command, ResponsePayload};
+use raku_protocol::backup::{AUTOMATIC_BACKUP_LIMIT, BackupInfo, next_automatic_backup_at};
 
 const AUTOMATIC_BACKUP_RETRY: u64 = 5 * 60;
 
@@ -48,7 +48,7 @@ impl BackupSettings {
     }
 }
 
-impl Waku {
+impl Raku {
     pub(super) fn schedule_automatic_backups(&mut self, cx: &mut Context<Self>) {
         self.schedule_automatic_backup_check(0, cx);
     }

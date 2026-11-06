@@ -1,4 +1,4 @@
-//! Waku's tooltip surface.
+//! Raku's tooltip surface.
 //!
 //! GPUI already owns tooltip *behaviour* — hover timing, placement, dismissal —
 //! through `InteractiveElement::tooltip`, which asks only for a view to render.
@@ -80,7 +80,7 @@ mod tests {
 
     #[gpui::test]
     fn tooltip_renders_long_labels_without_panic(cx: &mut TestAppContext) {
-        let long_label = "cd /Users/limboy/Projects/waku && python3 - <<'PY' import io p='docs/multi-model-delegation-plan.md' s=io.open(p,encoding='utf-8').read() old = '\"\"\"### 相对提案的偏差\"\"\" new = '\"\"\"### 父 agent 矩阵与提示词契约（首版实测后补充）- 父 provider 新增 **Pi / Oh My Pi**: `res...".repeat(2);
+        let long_label = "cd /Users/limboy/Projects/raku && python3 - <<'PY' import io p='docs/multi-model-delegation-plan.md' s=io.open(p,encoding='utf-8').read() old = '\"\"\"### 相对提案的偏差\"\"\" new = '\"\"\"### 父 agent 矩阵与提示词契约（首版实测后补充）- 父 provider 新增 **Pi / Oh My Pi**: `res...".repeat(2);
         let (_, cx) = cx.add_window_view(|_window, _cx| Tooltip::new(long_label));
         cx.run_until_parked();
     }

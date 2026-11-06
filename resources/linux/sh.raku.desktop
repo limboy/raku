@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Raku
+Comment=A native control plane for local coding agents
+Exec=raku %u
+Icon=sh.raku
+Terminal=false
+Categories=Development;IDE;
+MimeType=x-scheme-handler/raku;
+StartupNotify=true
+StartupWMClass=sh.raku

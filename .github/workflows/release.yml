@@ -120,15 +120,15 @@ jobs:
       - name: Build and verify Apple-silicon binaries
         run: |
           cargo build --locked --release --target aarch64-apple-darwin \
-            --package waku --bin waku --package waku-daemon --bin waku-daemon
+            --package raku --bin raku --package raku-daemon --bin raku-daemon
           mkdir -p target/release
-          for executable in waku waku-daemon; do
+          for executable in raku raku-daemon; do
             lipo "target/aarch64-apple-darwin/release/$executable" -verify_arch arm64
             ln -sf "../aarch64-apple-darwin/release/$executable" "target/release/$executable"
           done
         env:
-          WAKU_ANALYTICS_ENDPOINT: ${{ secrets.WAKU_ANALYTICS_ENDPOINT }}
-          WAKU_ANALYTICS_WEBSITE_ID: ${{ secrets.WAKU_ANALYTICS_WEBSITE_ID }}
+          RAKU_ANALYTICS_ENDPOINT: ${{ secrets.WAKU_ANALYTICS_ENDPOINT }}
+          RAKU_ANALYTICS_WEBSITE_ID: ${{ secrets.WAKU_ANALYTICS_WEBSITE_ID }}
 
       - name: Save release build cache before packaging
         if: ${{ always() && steps.cargo-cache.outputs.cache-hit != 'true' && steps.cargo-cache.outputs.cache-primary-key != '' }}
@@ -178,7 +178,7 @@ jobs:
               echo "::error::ASC_KEY_ID is required with ASC_PRIVATE_KEY"
               exit 1
             fi
-            key_path="$RUNNER_TEMP/waku-notary-key.p8"
+            key_path="$RUNNER_TEMP/raku-notary-key.p8"
             umask 077
             trap 'rm -f "$key_path"' EXIT
             printf '%s' "$ASC_PRIVATE_KEY" > "$key_path"
@@ -196,20 +196,20 @@ jobs:
 
       - name: Release
         env:
-          WAKU_SIGNING_IDENTITY: ${{ secrets.WAKU_SIGNING_IDENTITY || steps.certificate.outputs.identity }}
-          WAKU_ANALYTICS_ENDPOINT: ${{ secrets.WAKU_ANALYTICS_ENDPOINT }}
-          WAKU_ANALYTICS_WEBSITE_ID: ${{ secrets.WAKU_ANALYTICS_WEBSITE_ID }}
+          RAKU_SIGNING_IDENTITY: ${{ secrets.WAKU_SIGNING_IDENTITY || steps.certificate.outputs.identity }}
+          RAKU_ANALYTICS_ENDPOINT: ${{ secrets.WAKU_ANALYTICS_ENDPOINT }}
+          RAKU_ANALYTICS_WEBSITE_ID: ${{ secrets.WAKU_ANALYTICS_WEBSITE_ID }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-          WAKU_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}/
+          RAKU_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}/
         run: bun run release --local --skip-build
 
       - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: |
-            dist/Waku-${{ needs.version.outputs.version }}.dmg
-            dist/Waku-${{ needs.version.outputs.version }}.md
-            dist/Waku-${{ needs.version.outputs.version }}.zip
+            dist/Raku-${{ needs.version.outputs.version }}.dmg
+            dist/Raku-${{ needs.version.outputs.version }}.md
+            dist/Raku-${{ needs.version.outputs.version }}.zip
             dist/appcast.xml
           if-no-files-found: error
 
@@ -237,7 +237,7 @@ jobs:
       - name: Verify the signed macOS update feed and archive
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          WAKU_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}/
+          RAKU_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}/
         run: bun scripts/verify-update-feeds.ts artifacts "$VERSION"
 
       - name: Write release notes

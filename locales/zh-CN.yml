@@ -47,7 +47,7 @@ window.maximize: 最大化
 window.restore: 还原
 updater.update: 安装更新
 updater.updating: 正在更新…
-updater.up_to_date: Waku 已是最新版本
+updater.up_to_date: Raku 已是最新版本
 updater.failed: "更新失败：%{error}"
 session_search.placeholder: 搜索会话…
 session_search.no_results: 未找到匹配的会话
@@ -87,13 +87,13 @@ command_palette.no_results_hint: 可尝试搜索任务标题、消息、项目�
 command_palette.no_matching_providers: 未找到匹配的服务商
 command_palette.loading_sessions: 正在加载终端会话…
 command_palette.no_resume_sessions: 没有可恢复的终端会话
-command_palette.no_resume_sessions_hint: 已在 Waku 中的会话不会显示。请在智能体 CLI 中开始会话后重试。
+command_palette.no_resume_sessions_hint: 已在 Raku 中的会话不会显示。请在智能体 CLI 中开始会话后重试。
 command_palette.could_not_load_sessions: 无法加载终端会话
 command_palette.loading_selected_session: 正在加载对话…
 command_palette.resume_failed: "无法恢复会话：%{error}"
 language.title: 语言
 language.system: 跟随系统
-language.description: 选择 Waku 的界面语言
+language.description: 选择 Raku 的界面语言
 settings.general: 通用
 settings.appearance: 外观
 settings.providers: 服务商
@@ -139,9 +139,9 @@ settings.local_by_default_description: 项目、对话和设置均存储在这�
 settings.automatic_updates: 自动更新
 settings.automatic_updates_description: 在后台检查新版本，并在发现更新时提示安装
 settings.share_anonymous_usage_data: 分享匿名使用数据
-settings.share_anonymous_usage_data_description: 分享功能使用情况和可靠性数据，帮助改进 Waku。不会包含提示词、回复、项目名称、文件路径等个人信息
+settings.share_anonymous_usage_data_description: 分享功能使用情况和可靠性数据，帮助改进 Raku。不会包含提示词、回复、项目名称、文件路径等个人信息
 providers.coding_agents: 编程智能体
-providers.description: Waku 调用安装在这台电脑上的智能体命令行工具。请先安装相应工具或完成登录，然后刷新
+providers.description: Raku 调用安装在这台电脑上的智能体命令行工具。请先安装相应工具或完成登录，然后刷新
 providers.check_failed: "无法检查 %{command}：%{error}"
 providers.show_settings: 显示 %{provider} 设置
 providers.hide_settings: 隐藏 %{provider} 设置
@@ -155,9 +155,9 @@ providers.using_override: 正在使用 %{path}，不再从 PATH 自动检测
 providers.invalid_override: 此路径下没有可执行文件。清空后可恢复从 PATH 自动检测
 providers.detected_at: 已在 %{path} 检测到
 providers.detected_as: 已检测到 %{command}
-providers.searches_path: Waku 未在 PATH 中找到 %{command}
+providers.searches_path: Raku 未在 PATH 中找到 %{command}
 providers.binary_path: 可执行文件路径
-providers.binary_path_description: Waku 用于启动 %{provider} 的可执行文件。按 Return 应用；留空则从 PATH 自动检测
+providers.binary_path_description: Raku 用于启动 %{provider} 的可执行文件。按 Return 应用；留空则从 PATH 自动检测
 providers.checked_just_now: 刚刚检查过
 providers.checked_minutes_ago: "%{count} 分钟前检查过"
 providers.checked_hours_ago: "%{count} 小时前检查过"
@@ -212,7 +212,7 @@ project.project_lower: 项目
 project.without_a_project: 不使用项目
 project.your_project: 你的项目
 onboarding.open_project_to_begin: 打开一个项目即可开始
-onboarding.description: Waku 会在你选择的文件夹中运行编程智能体。代码、任务和历史记录都保留在这台电脑上
+onboarding.description: Raku 会在你选择的文件夹中运行编程智能体。代码、任务和历史记录都保留在这台电脑上
 onboarding.open_project_folder: 打开项目文件夹…
 onboarding.what_should_we_build: 想构建什么？
 onboarding.what_should_we_build_in: "想在 "
@@ -470,7 +470,7 @@ command_scope.project: 项目
 command_scope.user: 用户
 command_scope.skill: 技能
 command_scope.builtin: 内置
-command_scope.waku: waku
+command_scope.raku: raku
 skills.search: 搜索技能…
 skills.count_one: 1 个技能
 skills.count_many: "%{count} 个技能"
@@ -559,7 +559,7 @@ composer.preparing_task: 正在准备任务…
 composer.queue_followup: 排队为后续消息（⏎）
 composer.message: 消息
 composer.queue_placeholder: 添加后续消息…
-composer.prompt_placeholder: 让 Waku 构建些什么…
+composer.prompt_placeholder: 让 Raku 构建些什么…
 composer.stop: 停止
 composer.stop_confirm: 再按一次 Escape 停止
 composer.steer_current: 引导当前回合
@@ -592,22 +592,22 @@ session.agent_ran_out_of_context: 智能体在本轮任务中耗尽了上下文�
 session.agent_declined_turn: 智能体拒绝执行本轮任务
 session.agent_stopped_reason: "智能体已停止：%{reason}"
 errors.open_session: "无法打开该任务：%{error}"
-errors.create_projectless_task: "无法在 ~/.waku/projects 下创建任务：%{error}"
+errors.create_projectless_task: "无法在 ~/.raku/projects 下创建任务：%{error}"
 errors.save_projectless_migration: "无法保存无项目任务的迁移结果：%{error}"
-errors.move_projectless_task: "无法将旧的根目录无项目任务移至 ~/.waku/projects：%{error}"
+errors.move_projectless_task: "无法将旧的根目录无项目任务移至 ~/.raku/projects：%{error}"
 errors.change_branch: "无法切换分支：%{error}"
 errors.capture_pre_turn_checkpoint: "无法创建任务开始前的检查点：%{error}"
 errors.capture_turn_checkpoint: "无法创建本轮任务的检查点：%{error}"
 errors.save_local_state: "无法保存本地状态：%{error}"
 save_failure.title: 最近的更改尚未保存
-save_failure.detail: "Waku 会持续重试，并在保存成功前保留你的更改。现在退出可能会丢失这些更改。%{error}"
+save_failure.detail: "Raku 会持续重试，并在保存成功前保留你的更改。现在退出可能会丢失这些更改。%{error}"
 save_failure.retry_tooltip: 立即重试保存
 errors.task_project_not_found: 找不到该任务所属的项目
 errors.provider_native_session_unavailable: "%{provider} 的原生会话不可用"
 errors.provider_native_thread_unavailable: "%{provider} 的原生线程不可用"
 errors.provider_native_cursor_unavailable: "%{provider} 的原生会话位置不可用"
 errors.provider_native_thread_cursor_unavailable: "%{provider} 的原生线程位置不可用"
-errors.provider_waku_task_unavailable: "%{provider} 对应的 Waku 任务不可用"
+errors.provider_raku_task_unavailable: "%{provider} 对应的 Raku 任务不可用"
 errors.provider_not_installed: "尚未安装 %{provider}"
 errors.provider_not_found: "尚未安装 %{provider}，或无法找到该程序"
 errors.claude_fork_checkpoint_missing: Claude 未返回派生任务所需的检查点
@@ -956,25 +956,25 @@ usage_error.unknown_error: 未知错误
 usage_error.curl_no_status: curl 未返回 HTTP 状态行
 
 settings.backups: "备份与恢复"
-backup.description: "备份 Waku 的会话记录、附件、草稿和设置。项目文件和服务商登录信息由各自管理。"
+backup.description: "备份 Raku 的会话记录、附件、草稿和设置。项目文件和服务商登录信息由各自管理。"
 backup.directory: "备份目录"
 backup.choose_directory: "选择目录"
 backup.no_directory: "请选择用于保存备份的目录。"
 backup.restore: "恢复"
-backup.empty: "尚无备份。选择目录后，Waku 会自动创建备份。"
+backup.empty: "尚无备份。选择目录后，Raku 会自动创建备份。"
 backup.loading: "正在检查最新备份…"
 backup.creating: "正在创建备份…"
 backup.preparing_restore: "正在校验备份并准备恢复…"
 backup.created: "备份已保存至 %{path}"
 backup.snapshot_detail: "%{projects} 个项目 · %{sessions} 个会话 · %{size}"
-backup.confirm_title: "恢复最新备份并重新启动 Waku？"
-backup.confirm_detail: "%{path}\n\nWaku 将重新启动，并使用此备份替换当前的会话记录、附件、草稿和设置。"
+backup.confirm_title: "恢复最新备份并重新启动 Raku？"
+backup.confirm_detail: "%{path}\n\nRaku 将重新启动，并使用此备份替换当前的会话记录、附件、草稿和设置。"
 backup.restore_and_relaunch: "恢复并重新启动"
-backup.relaunching: "正在重新启动 Waku 以恢复备份…"
+backup.relaunching: "正在重新启动 Raku 以恢复备份…"
 backup.error: "备份操作失败：%{error}"
 backup.invalid_response: "后台服务返回了无效的备份响应。"
 backup.restore_failed: "恢复失败，已保留原有数据：%{error}"
-backup.automatic_description: "Waku 打开时每 24 小时自动备份一次；错过时会在下次启动补备份。仅保留最新 1 份备份。"
+backup.automatic_description: "Raku 打开时每 24 小时自动备份一次；错过时会在下次启动补备份。仅保留最新 1 份备份。"
 backup.latest: "最新备份"
 
 compaction.action: "压缩上下文"
