@@ -42,12 +42,16 @@ case "$profile" in
     bundle_identifier="sh.raku.dev"
     url_scheme="raku-debug"
     icon_file="AppIconDev.icns"
+    icon_catalog="AppIconDev.car"
+    icon_name="AppIconDev"
     ;;
   release)
     app_name="Raku"
     bundle_identifier="sh.raku"
     url_scheme="raku"
     icon_file="AppIcon.icns"
+    icon_catalog="AppIcon.car"
+    icon_name="AppIcon"
     ;;
   *)
     echo "usage: scripts/bundle.sh [debug|release]" >&2
@@ -103,6 +107,11 @@ if [ "$profile" = "release" ]; then
 fi
 cp resources/Info.plist "$contents/Info.plist"
 cp "resources/$icon_file" "$contents/Resources/AppIcon.icns"
+# macOS 26 only draws the Liquid Glass app icon from a compiled asset catalog
+# (built from resources/<name>.icon with `actool`). The .icns stays as the
+# fallback for older systems; without the catalog the icon is wrapped in a
+# glass tile like a legacy icon.
+cp "resources/$icon_catalog" "$contents/Resources/Assets.car"
 mkdir -p "$contents/Resources/pi"
 cp resources/pi/session-title.ts "$contents/Resources/pi/session-title.ts"
 frameworks_directory="$contents/Frameworks"
@@ -118,6 +127,7 @@ for sparkle_extra in XPCServices Headers PrivateHeaders Modules; do
 done
 plutil -replace CFBundleDisplayName -string "$app_name" "$contents/Info.plist"
 plutil -replace CFBundleExecutable -string "$app_name" "$contents/Info.plist"
+plutil -replace CFBundleIconName -string "$icon_name" "$contents/Info.plist"
 plutil -replace CFBundleIdentifier -string "$bundle_identifier" "$contents/Info.plist"
 plutil -replace CFBundleName -string "$app_name" "$contents/Info.plist"
 plutil -replace CFBundleURLTypes.0.CFBundleURLName -string "$bundle_identifier.session" "$contents/Info.plist"
