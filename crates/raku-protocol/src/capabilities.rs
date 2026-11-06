@@ -95,7 +95,7 @@ impl ProviderKind {
                 conversation: CONVERSATION,
                 compaction: CompactionCapabilities {
                     manual: true,
-                    instructions: true,
+                    instructions: false,
                     lifecycle: true,
                     summary: true,
                 },
