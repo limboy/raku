@@ -182,6 +182,9 @@ impl Raku {
             .map(|session| (session.project_id, session.runtime_mode))
         {
             self.state.selected_project = Some(project_id);
+            // Visiting any session in this workspace, projectless or not,
+            // is what clears its finished dot.
+            self.finished_project_ids.remove(&project_id);
             self.state.last_runtime_mode = runtime_mode;
         }
         // Activation may have switched projects after the initial request's

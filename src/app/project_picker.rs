@@ -198,6 +198,11 @@ impl Raku {
         let theme = Theme::current(cx);
         let selected_project = self.state.selected_project;
         let projectless_selected = self.selected_project().is_some_and(Project::is_projectless);
+        // Projectless workspaces never appear as rows; their finished turns
+        // surface on the pinned "No project" action instead.
+        let projectless_finished = self.state.projects.iter().any(|project| {
+            project.is_projectless() && self.finished_project_ids.contains(&project.id)
+        });
         let projects = Rc::new(if handle.is_open() {
             visible_project_entries(
                 &self.state.projects,
@@ -437,7 +442,8 @@ impl Raku {
                 let pinned_row = |action: ProjectPickerAction,
                                   id: &'static str,
                                   label: String,
-                                  selected: bool| {
+                                  selected: bool,
+                                  finished: bool| {
                     let weak = weak.clone();
                     let popover = popover.clone();
                     let index = actions.iter().position(|candidate| *candidate == action);
@@ -453,6 +459,17 @@ impl Raku {
                         )
                         .when(selected, |element| {
                             element.child(icon("icons/check.svg", 11.0, theme.text_secondary))
+                        })
+                        .when(finished && !selected, |element| {
+                            element.child(
+                                div()
+                                    .size(px(11.0))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(div().size(px(6.0)).rounded_full().bg(theme.accent)),
+                            )
                         })
                         .on_click(move |_, window, cx| {
                             popover.close(window, cx);
@@ -552,6 +569,7 @@ impl Raku {
                         "project-picker-none",
                         tr!("project.no_project_name"),
                         projectless_selected,
+                        projectless_finished,
                     ))
                     .child(div().mx(px(6.0)).my(px(4.0)).h(px(1.0)).bg(theme.border))
                     .child(rows)
@@ -560,6 +578,7 @@ impl Raku {
                         ProjectPickerAction::NewProject,
                         "project-picker-new",
                         tr!("project.new_project"),
+                        false,
                         false,
                     ))
                     .child(div().h(px(4.0)))
