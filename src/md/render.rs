@@ -2114,7 +2114,6 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
         .rounded(px(8.0))
         .border_1()
         .border_color(ctx.palette.border)
-        .bg(ctx.palette.inset)
         .overflow_hidden()
         .child(
             div()

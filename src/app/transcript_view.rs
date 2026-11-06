@@ -1471,7 +1471,7 @@ impl Waku {
         } else {
             inner
         };
-        let mut row = div()
+        let row = div()
             .id(("transcript-row", index))
             .w_full()
             .flex()
@@ -1493,17 +1493,18 @@ impl Waku {
             })
             .when(index + 1 == row_count && !blank_assistant, |element| {
                 element.pb(px(22.0))
-            })
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(CONTENT_MAX_WIDTH))
-                    .min_w_0()
-                    .child(inner),
-            );
+            });
+        // Hover tracks the centered content column, not the full-width row,
+        // so the gutters beside a response do not reveal its footer.
+        let mut content = div()
+            .id(("transcript-row-content", index))
+            .w_full()
+            .max_w(px(CONTENT_MAX_WIDTH))
+            .min_w_0()
+            .child(inner);
         if let Some(turn_id) = response_turn_id {
             let hover_target = (turn_id, kind);
-            row = row.on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
+            content = content.on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
                 let previous = this.hovered_response_row;
                 if *hovering {
                     this.hovered_response_row = Some(hover_target);
@@ -1515,7 +1516,7 @@ impl Waku {
                 }
             }));
         }
-        row.into_any_element()
+        row.child(content).into_any_element()
     }
 
     fn render_response_footer_row(
