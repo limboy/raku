@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.4.0] - 2026-11-06
+
+- Rename Waku to Raku, with a new app icon
+- Move existing data from `~/.waku` and `Application Support/Waku` to the Raku locations on first launch, leaving links at the old paths so existing projects, worktrees, and sessions keep working
+
 ## [2.3.0] - 2026-11-06
 
 - Add read-only side chats: ask a quick question about a task, or about quoted transcript text via right-click → Side chat, without adding turns to the conversation
