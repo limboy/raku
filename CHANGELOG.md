@@ -16,6 +16,15 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.3.0] - 2026-11-06
+
+- Add read-only side chats: ask a quick question about a task, or about quoted transcript text via right-click → Side chat, without adding turns to the conversation
+- Show failed turns as an error reply with the provider's reason behind a Details disclosure
+- Recall earlier prompts with up/down in an empty composer
+- Add a control to turn off automatic backups
+- Limit response hover to the content column so the side gutters no longer reveal the footer
+- Remove the inset background from transcript code blocks
+
 ## [2.2.10] - 2026-11-06
 
 - Let agents hand you a command as a runnable block: a Run button opens an inline terminal, and the agent resumes with the exit code and output when it finishes
