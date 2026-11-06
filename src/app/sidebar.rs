@@ -1389,7 +1389,7 @@ impl Raku {
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(sp(13.0))
+                                .text_size(sp(14.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text)
                                 .child(SharedString::from(title)),
