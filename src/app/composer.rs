@@ -1,3 +1,4 @@
+use super::composer_history::{HistoryNext, HistoryPrevious};
 use super::*;
 
 use anyhow::Context as _;
@@ -2666,11 +2667,18 @@ impl Waku {
                     .any(|(_, draft)| *draft == owner)
             });
         let can_send = has_draft && !no_providers && !attaching_session;
-        let (autocomplete, autocomplete_actionable) =
-            match self.render_composer_autocomplete(window, cx) {
-                Some((element, actionable)) => (Some(element), actionable),
-                None => (None, false),
-            };
+        let history_position = self.composer_history_position(cx);
+        // A recalled prompt may open with `/` or `@`; while it is being
+        // browsed the arrows belong to history, so the popup stays closed.
+        let (autocomplete, autocomplete_actionable) = match history_position
+            .is_none()
+            .then(|| self.render_composer_autocomplete(window, cx))
+            .flatten()
+        {
+            Some((element, actionable)) => (Some(element), actionable),
+            None => (None, false),
+        };
+        let history_available = !autocomplete_actionable && self.composer_history_available(cx);
         let autocomplete_loading = autocomplete.is_some() && !autocomplete_actionable;
         // Files dragged in from the OS light the card up as a drop target and
         // stage as attachment chips. The wash arrives pre-blended because a
@@ -2727,7 +2735,29 @@ impl Waku {
                             this.dismiss_autocomplete(cx);
                         }))
                 })
+                .when(history_available && !autocomplete_loading, |card| {
+                    card.key_context("ComposerHistory")
+                        .on_action(cx.listener(|this, _: &HistoryPrevious, _, cx| {
+                            this.navigate_composer_history(true, cx);
+                        }))
+                        .on_action(cx.listener(|this, _: &HistoryNext, _, cx| {
+                            this.navigate_composer_history(false, cx);
+                        }))
+                })
                 .children(autocomplete)
+                .children(history_position.map(|(current, total)| {
+                    div()
+                        .px(px(14.0))
+                        .pb(px(6.0))
+                        .text_size(sp(12.5))
+                        .line_height(sp(16.0))
+                        .text_color(theme.text_secondary)
+                        .child(tr!(
+                            "composer.history_position",
+                            current = current,
+                            total = total
+                        ))
+                }))
                 .when(!self.composer_attachments.is_empty(), |card| {
                     card.child(self.render_composer_attachments(cx))
                 })

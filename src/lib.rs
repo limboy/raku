@@ -47,8 +47,8 @@ mod ui;
 mod updater;
 
 pub use waku_client::{
-    checkpoint, command_env, composer_complete, git_branch, git_commit, i18n, identity,
-    model, model_catalog, persistence, projectless, skills, usage, worktree,
+    checkpoint, command_env, composer_complete, git_branch, git_commit, i18n, identity, model,
+    model_catalog, persistence, projectless, skills, usage, worktree,
 };
 
 use gpui::{
@@ -243,6 +243,7 @@ pub fn run() {
             crate::input::init(cx);
             crate::ui::menu::init(cx);
             crate::app::init_composer_autocomplete(cx);
+            crate::app::init_composer_history(cx);
             crate::app::init_settings_keys(cx);
             crate::app::init_command_palette(cx);
             crate::app::init_commit_dialog_keys(cx);

@@ -1264,6 +1264,8 @@ pub struct Waku {
     /// has no `Context` to rebuild the drawn index itself.
     composer_sources_stale: bool,
     composer_autocomplete: autocomplete::AutocompleteUi,
+    /// The prompt `up` recalled into the composer, while it is unedited.
+    composer_history: Option<composer_history::ComposerHistoryRecall>,
     /// Files dropped onto the composer, drawn as chips above the input and
     /// drained into the next submission.
     composer_attachments: Vec<ComposerAttachment>,
@@ -1656,6 +1658,7 @@ mod commit_dialog;
 mod compaction;
 mod components;
 mod composer;
+mod composer_history;
 mod drafts;
 mod file_search;
 mod goal_dialog;
@@ -1688,6 +1691,7 @@ use background_work::{
 pub use command_palette::init as init_command_palette;
 pub use commit_dialog::init as init_commit_dialog_keys;
 use components::*;
+pub use composer_history::init as init_composer_history;
 pub use goal_dialog::init as init_goal_dialog_keys;
 pub use image_preview::init as init_image_preview_keys;
 use project_picker::ProjectPickerSite;
@@ -2799,6 +2803,7 @@ impl Waku {
                 markdown_file_links: None,
                 composer_sources_stale: false,
                 composer_autocomplete: autocomplete::AutocompleteUi::new(),
+                composer_history: None,
                 composer_attachments,
                 session_link_imports: Vec::new(),
                 image_preview: None,

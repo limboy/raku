@@ -580,6 +580,7 @@ user_input.next: 次へ
 user_input.submit: 送信
 user_input.dismiss: 閉じる
 user_input.progress: "%{current} / %{total}"
+composer.history_position: "履歴 %{current}/%{total}"
 composer.preparing_task: タスクを準備中…
 composer.queue_followup: フォローアップとしてキューに追加（⏎）
 composer.message: メッセージ
