@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.4.2] - 2026-11-06
+
+- Show the finished dot on the No project row
+
 ## [2.4.1] - 2026-11-06
 
 - Fix the app icon so macOS 26 draws it without the glass tile
