@@ -249,6 +249,7 @@ impl Render for Raku {
             .on_action(cx.listener(Self::navigate_back_action))
             .on_action(cx.listener(Self::navigate_forward_action))
             .on_action(cx.listener(Self::select_sidebar_session_action))
+            .on_action(cx.listener(Self::select_adjacent_sidebar_session_action))
             .on_action(cx.listener(Self::switch_task_forward_action))
             .on_action(cx.listener(Self::switch_task_backward_action))
             .on_action(cx.listener(Self::select_first_task_action))

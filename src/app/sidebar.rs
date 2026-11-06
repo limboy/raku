@@ -10,18 +10,48 @@ actions!(raku_sidebar, [CancelSessionRename]);
 #[action(namespace = raku_sidebar, no_json)]
 pub(super) struct SelectSidebarSession(pub usize);
 
+/// Move through sessions in their displayed sidebar order.
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = raku_sidebar, no_json)]
+pub(super) struct SelectAdjacentSidebarSession {
+    forward: bool,
+}
+
 const SESSION_SHORTCUT_COUNT: usize = 9;
 const SESSION_RENAME_PARENT_CONTEXT: &str = "SessionRename";
 const SESSION_RENAME_FIELD_CONTEXT: &str = "SessionRename > TextInput";
 
-/// Keep Escape inside the focused inline rename editor so it cancels the
-/// rename rather than falling through to the window-wide Stop.
+/// Bind sidebar navigation and keep Escape inside the inline rename editor.
+/// Initialize after `crate::input::init` so Option-arrows override paragraph
+/// motion in text fields inside the Raku window.
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(
-        "escape",
-        CancelSessionRename,
-        Some(SESSION_RENAME_FIELD_CONTEXT),
-    )]);
+    cx.bind_keys([
+        KeyBinding::new(
+            "escape",
+            CancelSessionRename,
+            Some(SESSION_RENAME_FIELD_CONTEXT),
+        ),
+        KeyBinding::new(
+            "alt-up",
+            SelectAdjacentSidebarSession { forward: false },
+            Some("Raku"),
+        ),
+        KeyBinding::new(
+            "alt-down",
+            SelectAdjacentSidebarSession { forward: true },
+            Some("Raku"),
+        ),
+        KeyBinding::new(
+            "alt-up",
+            SelectAdjacentSidebarSession { forward: false },
+            Some("Raku > TextInput"),
+        ),
+        KeyBinding::new(
+            "alt-down",
+            SelectAdjacentSidebarSession { forward: true },
+            Some("Raku > TextInput"),
+        ),
+    ]);
     cx.bind_keys((0..SESSION_SHORTCUT_COUNT).map(|index| {
         KeyBinding::new(
             &format!("secondary-{}", index + 1),
@@ -232,6 +262,30 @@ fn grouped_sidebar_rows(
 fn sidebar_session_row_index(rows: &[SidebarRow], session_id: Uuid) -> Option<usize> {
     rows.iter()
         .position(|row| *row == SidebarRow::Session(session_id))
+}
+
+/// Skip headings and stop at the list edges. A draft or missing selection
+/// enters the history at the first or last session, depending on direction.
+fn adjacent_sidebar_session(
+    rows: &[SidebarRow],
+    selected: Option<Uuid>,
+    forward: bool,
+) -> Option<Uuid> {
+    let selected_index = selected.and_then(|id| sidebar_session_row_index(rows, id));
+    let candidates = match (selected_index, forward) {
+        (Some(index), true) => &rows[index + 1..],
+        (Some(index), false) => &rows[..index],
+        (None, _) => rows,
+    };
+    let mut sessions = candidates.iter().filter_map(|row| match row {
+        SidebarRow::Session(id) => Some(*id),
+        _ => None,
+    });
+    if forward {
+        sessions.next()
+    } else {
+        sessions.next_back()
+    }
 }
 
 fn sidebar_remapped_scroll_offset(
@@ -1117,6 +1171,29 @@ impl Raku {
         self.select_session(session_id, cx);
     }
 
+    pub(super) fn select_adjacent_sidebar_session_action(
+        &mut self,
+        action: &SelectAdjacentSidebarSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Repeated presses advance from the highlighted row even while its
+        // transcript is still being hydrated in the background.
+        let selected = self
+            .pending_session_activation
+            .map(|pending| pending.session_id)
+            .or(self.state.selected_session);
+        let Some(session_id) =
+            adjacent_sidebar_session(&self.sidebar_rows_cached(), selected, action.forward)
+        else {
+            return;
+        };
+        if self.settings_page.is_some() {
+            self.close_settings_popup(window, cx);
+        }
+        self.select_session(session_id, cx);
+    }
+
     pub(super) fn sidebar_session_shortcuts_modifiers_changed(
         &mut self,
         event: &gpui::ModifiersChangedEvent,
@@ -1687,6 +1764,61 @@ fn sidebar_session_menu_items(
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn sidebar_option_arrows_override_composer_paragraph_motion(cx: &mut gpui::TestAppContext) {
+        struct Harness {
+            composer: Entity<ComposerInput>,
+            received: Vec<bool>,
+            composer_context: &'static str,
+        }
+
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .key_context("Raku")
+                    .w(px(300.0))
+                    .on_action(
+                        cx.listener(|this, action: &SelectAdjacentSidebarSession, _, _| {
+                            this.received.push(action.forward);
+                        }),
+                    )
+                    .child(
+                        div()
+                            .key_context(self.composer_context)
+                            .child(self.composer.clone()),
+                    )
+            }
+        }
+
+        cx.update(|cx| {
+            crate::input::init(cx);
+            super::super::autocomplete::init(cx);
+            super::super::composer_history::init(cx);
+            init(cx);
+        });
+        let (harness, cx) = cx.add_window_view(|window, cx| Harness {
+            composer: cx.new(|cx| ComposerInput::new(window, cx)),
+            received: Vec::new(),
+            composer_context: "Composer",
+        });
+        let composer = cx.read_entity(&harness, |harness, _| harness.composer.clone());
+        cx.update(|window, cx| window.focus(&composer.read(cx).focus(), cx));
+        for composer_context in ["Composer", "ComposerHistory", "ComposerAutocomplete"] {
+            harness.update(cx, |harness, cx| {
+                harness.composer_context = composer_context;
+                harness.received.clear();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            cx.simulate_keystrokes("alt-up alt-down");
+            assert_eq!(
+                cx.read_entity(&harness, |harness, _| harness.received.clone()),
+                [false, true],
+                "Option-arrows must navigate sessions in {composer_context}",
+            );
+        }
+    }
+
     fn calendar_time(year: i32, month: u32, day: u32, hour: u32) -> DateTime<chrono::FixedOffset> {
         chrono::FixedOffset::east_opt(8 * 3_600)
             .unwrap()
@@ -1847,6 +1979,65 @@ mod tests {
             ]
         );
         assert_eq!(sidebar_session_shortcuts(&[]), [None; 9]);
+    }
+
+    #[test]
+    fn sidebar_arrow_navigation_follows_display_order_and_skips_headers() {
+        let ids = [9, 2, 12, 1].map(Uuid::from_u128);
+        let rows = [
+            SidebarRow::PinnedHeader,
+            SidebarRow::Session(ids[0]),
+            SidebarRow::Session(ids[1]),
+            SidebarRow::DateHeader(SidebarDateGroup::Today),
+            SidebarRow::Session(ids[2]),
+            SidebarRow::DateHeader(SidebarDateGroup::Yesterday),
+            SidebarRow::Session(ids[3]),
+        ];
+
+        for pair in ids.windows(2) {
+            assert_eq!(
+                adjacent_sidebar_session(&rows, Some(pair[0]), true),
+                Some(pair[1])
+            );
+            assert_eq!(
+                adjacent_sidebar_session(&rows, Some(pair[1]), false),
+                Some(pair[0])
+            );
+        }
+        assert_eq!(adjacent_sidebar_session(&rows, Some(ids[0]), false), None);
+        assert_eq!(adjacent_sidebar_session(&rows, Some(ids[3]), true), None);
+        for selected in [None, Some(Uuid::from_u128(99))] {
+            assert_eq!(
+                adjacent_sidebar_session(&rows, selected, true),
+                Some(ids[0])
+            );
+            assert_eq!(
+                adjacent_sidebar_session(&rows, selected, false),
+                Some(ids[3])
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_arrow_navigation_handles_empty_history_and_reaches_beyond_digit_shortcuts() {
+        let rows: Vec<_> = (1..=12)
+            .map(|id| SidebarRow::Session(Uuid::from_u128(id)))
+            .collect();
+        assert_eq!(
+            adjacent_sidebar_session(&rows, Some(Uuid::from_u128(9)), true),
+            Some(Uuid::from_u128(10))
+        );
+        for forward in [false, true] {
+            assert_eq!(adjacent_sidebar_session(&[], None, forward), None);
+            assert_eq!(
+                adjacent_sidebar_session(&[SidebarRow::PinnedHeader], None, forward),
+                None
+            );
+            assert_eq!(
+                adjacent_sidebar_session(&rows[..1], Some(Uuid::from_u128(1)), forward),
+                None
+            );
+        }
     }
 
     #[test]
