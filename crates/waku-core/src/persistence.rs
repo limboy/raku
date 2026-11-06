@@ -1989,7 +1989,10 @@ mod tests {
         let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
         let session = &mut state.sessions[0];
         session.begin_turn("question");
-        session.push_error_message("Pi could not complete this turn", Some("429: overloaded".into()));
+        session.push_error_message(
+            "Pi could not complete this turn",
+            Some("429: overloaded".into()),
+        );
         session.finish_active_turn(crate::model::TurnStatus::Failed);
         session.status = SessionStatus::Failed;
         let id = session.id;
@@ -2001,7 +2004,10 @@ mod tests {
         let reply = session.messages.last().unwrap();
         assert_eq!(reply.content, "Pi could not complete this turn");
         assert_eq!(
-            reply.error.as_ref().and_then(|error| error.detail.as_deref()),
+            reply
+                .error
+                .as_ref()
+                .and_then(|error| error.detail.as_deref()),
             Some("429: overloaded")
         );
         fs::remove_dir_all(directory).unwrap();

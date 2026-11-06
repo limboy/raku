@@ -924,14 +924,9 @@ impl Waku {
                 .pb(px(6.0))
                 .pr(px(6.0))
                 .when_some(pending_quote, |card, quote| {
-                    card.child(
-                        div()
-                            .px(px(10.0))
-                            .pt(px(4.0))
-                            .pb(px(2.0))
-                            .flex()
-                            .child(side_chat_quote_chip(&theme, &format!("composer-{id}"), &quote)),
-                    )
+                    card.child(div().px(px(10.0)).pt(px(4.0)).pb(px(2.0)).flex().child(
+                        side_chat_quote_chip(&theme, &format!("composer-{id}"), &quote),
+                    ))
                 })
                 .child(
                     div()
@@ -1212,7 +1207,8 @@ impl Waku {
                     && matches!(event.keystroke.key.as_str(), "enter" | "space")
                 {
                     cx.write_to_clipboard(ClipboardItem::new_string(key_content.to_string()));
-                    let _ = key_waku.update(cx, |this, cx| this.show_message_copied(message_id, cx));
+                    let _ =
+                        key_waku.update(cx, |this, cx| this.show_message_copied(message_id, cx));
                     cx.stop_propagation();
                 }
             });

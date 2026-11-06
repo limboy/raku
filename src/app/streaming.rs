@@ -685,14 +685,15 @@ impl Waku {
                     return true;
                 }
                 let task_notification =
-                    self.turn_end_notification_title(session_id, cx).map(|title| {
-                        let body = if success {
-                            tr!("session.turn_completed")
-                        } else {
-                            tr!("session.stopped")
-                        };
-                        (title, body)
-                    });
+                    self.turn_end_notification_title(session_id, cx)
+                        .map(|title| {
+                            let body = if success {
+                                tr!("session.turn_completed")
+                            } else {
+                                tr!("session.stopped")
+                            };
+                            (title, body)
+                        });
                 self.finish_streaming_assistant(session_id);
                 self.complete_turn_blocks(session_id);
                 runtime.stream_phase = None;
@@ -847,7 +848,10 @@ impl Waku {
                     if needs_fallback {
                         let provider = session.provider.display_name();
                         session.push_error_message(
-                            tr!("errors.provider_stopped_before_response", provider = provider),
+                            tr!(
+                                "errors.provider_stopped_before_response",
+                                provider = provider
+                            ),
                             failure_detail,
                         );
                     }

@@ -857,7 +857,9 @@ pub(super) fn render_error_reply(
     let click_waku = waku.clone();
     let key_waku = waku;
     let toggle = div()
-        .id(SharedString::from(format!("message-error-details-{message_id}")))
+        .id(SharedString::from(format!(
+            "message-error-details-{message_id}"
+        )))
         .track_focus(&focus)
         .tab_index(0)
         .ml(px(18.0))
@@ -2158,14 +2160,9 @@ mod message_time_tests {
         );
         assert_eq!(
             activity_disclosure_text(&activity).as_deref(),
-            Some(
-                "Arguments\n{\n  \"actions\": []\n}\n\nOutput\nHelper closed its session"
-            )
+            Some("Arguments\n{\n  \"actions\": []\n}\n\nOutput\nHelper closed its session")
         );
-        assert_eq!(
-            activity_preview(&activity),
-            "Helper closed its session"
-        );
+        assert_eq!(activity_preview(&activity), "Helper closed its session");
 
         let image_only = ActivityItem::new(
             Some("tool-2".into()),

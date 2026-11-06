@@ -1747,10 +1747,8 @@ impl Waku {
         let row_count = visible_count + usize::from(can_expand);
         for (index, file) in files.iter().take(visible_count).enumerate() {
             let last = index + 1 == row_count;
-            let row_focus = self.transcript_control_focus(
-                format!("changed-file-{turn_id}-{}", file.path),
-                cx,
-            );
+            let row_focus =
+                self.transcript_control_focus(format!("changed-file-{turn_id}-{}", file.path), cx);
             let path = file.path.clone();
             let key_path = file.path.clone();
             file_rows = file_rows.child(

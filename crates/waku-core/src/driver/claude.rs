@@ -44,9 +44,9 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
-    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, PermissionOption,
-    PlanDecision, ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputDelivery,
-    UserInputOption, UserInputQuestion, unix_time_millis,
+    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, PermissionOption, PlanDecision,
+    ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputDelivery, UserInputOption,
+    UserInputQuestion, unix_time_millis,
 };
 
 enum CommandMessage {
@@ -2286,7 +2286,10 @@ mod tests {
                 .any(|pair| pair[0] == flag && pair[1] == value)
         };
         assert!(has_pair("--tools", "Read,Grep,Glob,WebSearch,WebFetch"));
-        assert!(has_pair("--allowedTools", "Read,Grep,Glob,WebSearch,WebFetch"));
+        assert!(has_pair(
+            "--allowedTools",
+            "Read,Grep,Glob,WebSearch,WebFetch"
+        ));
         assert!(has_pair("--permission-mode", "dontAsk"));
         assert!(arguments.contains(&"--strict-mcp-config".to_owned()));
         assert!(arguments.contains(&"--disable-slash-commands".to_owned()));

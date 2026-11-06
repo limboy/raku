@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::model::{parse_command_exit_status, ActivityItem, ActivityKind};
+use crate::model::{ActivityItem, ActivityKind, parse_command_exit_status};
 
 const MAX_ACTIVITY_CHARS: usize = 16_000;
 
@@ -120,8 +120,14 @@ impl RetryNotice {
             tr!("activity.retried_request")
         };
         Some(
-            ActivityItem::new(Some(id), ActivityKind::Notice, title, self.detail.take(), true)
-                .with_failed(failed),
+            ActivityItem::new(
+                Some(id),
+                ActivityKind::Notice,
+                title,
+                self.detail.take(),
+                true,
+            )
+            .with_failed(failed),
         )
     }
 }
@@ -169,7 +175,12 @@ mod tests {
         assert_eq!(item.detail.as_deref(), Some("disk is full"));
         assert!(notice("Warning".into(), Some("   ")).detail.is_none());
         let long = "x".repeat(2_000);
-        assert!(notice("Warning".into(), Some(&long)).detail.unwrap().ends_with('…'));
+        assert!(
+            notice("Warning".into(), Some(&long))
+                .detail
+                .unwrap()
+                .ends_with('…')
+        );
     }
 
     #[test]
@@ -217,7 +228,11 @@ mod tests {
         );
         assert!(item.complete);
         assert!(item.failed);
-        assert!(item.output.as_deref().is_some_and(|text| text.len() < MAX_ACTIVITY_CHARS + 256));
+        assert!(
+            item.output
+                .as_deref()
+                .is_some_and(|text| text.len() < MAX_ACTIVITY_CHARS + 256)
+        );
     }
 }
 

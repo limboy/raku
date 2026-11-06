@@ -3185,9 +3185,9 @@ impl Waku {
                     .and_then(|browser| browser.read(cx).tab_label())
                     .unwrap_or_else(|| surface.label()),
                 // A side chat's title can arrive after its tab opened.
-                RightPanelSurface::SideChat { id, .. } => self
-                    .side_chat_title(*id)
-                    .unwrap_or_else(|| surface.label()),
+                RightPanelSurface::SideChat { id, .. } => {
+                    self.side_chat_title(*id).unwrap_or_else(|| surface.label())
+                }
                 _ => {
                     right_panel_tab_label(&surface, self.right_panel_files_selected_path.as_deref())
                 }

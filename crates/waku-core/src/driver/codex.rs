@@ -25,9 +25,9 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
-    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, GoalOperation,
-    PermissionOption, ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus,
-    UserInputAnswer, UserInputDelivery, UserInputOption, UserInputQuestion, unix_time_millis,
+    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, GoalOperation, PermissionOption,
+    ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus, UserInputAnswer,
+    UserInputDelivery, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 enum CommandMessage {
@@ -4472,12 +4472,12 @@ mod tests {
         // Payloads from a live Codex 0.166 turn with `tools.update_plan` on.
         let plan = |statuses: [&str; 3]| {
             json!({"method":"turn/plan/updated","params":{
-                "threadId":"thread-1","turnId":"turn-1","explanation":null,
-                "plan":[
-                    {"step":"Choose a quiet natural image","status":statuses[0]},
-                    {"step":"Shape it into 5–7–5 syllables","status":statuses[1]},
-                    {"step":"Polish the haiku’s final wording","status":statuses[2]}
-                ]}})
+            "threadId":"thread-1","turnId":"turn-1","explanation":null,
+            "plan":[
+                {"step":"Choose a quiet natural image","status":statuses[0]},
+                {"step":"Shape it into 5–7–5 syllables","status":statuses[1]},
+                {"step":"Polish the haiku’s final wording","status":statuses[2]}
+            ]}})
         };
         let rows = activities(feed_codex_messages(vec![
             plan(["completed", "inProgress", "pending"]),
@@ -4485,7 +4485,10 @@ mod tests {
             json!({"method":"turn/plan/updated","params":{"threadId":"thread-1","turnId":"turn-1","plan":[]}}),
         ]));
         assert_eq!(rows.len(), 2, "an empty plan adds no row");
-        assert!(rows.iter().all(|row| row.kind == ActivityKind::Plan && row.complete));
+        assert!(
+            rows.iter()
+                .all(|row| row.kind == ActivityKind::Plan && row.complete)
+        );
         assert_ne!(rows[0].source_id, rows[1].source_id);
         assert_eq!(rows[0].title, "Shape it into 5–7–5 syllables");
         assert_eq!(
@@ -4510,7 +4513,9 @@ mod tests {
             json!({"method":"item/started","params":{"item":{"id":"r1","type":"reasoning"}}}),
         ]);
         assert!(
-            !events.iter().any(|event| matches!(event, DriverEvent::Error(_))),
+            !events
+                .iter()
+                .any(|event| matches!(event, DriverEvent::Error(_))),
             "a retry is not an error"
         );
         let rows = activities(events)
@@ -4552,7 +4557,10 @@ mod tests {
             Some("gpt-6.1-sol → gpt-6-sol · flagged as high-risk cyber activity")
         );
         assert_eq!(rows[1].title, "Warning");
-        assert_eq!(rows[1].detail.as_deref(), Some("Sandbox fell back to read-only"));
+        assert_eq!(
+            rows[1].detail.as_deref(),
+            Some("Sandbox fell back to read-only")
+        );
     }
 
     fn feed_codex_messages(messages: Vec<Value>) -> Vec<DriverEvent> {
@@ -4723,7 +4731,14 @@ mod tests {
             .collect();
         assert_eq!(
             text,
-            ["Ready for approval.", "\n\n", "Prepared v2.2.5.", "\n\n", "More", " text"]
+            [
+                "Ready for approval.",
+                "\n\n",
+                "Prepared v2.2.5.",
+                "\n\n",
+                "More",
+                " text"
+            ]
         );
     }
 

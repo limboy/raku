@@ -3840,12 +3840,21 @@ mod tests {
     #[test]
     fn error_replies_keep_a_plain_headline_and_distinct_detail() {
         let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Pi);
-        session.push_error_message("Pi could not complete this turn", Some("  429: overloaded \n".into()));
-        session.push_error_message("Pi could not complete this turn", Some("Pi could not complete this turn".into()));
+        session.push_error_message(
+            "Pi could not complete this turn",
+            Some("  429: overloaded \n".into()),
+        );
+        session.push_error_message(
+            "Pi could not complete this turn",
+            Some("Pi could not complete this turn".into()),
+        );
         let first = &session.messages[0];
         assert_eq!(first.role, MessageRole::Assistant);
         assert_eq!(first.content, "Pi could not complete this turn");
-        assert_eq!(first.error.as_ref().unwrap().detail.as_deref(), Some("429: overloaded"));
+        assert_eq!(
+            first.error.as_ref().unwrap().detail.as_deref(),
+            Some("429: overloaded")
+        );
         assert_eq!(session.messages[1].error.as_ref().unwrap().detail, None);
     }
 

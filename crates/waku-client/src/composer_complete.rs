@@ -492,7 +492,10 @@ mod tests {
                 .map(|row| row.item.name)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(names(filter_commands(&commands, "", &mut matcher)), ["review"]);
+        assert_eq!(
+            names(filter_commands(&commands, "", &mut matcher)),
+            ["review"]
+        );
         assert_eq!(
             names(filter_skills(&commands, "")),
             ["deploy", "redeploy-docs"]

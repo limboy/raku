@@ -23,8 +23,7 @@ use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
 use crate::model::{
-    ActivityKind, DriverEvent, ProviderResumeCursor, ReportedCommand,
-    unix_time_millis,
+    ActivityKind, DriverEvent, ProviderResumeCursor, ReportedCommand, unix_time_millis,
 };
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
@@ -203,10 +202,7 @@ fn configure_pi_read_only_command(command: &mut std::process::Command) {
 }
 
 impl PiDriver {
-    pub fn start(
-        options: DriverStartOptions,
-        events: DriverEventSender,
-    ) -> anyhow::Result<Self> {
+    pub fn start(options: DriverStartOptions, events: DriverEventSender) -> anyhow::Result<Self> {
         let flavor = PiFlavor::Pi;
         let DriverStartOptions {
             binary,
@@ -1264,7 +1260,6 @@ fn handle_pi_message(
         return;
     }
 
-
     if event_type == flavor.session_info_event() {
         let title = value
             .get(flavor.session_info_title_field())
@@ -1852,11 +1847,9 @@ mod tests {
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(
-            arguments
-                .windows(2)
-                .any(|pair| pair[0] == "--tools" && pair[1].starts_with("read,grep,find,ls,web_search"))
-        );
+        assert!(arguments.windows(2).any(
+            |pair| pair[0] == "--tools" && pair[1].starts_with("read,grep,find,ls,web_search")
+        ));
         assert!(arguments.contains(&"--no-mcp".to_owned()));
         assert!(arguments.contains(&"--no-skills".to_owned()));
     }
@@ -2492,31 +2485,31 @@ mod tests {
         // session: thinking, a literal period, then toolCall, stopReason toolUse.
         let flavor = PiFlavor::Pi;
         for streamed in [false, true] {
-                let (pending, commands, _command_rx, mut state) = harness();
-                let (events, event_rx) = unbounded();
-                let message = json!({
-                    "role": "assistant", "provider": "deepseek", "model": "deepseek-flash",
-                    "stopReason": "toolUse",
-                    "content": [
-                        {"type": "thinking", "thinking": "Inspect the project"},
-                        {"type": "text", "text": " \n.\n"},
-                        {"type": "toolCall", "id": "tool-1", "name": "read", "arguments": {"path": "README.md"}}
-                    ]
-                });
-                let mut frames = vec![json!({"type": "message_start", "message": {
-                    "role": "assistant", "provider": "deepseek", "model": "deepseek-flash", "content": []
-                }})];
-                if streamed {
+            let (pending, commands, _command_rx, mut state) = harness();
+            let (events, event_rx) = unbounded();
+            let message = json!({
+                "role": "assistant", "provider": "deepseek", "model": "deepseek-flash",
+                "stopReason": "toolUse",
+                "content": [
+                    {"type": "thinking", "thinking": "Inspect the project"},
+                    {"type": "text", "text": " \n.\n"},
+                    {"type": "toolCall", "id": "tool-1", "name": "read", "arguments": {"path": "README.md"}}
+                ]
+            });
+            let mut frames = vec![json!({"type": "message_start", "message": {
+                "role": "assistant", "provider": "deepseek", "model": "deepseek-flash", "content": []
+            }})];
+            if streamed {
+                frames.push(json!({"type": "message_update", "assistantMessageEvent": {
+                    "type": "thinking_delta", "delta": "Inspect the project"
+                }}));
+                for delta in [" \n", ".", "\n"] {
                     frames.push(json!({"type": "message_update", "assistantMessageEvent": {
-                        "type": "thinking_delta", "delta": "Inspect the project"
+                        "type": "text_delta", "delta": delta
                     }}));
-                    for delta in [" \n", ".", "\n"] {
-                        frames.push(json!({"type": "message_update", "assistantMessageEvent": {
-                            "type": "text_delta", "delta": delta
-                        }}));
-                    }
                 }
-                frames.extend([
+            }
+            frames.extend([
                     json!({"type": "message_end", "message": message}),
                     json!({"type": "tool_execution_start", "toolCallId": "tool-1", "toolName": "read", "args": {"path": "README.md"}}),
                     json!({"type": "tool_execution_end", "toolCallId": "tool-1", "toolName": "read", "result": {"content": "Project instructions"}}),
@@ -2524,34 +2517,34 @@ mod tests {
                     json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Done."}}),
                     json!({"type": "message_end", "message": {"role": "assistant", "provider": "deepseek", "stopReason": "stop", "content": [{"type": "text", "text": "Done."}]}}),
                 ]);
-                for frame in frames {
-                    handle_pi_message(flavor, frame, &pending, &commands, &events, &mut state);
-                }
-                let emitted = event_rx.try_iter().collect::<Vec<_>>();
-                let tools = if streamed {
-                    assert!(
-                        matches!(&emitted[0], DriverEvent::ReasoningDelta(text) if text == "Inspect the project")
-                    );
-                    &emitted[1..]
-                } else {
-                    assert!(matches!(
-                        &emitted[0],
-                        DriverEvent::ReasoningStarted {
-                            timestamp_ms: 0,
-                            ..
-                        }
-                    ));
-                    assert!(
-                        matches!(&emitted[1], DriverEvent::ReasoningCompleted { content: Some(text), .. } if text == "Inspect the project")
-                    );
-                    &emitted[2..]
-                };
-                assert!(matches!(tools, [
+            for frame in frames {
+                handle_pi_message(flavor, frame, &pending, &commands, &events, &mut state);
+            }
+            let emitted = event_rx.try_iter().collect::<Vec<_>>();
+            let tools = if streamed {
+                assert!(
+                    matches!(&emitted[0], DriverEvent::ReasoningDelta(text) if text == "Inspect the project")
+                );
+                &emitted[1..]
+            } else {
+                assert!(matches!(
+                    &emitted[0],
+                    DriverEvent::ReasoningStarted {
+                        timestamp_ms: 0,
+                        ..
+                    }
+                ));
+                assert!(
+                    matches!(&emitted[1], DriverEvent::ReasoningCompleted { content: Some(text), .. } if text == "Inspect the project")
+                );
+                &emitted[2..]
+            };
+            assert!(matches!(tools, [
                     DriverEvent::RichActivity(started),
                     DriverEvent::RichActivity(finished),
                     DriverEvent::TextDelta(text),
                 ] if !started.complete && finished.complete && text == "Done."));
-            }
+        }
     }
 
     #[test]
@@ -2729,65 +2722,65 @@ mod tests {
     #[test]
     fn indexed_thinking_preserves_native_blocks_and_authoritative_completions() {
         let flavor = PiFlavor::Pi;
-            let (pending, commands, _command_rx, mut state) = harness();
-            let (events, received) = unbounded();
-            let first = "**Checking settings definition**\n\n**Checking default-path references**";
-            let second = "**Implementing daemon monitoring**\n\n**Initializing daemon state**";
-            for value in [
-                json!({"type":"message_start","message":{"role":"assistant"}}),
-                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}),
-                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"**Checking settings definition**"}}),
-                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":first}}),
-                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":1}}),
-                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":1,"delta":second}}),
-                json!({"type":"message_end","message":{"role":"assistant","content":[
-                    {"type":"thinking","thinking":first},{"type":"thinking","thinking":second}
-                ]}}),
-            ] {
-                handle_pi_message(flavor, value, &pending, &commands, &events, &mut state);
-            }
-            let emitted = received.try_iter().collect::<Vec<_>>();
-            let [
-                DriverEvent::ReasoningStarted {
-                    id: a,
-                    timestamp_ms: start,
-                },
-                DriverEvent::ReasoningBlockDelta { id: a_delta, .. },
-                DriverEvent::ReasoningCompleted {
-                    id: a_end,
-                    timestamp_ms: end,
-                    content: Some(a_text),
-                },
-                DriverEvent::ReasoningStarted { id: b, .. },
-                DriverEvent::ReasoningBlockDelta { id: b_delta, .. },
-                DriverEvent::ReasoningCompleted {
-                    id: b_end,
-                    content: Some(b_text),
-                    ..
-                },
-            ] = &emitted[..]
-            else {
-                panic!("unexpected lifecycle: {emitted:?}")
-            };
-            assert_eq!(a, a_delta);
-            assert_eq!(a, a_end);
-            assert_ne!(a, b);
-            assert_eq!(b, b_delta);
-            assert_eq!(b, b_end);
-            assert!(*start > 0 && end >= start);
-            assert_eq!(a_text, first);
-            assert_eq!(b_text, second);
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, received) = unbounded();
+        let first = "**Checking settings definition**\n\n**Checking default-path references**";
+        let second = "**Implementing daemon monitoring**\n\n**Initializing daemon state**";
+        for value in [
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"**Checking settings definition**"}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":first}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":1}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":1,"delta":second}}),
+            json!({"type":"message_end","message":{"role":"assistant","content":[
+                {"type":"thinking","thinking":first},{"type":"thinking","thinking":second}
+            ]}}),
+        ] {
+            handle_pi_message(flavor, value, &pending, &commands, &events, &mut state);
+        }
+        let emitted = received.try_iter().collect::<Vec<_>>();
+        let [
+            DriverEvent::ReasoningStarted {
+                id: a,
+                timestamp_ms: start,
+            },
+            DriverEvent::ReasoningBlockDelta { id: a_delta, .. },
+            DriverEvent::ReasoningCompleted {
+                id: a_end,
+                timestamp_ms: end,
+                content: Some(a_text),
+            },
+            DriverEvent::ReasoningStarted { id: b, .. },
+            DriverEvent::ReasoningBlockDelta { id: b_delta, .. },
+            DriverEvent::ReasoningCompleted {
+                id: b_end,
+                content: Some(b_text),
+                ..
+            },
+        ] = &emitted[..]
+        else {
+            panic!("unexpected lifecycle: {emitted:?}")
+        };
+        assert_eq!(a, a_delta);
+        assert_eq!(a, a_end);
+        assert_ne!(a, b);
+        assert_eq!(b, b_delta);
+        assert_eq!(b, b_end);
+        assert!(*start > 0 && end >= start);
+        assert_eq!(a_text, first);
+        assert_eq!(b_text, second);
 
-            // contentIndex starts over in the next assistant message.
-            for value in [
-                json!({"type":"message_start","message":{"role":"assistant"}}),
-                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}),
-            ] {
-                handle_pi_message(flavor, value, &pending, &commands, &events, &mut state);
-            }
-            assert!(
-                matches!(received.recv().unwrap(), DriverEvent::ReasoningStarted { id, .. } if &id != a && &id != b)
-            );
+        // contentIndex starts over in the next assistant message.
+        for value in [
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}),
+        ] {
+            handle_pi_message(flavor, value, &pending, &commands, &events, &mut state);
+        }
+        assert!(
+            matches!(received.recv().unwrap(), DriverEvent::ReasoningStarted { id, .. } if &id != a && &id != b)
+        );
     }
 
     #[test]
@@ -2908,10 +2901,21 @@ mod tests {
             json!({"type": "auto_retry_end", "success": false, "attempt": 1, "finalError": error}),
             json!({"type": "agent_settled"}),
         ] {
-            handle_pi_message(PiFlavor::Pi, value, &pending, &commands, &events, &mut state);
+            handle_pi_message(
+                PiFlavor::Pi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
         }
         let emitted = event_rx.try_iter().collect::<Vec<_>>();
-        assert!(emitted.iter().any(|event| matches!(event, DriverEvent::Error(message) if message == error)));
+        assert!(
+            emitted
+                .iter()
+                .any(|event| matches!(event, DriverEvent::Error(message) if message == error))
+        );
     }
 
     #[test]
@@ -2978,10 +2982,9 @@ mod launch_tests {
     #[test]
     fn the_title_extension_recognizes_the_title_language_context() {
         let source = include_str!("../../../../resources/pi/session-title.ts");
-        let prepared = super::super::title_language::TitleLanguageContext::new(
-            crate::model::ProviderKind::Pi,
-        )
-        .prepare("修复侧边栏的标题更新问题".into());
+        let prepared =
+            super::super::title_language::TitleLanguageContext::new(crate::model::ProviderKind::Pi)
+                .prepare("修复侧边栏的标题更新问题".into());
         let suffix = prepared
             .strip_prefix("修复侧边栏的标题更新问题")
             .expect("the note is appended");
