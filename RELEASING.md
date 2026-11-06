@@ -2,8 +2,7 @@
 
 Raku ships signed macOS (Apple Silicon) builds and in-app updates through
 **GitHub Actions and GitHub Releases**, with
-[Sparkle](https://sparkle-project.org) installing the updates. R2 remains an
-optional download mirror for the website; in-app updates do not depend on it.
+[Sparkle](https://sparkle-project.org) installing the updates.
 
 Once set up, cutting a release is:
 
@@ -32,9 +31,7 @@ tag, CI watch, and feed verification — from
   [`scripts/changelog.ts`](scripts/changelog.ts),
   [`scripts/verify-update-feeds.ts`](scripts/verify-update-feeds.ts).
 - GitHub Actions: [`.github/workflows/release.yml`](.github/workflows/release.yml)
-  builds, notarizes, and publishes the release;
-  [`.github/workflows/sync-release.yml`](.github/workflows/sync-release.yml)
-  copies published assets into the R2 bucket.
+  builds, notarizes, and publishes the release.
 
 ---
 
@@ -48,8 +45,8 @@ certificate unless `RAKU_SIGNING_IDENTITY` overrides it. An unencrypted `.p12`
 needs no `APPLE_CERTIFICATE_PASSWORD` secret.
 
 For local macOS packaging, the release script runs on [Bun](https://bun.sh)
-and needs [`create-dmg`](https://github.com/create-dmg/create-dmg) and
-[rclone](https://rclone.org) (`brew install bun create-dmg rclone`).
+and needs [`create-dmg`](https://github.com/create-dmg/create-dmg)
+(`brew install bun create-dmg`).
 
 ### 1. Sparkle signing keys
 
@@ -110,23 +107,6 @@ xcrun notarytool store-credentials NOTARY \
 
 Override the environment with `--signing-identity`, or change the notary
 profile with `--notary-profile` / `RAKU_NOTARY_PROFILE`.
-
-### 3. Cloudflare R2 mirror (optional)
-
-1. Create the bucket **`raku-releases`** (Cloudflare dashboard → R2 → Create
-   bucket). The release script will not create it — a bucket-scoped API token
-   can't.
-2. Attach the custom domain **`releases.waku.sh`** to the bucket (bucket →
-   Settings → Custom Domains). This serves objects publicly at
-   `https://releases.waku.sh/<file>`.
-3. Make sure the R2 API token behind the `r2` rclone remote covers this bucket
-   (R2 → Manage API Tokens → Object Read & Write). The remote already exists
-   for kero; if `rclone lsf r2:raku-releases --s3-no-check-bucket` returns
-   *AccessDenied* after the bucket exists, extend the token's bucket list.
-
-The rclone remote itself (`~/.config/rclone/rclone.conf`, type S3, provider
-Cloudflare, `no_check_bucket = true`) is shared with kero and needs no change.
-For CI mirroring, add the `R2_*` repository secrets.
 
 ---
 
@@ -213,15 +193,6 @@ binaries, and publishes:
 Builds are Apple Silicon only; the appcast declares
 `sparkle:hardwareRequirements` `arm64`.
 
-### R2 mirror
-
-**Sync release** copies a published release's assets to the `raku-releases`
-R2 bucket, with `appcast.xml` on a short cache lifetime and everything else
-cached forever. It skips itself when the R2 credentials are not configured.
-A release published with the workflow's `GITHUB_TOKEN` does not emit release
-events, so the publish job starts Sync release explicitly. You can also run
-**Sync release** manually from Actions with a tag.
-
 ### Repository secrets
 
 | Secret | Purpose |
@@ -238,10 +209,6 @@ events, so the publish job starts Sync release explicitly. You can also run
 | `APPLE_APP_SPECIFIC_PASSWORD` | fallback: app-specific password for that Apple ID |
 | `APPLE_TEAM_ID` | fallback: Developer Team ID |
 | `SPARKLE_PRIVATE_KEY` | EdDSA private key for `generate_appcast` |
-| `R2_ACCOUNT_ID` | optional mirror: Cloudflare account id for the R2 API |
-| `R2_ACCESS_KEY_ID` | optional mirror: R2 Object Read & Write token |
-| `R2_SECRET_ACCESS_KEY` | optional mirror: matching secret |
-| `R2_BUCKET` | optional; defaults to `raku-releases` |
 
 ### Local macOS packaging
 
@@ -250,27 +217,17 @@ notes, and appcast under `dist/` without publishing. Set
 `RAKU_DOWNLOAD_URL_PREFIX=https://github.com/limboy/raku/releases/download/v<version>/`
 when preparing assets for GitHub by hand, as CI does.
 
-The bare `bun run release` command retains the legacy R2 publishing path: it
-pulls recent archives from R2 to generate binary deltas and uploads there. It
-does not publish a GitHub release or advance the feed installed clients
-follow.
-
 ### Local script options
 
 | Flag / Env | Default | Purpose |
 | --- | --- | --- |
 | `--local` | — | build, notarize, and write the DMG + zip without publishing |
-| `--force` | — | re-publish a version that already exists in R2 |
 | `--adhoc`, `--skip-notarize` | — | local test builds (imply `--local`) |
 | `--skip-build` | — | reuse existing release binaries |
 | `--signing-identity <id>` / `RAKU_SIGNING_IDENTITY` | — | Developer ID identity to sign with |
 | `--notary-profile <name>` / `RAKU_NOTARY_PROFILE` | `NOTARY` | `notarytool` keychain profile |
 | `--build-number <n>` / `RAKU_BUILD_NUMBER` | derived | `CFBundleVersion` override |
-| `RAKU_R2_REMOTE` | `r2` | rclone remote name (legacy R2 path) |
-| `RAKU_R2_BUCKET` | `raku-releases` | R2 bucket (legacy R2 path) |
 | `RAKU_DOWNLOAD_URL_PREFIX` | `https://releases.waku.sh/` | base URL in the appcast |
-| `RAKU_HISTORY_COUNT` | `15` | recent archives pulled for delta generation |
-| `RAKU_NO_HISTORY=1` | — | skip pulling old archives (full updates only) |
 | `SPARKLE_BIN` | the `.raku-cache` copy | Sparkle tools directory |
 
 ---
@@ -279,8 +236,7 @@ follow.
 
 - **Two artifacts per release:** the notarized `.dmg` (what people download)
   and a `.zip` (what Sparkle installs). Only the zip appears in the appcast;
-  point download buttons at the DMG. CI feeds carry full updates only; deltas
-  come from the legacy R2 path.
+  point download buttons at the DMG. CI feeds carry full updates only.
 - **Keep artifact names stable.** `Raku-<v>.dmg`, `Raku-<v>.zip`, and
   `appcast.xml` are baked into existing clients' feed and download URLs.
 - **Debug builds never update themselves.** `Updater::init` returns `None`

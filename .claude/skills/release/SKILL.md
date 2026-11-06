@@ -141,9 +141,6 @@ Read `gh run view <id> -R limboy/raku --log-failed | tail -80` and match:
     "$D/Raku-<x.y.z>.dmg" "$D/Raku-<x.y.z>.zip" "$D/Raku-<x.y.z>.md" "$D/appcast.xml"
   ```
 
-  A manual publish skips the workflow's R2 sync step. If
-  `gh secret list -R limboy/raku` shows `R2_*` secrets, start it with
-  `gh workflow run sync-release.yml -R limboy/raku --ref main -f tag=v<x.y.z>`.
 - **Build, signing, or code failure**: fix it on `main` and release the next
   patch version. Leave the failed tag in place; an unpublished tag is harmless.
 
@@ -157,4 +154,4 @@ Read `gh run view <id> -R limboy/raku --log-failed | tail -80` and match:
 - `curl -sL https://github.com/limboy/raku/releases/latest/download/appcast.xml | grep shortVersionString`
   shows `<x.y.z>`. This is the feed Sparkle clients read.
 - Report the release URL, the version and notes, the run URL, and anything
-  that was skipped or done by hand (manual publish, R2 sync).
+  that was skipped or done by hand (manual publish).

@@ -550,9 +550,9 @@ try {
   const notesName = `${appName}-${version}.md`;
   const notesContents = `${notes ?? "See CHANGELOG.md for details."}\n`;
   await Bun.write(join(updatesDirectory, notesName), notesContents);
-  // The tag workflow publishes files from dist/ as GitHub release assets;
-  // sync-release then mirrors those assets to R2. Keep the notes beside the
-  // appcast there as well so Sparkle's release-notes URL cannot 404.
+  // The tag workflow publishes files from dist/ as GitHub release assets.
+  // Keep the notes beside the appcast there as well so Sparkle's
+  // release-notes URL cannot 404.
   await Bun.write(join(projectRoot, "dist", notesName), notesContents);
   console.log(
     notes
