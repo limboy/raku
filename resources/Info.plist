@@ -41,7 +41,7 @@
          assets. SUPublicEDKey verifies archives signed with the matching
          SPARKLE_PRIVATE_KEY repository secret (see RELEASING.md). -->
     <key>SUFeedURL</key>
-    <string>https://github.com/limboy/waku/releases/latest/download/appcast.xml</string>
+    <string>https://github.com/limboy/raku/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>ZOZ2bqWUeQ3OVnPCmB5ExjrQBdMI6PFxUO4+WzeGxDc=</string>
 	<key>NSHighResolutionCapable</key>

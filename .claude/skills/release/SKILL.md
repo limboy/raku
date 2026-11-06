@@ -13,7 +13,7 @@ notarization). This skill is the procedure. Where they disagree, trust
 currently builds **macOS only**, so the Linux/Windows artifacts described in
 RELEASING.md are not produced.
 
-Always pass `-R limboy/waku` to `gh`. This checkout has no default repo, so
+Always pass `-R limboy/raku` to `gh`. This checkout has no default repo, so
 bare `gh run …` / `gh release …` fail with "No default remote repository".
 
 A pushed tag publishes to every installed client with no further gate. Get the
@@ -28,18 +28,18 @@ Stop and report if any check fails.
 - `git fetch origin --tags`, then `main` must not be behind `origin/main`.
   If it is ahead, those commits ship in this release — list them for the user.
 - Last **published** release, not last tag:
-  `gh api repos/limboy/waku/releases/latest -q .tag_name`. A tag can exist
+  `gh api repos/limboy/raku/releases/latest -q .tag_name`. A tag can exist
   without a release when its run failed or was cancelled (e.g. `v2.1.0`).
   Compare `git tag -l 'v*' --sort=-v:refname | head -5` with
-  `gh release list -R limboy/waku -L 5`.
+  `gh release list -R limboy/raku -L 5`.
 - Something to release: `git log --oneline <published>..HEAD` has commits
   other than `Release Waku …`.
 - Tests are green on HEAD:
-  `gh run list -R limboy/waku -w test.yml -b main -L 1 --json headSha,status,conclusion`.
+  `gh run list -R limboy/raku -w test.yml -b main -L 1 --json headSha,status,conclusion`.
   If the latest run is for an older commit or still running, say so and ask
   whether to wait.
 - No Release run already in flight:
-  `gh run list -R limboy/waku -w release.yml -L 3`.
+  `gh run list -R limboy/raku -w release.yml -L 3`.
 
 ## 2. Pick the version
 
@@ -109,9 +109,9 @@ Stop and report if any check fails.
 ## 6. Watch the run
 
 - Find the run the tag started (it can take a few seconds to appear):
-  `gh run list -R limboy/waku -w release.yml -e push -L 3 --json databaseId,headBranch,status`
+  `gh run list -R limboy/raku -w release.yml -e push -L 3 --json databaseId,headBranch,status`
   and pick the one whose `headBranch` is `v<x.y.z>`.
-- Wait with `gh run watch <id> -R limboy/waku --exit-status` as a background
+- Wait with `gh run watch <id> -R limboy/raku --exit-status` as a background
   Bash command. A run takes about 15–25 minutes, mostly the macOS job. Do not
   poll with sleeps.
 - Jobs: **Resolve version** → **macOS** (cross-builds arm64 on an Intel runner,
@@ -119,12 +119,12 @@ Stop and report if any check fails.
 
 ## 7. If the run fails
 
-Read `gh run view <id> -R limboy/waku --log-failed | tail -80` and match:
+Read `gh run view <id> -R limboy/raku --log-failed | tail -80` and match:
 
 - **Notary or stapler network error** (`NSURLErrorDomain -1005`,
   `The validate action failed! Error 68`, `api.apple-cloudkit.com`): this is
   transient on Apple's side. Rerun with
-  `gh run rerun <id> -R limboy/waku --failed`. Rerunning macOS rebuilds and
+  `gh run rerun <id> -R limboy/raku --failed`. Rerunning macOS rebuilds and
   re-notarizes, so expect another ~16 minutes.
 - **Tag does not match Cargo.toml** in Resolve version: nothing was built or
   published. Ask before deleting the remote tag, then fix the mismatch and
@@ -135,26 +135,26 @@ Read `gh run view <id> -R limboy/waku --log-failed | tail -80` and match:
 
   ```sh
   D=$(mktemp -d /tmp/waku-v<x.y.z>-XXXX)
-  gh run download <id> -R limboy/waku -n macos -D "$D"
-  gh release create v<x.y.z> -R limboy/waku --verify-tag --latest \
+  gh run download <id> -R limboy/raku -n macos -D "$D"
+  gh release create v<x.y.z> -R limboy/raku --verify-tag --latest \
     --title v<x.y.z> --notes-file "$D/Waku-<x.y.z>.md" \
     "$D/Waku-<x.y.z>.dmg" "$D/Waku-<x.y.z>.zip" "$D/Waku-<x.y.z>.md" "$D/appcast.xml"
   ```
 
   A manual publish skips the workflow's R2 sync step. If
-  `gh secret list -R limboy/waku` shows `R2_*` secrets, start it with
-  `gh workflow run sync-release.yml -R limboy/waku --ref main -f tag=v<x.y.z>`.
+  `gh secret list -R limboy/raku` shows `R2_*` secrets, start it with
+  `gh workflow run sync-release.yml -R limboy/raku --ref main -f tag=v<x.y.z>`.
 - **Build, signing, or code failure**: fix it on `main` and release the next
   patch version. Leave the failed tag in place; an unpublished tag is harmless.
 
 ## 8. Verify and report
 
-- `gh release view v<x.y.z> -R limboy/waku --json isDraft,assets -q '{isDraft, assets: [.assets[].name]}'`:
+- `gh release view v<x.y.z> -R limboy/raku --json isDraft,assets -q '{isDraft, assets: [.assets[].name]}'`:
   not a draft, with `Waku-<x.y.z>.dmg`, `Waku-<x.y.z>.zip`, `Waku-<x.y.z>.md`,
   and `appcast.xml`.
-- `gh api repos/limboy/waku/releases/latest -q .tag_name` is `v<x.y.z>`.
+- `gh api repos/limboy/raku/releases/latest -q .tag_name` is `v<x.y.z>`.
   (`gh release view` has no `isLatest` field.)
-- `curl -sL https://github.com/limboy/waku/releases/latest/download/appcast.xml | grep shortVersionString`
+- `curl -sL https://github.com/limboy/raku/releases/latest/download/appcast.xml | grep shortVersionString`
   shows `<x.y.z>`. This is the feed Sparkle clients read.
 - Report the release URL, the version and notes, the run URL, and anything
   that was skipped or done by hand (manual publish, R2 sync).

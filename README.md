@@ -8,7 +8,7 @@ it keeps all projects, sessions, transcripts, and state on your machine.
 
 ## Install
 
-Download the latest build from [GitHub Releases](https://github.com/limboy/waku/releases/latest):
+Download the latest build from [GitHub Releases](https://github.com/limboy/raku/releases/latest):
 
 - **macOS (Apple Silicon):** Download and open `Waku-<version>.dmg`.
 

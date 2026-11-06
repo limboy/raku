@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { verifyUpdateFeeds } from "./verify-update-feeds.ts";
 
 const version = "1.2.3";
-const prefix = `https://github.com/limboy/waku/releases/download/v${version}/`;
+const prefix = `https://github.com/limboy/raku/releases/download/v${version}/`;
 const directories: string[] = [];
 
 afterEach(async () => {

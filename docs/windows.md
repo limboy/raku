@@ -50,8 +50,8 @@ and reopens. **Check for Updates…** in the app menu starts an explicit check.
 Updates are the same signed feed macOS uses, with one appcast per
 architecture:
 
-- `https://github.com/limboy/waku/releases/latest/download/appcast-windows-x86_64.xml`
-- `https://github.com/limboy/waku/releases/latest/download/appcast-windows-aarch64.xml`
+- `https://github.com/limboy/raku/releases/latest/download/appcast-windows-x86_64.xml`
+- `https://github.com/limboy/raku/releases/latest/download/appcast-windows-aarch64.xml`
 
 Every installer carries an EdDSA signature, and Waku refuses one that does not
 verify against the public key built into it — so a compromised mirror or a

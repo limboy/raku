@@ -38,10 +38,10 @@ static TEMPORARY_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
 const FEED_URL: Option<&str> =
-    Some("https://github.com/limboy/waku/releases/latest/download/appcast-linux-aarch64.xml");
+    Some("https://github.com/limboy/raku/releases/latest/download/appcast-linux-aarch64.xml");
 #[cfg(target_arch = "x86_64")]
 const FEED_URL: Option<&str> =
-    Some("https://github.com/limboy/waku/releases/latest/download/appcast-linux-x86_64.xml");
+    Some("https://github.com/limboy/raku/releases/latest/download/appcast-linux-x86_64.xml");
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 const FEED_URL: Option<&str> = None;
 

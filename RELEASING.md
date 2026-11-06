@@ -85,7 +85,7 @@ local file and upload it directly to GitHub without printing it:
   trap 'rm -rf "$sparkle_tmp"' EXIT
   .waku-cache/sparkle/2.9.4/bin/generate_keys --account sh.waku.updates \
     -x "$sparkle_tmp/private-key"
-  gh secret set SPARKLE_PRIVATE_KEY --repo limboy/waku \
+  gh secret set SPARKLE_PRIVATE_KEY --repo limboy/raku \
     < "$sparkle_tmp/private-key"
 )
 ```
@@ -157,9 +157,9 @@ generates the appcast, and publishes the GitHub release with the matching
 changelog section. Installed clients can discover the update as soon as
 publication completes. The feed and its downloads are release assets:
 
-- **Feed**: `https://github.com/limboy/waku/releases/latest/download/appcast.xml`
+- **Feed**: `https://github.com/limboy/raku/releases/latest/download/appcast.xml`
 - **Archive and release notes**: immutable versioned URLs under
-  `https://github.com/limboy/waku/releases/download/v<version>/`.
+  `https://github.com/limboy/raku/releases/download/v<version>/`.
 
 Before publishing, CI verifies that the feed references the matching release
 assets and that the declared length and Ed25519 signature match the actual
@@ -189,8 +189,8 @@ can be published by hand:
 
 ```sh
 D=$(mktemp -d)
-gh run download <run-id> -R limboy/waku -n macos -D "$D"
-gh release create v<version> -R limboy/waku --verify-tag --latest \
+gh run download <run-id> -R limboy/raku -n macos -D "$D"
+gh release create v<version> -R limboy/raku --verify-tag --latest \
   --title v<version> --notes-file "$D/Waku-<version>.md" \
   "$D/Waku-<version>.dmg" "$D/Waku-<version>.zip" \
   "$D/Waku-<version>.md" "$D/appcast.xml"
@@ -247,7 +247,7 @@ events, so the publish job starts Sync release explicitly. You can also run
 
 `bun run release --local` builds a signed, notarized DMG, update zip, release
 notes, and appcast under `dist/` without publishing. Set
-`WAKU_DOWNLOAD_URL_PREFIX=https://github.com/limboy/waku/releases/download/v<version>/`
+`WAKU_DOWNLOAD_URL_PREFIX=https://github.com/limboy/raku/releases/download/v<version>/`
 when preparing assets for GitHub by hand, as CI does.
 
 The bare `bun run release` command retains the legacy R2 publishing path: it

@@ -840,7 +840,7 @@ mod feed {
         let url = url::Url::parse(value)?;
         let official_origin = url.host_str() == Some("releases.waku.sh")
             || (url.host_str() == Some("github.com")
-                && url.path().starts_with("/limboy/waku/releases/download/"));
+                && url.path().starts_with("/limboy/raku/releases/download/"));
         anyhow::ensure!(
             url.scheme() == "https"
                 && official_origin
@@ -946,8 +946,8 @@ mod feed {
         #[test]
         fn official_github_assets_and_legacy_mirror_are_allowed() {
             for url in [
-                "https://github.com/limboy/waku/releases/download/v0.2.0/Waku-0.2.0-x86_64-Setup.exe",
-                "https://github.com/limboy/waku/releases/download/v0.2.0/waku-0.2.0-aarch64-unknown-linux-gnu.tar.gz",
+                "https://github.com/limboy/raku/releases/download/v0.2.0/Waku-0.2.0-x86_64-Setup.exe",
+                "https://github.com/limboy/raku/releases/download/v0.2.0/waku-0.2.0-aarch64-unknown-linux-gnu.tar.gz",
                 "https://releases.waku.sh/waku-0.1.20-x86_64-unknown-linux-gnu.tar.gz",
             ] {
                 assert!(validate_download_url(url).is_ok(), "{url}");
@@ -957,14 +957,14 @@ mod feed {
         #[test]
         fn unrelated_repositories_and_insecure_downloads_are_rejected() {
             for url in [
-                "http://github.com/limboy/waku/releases/download/v0.2.0/payload.zip",
+                "http://github.com/limboy/raku/releases/download/v0.2.0/payload.zip",
                 "https://github.com/other/waku/releases/download/v0.2.0/payload.zip",
-                "https://github.com/limboy/waku-evil/releases/download/v0.2.0/payload.zip",
-                "https://github.com/limboy/waku/releases/download/../../../../other/waku/payload.zip",
-                "https://github.com:8443/limboy/waku/releases/download/v0.2.0/payload.zip",
-                "https://github.com.evil.test/limboy/waku/releases/download/v0.2.0/payload.zip",
-                "https://user:password@github.com/limboy/waku/releases/download/v0.2.0/payload.zip",
-                "https://github.com@evil.test/limboy/waku/releases/download/v0.2.0/payload.zip",
+                "https://github.com/limboy/raku-evil/releases/download/v0.2.0/payload.zip",
+                "https://github.com/limboy/raku/releases/download/../../../../other/waku/payload.zip",
+                "https://github.com:8443/limboy/raku/releases/download/v0.2.0/payload.zip",
+                "https://github.com.evil.test/limboy/raku/releases/download/v0.2.0/payload.zip",
+                "https://user:password@github.com/limboy/raku/releases/download/v0.2.0/payload.zip",
+                "https://github.com@evil.test/limboy/raku/releases/download/v0.2.0/payload.zip",
                 "file:///tmp/payload.zip",
             ] {
                 assert!(validate_download_url(url).is_err(), "{url}");
@@ -1056,10 +1056,10 @@ mod windows {
     /// be a contract hiding in a string.
     #[cfg(target_arch = "aarch64")]
     const FEED_URL: &str =
-        "https://github.com/limboy/waku/releases/latest/download/appcast-windows-aarch64.xml";
+        "https://github.com/limboy/raku/releases/latest/download/appcast-windows-aarch64.xml";
     #[cfg(not(target_arch = "aarch64"))]
     const FEED_URL: &str =
-        "https://github.com/limboy/waku/releases/latest/download/appcast-windows-x86_64.xml";
+        "https://github.com/limboy/raku/releases/latest/download/appcast-windows-x86_64.xml";
 
     /// Read out of `resources/Info.plist` by the build script, so macOS and
     /// Windows cannot end up trusting different keys.

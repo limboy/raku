@@ -76,8 +76,8 @@ previous version.
 Every archive is verified with the same Ed25519 release key used by the macOS
 and Windows updaters. The architecture-specific feeds are:
 
-- `https://github.com/limboy/waku/releases/latest/download/appcast-linux-x86_64.xml`
-- `https://github.com/limboy/waku/releases/latest/download/appcast-linux-aarch64.xml`
+- `https://github.com/limboy/raku/releases/latest/download/appcast-linux-x86_64.xml`
+- `https://github.com/limboy/raku/releases/latest/download/appcast-linux-aarch64.xml`
 
 Use **Check for Updates** in the app menu for an explicit check. System-wide
 installs such as
