@@ -34,15 +34,43 @@ Install and authenticate at least one supported agent CLI before starting Raku.
 Raku detects available CLIs automatically and uses each provider's native
 structured protocol and session continuity.
 
-## Highlights
+## Features
 
-- Manage projects and independent agent sessions in one native interface, with pinned sessions, unread completion indicators, and project or date grouping.
+### Projects and sessions
+
+- Keep projects and independent agent sessions in one native sidebar, with pinned sessions, unread completion indicators, and project or date grouping.
+- Search all tasks by title and message content (`⌘K`), and jump to sidebar sessions with `⌘1`–`⌘9`.
+- Start tasks in a project or as projectless tasks, and recall earlier prompts with the up and down arrows in an empty composer.
+
+### Composer and agent control
+
 - Switch models, reasoning effort, and access modes from a unified composer.
-- Queue or steer follow-up messages while an agent is streaming, and trigger native context compaction across providers.
-- Inspect token usage and subscription plan quotas (`⌘U`).
-- Rewind Git-backed tasks with conversation-aware checkpoints and recover state from automatic daily backups.
-- Render rich transcripts with native Mermaid diagrams, LaTeX math, collapsible long-paste snippets, and full Markdown conversation export.
-- Keep all data locally on disk with no account or remote service required.
+- Use plan mode (`⌘⇧P`): the agent investigates and proposes a plan, then implements it once you approve.
+- Queue or steer follow-up messages while an agent is streaming.
+- Trigger native context compaction across providers.
+- Run commands the agent hands you in an inline terminal, and resume the agent with the exit code and output.
+
+### Side chats and review
+
+- Ask read-only side questions about a task, or about quoted transcript text (right-click → Side chat), without adding turns to the conversation.
+- Review file diffs and changed files alongside the transcript, with a searchable file tree and previews for images and SVGs.
+- Rewind Git-backed tasks with conversation-aware checkpoints, and recover state from automatic daily backups.
+
+### Transcripts
+
+- Render Markdown with native Mermaid diagrams (with a reusable preview window), LaTeX math, and collapsible long-paste snippets.
+- Show provider retries, model switches, and warnings, and show failed turns with the provider's reason.
+- Export full conversations as Markdown.
+- Adjust the transcript font size (Small, Medium, Large).
+
+### Usage and limits
+
+- Inspect token usage and subscription plan quotas in the usage panel (`⌘U`).
+
+### Privacy and updates
+
+- Keep all data on disk on your machine, with no account or remote service required.
+- Receive signed updates through Sparkle from GitHub Releases.
 
 ## Architecture
 
