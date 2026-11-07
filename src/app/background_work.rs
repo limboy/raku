@@ -177,6 +177,8 @@ impl BackgroundSummaryStatus {
 #[derive(Clone)]
 struct EnvironmentSummary {
     git_available: Option<bool>,
+    /// Branch review line counts from the cached snapshot; `None` until known.
+    review_counts: Option<(u64, u64)>,
     commit_status: Option<String>,
     commit_focus: FocusHandle,
     compare_focus: FocusHandle,
@@ -895,13 +897,16 @@ impl Raku {
                     .map(|project| project.path.as_path())
             })
             .map(std::path::Path::to_path_buf);
+        let mut review_counts = None;
         let git_available = workspace_path.map_or(Some(false), |path| {
-            if self
-                .visible_branch_snapshot
-                .as_ref()
-                .is_some_and(|(snapshot_path, _)| snapshot_path == &path)
-                || self.branch_snapshot_for_workspace(&path, cx).is_some()
-            {
+            let snapshot = self.branch_snapshot_for_workspace(&path, cx).or_else(|| {
+                self.visible_branch_snapshot
+                    .as_ref()
+                    .filter(|(snapshot_path, _)| snapshot_path == &path)
+                    .map(|(_, snapshot)| snapshot.clone())
+            });
+            if let Some(snapshot) = snapshot {
+                review_counts = Some((snapshot.branch_additions, snapshot.branch_deletions));
                 Some(true)
             } else {
                 match self.branch_snapshots.read(&path) {
@@ -912,6 +917,7 @@ impl Raku {
         });
         let environment = Some(EnvironmentSummary {
             git_available,
+            review_counts,
             commit_status: self.commit_operation_status_label(),
             commit_focus: self.transcript_control_focus("environment-summary-commit", cx),
             compare_focus: self.transcript_control_focus("environment-summary-compare", cx),
@@ -1663,6 +1669,7 @@ fn render_environment_summary_section(
         environment
             .commit_status
             .unwrap_or_else(|| tr!("environment.commit_or_push")),
+        None,
         !commit_pending,
         commit_pending,
         theme,
@@ -1682,6 +1689,9 @@ fn render_environment_summary_section(
         &environment.compare_focus,
         "icons/file-diff.svg",
         tr!("environment.review_changes"),
+        environment
+            .review_counts
+            .filter(|(additions, deletions)| *additions > 0 || *deletions > 0),
         true,
         false,
         theme,
@@ -1702,6 +1712,7 @@ fn render_environment_action_row(
     focus: &FocusHandle,
     icon_path: &'static str,
     label: String,
+    line_counts: Option<(u64, u64)>,
     enabled: bool,
     active: bool,
     theme: &Theme,
@@ -1752,6 +1763,27 @@ fn render_environment_action_row(
                 .text_color(foreground)
                 .child(label),
         )
+        .when_some(line_counts, |row, (additions, deletions)| {
+            row.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .text_size(sp(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(
+                        div()
+                            .text_color(theme.success)
+                            .child(format!("+{additions}")),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.danger)
+                            .child(format!("-{deletions}")),
+                    ),
+            )
+        })
         .when(enabled, |row| {
             row.on_click(move |_, window, cx| action(window, cx))
                 .on_key_down(move |event: &KeyDownEvent, window, cx| {

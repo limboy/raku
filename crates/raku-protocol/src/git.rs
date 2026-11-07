@@ -17,8 +17,15 @@ pub struct BranchSnapshot {
     pub detached_head: Option<String>,
     pub default_branch: Option<String>,
     pub branches: Vec<BranchEntry>,
+    /// Uncommitted lines: `HEAD` against the worktree, untracked included.
     pub additions: u64,
     pub deletions: u64,
+    /// Lines on the branch: its merge base with the default branch against
+    /// the worktree, matching the Branch review source.
+    #[serde(default)]
+    pub branch_additions: u64,
+    #[serde(default)]
+    pub branch_deletions: u64,
 }
 
 impl BranchSnapshot {

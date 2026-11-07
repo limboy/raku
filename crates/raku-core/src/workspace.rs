@@ -394,29 +394,13 @@ pub(crate) fn resolve_diff_range(
 }
 
 fn branch_base(cwd: &Path) -> anyhow::Result<String> {
-    let Some(snapshot) = crate::git_branch::inspect(cwd)? else {
+    let Some(snapshot) = crate::git_branch::inspect_refs(cwd)? else {
         bail!("the workspace is not a Git repository");
     };
     let Some(head) = resolve(cwd, "HEAD") else {
         return Ok(EMPTY_TREE.to_owned());
     };
-    let current = snapshot.current.as_deref();
-    let default_branch = snapshot
-        .default_branch
-        .filter(|branch| current != Some(branch.as_str()))
-        .or_else(|| {
-            ["main", "master"]
-                .into_iter()
-                .find(|candidate| {
-                    current != Some(*candidate)
-                        && snapshot
-                            .branches
-                            .iter()
-                            .any(|branch| branch.name == *candidate)
-                })
-                .map(str::to_owned)
-        });
-    let Some(default_branch) = default_branch else {
+    let Some(default_branch) = crate::git_branch::comparison_branch(&snapshot) else {
         return Ok(head);
     };
     let output = git(cwd, ["merge-base", "HEAD", default_branch.as_str()])?;

@@ -22,9 +22,56 @@ const BINARY_PROBE_BYTES: usize = 8_000;
 
 pub use raku_protocol::git::{BranchEntry, BranchSnapshot};
 
-/// Inspect local branches and which worktree, if any, currently owns each.
+/// Inspect local branches and which worktree, if any, currently owns each,
+/// with the uncommitted and branch line counts.
 /// `Ok(None)` means `cwd` is not inside a Git repository.
 pub fn inspect(cwd: &Path) -> anyhow::Result<Option<BranchSnapshot>> {
+    let Some(mut snapshot) = inspect_refs(cwd)? else {
+        return Ok(None);
+    };
+    let repository = snapshot.repository.clone();
+    let untracked = untracked_line_additions(&repository);
+    let with_untracked =
+        |(additions, deletions): (u64, u64)| (additions.saturating_add(untracked), deletions);
+    let (additions, deletions) = with_untracked(tracked_line_counts(&repository, "HEAD"));
+    let (branch_additions, branch_deletions) = comparison_branch(&snapshot)
+        .and_then(|branch| optional_stdout(&repository, &["merge-base", "HEAD", &branch]).ok()?)
+        .filter(|base| !base.is_empty())
+        .map_or((additions, deletions), |base| {
+            with_untracked(tracked_line_counts(&repository, &base))
+        });
+    snapshot.additions = additions;
+    snapshot.deletions = deletions;
+    snapshot.branch_additions = branch_additions;
+    snapshot.branch_deletions = branch_deletions;
+    Ok(Some(snapshot))
+}
+
+/// The branch a feature branch is reviewed against: the default branch, or
+/// `main`/`master` when the default is the current branch. `None` means the
+/// current checkout is itself the comparison base.
+pub(crate) fn comparison_branch(snapshot: &BranchSnapshot) -> Option<String> {
+    let current = snapshot.current.as_deref();
+    snapshot
+        .default_branch
+        .clone()
+        .filter(|branch| current != Some(branch.as_str()))
+        .or_else(|| {
+            ["main", "master"]
+                .into_iter()
+                .find(|candidate| {
+                    current != Some(*candidate)
+                        && snapshot
+                            .branches
+                            .iter()
+                            .any(|branch| branch.name == *candidate)
+                })
+                .map(str::to_owned)
+        })
+}
+
+/// [`inspect`] without the line counts, for callers that only need refs.
+pub(crate) fn inspect_refs(cwd: &Path) -> anyhow::Result<Option<BranchSnapshot>> {
     let repository_output = crate::command_env::plain_command("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
@@ -103,31 +150,28 @@ pub fn inspect(cwd: &Path) -> anyhow::Result<Option<BranchSnapshot>> {
         .filter(|branch| branches.iter().any(|entry| entry.name == *branch))
         .map(str::to_owned)
         .or_else(|| current.clone());
-    let (additions, deletions) = worktree_line_counts(&repository);
-
     Ok(Some(BranchSnapshot {
         repository,
         current,
         detached_head,
         default_branch,
         branches,
-        additions,
-        deletions,
+        additions: 0,
+        deletions: 0,
+        branch_additions: 0,
+        branch_deletions: 0,
     }))
 }
 
-fn worktree_line_counts(cwd: &Path) -> (u64, u64) {
-    let tracked = crate::command_env::plain_command("git")
-        .args(["diff", "--numstat", "HEAD", "--"])
+/// Tracked lines changed between `base` and the worktree.
+fn tracked_line_counts(cwd: &Path, base: &str) -> (u64, u64) {
+    crate::command_env::plain_command("git")
+        .args(["diff", "--numstat", base, "--"])
         .current_dir(cwd)
         .output()
         .ok()
         .filter(|output| output.status.success())
-        .map_or((0, 0), |output| numstat_line_counts(&output.stdout));
-    (
-        tracked.0.saturating_add(untracked_line_additions(cwd)),
-        tracked.1,
-    )
+        .map_or((0, 0), |output| numstat_line_counts(&output.stdout))
 }
 
 fn numstat_line_counts(output: &[u8]) -> (u64, u64) {
@@ -149,8 +193,8 @@ fn numstat_line_counts(output: &[u8]) -> (u64, u64) {
 }
 
 /// `git diff --numstat` deliberately omits untracked files. Count their text
-/// lines as additions so the compact status agrees with the Uncommitted review
-/// source that opens when it is clicked. Bounds keep generated trees from
+/// lines as additions so the counts agree with the Uncommitted and Branch
+/// review sources, which both include them. Bounds keep generated trees from
 /// turning a background metadata refresh into unbounded work.
 fn untracked_line_additions(repository: &Path) -> u64 {
     let Ok(output) = crate::command_env::plain_command("git")
@@ -401,6 +445,38 @@ mod tests {
 
         let snapshot = inspect(&repository).unwrap().unwrap();
         assert_eq!((snapshot.additions, snapshot.deletions), (1, 0));
+        // On the default branch the branch review is the uncommitted one.
+        assert_eq!(
+            (snapshot.branch_additions, snapshot.branch_deletions),
+            (1, 0)
+        );
+    }
+
+    #[test]
+    fn counts_branch_changes_since_the_default_branch() {
+        let repository = repository();
+        run_git(&repository, &["switch", "feature"]);
+        fs::write(repository.join("README.md"), "feature\ncommitted\n").unwrap();
+        run_git(
+            &repository,
+            &[
+                "-c",
+                "user.name=Raku Tests",
+                "-c",
+                "user.email=raku@example.com",
+                "commit",
+                "-am",
+                "feature",
+            ],
+        );
+        fs::write(repository.join("notes.txt"), "draft\n").unwrap();
+
+        let snapshot = inspect(&repository).unwrap().unwrap();
+        assert_eq!((snapshot.additions, snapshot.deletions), (1, 0));
+        assert_eq!(
+            (snapshot.branch_additions, snapshot.branch_deletions),
+            (3, 1)
+        );
     }
 
     #[test]
