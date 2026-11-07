@@ -392,11 +392,11 @@ pub fn run() {
                         // tiling remain enabled.
                         is_movable: true,
                         app_owns_titlebar_drag: cfg!(target_os = "macos"),
-                        window_background: if cfg!(target_os = "macos") {
-                            WindowBackgroundAppearance::Blurred
-                        } else {
-                            WindowBackgroundAppearance::Opaque
-                        },
+                        // Opaque on every platform: a translucent window makes
+                        // the compositor re-blur and blend the whole window on
+                        // every frame Raku presents, which saturated the GPU
+                        // while scrolling.
+                        window_background: WindowBackgroundAppearance::Opaque,
                         app_id: Some(APP_ID.to_owned()),
                         // GPUI defaults to compositor/server decorations. If a
                         // Wayland compositor declines them, it reports the
@@ -447,15 +447,7 @@ pub fn run() {
                 }
             });
 
-            window
-                .update(cx, |_, window, cx| {
-                    crate::platform::configure_sidebar_material(
-                        window,
-                        crate::theme::Theme::current(cx).is_dark,
-                    );
-                    cx.activate(true);
-                })
-                .ok();
+            window.update(cx, |_, _, cx| cx.activate(true)).ok();
 
             set_app_menus(cx, updater_available);
             // A Linux handoff retains the previous prefix until this freshly

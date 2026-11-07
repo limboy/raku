@@ -775,9 +775,6 @@ impl Raku {
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::current(cx);
-        let is_resizing = self
-            .panel_resize_drag
-            .is_some_and(|drag| drag.target == PanelResizeTarget::Sidebar);
         // The New task button always fits beside the fixed window navigation
         // at the minimum width. A narrow sidebar leaves no room for the update
         // button too, so it moves beside the project selector instead.
@@ -822,11 +819,7 @@ impl Raku {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(if is_resizing {
-                theme.sidebar_drag_background
-            } else {
-                theme.sidebar
-            })
+            .bg(theme.sidebar)
             .child(
                 self.window_drag_region(
                     div()

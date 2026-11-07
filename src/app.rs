@@ -2047,7 +2047,6 @@ impl Raku {
             ));
         }
         crate::theme::apply_theme_preference(state.theme, window, cx);
-        crate::platform::set_sidebar_material_width(window, sidebar_width);
         let project_paths = state
             .projects
             .iter()

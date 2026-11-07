@@ -1,4 +1,4 @@
-use gpui::{App, Global, Hsla, Rems, Window, WindowAppearance, hsla, rems, rgb, transparent_black};
+use gpui::{App, Global, Hsla, Rems, Window, WindowAppearance, hsla, rems, rgb};
 
 pub use raku_client::theme::ThemePreference;
 
@@ -33,17 +33,15 @@ fn native_override(preference: ThemePreference) -> Option<bool> {
 }
 
 /// Raku's visual language, take two: neutral graphite surfaces in the spirit
-/// of Cursor — color is reserved for meaning. On macOS the sidebar's semantic
-/// tint is installed as a native layer above Sidebar vibrancy; keeping this
-/// GPUI surface clear avoids incorrectly accumulating the alpha of nested Metal
-/// backgrounds. Light mode is a white canvas over a cool gray sidebar, with
+/// of Cursor — color is reserved for meaning. Every surface is opaque, the
+/// sidebar included, so the window never asks the compositor for vibrancy.
+/// Light mode is a white canvas over a cool gray sidebar, with
 /// selected sidebar rows as a ~10% neutral layer (dark mode stays at 6%).
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub is_dark: bool,
     pub canvas: Hsla,
     pub sidebar: Hsla,
-    pub sidebar_drag_background: Hsla,
     pub sidebar_item_background: Hsla,
     pub surface: Hsla,
     pub raised: Hsla,
@@ -103,12 +101,7 @@ impl Theme {
         Self {
             is_dark: true,
             canvas: rgb(0x1A1A1A).into(),
-            sidebar: if cfg!(target_os = "macos") {
-                transparent_black()
-            } else {
-                rgb(0x181818).into()
-            },
-            sidebar_drag_background: rgb(0x181818).into(),
+            sidebar: rgb(0x181818).into(),
             sidebar_item_background: hsla(0.0, 0.0, 0.941, 0.06),
             surface: rgb(0x1A1A1A).into(),
             raised: rgb(0x232323).into(),
@@ -150,12 +143,7 @@ impl Theme {
         Self {
             is_dark: false,
             canvas: rgb(0xFFFFFF).into(),
-            sidebar: if cfg!(target_os = "macos") {
-                transparent_black()
-            } else {
-                rgb(0xEBECED).into()
-            },
-            sidebar_drag_background: rgb(0xEBECED).into(),
+            sidebar: rgb(0xEBECED).into(),
             sidebar_item_background: hsla(0.0, 0.0, 0.0, 0.10),
             surface: rgb(0xFFFFFF).into(),
             raised: rgb(0xF3F3F3).into(),
@@ -227,6 +215,5 @@ pub fn apply_theme_preference(preference: ThemePreference, window: &mut Window, 
         },
         cx,
     );
-    crate::platform::configure_sidebar_material(window, is_dark);
     window.refresh();
 }

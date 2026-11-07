@@ -619,7 +619,6 @@ impl Raku {
             PanelResizeTarget::Sidebar => {
                 self.sidebar_slide = None;
                 self.sidebar_width = sidebar_width;
-                crate::platform::set_sidebar_material_width(window, sidebar_width);
                 sidebar_width
             }
             PanelResizeTarget::RightPanel => {
@@ -665,7 +664,6 @@ impl Raku {
                     return;
                 }
                 self.sidebar_width = width;
-                crate::platform::set_sidebar_material_width(window, width);
             }
             PanelResizeTarget::RightPanel => {
                 let maximum = RIGHT_PANEL_MAX_WIDTH
