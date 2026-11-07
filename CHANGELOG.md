@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.4.4] - 2026-11-07
+
+- Add Retry to a failed turn's response footer
+- Hide the pinned No project row while searching projects and show its running state
+- Fix the finished dot being hidden when a project has other busy tasks or a turn fails
+
 ## [2.4.3] - 2026-11-06
 
 - Add Option-arrow session navigation in the sidebar
