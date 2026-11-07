@@ -1106,6 +1106,16 @@ impl Raku {
         .detach();
     }
 
+    /// The rewind target that retries `message_index`'s failed latest turn,
+    /// available exactly where Edit & resend could rewind its opening prompt.
+    pub(super) fn retry_action_for_message(
+        &self,
+        message_index: usize,
+    ) -> Option<UserMessageAction> {
+        let opening_index = failed_latest_turn_opening(self.selected_session()?, message_index)?;
+        self.user_message_action_for_message(opening_index)
+    }
+
     pub(super) fn assistant_message_action_for_message(
         &self,
         message_index: usize,
@@ -1540,12 +1550,18 @@ impl Raku {
         };
         let copied = self.copied_message_feedback.contains_key(&message.id);
         let action = self.assistant_message_action_for_message(message_index);
+        let retry = self.retry_action_for_message(message_index);
         let controls = MessageFooterControls {
             copy: self.transcript_control_focus(format!("copy-message-{}", message.id), cx),
             fork: self.transcript_control_focus(format!("fork-response-{}", message.id), cx),
+            retry: self.transcript_control_focus(format!("retry-turn-{}", message.id), cx),
         };
-        let force_visible = controls.copy.is_focused(window)
+        // A failed turn's next step is to retry it, so that footer stays
+        // visible instead of waiting for hover.
+        let force_visible = retry.is_some()
+            || controls.copy.is_focused(window)
             || controls.fork.is_focused(window)
+            || controls.retry.is_focused(window)
             || self
                 .hovered_response_row
                 .is_some_and(|(hovered_turn_id, _)| hovered_turn_id == turn_id);
@@ -1571,6 +1587,7 @@ impl Raku {
                 force_visible,
                 false,
                 action,
+                retry,
                 None,
                 footer.model_label,
                 Some(controls),

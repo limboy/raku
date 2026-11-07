@@ -200,6 +200,7 @@ impl Raku {
 pub(super) struct MessageFooterControls {
     pub copy: FocusHandle,
     pub fork: FocusHandle,
+    pub retry: FocusHandle,
 }
 
 pub(super) fn render_message_footer(
@@ -212,6 +213,7 @@ pub(super) fn render_message_footer(
     force_visible: bool,
     align_right: bool,
     assistant_message_action: Option<AssistantMessageAction>,
+    retry_action: Option<UserMessageAction>,
     user_message_control: Option<UserMessageControl>,
     model_label: Option<SharedString>,
     controls: Option<MessageFooterControls>,
@@ -304,6 +306,47 @@ pub(super) fn render_message_footer(
         footer = footer.child(timestamp).child(copy_button);
     } else {
         footer = footer.child(copy_button);
+        if let Some(target) = retry_action {
+            let retry_raku = raku.clone();
+            let key_retry_raku = raku.clone();
+            footer = footer.child(
+                div()
+                    .id(SharedString::from(format!("retry-turn-{message_id}")))
+                    .w(px(27.0))
+                    .h(px(27.0))
+                    .flex_none()
+                    .rounded(px(8.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_default()
+                    .when_some(controls.as_ref(), |element, controls| {
+                        element
+                            .track_focus(&controls.retry)
+                            .tab_group()
+                            .tab_index(0)
+                    })
+                    .focus_visible(|element| element.bg(theme.overlay_strong))
+                    .hover(|element| element.bg(theme.overlay_strong))
+                    .child(icon("icons/rotate-cw.svg", 14.0, footer_color))
+                    .tooltip(Tooltip::text(tr!("common.retry")))
+                    .on_click(move |_, _, cx| {
+                        let _ = retry_raku.update(cx, |this, cx| {
+                            this.retry_failed_turn(target, cx);
+                        });
+                    })
+                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                        if !event.keystroke.modifiers.modified()
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        {
+                            let _ = key_retry_raku.update(cx, |this, cx| {
+                                this.retry_failed_turn(target, cx);
+                            });
+                            cx.stop_propagation();
+                        }
+                    }),
+            );
+        }
         if let Some(action) = assistant_message_action {
             let fork_raku = raku.clone();
             let key_fork_raku = raku.clone();
@@ -1262,6 +1305,7 @@ pub(super) fn render_message(
                     user_footer_focused,
                     true,
                     None,
+                    None,
                     user_message_control,
                     None,
                     None,
@@ -1310,6 +1354,7 @@ pub(super) fn render_message(
                     false,
                     false,
                     assistant_message_action,
+                    None,
                     None,
                     None,
                     None,

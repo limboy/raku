@@ -1445,6 +1445,31 @@ pub(super) fn message_opens_turn(messages: &[Message], message_index: usize) -> 
         .any(|earlier| earlier.role == MessageRole::User)
 }
 
+/// The opening prompt of `message_index`'s turn when that turn is the
+/// session's latest and it failed: what a retry resubmits. An earlier failed
+/// turn is not retryable — rewinding to it would discard every turn after it.
+/// The latest turn's messages are the transcript's tail, so the walk is
+/// bounded by that one turn.
+pub(super) fn failed_latest_turn_opening(
+    session: &AgentSession,
+    message_index: usize,
+) -> Option<usize> {
+    let turn_id = session.messages.get(message_index)?.turn_id?;
+    session
+        .turns
+        .last()
+        .filter(|turn| turn.id == turn_id && turn.status == TurnStatus::Failed)?;
+    session
+        .messages
+        .iter()
+        .enumerate()
+        .rev()
+        .take_while(|(_, message)| message.turn_id == Some(turn_id))
+        .filter(|(_, message)| message.role == MessageRole::User)
+        .last()
+        .map(|(index, _)| index)
+}
+
 pub(super) fn message_starts_followup_turn(messages: &[Message], message_index: usize) -> bool {
     messages
         .get(message_index)

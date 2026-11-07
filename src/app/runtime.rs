@@ -1979,25 +1979,71 @@ impl Raku {
         let provider_prompt = composer::merged_submission(&prompt, &mentions)
             .expect("edited text or retained attachments always form a submission");
         let display_content = (!edit.attachments.is_empty()).then_some(prompt);
+        let target = UserMessageAction {
+            session_id: edit.session_id,
+            message_id: edit.message_id,
+            turn_count: edit.turn_count,
+            workspace: edit.workspace,
+        };
+        let attachments = edit.attachments.clone();
         self.start_message_rewind(
-            edit.clone(),
+            target,
+            Some(edit),
             ComposerSubmission {
                 prompt: provider_prompt,
                 display_content,
-                attachments: edit.attachments,
+                attachments,
             },
             cx,
         );
     }
 
+    /// Run a failed turn again: rewind to just before it, exactly as Edit &
+    /// resend does, and resubmit its opening prompt and attachments unchanged.
+    pub(super) fn retry_failed_turn(&mut self, target: UserMessageAction, cx: &mut Context<Self>) {
+        if self.submission_preparations.contains(&target.session_id) {
+            return;
+        }
+        let submission = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == target.session_id)
+            .filter(|session| {
+                session.turns.last().is_some_and(|turn| {
+                    turn.turn_count == target.turn_count && turn.status == TurnStatus::Failed
+                })
+            })
+            .and_then(|session| {
+                session
+                    .messages
+                    .iter()
+                    .find(|message| message.id == target.message_id)
+            })
+            .map(|message| ComposerSubmission {
+                prompt: message.content.clone(),
+                display_content: message.display_content.clone(),
+                attachments: message.attachments.clone(),
+            });
+        let Some(submission) = submission else {
+            self.show_toast(tr!("session.message_unavailable"));
+            cx.notify();
+            return;
+        };
+        self.start_message_rewind(target, None, submission, cx);
+    }
+
+    /// Rewind to just before `target`'s turn and resubmit. `editor` is the
+    /// open Edit & resend field, restored on failure; a retry has none.
     fn start_message_rewind(
         &mut self,
-        edit: MessageEdit,
+        target: UserMessageAction,
+        editor: Option<MessageEdit>,
         submission: ComposerSubmission,
         cx: &mut Context<Self>,
     ) {
-        let session_id = edit.session_id;
-        let turn_count = edit.turn_count;
+        let session_id = target.session_id;
+        let turn_count = target.turn_count;
         let retained_turn_count = turn_count.saturating_sub(1);
         let Some(source) = self
             .state
@@ -2028,13 +2074,16 @@ impl Raku {
         if let Err(error) = source.provider.validate_access_mode(source.runtime_mode) {
             // Keyboard submit clears this field before delivering the event.
             // Keep the edit available for retry once its mode is corrected.
-            if edit.input.read(cx).content(cx).is_empty() {
+            if let Some(editor) = &editor
+                && editor.input.read(cx).content(cx).is_empty()
+            {
                 let draft = submission
                     .display_content
                     .as_ref()
                     .unwrap_or(&submission.prompt)
                     .clone();
-                edit.input
+                editor
+                    .input
                     .update(cx, |input, cx| input.set_content(draft, cx));
             }
             self.show_toast(error.to_string());
@@ -2094,7 +2143,7 @@ impl Raku {
         let provider = source.provider;
         let provider_cursor = source.provider_cursor.clone();
         let session_title = source.display_title().to_owned();
-        let edited_message_id = edit.message_id;
+        let edited_message_id = target.message_id;
         let Some(edited_message_index) = source
             .turns
             .iter()
@@ -2119,7 +2168,7 @@ impl Raku {
             session_title,
             previous_turn_count,
             project_path,
-            workspace: edit.workspace,
+            workspace: target.workspace,
             retained_turn_count,
             rollback_turns,
             provider_turn_count,
@@ -2164,9 +2213,9 @@ impl Raku {
                 .await;
             let _ = raku.update(cx, move |raku, cx| {
                 raku.finish_message_rewind(
-                    edit,
+                    target,
+                    editor,
                     submission,
-                    edited_message_id,
                     original_message,
                     previous_status,
                     result,
@@ -2177,18 +2226,21 @@ impl Raku {
         .detach();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_message_rewind(
         &mut self,
-        edit: MessageEdit,
+        target: UserMessageAction,
+        editor: Option<MessageEdit>,
         submission: ComposerSubmission,
-        edited_message_id: Uuid,
         original_message: Message,
         previous_status: SessionStatus,
         result: Result<PreparedMessageRewind, String>,
         cx: &mut Context<Self>,
     ) {
-        let session_id = edit.session_id;
-        let turn_count = edit.turn_count;
+        let session_id = target.session_id;
+        let turn_count = target.turn_count;
+        let edited_message_id = target.message_id;
+        let retry = editor.is_none();
         if !self.submission_preparations.remove(&session_id) {
             return;
         }
@@ -2208,8 +2260,11 @@ impl Raku {
                         session.status = previous_status;
                     }
                 }
-                if selected && self.message_edit.is_none() {
-                    self.message_edit = Some(edit.clone());
+                if selected
+                    && self.message_edit.is_none()
+                    && let Some(editor) = editor
+                {
+                    self.message_edit = Some(editor);
                 }
                 if selected
                     && let Some(message_index) = self.selected_session().and_then(|session| {
@@ -2319,14 +2374,17 @@ impl Raku {
             self.expanded_changed_files.clear();
             self.transcript_control_focuses.borrow_mut().clear();
             self.splice_transcript_rows_after_visibility_change(&previous_kinds);
-            self.show_toast(match cleanup_error {
-                None => tr!("session.rewound", turn = turn_count),
-                Some(error) => tr!(
+            // A retry reads as the turn simply running again; only a cleanup
+            // warning is worth interrupting it for.
+            match cleanup_error {
+                None if retry => {}
+                None => self.show_toast(tr!("session.rewound", turn = turn_count)),
+                Some(error) => self.show_toast(tr!(
                     "session.rewound_with_stale_refs",
                     turn = turn_count,
                     error = error
-                ),
-            });
+                )),
+            }
         }
         self.analytics
             .track(crate::analytics::Event::ConversationRolledBack {

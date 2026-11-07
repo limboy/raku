@@ -10,17 +10,18 @@ use super::{
     StreamDeltaKind, TranscriptRowKind::*, active_navigation_turn_index,
     append_text_delta_to_session, assistant_response_footer, assistant_response_footer_index,
     assistant_response_footer_time, compact_driver_error, disclosure_leading_space,
-    fitted_file_tree_width, fitted_panel_widths, folded_transcript_row_kinds,
-    folded_transcript_rows, format_worked_duration, format_working_elapsed,
-    maintain_transcript_anchor, message_opens_turn, message_starts_followup_turn,
-    navigation_preview_snippet, navigation_rail_fade_visibility, navigation_rail_height,
-    navigation_rail_scale, paused_toast_duration, pop_stream_batch, push_transcript_activity,
-    response_footer_message_index, response_row_turn_id, session_accepts_turn_output,
-    session_is_reapable, should_refresh_branch_after_activity, should_show_navigation_rail,
-    should_show_scroll_to_bottom, task_id_from_notification_tag, task_notification_tag,
-    transcript_anchor_end_space, transcript_navigation_turns, transcript_rests_at_tail,
-    transcript_row_kinds, transcript_row_splice, transcript_rows_fingerprint,
-    widened_panel_width_for_file_editor, widened_panel_width_for_review,
+    failed_latest_turn_opening, fitted_file_tree_width, fitted_panel_widths,
+    folded_transcript_row_kinds, folded_transcript_rows, format_worked_duration,
+    format_working_elapsed, maintain_transcript_anchor, message_opens_turn,
+    message_starts_followup_turn, navigation_preview_snippet, navigation_rail_fade_visibility,
+    navigation_rail_height, navigation_rail_scale, paused_toast_duration, pop_stream_batch,
+    push_transcript_activity, response_footer_message_index, response_row_turn_id,
+    session_accepts_turn_output, session_is_reapable, should_refresh_branch_after_activity,
+    should_show_navigation_rail, should_show_scroll_to_bottom, task_id_from_notification_tag,
+    task_notification_tag, transcript_anchor_end_space, transcript_navigation_turns,
+    transcript_rests_at_tail, transcript_row_kinds, transcript_row_splice,
+    transcript_rows_fingerprint, widened_panel_width_for_file_editor,
+    widened_panel_width_for_review,
 };
 use crate::git_branch::BranchEntry;
 use crate::model::{
@@ -821,6 +822,52 @@ fn only_the_turn_opening_prompt_is_a_rewind_boundary() {
     );
     assert!(!message_opens_turn(&session.messages, 3));
     assert!(message_opens_turn(&session.messages, 4));
+}
+
+#[test]
+fn only_a_failed_latest_turn_retries_from_its_opening_prompt() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Claude);
+    session.begin_turn("first prompt");
+    session.push_error_message("Claude could not complete this turn", None);
+    session.finish_active_turn(TurnStatus::Failed);
+    session.begin_turn("second prompt");
+    session.push_message(MessageRole::Assistant, "working on it");
+    session.push_user_message_with_presentation("also this", None, Vec::new());
+    session.push_message(
+        MessageRole::Assistant,
+        "Failed to authenticate: OAuth token revoked.",
+    );
+
+    assert_eq!(
+        failed_latest_turn_opening(&session, 5),
+        None,
+        "a running turn has nothing to retry yet"
+    );
+
+    session.finish_active_turn(TurnStatus::Failed);
+    assert_eq!(
+        failed_latest_turn_opening(&session, 5),
+        Some(2),
+        "a retry resubmits the turn's opening prompt, not the steer"
+    );
+    assert_eq!(failed_latest_turn_opening(&session, 3), Some(2));
+    assert_eq!(
+        failed_latest_turn_opening(&session, 1),
+        None,
+        "retrying an earlier turn would discard the turns after it"
+    );
+
+    session.begin_turn("third prompt");
+    session.push_message(MessageRole::Assistant, "done");
+    session.finish_active_turn(TurnStatus::Completed);
+    assert_eq!(failed_latest_turn_opening(&session, 7), None);
+    session.begin_turn("fourth prompt");
+    session.finish_active_turn(TurnStatus::Interrupted);
+    assert_eq!(
+        failed_latest_turn_opening(&session, 8),
+        None,
+        "a turn the user stopped is not a failure"
+    );
 }
 
 #[test]
