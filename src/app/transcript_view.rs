@@ -343,7 +343,13 @@ impl Raku {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
-                    window.focus(&this.transcript_focus, cx);
+                    // A focusable row control under the click (the Edit &
+                    // resend field, a button) already took focus in this
+                    // bubble pass and prevented default. Taking it back here
+                    // would leave a clicked text field unable to type.
+                    if !window.default_prevented() {
+                        window.focus(&this.transcript_focus, cx);
+                    }
                 }),
             )
             // Painted before any row, so the frame's selection registry holds
