@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.4.5] - 2026-11-07
+
+- Improve the project picker by showing the finished dot beside the project title and No project's status icon beside its name
+- Fix row controls losing the focus they take
+
 ## [2.4.4] - 2026-11-07
 
 - Add Retry to a failed turn's response footer
