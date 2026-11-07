@@ -199,7 +199,10 @@ impl Raku {
         let selected_project = self.state.selected_project;
         let projectless_selected = self.selected_project().is_some_and(Project::is_projectless);
         // Projectless workspaces never appear as rows; their finished turns
-        // surface on the pinned "No project" action instead.
+        // surface on the pinned "No project" action instead. The dot is
+        // independent of the ongoing-status icon: another task still running
+        // must not hide that this one finished, or a banner arrives with no
+        // trace left in the picker.
         let projectless_finished = self.state.projects.iter().any(|project| {
             project.is_projectless() && self.finished_project_ids.contains(&project.id)
         });
@@ -587,7 +590,7 @@ impl Raku {
                                 "project-picker-none",
                                 tr!("project.no_project_name"),
                                 projectless_selected,
-                                projectless_finished && projectless_status.is_none(),
+                                projectless_finished,
                                 projectless_status,
                             ))
                             .child(div().mx(px(6.0)).my(px(4.0)).h(px(1.0)).bg(theme.border))
@@ -850,8 +853,7 @@ fn visible_project_entries(
                 id: project.id,
                 name: project.display_name().into(),
                 status: project_status.get(&project.id).copied(),
-                finished: finished_project_ids.contains(&project.id)
-                    && !project_status.contains_key(&project.id),
+                finished: finished_project_ids.contains(&project.id),
             })
             .collect();
     }
@@ -870,8 +872,7 @@ fn visible_project_entries(
                     id: project.id,
                     name: SharedString::from(name),
                     status: project_status.get(&project.id).copied(),
-                    finished: finished_project_ids.contains(&project.id)
-                        && !project_status.contains_key(&project.id),
+                    finished: finished_project_ids.contains(&project.id),
                 },
             ))
         })
@@ -1045,6 +1046,26 @@ mod tests {
         );
         assert!(entries[0].finished);
         assert!(!entries[1].finished);
+    }
+
+    #[test]
+    fn finished_dot_survives_another_ongoing_session_in_the_project() {
+        let projects = vec![project("busy-and-finished")];
+        let mut ongoing = session(&projects[0], 20);
+        ongoing.status = SessionStatus::Waiting;
+        let sessions = vec![ongoing, session(&projects[0], 10)];
+        let finished = HashSet::from([projects[0].id]);
+        let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
+        let entries = visible_project_entries(
+            &projects,
+            &sessions,
+            &HashSet::new(),
+            &finished,
+            "",
+            &mut matcher,
+        );
+        assert_eq!(entries[0].status, Some(SessionStatus::Waiting));
+        assert!(entries[0].finished);
     }
 
     fn session(project: &Project, timestamp: u64) -> AgentSession {

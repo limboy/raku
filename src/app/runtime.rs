@@ -1061,12 +1061,16 @@ impl Raku {
             .session_mut(session_id)?
             .finish_active_turn(status);
         if result.is_some() {
+            // A failed turn announces itself with the same banner as a
+            // completed one, so its project needs the same dot; the picker
+            // has no failed icon, and the session's own row shows the failure.
+            if matches!(status, TurnStatus::Completed | TurnStatus::Failed)
+                && let Some(project_id) = project_id
+                && self.state.selected_project != Some(project_id)
+            {
+                self.finished_project_ids.insert(project_id);
+            }
             if status == TurnStatus::Completed && project_id.is_some() {
-                if let Some(project_id) = project_id {
-                    if self.state.selected_project != Some(project_id) {
-                        self.finished_project_ids.insert(project_id);
-                    }
-                }
                 let is_current_session = self.state.selected_session == Some(session_id)
                     || self
                         .pending_session_activation
