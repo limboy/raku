@@ -203,6 +203,15 @@ impl Raku {
         let projectless_finished = self.state.projects.iter().any(|project| {
             project.is_projectless() && self.finished_project_ids.contains(&project.id)
         });
+        // "No project" is a fixed action, not a match candidate, so it steps
+        // aside while a query narrows the project list.
+        let show_no_project = self.project_search.read(cx).content().trim().is_empty();
+        let leading = usize::from(show_no_project);
+        let projectless_status = if handle.is_open() {
+            projectless_picker_status(&self.state.projects, &self.state.sessions)
+        } else {
+            None
+        };
         let projects = Rc::new(if handle.is_open() {
             visible_project_entries(
                 &self.state.projects,
@@ -219,7 +228,9 @@ impl Raku {
             self.sync_project_picker_rows(&projects);
         }
         let actions = Rc::new(
-            std::iter::once(ProjectPickerAction::NoProject)
+            show_no_project
+                .then_some(ProjectPickerAction::NoProject)
+                .into_iter()
                 .chain(projects.iter().flat_map(|entry| {
                     [
                         ProjectPickerAction::Select(entry.id),
@@ -272,7 +283,7 @@ impl Raku {
                                     return div().into_any_element();
                                 };
                                 let project_id = entry.id;
-                                let select_index = index * 2 + 1;
+                                let select_index = leading + index * 2;
                                 let remove_index = select_index + 1;
                                 let name = entry.name.clone();
                                 let status = entry.status;
@@ -443,7 +454,8 @@ impl Raku {
                                   id: &'static str,
                                   label: String,
                                   selected: bool,
-                                  finished: bool| {
+                                  finished: bool,
+                                  status: Option<SessionStatus>| {
                     let weak = weak.clone();
                     let popover = popover.clone();
                     let index = actions.iter().position(|candidate| *candidate == action);
@@ -456,6 +468,10 @@ impl Raku {
                                 .truncate()
                                 .text_color(theme.text)
                                 .child(label),
+                        )
+                        .when_some(
+                            status.and_then(|s| project_picker_status_icon(s, &theme)),
+                            |element, icon| element.child(div().flex_none().child(icon)),
                         )
                         .when(selected, |element| {
                             element.child(icon("icons/check.svg", 11.0, theme.text_secondary))
@@ -485,7 +501,7 @@ impl Raku {
                     let row_count = projects.len();
                     move |cx: &mut App| {
                         let _ = weak.update(cx, |this, cx| {
-                            this.move_project_picker_highlight(key, row_count, cx);
+                            this.move_project_picker_highlight(key, leading, row_count, cx);
                         });
                     }
                 };
@@ -564,14 +580,18 @@ impl Raku {
                                     .child(div().flex_1().min_w_0().child(search.clone())),
                             ),
                     )
-                    .child(pinned_row(
-                        ProjectPickerAction::NoProject,
-                        "project-picker-none",
-                        tr!("project.no_project_name"),
-                        projectless_selected,
-                        projectless_finished,
-                    ))
-                    .child(div().mx(px(6.0)).my(px(4.0)).h(px(1.0)).bg(theme.border))
+                    .when(show_no_project, |element| {
+                        element
+                            .child(pinned_row(
+                                ProjectPickerAction::NoProject,
+                                "project-picker-none",
+                                tr!("project.no_project_name"),
+                                projectless_selected,
+                                projectless_finished && projectless_status.is_none(),
+                                projectless_status,
+                            ))
+                            .child(div().mx(px(6.0)).my(px(4.0)).h(px(1.0)).bg(theme.border))
+                    })
                     .child(rows)
                     .child(div().mx(px(6.0)).my(px(4.0)).h(px(1.0)).bg(theme.border))
                     .child(pinned_row(
@@ -580,6 +600,7 @@ impl Raku {
                         tr!("project.new_project"),
                         false,
                         false,
+                        None,
                     ))
                     .child(div().h(px(4.0)))
                     .into_any_element()
@@ -604,19 +625,20 @@ impl Raku {
     fn move_project_picker_highlight(
         &mut self,
         key: &str,
+        leading: usize,
         row_count: usize,
         cx: &mut Context<Self>,
     ) {
         let Some(next) =
-            next_project_picker_highlight(self.project_picker_highlight, row_count, key)
+            next_project_picker_highlight(self.project_picker_highlight, leading, row_count, key)
         else {
             return;
         };
         self.project_picker_highlight = Some(next);
         // The pinned actions sit outside the list and are always visible.
-        if next > 0 && next <= row_count * 2 {
+        if next >= leading && next < leading + row_count * 2 {
             self.project_picker_list_state
-                .scroll_to_reveal_item((next - 1) / 2);
+                .scroll_to_reveal_item((next - leading) / 2);
         }
         cx.notify();
     }
@@ -704,35 +726,57 @@ fn remove_project_picker_row(project_id: Uuid, rows: &mut Vec<Uuid>, list: &List
 
 /// Arrows keep the existing row navigation. Tab visits the inline remove
 /// controls too, with the search field retaining focus for filtering.
+/// `leading` is 1 while the pinned "No project" action heads the list, else 0.
 fn next_project_picker_highlight(
     current: Option<usize>,
+    leading: usize,
     row_count: usize,
     key: &str,
 ) -> Option<usize> {
-    let current = current.filter(|index| *index < row_count * 2 + 2);
+    let total = leading + row_count * 2 + 1;
+    let current = current.filter(|index| *index < total);
     match key {
-        "tab" => next_picker_highlight(current, row_count * 2 + 2, "down"),
-        "shift-tab" => next_picker_highlight(current, row_count * 2 + 2, "up"),
+        "tab" => next_picker_highlight(current, total, "down"),
+        "shift-tab" => next_picker_highlight(current, total, "up"),
         "up" | "down" => {
-            let row = current.map(|index| {
-                if index <= row_count * 2 {
-                    (index + 1) / 2
-                } else {
-                    index - row_count
-                }
-            });
-            next_picker_highlight(row, row_count + 2, key).map(|index| {
-                if index == 0 {
-                    0
-                } else if index <= row_count {
-                    index * 2 - 1
-                } else {
-                    index + row_count
-                }
-            })
+            // Arrows step between groups: a row's select and remove share one.
+            let groups = (0..total)
+                .filter(|index| !is_project_remove_slot(*index, leading, row_count))
+                .collect::<Vec<_>>();
+            let current_group =
+                current.map(|index| groups.partition_point(|start| *start <= index) - 1);
+            next_picker_highlight(current_group, groups.len(), key).map(|group| groups[group])
         }
         _ => None,
     }
+}
+
+/// Whether action slot `index` is a row's remove button rather than its select.
+fn is_project_remove_slot(index: usize, leading: usize, row_count: usize) -> bool {
+    index >= leading && index < leading + row_count * 2 && (index - leading) % 2 == 1
+}
+
+/// The ongoing status across every projectless workspace, so the pinned
+/// "No project" action reflects the same running state its sessions have.
+fn projectless_picker_status(
+    projects: &[Project],
+    sessions: &[AgentSession],
+) -> Option<SessionStatus> {
+    let projectless_ids = projects
+        .iter()
+        .filter(|project| project.is_projectless())
+        .map(|project| project.id)
+        .collect::<HashSet<_>>();
+    let mut status = None;
+    for session in sessions {
+        if session.is_listed_task()
+            && session.is_busy()
+            && projectless_ids.contains(&session.project_id)
+        {
+            status = resolve_ongoing_status(status, session.status);
+        }
+    }
+    status
 }
 
 /// The shared row: fixed height for the virtualized list, hover, and the
@@ -1164,25 +1208,65 @@ mod tests {
     #[test]
     fn arrows_skip_remove_buttons_while_tab_visits_them() {
         // No project, two projects (each with a remove button), then New project.
-        assert_eq!(next_project_picker_highlight(None, 2, "down"), Some(0));
-        assert_eq!(next_project_picker_highlight(Some(0), 2, "tab"), Some(1));
-        assert_eq!(next_project_picker_highlight(Some(0), 2, "down"), Some(1));
-        assert_eq!(next_project_picker_highlight(Some(1), 2, "tab"), Some(2));
-        assert_eq!(next_project_picker_highlight(Some(1), 2, "down"), Some(3));
-        assert_eq!(next_project_picker_highlight(Some(2), 2, "up"), Some(0));
-        assert_eq!(next_project_picker_highlight(Some(2), 2, "tab"), Some(3));
-        assert_eq!(next_project_picker_highlight(Some(2), 2, "down"), Some(3));
-        assert_eq!(next_project_picker_highlight(Some(3), 2, "tab"), Some(4));
-        assert_eq!(next_project_picker_highlight(Some(3), 2, "down"), Some(5));
-        assert_eq!(next_project_picker_highlight(Some(4), 2, "down"), Some(5));
-        assert_eq!(next_project_picker_highlight(Some(5), 2, "down"), Some(0));
-        assert_eq!(next_project_picker_highlight(Some(4), 2, "up"), Some(1));
-        assert_eq!(next_project_picker_highlight(Some(5), 2, "up"), Some(3));
+        let nav = |current, key| next_project_picker_highlight(current, 1, 2, key);
+        assert_eq!(nav(None, "down"), Some(0));
+        assert_eq!(nav(Some(0), "tab"), Some(1));
+        assert_eq!(nav(Some(0), "down"), Some(1));
+        assert_eq!(nav(Some(1), "tab"), Some(2));
+        assert_eq!(nav(Some(1), "down"), Some(3));
+        assert_eq!(nav(Some(2), "up"), Some(0));
+        assert_eq!(nav(Some(2), "tab"), Some(3));
+        assert_eq!(nav(Some(2), "down"), Some(3));
+        assert_eq!(nav(Some(3), "tab"), Some(4));
+        assert_eq!(nav(Some(3), "down"), Some(5));
+        assert_eq!(nav(Some(4), "down"), Some(5));
+        assert_eq!(nav(Some(5), "down"), Some(0));
+        assert_eq!(nav(Some(4), "up"), Some(1));
+        assert_eq!(nav(Some(5), "up"), Some(3));
+        assert_eq!(nav(Some(0), "shift-tab"), Some(5));
+        assert_eq!(next_project_picker_highlight(None, 1, 0, "down"), Some(0));
         assert_eq!(
-            next_project_picker_highlight(Some(0), 2, "shift-tab"),
-            Some(5)
+            next_project_picker_highlight(Some(0), 1, 0, "down"),
+            Some(1)
         );
-        assert_eq!(next_project_picker_highlight(None, 0, "down"), Some(0));
-        assert_eq!(next_project_picker_highlight(Some(0), 0, "down"), Some(1));
+    }
+
+    #[test]
+    fn arrows_start_at_the_first_project_when_no_project_is_hidden() {
+        // Two projects (each with a remove button), then New project; no pinned top.
+        let nav = |current, key| next_project_picker_highlight(current, 0, 2, key);
+        assert_eq!(nav(None, "down"), Some(0));
+        assert_eq!(nav(Some(0), "tab"), Some(1));
+        assert_eq!(nav(Some(0), "down"), Some(2));
+        assert_eq!(nav(Some(1), "down"), Some(2));
+        assert_eq!(nav(Some(2), "tab"), Some(3));
+        assert_eq!(nav(Some(2), "down"), Some(4));
+        assert_eq!(nav(Some(4), "down"), Some(0));
+        assert_eq!(nav(Some(4), "up"), Some(2));
+        assert_eq!(nav(Some(0), "shift-tab"), Some(4));
+    }
+
+    #[test]
+    fn projectless_status_reports_running_work_across_projectless_workspaces() {
+        let root = crate::projectless::workspace_root().expect("default workspace root");
+        let projectless = Project::from_path(root.join("task-a"));
+        let other_projectless = Project::from_path(root.join("task-b"));
+        let repo = project("crow");
+        let projects = vec![projectless.clone(), other_projectless.clone(), repo.clone()];
+
+        let idle = session(&projectless, 10);
+        let mut working = session(&other_projectless, 20);
+        working.status = SessionStatus::Working;
+        let mut repo_running = session(&repo, 30);
+        repo_running.status = SessionStatus::Working;
+
+        assert_eq!(
+            projectless_picker_status(&projects, &[idle.clone(), repo_running.clone()]),
+            None
+        );
+        assert_eq!(
+            projectless_picker_status(&projects, &[idle, working, repo_running]),
+            Some(SessionStatus::Working)
+        );
     }
 }
