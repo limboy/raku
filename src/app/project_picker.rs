@@ -323,6 +323,12 @@ impl Raku {
                                             |element, icon| {
                                                 element.child(div().flex_none().child(icon))
                                             },
+                                        )
+                                        .when(
+                                            finished && selected_project != Some(project_id),
+                                            |element| {
+                                                element.child(project_picker_finished_dot(&theme))
+                                            },
                                         ),
                                 )
                                 .child(
@@ -350,31 +356,6 @@ impl Raku {
                                                             11.0,
                                                             theme.text_secondary,
                                                         )),
-                                                )
-                                            },
-                                        )
-                                        .when(
-                                            selected_project != Some(project_id)
-                                                && finished
-                                                && highlight != Some(remove_index),
-                                            |element| {
-                                                element.child(
-                                                    div()
-                                                        .absolute()
-                                                        .inset_0()
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .group_hover(
-                                                            "project-picker-row",
-                                                            |style| style.invisible(),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .size(px(6.0))
-                                                                .rounded_full()
-                                                                .bg(theme.accent),
-                                                        ),
                                                 )
                                             },
                                         )
@@ -466,7 +447,7 @@ impl Raku {
                         .mx(px(4.0))
                         .child(
                             // Same grouping as project rows: the status icon
-                            // trails the label rather than the row's edge.
+                            // and finished dot trail the label.
                             div()
                                 .flex()
                                 .items_center()
@@ -483,21 +464,13 @@ impl Raku {
                                 .when_some(
                                     status.and_then(|s| project_picker_status_icon(s, &theme)),
                                     |element, icon| element.child(div().flex_none().child(icon)),
-                                ),
+                                )
+                                .when(finished && !selected, |element| {
+                                    element.child(project_picker_finished_dot(&theme))
+                                }),
                         )
                         .when(selected, |element| {
                             element.child(icon("icons/check.svg", 11.0, theme.text_secondary))
-                        })
-                        .when(finished && !selected, |element| {
-                            element.child(
-                                div()
-                                    .size(px(11.0))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(div().size(px(6.0)).rounded_full().bg(theme.accent)),
-                            )
                         })
                         .on_click(move |_, window, cx| {
                             popover.close(window, cx);
@@ -906,6 +879,17 @@ fn resolve_ongoing_status(
         (_, SessionStatus::Waiting) => Some(incoming),
         _ => Some(incoming),
     }
+}
+
+/// The finished-turn dot, sized to the status icons it sits beside.
+fn project_picker_finished_dot(theme: &Theme) -> Div {
+    div()
+        .size(px(12.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(div().size(px(6.0)).rounded_full().bg(theme.accent))
 }
 
 fn project_picker_status_icon(status: SessionStatus, theme: &Theme) -> Option<AnyElement> {
