@@ -465,16 +465,25 @@ impl Raku {
                     project_picker_row(id, highlight.is_some() && highlight == index, &theme)
                         .mx(px(4.0))
                         .child(
+                            // Same grouping as project rows: the status icon
+                            // trails the label rather than the row's edge.
                             div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
                                 .min_w_0()
                                 .flex_1()
-                                .truncate()
-                                .text_color(theme.text)
-                                .child(label),
-                        )
-                        .when_some(
-                            status.and_then(|s| project_picker_status_icon(s, &theme)),
-                            |element, icon| element.child(div().flex_none().child(icon)),
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.text)
+                                        .child(label),
+                                )
+                                .when_some(
+                                    status.and_then(|s| project_picker_status_icon(s, &theme)),
+                                    |element, icon| element.child(div().flex_none().child(icon)),
+                                ),
                         )
                         .when(selected, |element| {
                             element.child(icon("icons/check.svg", 11.0, theme.text_secondary))
