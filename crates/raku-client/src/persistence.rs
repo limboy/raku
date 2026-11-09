@@ -297,12 +297,14 @@ pub struct AppSettings {
     pub code_font_size: f32,
     pub render_math: bool,
     pub backup_directory: Option<PathBuf>,
-    /// Provider and model for read-only side chats. `None` resolves to a
-    /// DeepSeek model discovered through Pi, then Pi's own default.
+    /// Provider and model for read-only side chats. Pi defaults to a
+    /// discovered DeepSeek model; an unset legacy provider is treated as Pi.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side_chat_provider: Option<ProviderKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side_chat_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side_chat_reasoning_effort: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -317,8 +319,9 @@ impl Default for AppSettings {
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
             backup_directory: None,
-            side_chat_provider: None,
+            side_chat_provider: Some(ProviderKind::Pi),
             side_chat_model: None,
+            side_chat_reasoning_effort: Some("low".into()),
         }
     }
 }
@@ -328,6 +331,9 @@ impl AppSettings {
     pub fn normalize_desktop_defaults(&mut self) {
         self.analytics_enabled = false;
         self.render_math = true;
+        self.side_chat_provider.get_or_insert(ProviderKind::Pi);
+        self.side_chat_reasoning_effort
+            .get_or_insert_with(|| "low".into());
     }
 }
 
@@ -487,6 +493,8 @@ pub struct PersistedState {
     pub side_chat_provider: Option<ProviderKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_chat_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_chat_reasoning_effort: Option<String>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
     #[serde(default = "default_right_panel_visibility")]
@@ -558,8 +566,9 @@ impl PersistedState {
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
             backup_directory: None,
-            side_chat_provider: None,
+            side_chat_provider: Some(ProviderKind::Pi),
             side_chat_model: None,
+            side_chat_reasoning_effort: Some("low".into()),
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -784,6 +793,7 @@ impl PersistedState {
             backup_directory: self.backup_directory.clone(),
             side_chat_provider: self.side_chat_provider,
             side_chat_model: self.side_chat_model.clone(),
+            side_chat_reasoning_effort: self.side_chat_reasoning_effort.clone(),
         };
         settings.normalize_desktop_defaults();
         settings
@@ -829,6 +839,7 @@ impl PersistedState {
         self.backup_directory = settings.backup_directory;
         self.side_chat_provider = settings.side_chat_provider;
         self.side_chat_model = settings.side_chat_model;
+        self.side_chat_reasoning_effort = settings.side_chat_reasoning_effort;
     }
 
     fn apply_app_state(&mut self, app_state: AppState) {
@@ -1111,9 +1122,12 @@ pub fn load_or_create_app_settings() -> io::Result<AppSettings> {
         .map(|(bytes, _)| from_persisted_json::<AppSettings>(&bytes).map_err(to_io_error))
         .transpose()?
         .unwrap_or_default();
-    let retired_preferences = settings.analytics_enabled || !settings.render_math;
+    let needs_normalization = settings.analytics_enabled
+        || !settings.render_math
+        || settings.side_chat_provider.is_none()
+        || settings.side_chat_reasoning_effort.is_none();
     settings.normalize_desktop_defaults();
-    if !loaded_from_primary || retired_preferences {
+    if !loaded_from_primary || needs_normalization {
         write_json_atomically(&path, &settings)?;
     }
     Ok(settings)
@@ -1901,6 +1915,45 @@ mod tests {
         let mut restored = PersistedState::empty();
         restored.apply_app_settings(serde_json::from_str(&settings).unwrap());
         assert!(restored.model_picker_favorites_only);
+    }
+
+    #[test]
+    fn side_chat_model_settings_default_and_persist_together() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.side_chat_provider, Some(ProviderKind::Pi));
+        assert_eq!(defaults.side_chat_reasoning_effort.as_deref(), Some("low"));
+        let mut state = PersistedState::empty();
+        state.side_chat_provider = Some(ProviderKind::Pi);
+        state.side_chat_model = Some("provider/reasoner".into());
+        state.side_chat_reasoning_effort = Some("high".into());
+        let settings = serde_json::to_string(&state.app_settings()).unwrap();
+        let mut restored = PersistedState::empty();
+        restored.apply_app_settings(serde_json::from_str(&settings).unwrap());
+        assert_eq!(restored.side_chat_provider, state.side_chat_provider);
+        assert_eq!(restored.side_chat_model, state.side_chat_model);
+        assert_eq!(
+            restored.side_chat_reasoning_effort,
+            state.side_chat_reasoning_effort
+        );
+    }
+
+    #[test]
+    fn legacy_automatic_side_chat_settings_become_pi_with_low_effort() {
+        let legacy: AppSettings = serde_json::from_str(
+            r#"{
+                "side_chat_provider": null,
+                "side_chat_model": null,
+                "side_chat_reasoning_effort": null
+            }"#,
+        )
+        .unwrap();
+        let mut restored = PersistedState::empty();
+        restored.apply_app_settings(legacy);
+        assert_eq!(restored.side_chat_provider, Some(ProviderKind::Pi));
+        assert_eq!(restored.side_chat_reasoning_effort.as_deref(), Some("low"));
+        let settings = serde_json::to_value(restored.app_settings()).unwrap();
+        assert_eq!(settings["side_chat_provider"], "pi");
+        assert_eq!(settings["side_chat_reasoning_effort"], "low");
     }
 
     #[test]

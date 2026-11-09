@@ -43,14 +43,19 @@ Later turns in the main task are not pushed into the side chat.
 
 ## Provider and model
 
-Set them in **Settings → Side Chat**. **Automatic** resolves in this order:
+Set them in **Settings → Side Chat**. The defaults are **Pi**, a discovered
+**DeepSeek** model, and reasoning **Low**. Provider and Model always show
+concrete choices. Pi prefers its own default model when that model is DeepSeek,
+then the first discovered DeepSeek model, then Pi's default if none is offered.
+Other providers use their own default model until a model is selected. Side
+chats stay on the selected provider; an unavailable provider must be installed,
+enabled, or changed in Settings.
 
-1. The explicit setting, while its provider is enabled and the model is still offered.
-2. A Pi model whose id contains `deepseek`, preferring Pi's own default model when it matches.
-3. Pi's default model.
-4. The parent task's provider and model.
-
-A side chat uses effort `low` when the model offers it.
+Set **Reasoning** in the same settings page to choose the effort for new side
+chats. The options come from the selected model's capabilities; models without
+reasoning options hide the row.
+Changing the provider or model resets the effort to `low` when offered,
+otherwise the model's default. Existing side chats keep their own effort.
 
 ## Read-only tool policy
 

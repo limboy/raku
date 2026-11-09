@@ -2397,8 +2397,10 @@ impl Raku {
                     ComposerEvent::Submit(prompt) | ComposerEvent::SubmitSteer(prompt) => {
                         this.submit_side_chat(prompt.clone(), cx);
                     }
+                    ComposerEvent::Edited => {
+                        this.right_panel_pane.update(cx, |_, cx| cx.notify());
+                    }
                     ComposerEvent::SteerQueued
-                    | ComposerEvent::Edited
                     | ComposerEvent::Focus
                     | ComposerEvent::BackspaceOnEmpty => {}
                 },

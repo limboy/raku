@@ -2069,14 +2069,8 @@ side_chat.settings_title:
   en: "Side Chat"
 side_chat.provider:
   en: "Provider"
-side_chat.provider_description:
-  en: "Automatic uses a DeepSeek model through Pi when available. Now: %{model}"
 side_chat.model:
   en: "Model"
-side_chat.model_description:
-  en: "Used for new side chats."
-side_chat.automatic:
-  en: "Automatic"
 side_chat.read_only_description:
   en: "Side chats can read and search the project's files but cannot edit files, run commands, or use MCP tools. They never add messages to the task's conversation."
 errors.start_agent_headline:

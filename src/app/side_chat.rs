@@ -121,52 +121,66 @@ pub(super) fn side_chat_link_target(target: &str) -> Option<Uuid> {
     Uuid::parse_str(target.strip_prefix(SIDE_CHAT_LINK_PREFIX)?).ok()
 }
 
-/// Where side chats run. An explicit, still-available setting wins; otherwise
-/// a DeepSeek model found through Pi, then Pi's own default, then the parent
-/// task's provider and model.
+/// Side chats stay on the selected provider. Pi defaults to a discovered
+/// DeepSeek model, preferring Pi's default when it is itself DeepSeek.
 pub(super) fn resolve_side_chat_target(
     probes: &[ProviderProbe],
     disabled: &[ProviderKind],
-    setting_provider: Option<ProviderKind>,
+    provider: ProviderKind,
     setting_model: Option<&str>,
-    fallback: Option<(ProviderKind, Option<String>)>,
 ) -> Option<(ProviderKind, Option<String>)> {
-    let usable = |provider: ProviderKind| {
-        (!disabled.contains(&provider))
-            .then(|| {
-                probes
-                    .iter()
-                    .find(|probe| probe.provider == provider && probe.path.is_some())
-            })
-            .flatten()
-    };
-    if let Some(provider) = setting_provider
-        && let Some(probe) = usable(provider)
-    {
-        match setting_model {
-            Some(model) if probe.models.is_empty() || probe.model(model).is_some() => {
-                return Some((provider, Some(model.to_owned())));
-            }
-            Some(_) => {}
-            None => {
-                return Some((
-                    provider,
-                    probe.preferred_model().map(|model| model.id.clone()),
-                ));
-            }
-        }
+    if disabled.contains(&provider) {
+        return None;
     }
-    if let Some(probe) = usable(ProviderKind::Pi) {
+    let probe = probes
+        .iter()
+        .find(|probe| probe.provider == provider && probe.path.is_some())?;
+    if let Some(model) = setting_model
+        && (probe.models.is_empty() || probe.model(model).is_some())
+    {
+        return Some((provider, Some(model.to_owned())));
+    }
+    let model = if provider == ProviderKind::Pi {
         let is_deepseek = |model: &&ProviderModel| model.id.to_lowercase().contains("deepseek");
-        let model = probe
+        probe
             .preferred_model()
             .filter(is_deepseek)
             .or_else(|| probe.models.iter().find(is_deepseek))
             .or_else(|| probe.preferred_model())
-            .map(|model| model.id.clone());
-        return Some((ProviderKind::Pi, model));
-    }
-    fallback.filter(|(provider, _)| usable(*provider).is_some())
+    } else {
+        probe.preferred_model()
+    };
+    Some((provider, model.map(|model| model.id.clone())))
+}
+
+/// Keep side questions quick by default, while honoring a supported explicit
+/// choice. A stale setting must never send an effort the current model rejects.
+fn resolve_side_chat_reasoning_effort<'a>(
+    model: &'a ProviderModel,
+    setting: Option<&str>,
+) -> Option<&'a str> {
+    let supported = |id: &str| {
+        model
+            .reasoning_efforts
+            .iter()
+            .find(|option| option.id == id)
+            .map(|option| option.id.as_str())
+    };
+    setting
+        .and_then(supported)
+        .or_else(|| supported("low"))
+        .or_else(|| {
+            model
+                .default_reasoning_effort
+                .as_deref()
+                .and_then(supported)
+        })
+        .or_else(|| {
+            model
+                .reasoning_efforts
+                .first()
+                .map(|option| option.id.as_str())
+        })
 }
 
 /// The least privileged interactive mode the provider accepts. The driver's
@@ -351,21 +365,12 @@ impl Raku {
             .filter(|session| !session.is_side_chat())
     }
 
-    pub(super) fn side_chat_target(
-        &self,
-        parent: Option<&AgentSession>,
-    ) -> Option<(ProviderKind, Option<String>)> {
+    pub(super) fn side_chat_target(&self) -> Option<(ProviderKind, Option<String>)> {
         resolve_side_chat_target(
             &self.probes,
             &self.state.disabled_providers,
-            self.state.side_chat_provider,
+            self.state.side_chat_provider.unwrap_or(ProviderKind::Pi),
             self.state.side_chat_model.as_deref(),
-            parent.map(|parent| {
-                (
-                    parent.provider,
-                    self.model_for_session(parent).map(str::to_owned),
-                )
-            }),
         )
     }
 
@@ -387,7 +392,7 @@ impl Raku {
             .sessions
             .iter()
             .find(|session| session.id == parent_id && !session.is_side_chat())?;
-        let Some((provider, model)) = self.side_chat_target(Some(parent)) else {
+        let Some((provider, model)) = self.side_chat_target() else {
             self.show_toast(tr!("side_chat.no_provider"));
             cx.notify();
             return None;
@@ -395,14 +400,13 @@ impl Raku {
         let reasoning_effort = model
             .as_deref()
             .and_then(|model| self.provider_probe(provider)?.model(model))
-            .filter(|model| {
-                model
-                    .reasoning_efforts
-                    .iter()
-                    .any(|option| option.id == "low")
+            .and_then(|model| {
+                resolve_side_chat_reasoning_effort(
+                    model,
+                    self.state.side_chat_reasoning_effort.as_deref(),
+                )
             })
-            // A side question wants a quick answer.
-            .map(|_| "low".to_owned());
+            .map(str::to_owned);
         let mut session = AgentSession::new(parent.project_id, provider);
         session.workspace = match &parent.workspace {
             // A side chat must never create a worktree of its own.
@@ -643,7 +647,13 @@ impl Raku {
 
     fn submit_side_chat_composer(&mut self, cx: &mut Context<Self>) {
         let prompt = self.side_chat.composer.read(cx).content(cx).to_owned();
-        if prompt.trim().is_empty() {
+        if prompt.trim().is_empty()
+            || !self
+                .side_chat
+                .composer_target
+                .and_then(|id| self.side_chat_session(id))
+                .is_some_and(|session| session.detail_loaded)
+        {
             return;
         }
         self.side_chat
@@ -799,6 +809,14 @@ impl Raku {
         if self.side_chat.composer_target != Some(id) {
             self.switch_side_chat_composer(Some(id), cx);
         }
+        let can_send = loaded
+            && !self
+                .side_chat
+                .composer
+                .read(cx)
+                .content(cx)
+                .trim()
+                .is_empty();
         let list_state = self.sync_side_chat_list(id, rows, tail_len);
         let weak = cx.entity().downgrade();
 
@@ -888,26 +906,44 @@ impl Raku {
         } else {
             div()
                 .id(SharedString::from(format!("side-chat-send-{id}")))
-                .track_focus(&self.transcript_control_focus(format!("side-chat-send-{id}"), cx))
-                .tab_index(0)
                 .size(px(28.0))
                 .flex_none()
                 .rounded_full()
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(theme.inverse)
-                .cursor_pointer()
-                .focus_visible(|style| style.border_2().border_color(theme.accent))
-                .tooltip(Tooltip::text(tr!("side_chat.send")))
-                .child(icon("icons/arrow-up.svg", 14.0, theme.on_inverse))
-                .on_click(cx.listener(|this, _, _, cx| this.submit_side_chat_composer(cx)))
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        this.submit_side_chat_composer(cx);
-                        cx.stop_propagation();
-                    }
-                }))
+                .bg(if can_send {
+                    theme.inverse
+                } else {
+                    theme.overlay_strong
+                })
+                .cursor_default()
+                .child(icon(
+                    "icons/arrow-up.svg",
+                    14.0,
+                    if can_send {
+                        theme.on_inverse
+                    } else {
+                        theme.text_ghost
+                    },
+                ))
+                .when(can_send, |button| {
+                    button
+                        .track_focus(
+                            &self.transcript_control_focus(format!("side-chat-send-{id}"), cx),
+                        )
+                        .tab_index(0)
+                        .cursor_pointer()
+                        .focus_visible(|style| style.border_2().border_color(theme.accent))
+                        .tooltip(Tooltip::text(tr!("side_chat.send")))
+                        .on_click(cx.listener(|this, _, _, cx| this.submit_side_chat_composer(cx)))
+                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.submit_side_chat_composer(cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                })
         };
 
         let composer = div().flex_none().w_full().p(px(10.0)).child(
@@ -1422,18 +1458,8 @@ impl Raku {
 
     pub(super) fn render_side_chat_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
-        let explicit = self.state.side_chat_provider;
-        let resolved = self.side_chat_target(None);
-        let resolved_label = resolved
-            .as_ref()
-            .map(|(provider, model)| {
-                format!(
-                    "{} ({})",
-                    self.model_display_name(*provider, model.as_deref()),
-                    provider.display_name()
-                )
-            })
-            .unwrap_or_else(|| tr!("side_chat.no_provider"));
+        let provider = self.state.side_chat_provider.unwrap_or(ProviderKind::Pi);
+        let resolved = self.side_chat_target();
         let providers = ProviderKind::ALL
             .into_iter()
             .filter(|provider| !self.state.disabled_providers.contains(provider))
@@ -1447,10 +1473,7 @@ impl Raku {
         let provider_handle = self.menu_handle("side-chat-provider-selector", cx);
         let provider_selector = dropdown_menu(
             MenuChip::new("side-chat-provider-selector")
-                .label(explicit.map_or_else(
-                    || tr!("side_chat.automatic"),
-                    |provider| provider.display_name().to_owned(),
-                ))
+                .label(provider.display_name())
                 .outlined()
                 .selected(provider_handle.is_open())
                 .w(px(180.0))
@@ -1459,29 +1482,23 @@ impl Raku {
             &provider_handle,
             MenuAlign::BelowRight,
             move |_| {
-                let mut items = vec![{
-                    let weak = weak.clone();
-                    MenuItem::new(tr!("side_chat.automatic"), move |_, cx| {
-                        let _ =
-                            weak.update(cx, |this, cx| this.set_side_chat_target(None, None, cx));
+                providers
+                    .iter()
+                    .map(|option| {
+                        let option = *option;
+                        let weak = weak.clone();
+                        MenuItem::new(option.display_name(), move |_, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.set_side_chat_target(option, None, cx);
+                            });
+                        })
+                        .selected(provider == option)
                     })
-                    .selected(explicit.is_none())
-                }];
-                items.extend(providers.iter().map(|provider| {
-                    let provider = *provider;
-                    let weak = weak.clone();
-                    MenuItem::new(provider.display_name(), move |_, cx| {
-                        let _ = weak.update(cx, |this, cx| {
-                            this.set_side_chat_target(Some(provider), None, cx);
-                        });
-                    })
-                    .selected(explicit == Some(provider))
-                }));
-                items
+                    .collect()
             },
         );
 
-        let model_row = explicit.map(|provider| {
+        let model_selector = {
             let selected_model = resolved
                 .as_ref()
                 .filter(|(resolved, _)| *resolved == provider)
@@ -1509,6 +1526,7 @@ impl Raku {
                 MenuChip::new("side-chat-model-selector")
                     .label(label)
                     .outlined()
+                    .disabled(models.is_empty())
                     .selected(model_handle.is_open())
                     .w(px(220.0))
                     .justify_between(),
@@ -1524,7 +1542,7 @@ impl Raku {
                             MenuItem::new(label.clone(), move |_, cx| {
                                 let model = model.clone();
                                 let _ = weak.update(cx, |this, cx| {
-                                    this.set_side_chat_target(Some(provider), Some(model), cx);
+                                    this.set_side_chat_target(provider, Some(model), cx);
                                 });
                             })
                             .selected(selected_model.as_deref() == Some(id.as_str()))
@@ -1532,10 +1550,57 @@ impl Raku {
                         .collect()
                 },
             );
-            (selector, tr!("side_chat.model_description"))
+            selector.into_any_element()
+        };
+
+        let effort_selector = resolved.as_ref().and_then(|(provider, model)| {
+            let model = self.provider_probe(*provider)?.model(model.as_deref()?)?;
+            let selected_effort = resolve_side_chat_reasoning_effort(
+                model,
+                self.state.side_chat_reasoning_effort.as_deref(),
+            )?;
+            let label = model
+                .reasoning_efforts
+                .iter()
+                .find(|option| option.id == selected_effort)?
+                .label
+                .clone();
+            let selected_effort = selected_effort.to_owned();
+            let efforts = model.reasoning_efforts.clone();
+            let weak = cx.entity().downgrade();
+            let handle = self.menu_handle("side-chat-effort-selector", cx);
+            Some(
+                dropdown_menu(
+                    MenuChip::new("side-chat-effort-selector")
+                        .label(label)
+                        .outlined()
+                        .selected(handle.is_open())
+                        .w(px(180.0))
+                        .justify_between(),
+                    "side-chat-effort-selector-menu",
+                    &handle,
+                    MenuAlign::BelowRight,
+                    move |_| {
+                        efforts
+                            .iter()
+                            .map(|option| {
+                                let weak = weak.clone();
+                                let effort = option.id.clone();
+                                MenuItem::new(option.label.clone(), move |_, cx| {
+                                    let _ = weak.update(cx, |this, cx| {
+                                        this.set_side_chat_reasoning_effort(effort.clone(), cx);
+                                    });
+                                })
+                                .selected(option.id == selected_effort)
+                            })
+                            .collect()
+                    },
+                )
+                .into_any_element(),
+            )
         });
 
-        let row = |title: String, description: String, control: AnyElement| {
+        let row = |title: String, control: AnyElement| {
             div()
                 .w_full()
                 .min_h(px(60.0))
@@ -1548,21 +1613,10 @@ impl Raku {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(
-                            div()
-                                .text_size(sp(13.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text)
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .mt(px(5.0))
-                                .text_size(sp(12.5))
-                                .line_height(sp(18.0))
-                                .text_color(theme.text_secondary)
-                                .child(description),
-                        ),
+                        .text_size(sp(13.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text)
+                        .child(title),
                 )
                 .child(control)
         };
@@ -1583,45 +1637,46 @@ impl Raku {
                     .bg(theme.raised)
                     .child(row(
                         tr!("side_chat.provider"),
-                        tr!("side_chat.provider_description", model = resolved_label),
                         provider_selector.into_any_element(),
                     ))
-                    .when_some(model_row, |card, (selector, description)| {
+                    .child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
+                    .child(row(tr!("side_chat.model"), model_selector))
+                    .when_some(effort_selector, |card, selector| {
                         card.child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
-                            .child(row(
-                                tr!("side_chat.model"),
-                                description,
-                                selector.into_any_element(),
-                            ))
+                            .child(row(tr!("models.reasoning"), selector))
                     }),
             )
             .child(
                 div()
+                    .w_full()
+                    .min_w_0()
                     .px(px(4.0))
-                    .flex()
-                    .items_start()
-                    .gap(px(8.0))
                     .text_size(sp(12.5))
                     .line_height(sp(18.0))
                     .text_color(theme.text_secondary)
-                    .child(div().pt(px(2.0)).child(icon(
-                        "icons/eye.svg",
-                        13.0,
-                        theme.text_secondary,
-                    )))
-                    .child(div().flex_1().child(tr!("side_chat.read_only_description"))),
+                    .whitespace_normal()
+                    .child(tr!("side_chat.read_only_description")),
             )
             .into_any_element()
     }
 
     fn set_side_chat_target(
         &mut self,
-        provider: Option<ProviderKind>,
+        provider: ProviderKind,
         model: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.state.side_chat_provider = provider;
+        if self.state.side_chat_provider != Some(provider) || self.state.side_chat_model != model {
+            self.state.side_chat_reasoning_effort = Some("low".into());
+        }
+        self.state.side_chat_provider = Some(provider);
         self.state.side_chat_model = model;
+        self.save();
+        cx.notify();
+    }
+
+    fn set_side_chat_reasoning_effort(&mut self, effort: String, cx: &mut Context<Self>) {
+        self.state.side_chat_reasoning_effort = Some(effort);
         self.save();
         cx.notify();
     }
@@ -1765,6 +1820,7 @@ fn render_side_chat_card_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ProviderModelOption;
 
     fn probe(provider: ProviderKind, models: &[(&str, bool)]) -> ProviderProbe {
         ProviderProbe {
@@ -1784,6 +1840,54 @@ mod tests {
     }
 
     #[test]
+    fn side_chat_effort_honors_supported_choices_and_defaults_to_low() {
+        let model = ProviderModel::new("reasoner", "Reasoner").reasoning(
+            [
+                ProviderModelOption::new("low", "Low"),
+                ProviderModelOption::new("high", "High"),
+            ],
+            "high",
+        );
+        assert_eq!(
+            resolve_side_chat_reasoning_effort(&model, None),
+            Some("low")
+        );
+        assert_eq!(
+            resolve_side_chat_reasoning_effort(&model, Some("high")),
+            Some("high")
+        );
+        assert_eq!(
+            resolve_side_chat_reasoning_effort(&model, Some("removed-effort")),
+            Some("low")
+        );
+    }
+
+    #[test]
+    fn side_chat_effort_falls_back_only_to_supported_model_options() {
+        let mut model = ProviderModel::new("reasoner", "Reasoner").reasoning(
+            [
+                ProviderModelOption::new("medium", "Medium"),
+                ProviderModelOption::new("high", "High"),
+            ],
+            "high",
+        );
+        assert_eq!(
+            resolve_side_chat_reasoning_effort(&model, Some("low")),
+            Some("high")
+        );
+        model.default_reasoning_effort = Some("removed-effort".into());
+        assert_eq!(
+            resolve_side_chat_reasoning_effort(&model, None),
+            Some("medium")
+        );
+        model.reasoning_efforts.clear();
+        assert_eq!(
+            resolve_side_chat_reasoning_effort(&model, Some("high")),
+            None
+        );
+    }
+
+    #[test]
     fn side_chats_default_to_deepseek_through_pi() {
         let probes = [
             probe(ProviderKind::Claude, &[("claude-opus-5", true)]),
@@ -1796,7 +1900,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            resolve_side_chat_target(&probes, &[], None, None, None),
+            resolve_side_chat_target(&probes, &[], ProviderKind::Pi, None),
             Some((
                 ProviderKind::Pi,
                 Some("opencode-go/deepseek-v4.1-flash".into())
@@ -1814,42 +1918,34 @@ mod tests {
             ),
         ];
         assert_eq!(
-            resolve_side_chat_target(
-                &probes,
-                &[],
-                Some(ProviderKind::Claude),
-                Some("claude-haiku-4-5"),
-                None
-            ),
+            resolve_side_chat_target(&probes, &[], ProviderKind::Claude, Some("claude-haiku-4-5"),),
             Some((ProviderKind::Claude, Some("claude-haiku-4-5".into())))
         );
-        // A disabled provider falls back to the Pi default.
+        // A removed model falls back within the selected provider.
+        assert_eq!(
+            resolve_side_chat_target(&probes, &[], ProviderKind::Claude, Some("removed-model")),
+            Some((ProviderKind::Claude, Some("claude-haiku-4-5".into())))
+        );
         assert_eq!(
             resolve_side_chat_target(
                 &probes,
                 &[ProviderKind::Claude],
-                Some(ProviderKind::Claude),
+                ProviderKind::Claude,
                 Some("claude-haiku-4-5"),
-                None
             ),
-            Some((
-                ProviderKind::Pi,
-                Some("opencode-go/deepseek-v4.1-flash".into())
-            ))
+            None
         );
     }
 
     #[test]
-    fn without_pi_side_chats_follow_the_parent_task() {
+    fn an_unavailable_side_chat_provider_does_not_switch_to_another_provider() {
         let probes = [probe(ProviderKind::Codex, &[("gpt-5.6", true)])];
         assert_eq!(
-            resolve_side_chat_target(
-                &probes,
-                &[],
-                None,
-                None,
-                Some((ProviderKind::Codex, Some("gpt-5.6".into())))
-            ),
+            resolve_side_chat_target(&probes, &[], ProviderKind::Pi, None),
+            None
+        );
+        assert_eq!(
+            resolve_side_chat_target(&probes, &[], ProviderKind::Codex, None),
             Some((ProviderKind::Codex, Some("gpt-5.6".into())))
         );
     }
