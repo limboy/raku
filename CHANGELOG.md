@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.4.7] - 2026-11-09
+
+- Add model-specific reasoning levels for side chats, defaulting to Pi, DeepSeek, and Low
+- Simplify side chat settings and wrap the read-only description
+- Disable side chat submission when the input is empty or contains only whitespace
+
 ## [2.4.6] - 2026-11-07
 
 - Add line counts to the Git popover's Review changes row
