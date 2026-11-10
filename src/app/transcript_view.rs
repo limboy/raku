@@ -2020,6 +2020,9 @@ impl Raku {
                 duration = format_working_elapsed(elapsed)
             )
         };
+        // Same type as the activity summary above it, so the live label reads
+        // as part of the same run of work.
+        let metrics = self.transcript_markdown_metrics(MarkdownMetrics::BODY);
         div()
             .h(px(22.0))
             .flex()
@@ -2028,9 +2031,9 @@ impl Raku {
             .child(working_wave_dots(theme.text_tertiary))
             .child(
                 div()
-                    .text_size(sp(13.5))
-                    .line_height(sp(18.0))
-                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(metrics.text_size))
+                    .line_height(px(metrics.line_height))
+                    .font_weight(FontWeight::NORMAL)
                     .text_color(theme.text_tertiary)
                     .child(SharedString::from(label)),
             )
@@ -2618,7 +2621,9 @@ impl Raku {
                     .expanded_items
                     .get(&id)
                     .copied()
-                    .unwrap_or(reasoning_live);
+                    // Internal actions stay folded by default, even while
+                    // their reasoning streams; the user opens them on demand.
+                    .unwrap_or(false);
             let item_focus = self.transcript_control_focus(format!("activity-item-{id}"), cx);
             let item = div().w_full().min_w_0().flex().flex_col().child(
                 div()
