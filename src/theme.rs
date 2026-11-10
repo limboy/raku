@@ -75,6 +75,9 @@ pub struct Theme {
     pub canvas: Hsla,
     pub sidebar: Hsla,
     pub sidebar_item_background: Hsla,
+    /// Hovered sidebar row: a lighter step of `sidebar_item_background` so
+    /// the selected row still reads as distinct.
+    pub sidebar_item_hover: Hsla,
     pub surface: Hsla,
     pub raised: Hsla,
     /// Context and dropdown menu cards.
@@ -134,6 +137,7 @@ impl Theme {
             canvas: rgb(0x1A1A1A).into(),
             sidebar: rgb(0x181818).into(),
             sidebar_item_background: hsla(0.0, 0.0, 0.941, 0.06),
+            sidebar_item_hover: hsla(0.0, 0.0, 0.941, 0.035),
             surface: rgb(0x1A1A1A).into(),
             raised: rgb(0x232323).into(),
             menu: rgb(0x232323).into(),
@@ -175,6 +179,7 @@ impl Theme {
             canvas: rgb(0xFFFFFF).into(),
             sidebar: rgb(0xEBECED).into(),
             sidebar_item_background: hsla(0.0, 0.0, 0.0, 0.10),
+            sidebar_item_hover: hsla(0.0, 0.0, 0.0, 0.055),
             surface: rgb(0xFFFFFF).into(),
             raised: rgb(0xF3F3F3).into(),
             menu: rgb(0xFEFEFE).into(),

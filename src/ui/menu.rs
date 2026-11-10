@@ -2001,7 +2001,10 @@ mod tests {
         let outside = point(px(500.0), px(400.0));
 
         cx.simulate_mouse_down(on_trigger, MouseButton::Left, Modifiers::none());
-        assert!(!handle.is_open(), "a press alone must not open; release does");
+        assert!(
+            !handle.is_open(),
+            "a press alone must not open; release does"
+        );
         cx.simulate_mouse_up(on_trigger, MouseButton::Left, Modifiers::none());
         assert!(handle.is_open(), "first trigger click should open");
 
@@ -2107,10 +2110,7 @@ mod tests {
         };
         let (_view, cx) = cx.add_window_view(|_, _| harness);
 
-        cx.simulate_click(
-            point(px(10.0), px(10.0)),
-            Modifiers::none(),
-        );
+        cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::none());
         assert!(handle.is_open());
         cx.run_until_parked();
         cx.update(|window, cx| window.focus(&descendant_focus, cx));
@@ -2137,10 +2137,7 @@ mod tests {
         };
         let (_view, cx) = cx.add_window_view(|_, _| harness);
 
-        cx.simulate_click(
-            point(px(10.0), px(10.0)),
-            Modifiers::none(),
-        );
+        cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::none());
         cx.run_until_parked();
         cx.update(|window, cx| window.focus(&handle.focus, cx));
         cx.simulate_keystrokes("down");

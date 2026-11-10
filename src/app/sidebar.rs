@@ -1290,9 +1290,21 @@ impl Raku {
                 .into_any_element()
         };
         let raku = cx.entity().downgrade();
-        let menu = self.menu_handle(format!("session-{session_id}"), cx);
+        // The sidebar is a cached pane, so the row's open-menu highlight needs
+        // a notify on toggle; a window refresh alone keeps the stale frame.
+        // Deferred because the keyboard path toggles from inside a listener
+        // that already holds this entity.
+        let toggled = raku.clone();
+        let menu =
+            self.menu_handle_with(format!("session-{session_id}"), cx, move |_, window, cx| {
+                let toggled = toggled.clone();
+                window.defer(cx, move |_, cx| {
+                    toggled.update(cx, |_, cx| cx.notify()).ok();
+                });
+            });
         let row_focus = menu.trigger_focus_handle().clone();
         let keyboard_menu = menu.clone();
+        let menu_open = menu.is_open();
         let row = div()
             .id(SharedString::from(format!("session-{}", session.id)))
             .relative()
@@ -1304,10 +1316,14 @@ impl Raku {
             .px(px(8.0))
             .rounded(px(7.0))
             .cursor_default()
-            .when(selected, |element| {
+            // The row keeps its highlight while its context menu is open, so
+            // the menu's target stays marked once the pointer moves onto it.
+            .when(selected || menu_open, |element| {
                 element.bg(theme.sidebar_item_background)
             })
-            .hover(|element| element.bg(theme.sidebar_item_background))
+            .when(!selected && !menu_open, |element| {
+                element.hover(|element| element.bg(theme.sidebar_item_hover))
+            })
             .active(|element| element.bg(theme.sidebar_item_background))
             .child(
                 div()

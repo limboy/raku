@@ -258,7 +258,9 @@ impl Raku {
                     })
                     .focus_visible(|style| style.border_1().border_color(theme.accent))
                     .when(selected, |style| style.bg(theme.sidebar_item_background))
-                    .hover(|style| style.bg(theme.sidebar_item_background))
+                    .when(!selected, |style| {
+                        style.hover(|style| style.bg(theme.sidebar_item_hover))
+                    })
                     .active(|style| style.bg(theme.sidebar_item_background))
                     .child(icon(icon_path, 15.0, theme.text_tertiary))
                     .child(label)
