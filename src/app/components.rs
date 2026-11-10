@@ -225,7 +225,7 @@ pub(super) fn render_message_footer(
     let footer_color = if theme.is_dark {
         gpui::hsla(126.93 / 360.0, 0.000_000_1, 0.543_95, 1.0)
     } else {
-        theme.text_ghost
+        theme.text_secondary
     };
     let timestamp = div()
         .flex_none()

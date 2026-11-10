@@ -1507,9 +1507,19 @@ impl Raku {
             .w_full()
             .flex()
             .justify_center()
-            .px(px(20.0))
+            .px(px(20.0));
+        // Vertical spacing lives inside the hover target so a response's rows
+        // tile without gaps: crossing from the body to its footer must not
+        // hide the footer for a frame. Hover still tracks the centered
+        // content column, not the full-width row, so the gutters beside a
+        // response do not reveal its footer.
+        let mut content = div()
+            .id(("transcript-row-content", index))
+            .w_full()
+            .max_w(px(CONTENT_MAX_WIDTH))
+            .min_w_0()
             .py(px(8.0))
-            .when(blank_assistant, |row| row.py(px(0.0)))
+            .when(blank_assistant, |element| element.py(px(0.0)))
             .when(
                 matches!(kind, TranscriptRowKind::ResponseFooter(_, _)),
                 |element| element.pt(px(0.0)),
@@ -1522,14 +1532,7 @@ impl Raku {
             })
             .when(index + 1 == row_count && !blank_assistant, |element| {
                 element.pb(px(22.0))
-            });
-        // Hover tracks the centered content column, not the full-width row,
-        // so the gutters beside a response do not reveal its footer.
-        let mut content = div()
-            .id(("transcript-row-content", index))
-            .w_full()
-            .max_w(px(CONTENT_MAX_WIDTH))
-            .min_w_0()
+            })
             .child(inner);
         if let Some(turn_id) = response_turn_id {
             let hover_target = (turn_id, kind);
