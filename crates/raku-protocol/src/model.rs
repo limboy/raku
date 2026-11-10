@@ -2612,7 +2612,9 @@ impl ActivityItem {
                 .take()
                 .and_then(normalize_command_activity_command);
             if let Some(command) = self.arguments.as_deref() {
-                self.display_target = Some(compact_activity_target(command));
+                self.display_target = Some(compact_activity_target(
+                    strip_leading_absolute_directory_change(command),
+                ));
             }
             self.reclassify_patch_command();
         }
@@ -2761,6 +2763,53 @@ fn is_generic_file_tool_title(title: &str) -> bool {
         || trimmed == tr!("activity.write_file")
         || trimmed == tr!("activity.read_file")
         || trimmed == tr!("activity.edit_file")
+}
+
+/// The command a row should name when an agent prefixes every call with
+/// `cd /absolute/project && …`. That prefix repeats the session's own
+/// directory and pushes the real command off the end of the row, so only the
+/// label drops it; the stored command and the expanded view keep it. A
+/// relative `cd` says where the command runs within the project and stays.
+fn strip_leading_absolute_directory_change(command: &str) -> &str {
+    let trimmed = command.trim_start();
+    let Some(after_cd) = trimmed.strip_prefix("cd") else {
+        return command;
+    };
+    if !after_cd.starts_with([' ', '\t']) {
+        return command;
+    }
+    let after_cd = after_cd.trim_start();
+    let (directory, rest) = match after_cd.chars().next() {
+        Some(quote @ ('"' | '\'')) => {
+            let body = &after_cd[1..];
+            let Some(end) = body.find(quote) else {
+                return command;
+            };
+            (&body[..end], &body[end + 1..])
+        }
+        _ => {
+            let end = after_cd
+                .find(|c: char| c.is_whitespace() || c == ';' || c == '&')
+                .unwrap_or(after_cd.len());
+            (&after_cd[..end], &after_cd[end..])
+        }
+    };
+    let absolute = directory.starts_with('/')
+        || directory.starts_with('~')
+        || directory.starts_with('$')
+        || directory
+            .as_bytes()
+            .get(1..3)
+            .is_some_and(|drive| drive == b":\\" || drive == b":/");
+    if !absolute {
+        return command;
+    }
+    let rest = rest.trim_start();
+    let Some(rest) = rest.strip_prefix("&&").or_else(|| rest.strip_prefix(';')) else {
+        return command;
+    };
+    let rest = rest.trim_start();
+    if rest.is_empty() { command } else { rest }
 }
 
 fn normalize_command_activity_command(source: String) -> Option<String> {
@@ -3791,6 +3840,11 @@ pub struct ReasoningBlock {
     /// inferred from the arrival of a summary alone.
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
+    /// A short label for the reasoning, written by the user's text-generation
+    /// model once the block finished. Unset until then, and for reasoning that
+    /// finished before a model was chosen; rows fall back to its opening line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headline: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -4249,6 +4303,41 @@ mod tests {
         let activity = ActivityItem::new(None, ActivityKind::Command, "bash", None, true)
             .with_output(Some(json_output.to_owned()));
         assert_eq!(activity.output.as_deref(), Some(json_output));
+    }
+
+    #[test]
+    fn command_labels_drop_an_absolute_directory_change() {
+        let cases = [
+            (
+                "cd /Users/me/Projects/raku && cat docs/commit-messages.md | head -60",
+                "cat docs/commit-messages.md | head -60",
+            ),
+            ("cd \"/Users/me/My Project\" && git status", "git status"),
+            ("cd ~/src; make", "make"),
+            ("cd $HOME && ls", "ls"),
+            ("cd C:\\work && dir", "dir"),
+            // A relative cd says where in the project the command runs.
+            (
+                "cd crates/raku-core && cargo test",
+                "cd crates/raku-core && cargo test",
+            ),
+            // Nothing follows, or the cd is the whole command.
+            ("cd /tmp", "cd /tmp"),
+            ("cd /tmp &&", "cd /tmp &&"),
+            // `||` is not a sequencing prefix and `cdk` is not `cd`.
+            ("cd /tmp || exit 1", "cd /tmp || exit 1"),
+            ("cdk deploy", "cdk deploy"),
+        ];
+        for (command, expected) in cases {
+            let activity = ActivityItem::new(None, ActivityKind::Command, "bash", None, false)
+                .with_arguments(Some(serde_json::json!({ "command": command }).to_string()));
+            assert_eq!(
+                activity.display_target.as_deref(),
+                Some(expected),
+                "{command}"
+            );
+            assert_eq!(activity.arguments.as_deref(), Some(command), "{command}");
+        }
     }
 
     #[test]
@@ -4975,6 +5064,7 @@ mod tests {
                         content: "Looking around".into(),
                         started_at_ms: 1_000,
                         finished_at_ms: 2_000,
+                        headline: None,
                     },
                     true,
                 )],

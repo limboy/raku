@@ -387,7 +387,6 @@ impl Raku {
                         && self.state.selected_session == Some(session_id);
                     let item = ActivityItem::new(id, kind, title, detail, complete);
                     self.observe_foreground_command_activity(session_id, &item);
-                    self.observe_plan_steps(session_id, &item);
                     self.update_activity(session_id, runtime, item);
                     if refresh_branch {
                         self.refresh_selected_branch_snapshot(cx);
@@ -464,6 +463,9 @@ impl Raku {
                         should_refresh_branch_after_activity(item.kind, item.complete)
                             && self.state.selected_session == Some(session_id);
                     self.observe_foreground_command_activity(session_id, &item);
+                    // Plan steps only ever ride rich activities (Claude's
+                    // TaskCreate/TaskUpdate result, Codex's plan update).
+                    self.observe_plan_steps(session_id, &item);
                     self.update_activity(session_id, runtime, item);
                     if refresh_branch {
                         self.refresh_selected_branch_snapshot(cx);
@@ -1145,6 +1147,7 @@ pub(super) fn start_session_reasoning(
             content: String::new(),
             started_at_ms: now,
             finished_at_ms: now,
+            headline: None,
         },
         false,
     );
@@ -1232,6 +1235,7 @@ pub(super) fn append_session_reasoning(
                     content: delta,
                     started_at_ms: now,
                     finished_at_ms: now,
+                    headline: None,
                 },
                 false,
             ),

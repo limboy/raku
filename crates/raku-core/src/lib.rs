@@ -44,6 +44,7 @@ pub mod session_catalog;
 pub mod settings;
 pub mod skills;
 mod slash_command_catalog;
+pub mod text_generation;
 pub mod theme;
 pub mod usage;
 pub mod workspace;

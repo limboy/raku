@@ -209,6 +209,13 @@ enum SettingsPage {
     Skills,
     Backups,
     SideChat,
+    TextGeneration,
+}
+
+impl SettingsPage {
+    /// Variant count; per-page arrays are sized by it so a new page cannot
+    /// index past them.
+    const COUNT: usize = SettingsPage::TextGeneration as usize + 1;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1130,7 +1137,8 @@ pub struct Raku {
     model_search: Entity<TextInput>,
     settings_focus: FocusHandle,
     settings_close_focus: FocusHandle,
-    settings_tab_focus: [FocusHandle; 5],
+    /// One handle per [`SettingsPage`], indexed by its discriminant.
+    settings_tab_focus: [FocusHandle; SettingsPage::COUNT],
     backup_settings: backup_settings::BackupSettings,
     settings_previous_focus: Option<FocusHandle>,
     settings_focus_generation: u64,
@@ -1325,6 +1333,7 @@ pub struct Raku {
     /// re-inserted it.
     pending_queue_drains: Vec<Uuid>,
     stream_state_dirty: bool,
+    reasoning_headlines: text_generation::ReasoningHeadlines,
     last_stream_save: Instant,
     /// `app.json`/`state.json` land here rather than on the UI thread: a save
     /// runs every second while streaming and each atomic write ends in a
@@ -1688,6 +1697,7 @@ mod skills_page;
 mod streaming;
 mod task_list;
 mod task_switcher;
+mod text_generation;
 mod transcript;
 mod transcript_search;
 mod transcript_view;
@@ -2847,6 +2857,7 @@ impl Raku {
                 response_fork_preparations: HashMap::new(),
                 pending_queue_drains: Vec::new(),
                 stream_state_dirty: false,
+                reasoning_headlines: text_generation::ReasoningHeadlines::new(),
                 last_stream_save: Instant::now(),
                 background_executor: cx.background_executor().clone(),
                 desktop_document_write: None,

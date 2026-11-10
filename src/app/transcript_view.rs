@@ -2464,6 +2464,7 @@ impl Raku {
             };
             let action_label = activity_action_label(activity);
             let mut row_detail = activity_row_detail(activity, reasoning_live);
+            let reasoning_duration = reasoning_row_duration(activity, reasoning_live);
             if row_detail.trim().is_empty() {
                 row_detail = preview;
             }
@@ -2556,6 +2557,14 @@ impl Raku {
                         )
                     })
                     .when(!has_row_detail, |row| row.child(div().flex_1()))
+                    .when_some(reasoning_duration, |row, duration| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.text_tertiary)
+                                .child(SharedString::from(duration)),
+                        )
+                    })
                     .when_some(file_change_stats, |row, (additions, deletions)| {
                         row.child(
                             div()

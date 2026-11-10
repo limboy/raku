@@ -322,6 +322,7 @@ mod tests {
                 content: "Reasoning text".into(),
                 started_at_ms: 0,
                 finished_at_ms: 1,
+                headline: None,
             },
             true,
         );

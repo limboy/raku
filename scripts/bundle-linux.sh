@@ -25,8 +25,10 @@ install -Dm644 resources/linux/sh.raku.desktop \
   "$package_dir/share/applications/sh.raku.desktop"
 install -Dm644 resources/linux/self-update-v1 \
   "$package_dir/share/raku/self-update-v1"
-install -Dm644 resources/pi/session-title.ts \
-  "$package_dir/share/raku/pi/session-title.ts"
+for pi_extension in resources/pi/*.ts; do
+  install -Dm644 "$pi_extension" \
+    "$package_dir/share/raku/pi/$(basename "$pi_extension")"
+done
 install -Dm644 website/public/app-icon.png \
   "$package_dir/share/icons/hicolor/256x256/apps/sh.raku.png"
 install -Dm644 LICENSE "$package_dir/share/licenses/raku/LICENSE"

@@ -1742,17 +1742,9 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
         ActivityKind::Reasoning => activity.reasoning.as_ref().map_or_else(
             || activity.title.clone(),
             |reasoning| {
-                if reasoning_live || reasoning.started_at_ms == 0 {
-                    String::new()
-                } else {
-                    format_worked_duration(
-                        reasoning
-                            .finished_at_ms
-                            .saturating_sub(reasoning.started_at_ms)
-                            .div_ceil(1000)
-                            .max(1),
-                    )
-                }
+                reasoning_row_headline(reasoning, reasoning_live)
+                    .or_else(|| reasoning_duration(reasoning, reasoning_live))
+                    .unwrap_or_default()
             },
         ),
         ActivityKind::Command => activity
@@ -1794,6 +1786,116 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
                 .unwrap_or_default()
         }
     }
+}
+
+/// How long finished reasoning took, shown beside a headline. Unknown while
+/// it streams and for snapshot-only reasoning, which has no start time.
+fn reasoning_duration(reasoning: &ReasoningBlock, live: bool) -> Option<String> {
+    (!live && reasoning.started_at_ms != 0).then(|| {
+        format_worked_duration(
+            reasoning
+                .finished_at_ms
+                .saturating_sub(reasoning.started_at_ms)
+                .div_ceil(1000)
+                .max(1),
+        )
+    })
+}
+
+/// The duration a reasoning row shows after its headline, when the headline
+/// took the detail slot that otherwise holds the duration.
+pub(super) fn reasoning_row_duration(activity: &ActivityItem, live: bool) -> Option<String> {
+    let reasoning = activity.reasoning.as_ref()?;
+    reasoning_row_headline(reasoning, live)?;
+    reasoning_duration(reasoning, live)
+}
+
+/// The text-generation model's headline once it lands, else the opening line.
+fn reasoning_row_headline(reasoning: &ReasoningBlock, live: bool) -> Option<String> {
+    reasoning
+        .headline
+        .clone()
+        .or_else(|| reasoning_headline(&reasoning.content, live))
+}
+
+/// A one-line summary of what the model was thinking about, so a reasoning
+/// row says more than "Think".
+///
+/// Codex reasoning summaries open with a bold heading, which is used as is.
+/// Raw thinking (Pi, DeepSeek, Claude) has no heading, so its first sentence
+/// stands in. Only the opening few hundred bytes are read, keeping the row
+/// builder's cost independent of how long the reasoning grew.
+///
+/// While reasoning streams, a headline appears only once its heading or first
+/// sentence has closed, so the row never shows a half-written phrase.
+pub(super) fn reasoning_headline(content: &str, live: bool) -> Option<String> {
+    const SCAN_BYTES: usize = 480;
+    const MAX_CHARS: usize = 120;
+
+    let text = content.trim_start();
+    let mut end = text.len().min(SCAN_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let scanned = &text[..end];
+    let truncated_scan = end < text.len();
+
+    let (candidate, closed) = if let Some(rest) = scanned.strip_prefix("**") {
+        match rest.find("**") {
+            Some(close) => (&rest[..close], true),
+            None => (rest.lines().next().unwrap_or(rest), false),
+        }
+    } else {
+        let (line, line_closed) = match scanned.find('\n') {
+            Some(newline) => (&scanned[..newline], true),
+            None => (scanned, false),
+        };
+        match first_sentence_end(line) {
+            Some(sentence_end) => (&line[..sentence_end], true),
+            None => (line, line_closed),
+        }
+    };
+    if live && !closed {
+        return None;
+    }
+
+    let headline = candidate
+        .trim()
+        .trim_start_matches(['#', '>', '-', ' '])
+        .trim_matches(['*', '_', '`', ' '])
+        .trim_end_matches(['.', ':', '：', '。', ' '])
+        .trim();
+    if headline.is_empty() {
+        return None;
+    }
+    let mut chars = headline.chars();
+    let mut shortened: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() || (!closed && truncated_scan) {
+        shortened = shortened.trim_end().to_owned();
+        shortened.push('…');
+    }
+    Some(shortened)
+}
+
+/// Byte offset just past the first sentence of `line`, keeping its
+/// terminator. A period ends a sentence only before whitespace, so file names
+/// and version numbers stay whole; CJK terminators end one outright.
+fn first_sentence_end(line: &str) -> Option<usize> {
+    let mut chars = line.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '。' | '！' | '？' => return Some(index + ch.len_utf8()),
+            '.' | '!' | '?' => {
+                // End of line is handled by the caller, which knows whether
+                // the line itself has closed.
+                if chars.peek().is_some_and(|(_, next)| next.is_whitespace()) {
+                    return Some(index + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 pub(super) fn reasoning_activity_title(reasoning: &ReasoningBlock, live: bool) -> String {
@@ -2329,14 +2431,89 @@ mod message_time_tests {
                 content: "summary".into(),
                 started_at_ms: 0,
                 finished_at_ms: 1_000_000,
+                headline: None,
             },
             true,
         );
-        assert_eq!(activity_row_detail(&activity, false), "");
+        assert_eq!(activity_row_detail(&activity, false), "summary");
+        assert_eq!(reasoning_row_duration(&activity, false), None);
         assert_eq!(
             reasoning_activity_title(activity.reasoning.as_ref().unwrap(), false),
             "Think"
         );
+    }
+
+    #[test]
+    fn reasoning_headlines_summarize_the_opening_thought() {
+        let cases = [
+            // Codex summary headings.
+            (
+                "**Inspecting the diff**\n\nI'm checking hunks.",
+                false,
+                Some("Inspecting the diff"),
+            ),
+            ("**Inspecting the diff**", true, Some("Inspecting the diff")),
+            ("**Inspecting the di", true, None),
+            // Raw thinking: the first sentence.
+            (
+                "I need to commit only my changes, not the parallel session's work.\n\nMy files:",
+                false,
+                Some("I need to commit only my changes, not the parallel session's work"),
+            ),
+            (
+                "The user says inline code is bold. Let me find the styling.",
+                true,
+                Some("The user says inline code is bold"),
+            ),
+            ("Check src/app.rs before v1.2 ships", true, None),
+            (
+                "Check src/app.rs before v1.2 ships",
+                false,
+                Some("Check src/app.rs before v1.2 ships"),
+            ),
+            ("Plan:\n1. Read", true, Some("Plan")),
+            (
+                "用户说行内代码被加粗了。我来找找样式。",
+                true,
+                Some("用户说行内代码被加粗了"),
+            ),
+            ("  \n\n", false, None),
+        ];
+        for (content, live, expected) in cases {
+            assert_eq!(
+                reasoning_headline(content, live).as_deref(),
+                expected,
+                "{content:?}"
+            );
+        }
+
+        let mut generated = ActivityItem::from_reasoning(
+            ReasoningBlock {
+                content: "I'm putting together a simple Wordle clone as one HTML file.".into(),
+                started_at_ms: 1_000,
+                finished_at_ms: 2_000,
+                headline: Some("Planning a single-file Wordle clone".into()),
+            },
+            true,
+        );
+        assert_eq!(
+            activity_row_detail(&generated, false),
+            "Planning a single-file Wordle clone"
+        );
+        assert_eq!(
+            reasoning_row_duration(&generated, false).as_deref(),
+            Some("1 second")
+        );
+        generated.reasoning.as_mut().unwrap().headline = None;
+        assert_eq!(
+            activity_row_detail(&generated, false),
+            "I'm putting together a simple Wordle clone as one HTML file"
+        );
+
+        let long = "word ".repeat(200);
+        let headline = reasoning_headline(&long, false).unwrap();
+        assert!(headline.ends_with('…'));
+        assert!(headline.chars().count() <= 121);
     }
 
     #[test]
@@ -2346,6 +2523,7 @@ mod message_time_tests {
                 content: "Inspecting history".into(),
                 started_at_ms: 1_000,
                 finished_at_ms: 2_000,
+                headline: None,
             },
             true,
         );
@@ -2381,7 +2559,15 @@ mod message_time_tests {
             activity_header_title(&activities[..1], false, None),
             "1 activity"
         );
-        assert_eq!(activity_row_detail(&activities[0], false), "1 second");
+        assert_eq!(
+            activity_row_detail(&activities[0], false),
+            "Inspecting history"
+        );
+        assert_eq!(
+            reasoning_row_duration(&activities[0], false).as_deref(),
+            Some("1 second")
+        );
+        // An unfinished first line is not shown while it streams.
         assert_eq!(activity_row_detail(&activities[0], true), "");
         assert!(!activity_group_is_live(true, false, 1, 1));
         assert!(!activity_group_is_live(false, true, 1, 1));

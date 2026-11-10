@@ -113,7 +113,7 @@ cp "resources/$icon_file" "$contents/Resources/AppIcon.icns"
 # glass tile like a legacy icon.
 cp "resources/$icon_catalog" "$contents/Resources/Assets.car"
 mkdir -p "$contents/Resources/pi"
-cp resources/pi/session-title.ts "$contents/Resources/pi/session-title.ts"
+cp resources/pi/*.ts "$contents/Resources/pi/"
 frameworks_directory="$contents/Frameworks"
 sparkle_framework="$frameworks_directory/Sparkle.framework"
 mkdir -p "$frameworks_directory"

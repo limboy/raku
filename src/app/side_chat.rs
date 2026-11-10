@@ -161,7 +161,7 @@ pub(super) fn resolve_side_chat_target(
 
 /// Keep side questions quick by default, while honoring a supported explicit
 /// choice. A stale setting must never send an effort the current model rejects.
-fn resolve_side_chat_reasoning_effort<'a>(
+pub(super) fn resolve_side_chat_reasoning_effort<'a>(
     model: &'a ProviderModel,
     setting: Option<&str>,
 ) -> Option<&'a str> {

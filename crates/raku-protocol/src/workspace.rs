@@ -104,6 +104,12 @@ pub enum WorkspaceOperation {
         include_unstaged: bool,
         invocation: AgentInvocation,
     },
+    /// A short headline for a finished block of model reasoning, written by
+    /// the text-generation model in `invocation`.
+    GenerateReasoningHeadline {
+        reasoning: String,
+        invocation: AgentInvocation,
+    },
     Commit {
         cwd: PathBuf,
         message: String,
@@ -209,6 +215,9 @@ pub enum WorkspaceResult {
     },
     CommitMessage {
         message: String,
+    },
+    ReasoningHeadline {
+        headline: String,
     },
     Checkpoint {
         checkpoint: Checkpoint,

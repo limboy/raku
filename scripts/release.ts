@@ -420,6 +420,7 @@ try {
     join(mountedContents, "MacOS", executableName),
     mountedDaemon,
     join(mountedContents, "Resources", "pi", "session-title.ts"),
+    join(mountedContents, "Resources", "pi", "command-descriptions.ts"),
     join(mountedSparkleFramework, "Sparkle"),
   ]) {
     await access(artifact);

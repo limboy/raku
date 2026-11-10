@@ -308,6 +308,15 @@ pub struct AppSettings {
     pub side_chat_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side_chat_reasoning_effort: Option<String>,
+    /// Provider and model that write short labels, such as reasoning
+    /// headlines. No provider turns generation off; that is the default,
+    /// because every label is a model request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_generation_provider: Option<ProviderKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_generation_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_generation_reasoning_effort: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -327,6 +336,9 @@ impl Default for AppSettings {
             side_chat_provider: Some(ProviderKind::Pi),
             side_chat_model: None,
             side_chat_reasoning_effort: Some("low".into()),
+            text_generation_provider: None,
+            text_generation_model: None,
+            text_generation_reasoning_effort: None,
         }
     }
 }
@@ -504,6 +516,12 @@ pub struct PersistedState {
     pub side_chat_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_chat_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_generation_provider: Option<ProviderKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_generation_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_generation_reasoning_effort: Option<String>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
     #[serde(default = "default_right_panel_visibility")]
@@ -580,6 +598,9 @@ impl PersistedState {
             side_chat_provider: Some(ProviderKind::Pi),
             side_chat_model: None,
             side_chat_reasoning_effort: Some("low".into()),
+            text_generation_provider: None,
+            text_generation_model: None,
+            text_generation_reasoning_effort: None,
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -807,6 +828,9 @@ impl PersistedState {
             side_chat_provider: self.side_chat_provider,
             side_chat_model: self.side_chat_model.clone(),
             side_chat_reasoning_effort: self.side_chat_reasoning_effort.clone(),
+            text_generation_provider: self.text_generation_provider,
+            text_generation_model: self.text_generation_model.clone(),
+            text_generation_reasoning_effort: self.text_generation_reasoning_effort.clone(),
         };
         settings.normalize_desktop_defaults();
         settings
@@ -855,6 +879,9 @@ impl PersistedState {
         self.side_chat_provider = settings.side_chat_provider;
         self.side_chat_model = settings.side_chat_model;
         self.side_chat_reasoning_effort = settings.side_chat_reasoning_effort;
+        self.text_generation_provider = settings.text_generation_provider;
+        self.text_generation_model = settings.text_generation_model;
+        self.text_generation_reasoning_effort = settings.text_generation_reasoning_effort;
     }
 
     fn apply_app_state(&mut self, app_state: AppState) {
@@ -1975,6 +2002,31 @@ mod tests {
         assert_eq!(
             restored.side_chat_reasoning_effort,
             state.side_chat_reasoning_effort
+        );
+    }
+
+    #[test]
+    fn text_generation_is_off_by_default_and_persists_its_choice() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.text_generation_provider, None);
+        let mut state = PersistedState::empty();
+        state.text_generation_provider = Some(ProviderKind::Claude);
+        state.text_generation_model = Some("claude-haiku-4-5".into());
+        state.text_generation_reasoning_effort = Some("low".into());
+        let settings = serde_json::to_string(&state.app_settings()).unwrap();
+        let mut restored = PersistedState::empty();
+        restored.apply_app_settings(serde_json::from_str(&settings).unwrap());
+        assert_eq!(
+            restored.text_generation_provider,
+            Some(ProviderKind::Claude)
+        );
+        assert_eq!(
+            restored.text_generation_model.as_deref(),
+            Some("claude-haiku-4-5")
+        );
+        assert_eq!(
+            restored.text_generation_reasoning_effort.as_deref(),
+            Some("low")
         );
     }
 

@@ -2089,6 +2089,12 @@ side_chat.model:
   en: "Model"
 side_chat.read_only_description:
   en: "Side chats can read and search the project's files but cannot edit files, run commands, or use MCP tools. They never add messages to the task's conversation."
+text_generation.settings_title:
+  en: "Text Generation"
+text_generation.off:
+  en: "Off"
+text_generation.description:
+  en: "This model writes short headlines for the agent's thinking once each thought finishes, one small request per thought. Turned off, thinking rows show the thought's opening line instead. Thoughts from before a model was chosen keep their opening line."
 errors.start_agent_headline:
   en: "Could not start %{provider}"
 errors.provider_stopped_before_response:

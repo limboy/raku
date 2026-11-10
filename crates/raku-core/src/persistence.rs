@@ -3046,6 +3046,7 @@ mod tests {
                         content: "Checking the source".into(),
                         started_at_ms: 1_000,
                         finished_at_ms: 2_500,
+                        headline: None,
                     },
                     true,
                 ),
@@ -3136,6 +3137,7 @@ mod tests {
                     content: "Inspect the project".into(),
                     started_at_ms: 1,
                     finished_at_ms: 2,
+                    headline: None,
                 },
                 true,
             );

@@ -3608,6 +3608,9 @@ impl Raku {
             if keep_runtime {
                 self.runtimes.insert(session_id, runtime);
             }
+            if runtime_changed {
+                self.queue_reasoning_headlines(session_id, cx);
+            }
             changed |= runtime_changed || background_changed;
             persisted_state_changed |= runtime_changed;
             if self.state.selected_session == Some(session_id)

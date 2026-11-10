@@ -1019,6 +1019,9 @@ side_chat.settings_title: "侧聊"
 side_chat.provider: "提供方"
 side_chat.model: "模型"
 side_chat.read_only_description: "侧聊可以读取和搜索项目文件，但不能编辑文件、运行命令或使用 MCP 工具，也不会向任务对话添加消息。"
+text_generation.settings_title: 文本生成
+text_generation.off: 关闭
+text_generation.description: "该模型会在每段思考结束后为其写一个简短标题，每段思考发送一次小请求。关闭时，思考行显示思考的第一句话。选择模型之前的思考仍显示第一句话。"
 errors.start_agent_headline: "无法启动 %{provider}"
 errors.provider_stopped_before_response: "%{provider} 在回复前停止了"
 message_error.details: "详情"

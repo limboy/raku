@@ -142,6 +142,12 @@ pub fn execute(operation: WorkspaceOperation) -> anyhow::Result<WorkspaceResult>
         } => WorkspaceResult::CommitMessage {
             message: crate::git_commit::generate_message(&cwd, include_unstaged, &invocation)?,
         },
+        WorkspaceOperation::GenerateReasoningHeadline {
+            reasoning,
+            invocation,
+        } => WorkspaceResult::ReasoningHeadline {
+            headline: crate::text_generation::reasoning_headline(&reasoning, &invocation)?,
+        },
         WorkspaceOperation::Commit {
             cwd,
             message,

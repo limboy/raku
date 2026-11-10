@@ -155,12 +155,27 @@ pub struct PiDriver {
 /// title from the first request in the background and reports it through
 /// `session_info_changed`, which already feeds `AutoTitleUpdated`.
 pub(crate) fn pi_title_extension_path() -> anyhow::Result<PathBuf> {
+    pi_extension_path("session-title.ts", "Raku Pi session title extension")
+}
+
+/// The extension that asks Pi's `bash` tool for a short `description` of each
+/// command, the line Raku shows in place of the raw command text, as Claude
+/// Code's shell tool already does.
+pub(crate) fn pi_command_description_extension_path() -> anyhow::Result<PathBuf> {
+    pi_extension_path(
+        "command-descriptions.ts",
+        "Raku Pi command description extension",
+    )
+}
+
+fn pi_extension_path(file: &str, name: &str) -> anyhow::Result<PathBuf> {
     let path = crate::resources::resources_directory(
         &crate::resources::host_executable_path()?,
         std::env::consts::OS,
     )?
-    .join("pi/session-title.ts");
-    crate::resources::packaged_file(&path, "Raku Pi session title extension")
+    .join("pi")
+    .join(file);
+    crate::resources::packaged_file(&path, name)
 }
 
 /// Sessions get automatic titles. A missing asset only costs the generated
@@ -170,14 +185,39 @@ fn configure_pi_title_command(
     flavor: PiFlavor,
     extension: impl FnOnce() -> anyhow::Result<PathBuf>,
 ) {
+    configure_pi_extension(command, extension, || {
+        format!(
+            "{} sessions will not get generated titles",
+            flavor.display_name()
+        )
+    });
+}
+
+/// Commands get model-written descriptions. Side chats cannot run commands, so
+/// they skip it. A missing asset only costs the descriptions.
+fn configure_pi_command_description_command(
+    command: &mut std::process::Command,
+    flavor: PiFlavor,
+    extension: impl FnOnce() -> anyhow::Result<PathBuf>,
+) {
+    configure_pi_extension(command, extension, || {
+        format!(
+            "{} commands will show without descriptions",
+            flavor.display_name()
+        )
+    });
+}
+
+fn configure_pi_extension(
+    command: &mut std::process::Command,
+    extension: impl FnOnce() -> anyhow::Result<PathBuf>,
+    consequence: impl FnOnce() -> String,
+) {
     match extension() {
         Ok(extension) => {
             command.arg("--extension").arg(extension);
         }
-        Err(error) => eprintln!(
-            "{} sessions will not get generated titles: {error:#}",
-            flavor.display_name()
-        ),
+        Err(error) => eprintln!("{}: {error:#}", consequence()),
     }
 }
 
@@ -247,6 +287,11 @@ impl PiDriver {
             configure_pi_read_only_command(&mut command);
         } else {
             command.args(["--append-system-prompt", super::USER_RUN_INSTRUCTIONS]);
+            configure_pi_command_description_command(
+                &mut command,
+                flavor,
+                pi_command_description_extension_path,
+            );
         }
         if flavor.skips_version_check_by_env() {
             command.env("PI_SKIP_VERSION_CHECK", "1");
@@ -3022,6 +3067,27 @@ mod launch_tests {
             args(&command),
             ["--extension", "/bundle/pi/session-title.ts"]
         );
+    }
+
+    #[test]
+    fn a_session_gets_the_command_description_extension() {
+        let mut command = command();
+        configure_pi_command_description_command(&mut command, PiFlavor::Pi, || {
+            Ok(PathBuf::from("/bundle/pi/command-descriptions.ts"))
+        });
+        assert_eq!(
+            args(&command),
+            ["--extension", "/bundle/pi/command-descriptions.ts"]
+        );
+    }
+
+    #[test]
+    fn a_missing_command_description_extension_is_skipped() {
+        let mut command = command();
+        configure_pi_command_description_command(&mut command, PiFlavor::Pi, || {
+            Err(anyhow!("missing"))
+        });
+        assert!(args(&command).is_empty());
     }
 
     /// The extension strips Raku's title-language note before the agent sees

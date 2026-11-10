@@ -20,7 +20,7 @@ enum FontTarget {
 }
 
 /// The remaining settings sections, in navigation order.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str); 6] = [
     (
         SettingsPage::Appearance,
         "settings.appearance",
@@ -35,6 +35,11 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
         SettingsPage::SideChat,
         "side_chat.settings_title",
         "icons/ant/messages.svg",
+    ),
+    (
+        SettingsPage::TextGeneration,
+        "text_generation.settings_title",
+        "icons/sparkle.svg",
     ),
     (SettingsPage::Skills, "settings.skills", "icons/package.svg"),
     (
@@ -343,6 +348,7 @@ impl Raku {
             SettingsPage::Skills => tr!("settings.skills"),
             SettingsPage::Backups => tr!("settings.backups"),
             SettingsPage::SideChat => tr!("side_chat.settings_title"),
+            SettingsPage::TextGeneration => tr!("text_generation.settings_title"),
         };
         let header = div()
             .h(px(58.0))
@@ -369,6 +375,7 @@ impl Raku {
                     SettingsPage::Providers => self.render_providers_settings(cx),
                     SettingsPage::Backups => self.render_backup_settings(cx),
                     SettingsPage::SideChat => self.render_side_chat_settings(cx),
+                    SettingsPage::TextGeneration => self.render_text_generation_settings(cx),
                     SettingsPage::Skills => unreachable!(),
                 });
             div()

@@ -36,10 +36,10 @@ const CODEX_COMMIT_MODEL: &str = "gpt-5.6-luna";
 // `unsupported_value`, listing `none` as the lowest it accepts.
 const CODEX_COMMIT_EFFORT: &str = r#"model_reasoning_effort="none""#;
 
-struct CapturedOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+pub(crate) struct CapturedOutput {
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
 }
 
 pub fn inspect(cwd: &Path) -> anyhow::Result<Snapshot> {
@@ -410,7 +410,10 @@ fn git_capture(cwd: &Path, args: &[&str]) -> anyhow::Result<CapturedOutput> {
     run_capture(&mut command, GIT_TIMEOUT)
 }
 
-fn run_capture(command: &mut Command, timeout: Duration) -> anyhow::Result<CapturedOutput> {
+pub(crate) fn run_capture(
+    command: &mut Command,
+    timeout: Duration,
+) -> anyhow::Result<CapturedOutput> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -468,7 +471,7 @@ fn read_bounded(mut reader: impl Read, limit: usize) -> Vec<u8> {
     kept
 }
 
-fn command_error(output: &CapturedOutput) -> String {
+pub(crate) fn command_error(output: &CapturedOutput) -> String {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     let stderr = stderr.trim();
     if stderr.is_empty() {

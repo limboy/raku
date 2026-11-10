@@ -1067,6 +1067,9 @@ side_chat.settings_title: "サイドチャット"
 side_chat.provider: "プロバイダー"
 side_chat.model: "モデル"
 side_chat.read_only_description: "サイドチャットはプロジェクトのファイルを読み取り・検索できますが、ファイルの編集、コマンドの実行、MCP ツールの使用はできません。タスクの会話にメッセージを追加することもありません。"
+text_generation.settings_title: テキスト生成
+text_generation.off: オフ
+text_generation.description: "このモデルは、エージェントの思考が終わるたびに短い見出しを書きます。思考ごとに小さなリクエストを 1 回送ります。オフの場合、思考の行には最初の一文が表示されます。モデルを選ぶ前の思考は最初の一文のままです。"
 errors.start_agent_headline: "%{provider} を起動できませんでした"
 errors.provider_stopped_before_response: "%{provider} が応答前に停止しました"
 message_error.details: "詳細"

@@ -752,6 +752,7 @@ fn settling_an_anchored_turn_splices_without_resetting_its_prompt() {
                 content: "Inspecting the project".into(),
                 started_at_ms: 1_000,
                 finished_at_ms: 2_000,
+                headline: None,
             },
             true,
         )],
@@ -1023,6 +1024,7 @@ fn reasoning_and_tools_share_one_ordered_activity_block() {
                 content: "Inspecting the project".into(),
                 started_at_ms: 1_000,
                 finished_at_ms: 2_000,
+                headline: None,
             },
             true,
         ),
@@ -1053,6 +1055,7 @@ fn reasoning_and_tools_share_one_ordered_activity_block() {
                 content: "Checking the result".into(),
                 started_at_ms: 3_000,
                 finished_at_ms: 4_000,
+                headline: None,
             },
             false,
         ),
@@ -1205,6 +1208,7 @@ fn row_kinds_and_row_count_describe_the_same_rows() {
                     content: "Looking around".into(),
                     started_at_ms: 1_000,
                     finished_at_ms: 2_000,
+                    headline: None,
                 },
                 true,
             ),
@@ -1449,6 +1453,7 @@ fn the_row_fingerprint_moves_whenever_the_fold_does() {
                 content: "Looking around".into(),
                 started_at_ms: 1_000,
                 finished_at_ms: 2_000,
+                headline: None,
             },
             true,
         )],
@@ -1562,6 +1567,7 @@ fn a_settled_turn_folds_all_of_its_work_above_the_answer() {
                 content: "Looking around".into(),
                 started_at_ms: 1_000,
                 finished_at_ms: 2_000,
+                headline: None,
             },
             true,
         )],
@@ -1632,6 +1638,7 @@ fn consecutive_trailing_text_parts_all_stay_out_of_the_fold() {
                 content: "Looking around".into(),
                 started_at_ms: 1_000,
                 finished_at_ms: 2_000,
+                headline: None,
             },
             true,
         )],
@@ -1706,6 +1713,7 @@ fn assistant_response_footer_is_owned_by_the_terminal_part_and_copies_the_visibl
                 content: "Looking around".into(),
                 started_at_ms: 1_000,
                 finished_at_ms: 2_000,
+                headline: None,
             },
             true,
         )],
@@ -1870,6 +1878,7 @@ fn running_turn_keeps_its_ordered_work_visible() {
                 content: "Still thinking".into(),
                 started_at_ms: 1_000,
                 finished_at_ms: 2_000,
+                headline: None,
             },
             false,
         )],
@@ -2035,6 +2044,7 @@ fn settings_navigation_contains_only_supported_pages() {
         SettingsPage::Appearance,
         SettingsPage::Providers,
         SettingsPage::SideChat,
+        SettingsPage::TextGeneration,
         SettingsPage::Skills,
         SettingsPage::Backups,
     ];
@@ -2043,6 +2053,12 @@ fn settings_navigation_contains_only_supported_pages() {
             .map(|(page, ..)| page)
             .collect::<Vec<_>>(),
         expected
+    );
+    // Per-page focus handles are indexed by discriminant.
+    assert!(
+        expected
+            .iter()
+            .all(|page| (*page as usize) < SettingsPage::COUNT)
     );
 }
 
