@@ -1519,8 +1519,10 @@ pub struct Raku {
     sidebar_scrollbar: Rc<ScrollbarState>,
     /// Snapshot of the sidebar rows the list state currently corresponds to.
     sidebar_row_cache: RefCell<Vec<SidebarRow>>,
-    /// Project whose rows and scroll position are currently displayed.
-    sidebar_row_project: Cell<Option<Uuid>>,
+    /// Filter whose rows and scroll position are currently displayed.
+    sidebar_row_project: Cell<Option<SidebarProjectFilter>>,
+    /// The sidebar history's project filter; `None` shows every task.
+    sidebar_project_filter: Option<SidebarProjectFilter>,
     /// Fingerprint + snapshot pair backing `sidebar_rows_cached`.
     sidebar_rows_fingerprint: Cell<Option<u64>>,
     sidebar_rows_snapshot: RefCell<Rc<Vec<SidebarRow>>>,
@@ -1720,7 +1722,7 @@ pub use image_preview::init as init_image_preview_keys;
 use project_picker::ProjectPickerSite;
 pub use settings::init as init_settings_keys;
 pub use sidebar::init as init_sidebar_keys;
-use sidebar::{SidebarDateBoundaries, SidebarRow};
+use sidebar::{SidebarDateBoundaries, SidebarProjectFilter, SidebarRow};
 pub use skills_page::init as init_skills_keys;
 use streaming::*;
 use transcript::*;
@@ -2979,6 +2981,7 @@ impl Raku {
                 sidebar_scrollbar: ScrollbarState::new(),
                 sidebar_row_cache: RefCell::new(Vec::new()),
                 sidebar_row_project: Cell::new(None),
+                sidebar_project_filter: None,
                 sidebar_rows_fingerprint: Cell::new(None),
                 sidebar_rows_snapshot: RefCell::new(Rc::new(Vec::new())),
                 sidebar_session_shortcuts_visible: window.is_window_active()

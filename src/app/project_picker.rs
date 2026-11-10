@@ -23,6 +23,8 @@ const PROJECT_PICKER_VISIBLE_ROWS: f32 = 11.0;
 const PROJECT_PICKER_WIDTH: f32 = 300.0;
 /// The composer footer's panel, matching the branch picker beside it.
 const COMPOSER_PROJECT_PICKER_WIDTH: f32 = 240.0;
+/// The sidebar's horizontal content inset, where the filter panel starts.
+const SIDEBAR_PICKER_INSET: f32 = 10.0;
 
 /// Where a picker is drawn, which decides its anchoring and how a choice
 /// lands. Choices configuring an unsent task carry its draft to the new project.
@@ -44,20 +46,23 @@ impl ProjectPickerSite {
 
     fn align(self) -> MenuAlign {
         match self {
-            Self::Sidebar | Self::EmptyState => MenuAlign::BelowLeft,
+            // The filter button sits at the sidebar's right edge.
+            Self::Sidebar => MenuAlign::BelowRight,
+            Self::EmptyState => MenuAlign::BelowLeft,
             // The composer footer sits at the bottom of the window.
             Self::Composer => MenuAlign::AboveLeft,
         }
     }
 
-    /// The panel's width: the sidebar selector's own width, so the panel reads
-    /// as its trigger unfolding. The empty state's inline headline and the
-    /// composer's chip are too narrow for that, so theirs keep a fixed width.
+    /// The panel's width: the sidebar's filter spans the sidebar from its
+    /// leading inset to the button's trailing edge, so it fits any sidebar
+    /// width. The empty state's inline headline and the composer's chip keep
+    /// a fixed width.
     fn panel_width(self, handle: &ContextMenuHandle) -> Pixels {
         match self {
             Self::Sidebar => handle
                 .trigger_bounds()
-                .map(|bounds| bounds.size.width)
+                .map(|bounds| (bounds.right() - px(SIDEBAR_PICKER_INSET)).max(bounds.size.width))
                 .unwrap_or(px(PROJECT_PICKER_WIDTH)),
             Self::EmptyState => px(PROJECT_PICKER_WIDTH),
             Self::Composer => px(COMPOSER_PROJECT_PICKER_WIDTH),
@@ -74,10 +79,12 @@ pub(super) struct ProjectPickerEntry {
     pub finished: bool,
 }
 
-/// A keyboard-reachable target, in drawn order: no project, each project and
-/// its remove button, then new project.
+/// A keyboard-reachable target, in drawn order: all projects (the sidebar
+/// filter only), no project, each project and its remove button, then new
+/// project.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectPickerAction {
+    AllProjects,
     Select(Uuid),
     Remove(Uuid),
     NewProject,
@@ -85,7 +92,7 @@ enum ProjectPickerAction {
 }
 
 impl Raku {
-    /// The primary shortcut + P opens the sidebar's project selector,
+    /// The primary shortcut + P opens the sidebar's project filter,
     /// revealing a hidden sidebar first so the picker has a trigger to drop
     /// from.
     pub(super) fn toggle_project_picker_action(
@@ -196,8 +203,22 @@ impl Raku {
         E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
     {
         let theme = Theme::current(cx);
-        let selected_project = self.state.selected_project;
-        let projectless_selected = self.selected_project().is_some_and(Project::is_projectless);
+        // The sidebar's picker filters the history; the others choose the
+        // active project.
+        let filter = site == ProjectPickerSite::Sidebar;
+        let (selected_project, projectless_selected) = if filter {
+            match self.sidebar_project_filter {
+                Some(SidebarProjectFilter::Project(id)) => (Some(id), false),
+                Some(SidebarProjectFilter::NoProject) => (None, true),
+                None => (None, false),
+            }
+        } else {
+            (
+                self.state.selected_project,
+                self.selected_project().is_some_and(Project::is_projectless),
+            )
+        };
+        let all_selected = filter && self.sidebar_project_filter.is_none();
         // Projectless workspaces never appear as rows; their finished turns
         // surface on the pinned "No project" action instead. The dot is
         // independent of the ongoing-status icon: another task still running
@@ -209,7 +230,8 @@ impl Raku {
         // "No project" is a fixed action, not a match candidate, so it steps
         // aside while a query narrows the project list.
         let show_no_project = self.project_search.read(cx).content().trim().is_empty();
-        let leading = usize::from(show_no_project);
+        let show_all_projects = filter && show_no_project;
+        let leading = usize::from(show_no_project) + usize::from(show_all_projects);
         let projectless_status = if handle.is_open() {
             projectless_picker_status(&self.state.projects, &self.state.sessions)
         } else {
@@ -231,9 +253,10 @@ impl Raku {
             self.sync_project_picker_rows(&projects);
         }
         let actions = Rc::new(
-            show_no_project
-                .then_some(ProjectPickerAction::NoProject)
+            show_all_projects
+                .then_some(ProjectPickerAction::AllProjects)
                 .into_iter()
+                .chain(show_no_project.then_some(ProjectPickerAction::NoProject))
                 .chain(projects.iter().flat_map(|entry| {
                     [
                         ProjectPickerAction::Select(entry.id),
@@ -569,6 +592,16 @@ impl Raku {
                                     .child(div().flex_1().min_w_0().child(search.clone())),
                             ),
                     )
+                    .when(show_all_projects, |element| {
+                        element.child(pinned_row(
+                            ProjectPickerAction::AllProjects,
+                            "project-picker-all",
+                            tr!("sidebar.all_projects"),
+                            all_selected,
+                            false,
+                            None,
+                        ))
+                    })
                     .when(show_no_project, |element| {
                         element
                             .child(pinned_row(
@@ -642,6 +675,24 @@ impl Raku {
         // its draft to the new project. From an existing conversation it
         // starts a task in the new project, leaving that conversation's draft
         // in place.
+        // Filtering the sidebar to a project also makes it the composer's
+        // project; "All projects" only widens the history.
+        if site == ProjectPickerSite::Sidebar {
+            let filter = match action {
+                ProjectPickerAction::AllProjects => Some(None),
+                ProjectPickerAction::Select(project_id) => {
+                    Some(Some(SidebarProjectFilter::Project(project_id)))
+                }
+                ProjectPickerAction::NoProject => Some(Some(SidebarProjectFilter::NoProject)),
+                ProjectPickerAction::NewProject | ProjectPickerAction::Remove(_) => None,
+            };
+            if let Some(filter) = filter
+                && self.sidebar_project_filter != filter
+            {
+                self.sidebar_project_filter = filter;
+                cx.notify();
+            }
+        }
         let carry_draft = matches!(
             site,
             ProjectPickerSite::Sidebar | ProjectPickerSite::Composer
@@ -649,6 +700,7 @@ impl Raku {
             .selected_session()
             .is_some_and(|session| !session.has_started() && !session.is_busy());
         match action {
+            ProjectPickerAction::AllProjects => {}
             ProjectPickerAction::Select(project_id) => {
                 if self.state.selected_project == Some(project_id) {
                     return;
@@ -687,6 +739,9 @@ impl Raku {
             return;
         }
         self.finished_project_ids.remove(&project_id);
+        if self.sidebar_project_filter == Some(SidebarProjectFilter::Project(project_id)) {
+            self.sidebar_project_filter = None;
+        }
         self.finished_session_ids.retain(|id| {
             self.state
                 .sessions
@@ -715,7 +770,8 @@ fn remove_project_picker_row(project_id: Uuid, rows: &mut Vec<Uuid>, list: &List
 
 /// Arrows keep the existing row navigation. Tab visits the inline remove
 /// controls too, with the search field retaining focus for filtering.
-/// `leading` is 1 while the pinned "No project" action heads the list, else 0.
+/// `leading` counts the pinned actions ("All projects", "No project") heading
+/// the list.
 fn next_project_picker_highlight(
     current: Option<usize>,
     leading: usize,

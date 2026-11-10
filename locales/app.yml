@@ -362,8 +362,10 @@ sidebar.pinned:
   en: Pinned
 sidebar.new_task:
   en: New task (%{shortcut})
-sidebar.switch_project:
-  en: Switch project (%{shortcut})
+sidebar.filter_project:
+  en: Filter by project (%{shortcut})
+sidebar.all_projects:
+  en: All projects
 sidebar.search_tasks:
   en: Search tasks (%{shortcut})
 sidebar.options:

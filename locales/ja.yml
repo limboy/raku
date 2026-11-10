@@ -186,7 +186,8 @@ session.new_task: 新規タスク
 sidebar.today: 今日
 sidebar.pinned: ピン留め
 sidebar.new_task: 新規タスク（%{shortcut}）
-sidebar.switch_project: プロジェクトを切り替える（%{shortcut}）
+sidebar.filter_project: プロジェクトで絞り込む（%{shortcut}）
+sidebar.all_projects: すべてのプロジェクト
 sidebar.search_tasks: タスクを検索（%{shortcut}）
 sidebar.options: サイドバーオプション
 sidebar.grouping: グループ化

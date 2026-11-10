@@ -175,7 +175,8 @@ session.new_task: 新任务
 sidebar.today: 今天
 sidebar.pinned: 已置顶
 sidebar.new_task: 新建任务（%{shortcut}）
-sidebar.switch_project: 切换项目（%{shortcut}）
+sidebar.filter_project: 按项目筛选（%{shortcut}）
+sidebar.all_projects: 所有项目
 sidebar.search_tasks: 搜索任务（%{shortcut}）
 sidebar.options: 侧边栏选项
 sidebar.grouping: 分组

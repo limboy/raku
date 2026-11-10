@@ -69,7 +69,6 @@ const SIDEBAR_SESSION_SHORTCUT_SIZE: f32 = 18.0;
 const SIDEBAR_SESSION_SHORTCUT_GAP: f32 = 6.0;
 const SIDEBAR_SESSION_ROW_GAP: f32 = 1.0;
 const SIDEBAR_SESSION_ROW_HEIGHT: f32 = SIDEBAR_SESSION_CARD_HEIGHT + SIDEBAR_SESSION_ROW_GAP;
-const SIDEBAR_PROJECT_SELECTOR_HEIGHT: f32 = 36.0;
 const TITLEBAR_BUTTON_SIZE: f32 = 26.0;
 const TITLEBAR_NAVIGATION_GAP: f32 = 6.0;
 
@@ -161,30 +160,36 @@ fn sort_sidebar_sessions(sessions: &mut Vec<&AgentSession>, ordering: SidebarOrd
     }
 }
 
-/// Resolve the selected project's session set once per snapshot. Projectless
-/// tasks have separate workspaces but share one "No project" history.
+/// What the sidebar history shows. `None` everywhere means every task, with
+/// and without a project; the filter is independent of the active project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SidebarProjectFilter {
+    Project(Uuid),
+    /// Projectless tasks have separate workspaces but share one history.
+    NoProject,
+}
+
+/// Resolve the filtered session set once per snapshot.
 fn selected_sidebar_sessions<'a>(
     sessions: &'a [AgentSession],
     projects: &[Project],
-    selected_project: Option<Uuid>,
+    removed_project_ids: &HashSet<Uuid>,
+    filter: Option<SidebarProjectFilter>,
     projectless_root: Option<&Path>,
     ordering: SidebarOrdering,
 ) -> Vec<&'a AgentSession> {
-    let Some(selected) = projects
+    let project_ids = projects
         .iter()
-        .find(|project| Some(project.id) == selected_project)
-    else {
-        return Vec::new();
-    };
-    let project_ids = if sidebar_project_is_projectless(selected, projectless_root) {
-        projects
-            .iter()
-            .filter(|project| sidebar_project_is_projectless(project, projectless_root))
-            .map(|project| project.id)
-            .collect::<HashSet<_>>()
-    } else {
-        HashSet::from([selected.id])
-    };
+        .filter(|project| {
+            let projectless = sidebar_project_is_projectless(project, projectless_root);
+            match filter {
+                None => projectless || !removed_project_ids.contains(&project.id),
+                Some(SidebarProjectFilter::Project(id)) => project.id == id && !projectless,
+                Some(SidebarProjectFilter::NoProject) => projectless,
+            }
+        })
+        .map(|project| project.id)
+        .collect::<HashSet<_>>();
     let mut sessions = sessions
         .iter()
         .filter(|session| session.is_listed_task() && project_ids.contains(&session.project_id))
@@ -666,70 +671,55 @@ impl Raku {
         )
     }
 
-    fn render_sidebar_project_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The history's heading: every task, one project's, or the shared
+    /// "No project" history.
+    fn sidebar_filter_title(&self) -> String {
+        match self.sidebar_project_filter {
+            None => tr!("sidebar.all_projects"),
+            Some(SidebarProjectFilter::NoProject) => tr!("project.no_project_name"),
+            Some(SidebarProjectFilter::Project(project_id)) => self
+                .state
+                .projects
+                .iter()
+                .find(|project| project.id == project_id)
+                .map(Project::display_name)
+                .unwrap_or_else(|| tr!("sidebar.unknown_project")),
+        }
+    }
+
+    fn render_sidebar_project_filter(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
-        let projectless = self.selected_project().is_some_and(Project::is_projectless);
+        let filtered = self.sidebar_project_filter.is_some();
         let handle = self.project_picker_handle(ProjectPickerSite::Sidebar, cx);
+        let open = handle.is_open();
         let trigger = div()
             .id("sidebar-project")
-            .flex_1()
-            .min_w_0()
-            .h(px(SIDEBAR_PROJECT_SELECTOR_HEIGHT))
-            // The border takes 1px of the inset.
-            .px(px(8.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.overlay)
+            .size(px(TITLEBAR_BUTTON_SIZE))
+            .flex_none()
+            .rounded(px(6.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .justify_center()
             .cursor_default()
-            .focus_visible(|style| style.border_color(theme.accent))
-            .when(handle.is_open(), |element| element.bg(theme.overlay_strong))
-            .when(!handle.is_open(), |element| {
+            .focus_visible(|style| style.border_1().border_color(theme.accent))
+            .when(filtered || open, |element| element.bg(theme.overlay_strong))
+            .when(!open, |element| {
                 element.tooltip(Tooltip::text(tr!(
-                    "sidebar.switch_project",
+                    "sidebar.filter_project",
                     shortcut = crate::platform::primary_shortcut("⌘P", "Ctrl+P")
                 )))
             })
             .hover(|element| element.bg(theme.overlay_strong))
             .active(|element| element.bg(theme.overlay_strong))
-            .child(
-                div()
-                    .size(px(20.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon(
-                        if projectless {
-                            "icons/folder-dashed.svg"
-                        } else {
-                            "icons/folder.svg"
-                        },
-                        16.0,
-                        theme.text,
-                    )),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(sp(13.0))
-                    .text_color(theme.text)
-                    .child(self.project_picker_label()),
-            )
-            .child(
-                div()
-                    .size(px(20.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("icons/chevrons-up-down.svg", 12.0, theme.text_ghost)),
-            );
+            .child(icon(
+                "icons/filter.svg",
+                16.0,
+                if filtered {
+                    theme.text
+                } else {
+                    theme.text_secondary
+                },
+            ));
         self.render_project_picker(trigger, &handle, ProjectPickerSite::Sidebar, cx)
     }
 
@@ -779,7 +769,7 @@ impl Raku {
         let theme = Theme::current(cx);
         // The New task button always fits beside the fixed window navigation
         // at the minimum width. A narrow sidebar leaves no room for the update
-        // button too, so it moves beside the project selector instead.
+        // button too, so it moves beside the project filter instead.
         let update_in_titlebar = width
             >= self.window_navigation_width(window, cx)
                 + TITLEBAR_BUTTON_SIZE * 2.0
@@ -854,7 +844,19 @@ impl Raku {
                     .tab_index(0)
                     .tab_group()
                     .tab_stop(false)
-                    .child(self.render_sidebar_project_selector(cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .pl(px(8.0))
+                            .truncate()
+                            .text_size(sp(13.0))
+                            .line_height(sp(16.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .child(self.sidebar_filter_title()),
+                    )
+                    .child(self.render_sidebar_project_filter(cx))
                     .when(!update_in_titlebar, |row| {
                         row.children(self.render_sidebar_update(cx))
                     }),
@@ -917,9 +919,13 @@ impl Raku {
     fn sidebar_rows_cached(&self) -> Rc<Vec<SidebarRow>> {
         let mut fingerprint = mix(
             0x51de_ba5e_5eed_c0de,
-            u64::from(self.state.selected_project.is_some()),
+            match self.sidebar_project_filter {
+                None => 0,
+                Some(SidebarProjectFilter::Project(_)) => 1,
+                Some(SidebarProjectFilter::NoProject) => 2,
+            },
         );
-        if let Some(project_id) = self.state.selected_project {
+        if let Some(SidebarProjectFilter::Project(project_id)) = self.sidebar_project_filter {
             fingerprint = mix_uuid(fingerprint, project_id);
         }
         fingerprint = mix(
@@ -949,6 +955,10 @@ impl Raku {
         }
         for project in &self.state.projects {
             fingerprint = mix_uuid(fingerprint, project.id);
+            fingerprint = mix(
+                fingerprint,
+                u64::from(self.state.removed_project_ids.contains(&project.id)),
+            );
         }
         if self.sidebar_rows_fingerprint.get() != Some(fingerprint) {
             *self.sidebar_rows_snapshot.borrow_mut() = Rc::new(self.sidebar_rows());
@@ -962,7 +972,8 @@ impl Raku {
         let sessions = selected_sidebar_sessions(
             &self.state.sessions,
             &self.state.projects,
-            self.state.selected_project,
+            &self.state.removed_project_ids,
+            self.sidebar_project_filter,
             projectless_root.as_deref(),
             self.state.sidebar_ordering,
         );
@@ -980,11 +991,9 @@ impl Raku {
     fn sync_sidebar_rows(&self, rows: &[SidebarRow]) {
         let project_changed = self
             .sidebar_row_project
-            .replace(self.state.selected_project)
-            != self.state.selected_project;
+            .replace(self.sidebar_project_filter)
+            != self.sidebar_project_filter;
         let mut cached = self.sidebar_row_cache.borrow_mut();
-        // Projectless tasks have distinct workspace project IDs but share
-        // one history. Switching between them must not reset its scroll.
         if cached.as_slice() == rows {
             return;
         }
@@ -1051,7 +1060,7 @@ impl Raku {
                     .items_center()
                     .text_size(sp(11.5))
                     .line_height(sp(16.0))
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text_tertiary)
                     .child(label)
                     .into_any_element()
@@ -2091,7 +2100,8 @@ mod tests {
             let history = selected_sidebar_sessions(
                 &sessions,
                 &projects,
-                Some(projects[0].id),
+                &HashSet::new(),
+                Some(SidebarProjectFilter::Project(projects[0].id)),
                 None,
                 ordering,
             );
@@ -2121,7 +2131,8 @@ mod tests {
         let history = selected_sidebar_sessions(
             &sessions,
             &projects,
-            Some(projects[0].id),
+            &HashSet::new(),
+            Some(SidebarProjectFilter::Project(projects[0].id)),
             None,
             SidebarOrdering::Newest,
         );
@@ -2282,12 +2293,14 @@ mod tests {
             started(projects[0].id, 20),
             AgentSession::new(projects[0].id, ProviderKind::Codex),
         ];
-        let history = |selected, ordering| {
-            selected_sidebar_sessions(&sessions, &projects, selected, None, ordering)
+        let history_without = |removed: &HashSet<Uuid>, selected: Option<Uuid>, ordering| {
+            let selected = selected.map(SidebarProjectFilter::Project);
+            selected_sidebar_sessions(&sessions, &projects, removed, selected, None, ordering)
                 .iter()
                 .map(|session| session.id)
                 .collect::<Vec<_>>()
         };
+        let history = |selected, ordering| history_without(&HashSet::new(), selected, ordering);
 
         assert_eq!(
             history(Some(projects[0].id), SidebarOrdering::Newest),
@@ -2302,8 +2315,20 @@ mod tests {
             vec![sessions[0].id, sessions[2].id]
         );
         assert!(history(Some(projects[2].id), SidebarOrdering::Newest).is_empty());
-        assert!(history(None, SidebarOrdering::Newest).is_empty());
         assert!(history(Some(Uuid::new_v4()), SidebarOrdering::Newest).is_empty());
+        // No filter shows every project's tasks, minus removed projects.
+        assert_eq!(
+            history(None, SidebarOrdering::Newest),
+            vec![sessions[1].id, sessions[2].id, sessions[0].id]
+        );
+        assert_eq!(
+            history_without(
+                &HashSet::from([projects[1].id]),
+                None,
+                SidebarOrdering::Newest
+            ),
+            vec![sessions[2].id, sessions[0].id]
+        );
     }
 
     #[test]
@@ -2324,19 +2349,27 @@ mod tests {
                 session
             })
             .collect::<Vec<_>>();
-        for selected in &projects[1..] {
-            let history = selected_sidebar_sessions(
+        let history = |filter| {
+            selected_sidebar_sessions(
                 &sessions,
                 &projects,
-                Some(selected.id),
+                &HashSet::new(),
+                filter,
                 Some(root),
                 SidebarOrdering::Newest,
-            );
-            assert_eq!(
-                history.iter().map(|session| session.id).collect::<Vec<_>>(),
-                vec![sessions[2].id, sessions[1].id]
-            );
-        }
+            )
+            .iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            history(Some(SidebarProjectFilter::NoProject)),
+            vec![sessions[2].id, sessions[1].id]
+        );
+        assert_eq!(
+            history(None),
+            vec![sessions[2].id, sessions[1].id, sessions[0].id]
+        );
     }
 
     #[test]
