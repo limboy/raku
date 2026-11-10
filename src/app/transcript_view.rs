@@ -9,6 +9,9 @@ const CHANGED_FILES_EXPANDED_LIMIT: usize = 12;
 /// An expanded edit stays one transcript row tall; past this the diff scrolls
 /// in place, the same as long command output.
 const ACTIVITY_DIFF_MAX_HEIGHT: f32 = 400.0;
+/// Width of the label column in a tool call's input fields: room for a
+/// two-word argument name before it truncates.
+const ACTIVITY_FIELD_LABEL_WIDTH: f32 = 120.0;
 /// Aligns a hunk separator with the line numbers in the rows below it; see
 /// `DiffRowStyle::ACTIVITY`.
 const ACTIVITY_DIFF_GUTTER_WIDTH: f32 = 52.0;
@@ -896,6 +899,8 @@ impl Raku {
                 // edit the session ever made.
                 this.activity_diffs.borrow_mut().remove(&id);
                 this.activity_diff_viewports.borrow_mut().remove(&id);
+                this.activity_reads.borrow_mut().remove(&id);
+                this.activity_inputs.borrow_mut().remove(&id);
             }
         });
     }
@@ -957,6 +962,44 @@ impl Raku {
             .borrow_mut()
             .insert(activity.id, diff.clone());
         diff
+    }
+
+    /// Numbered code for an expanded read activity, built on first sight and
+    /// held until the activity collapses or its output is replaced.
+    fn activity_read_preview(
+        &self,
+        activity: &ActivityItem,
+    ) -> Option<Rc<activity_read::ReadPreview>> {
+        let source_len = activity.output.as_deref()?.len();
+        if let Some(preview) = self.activity_reads.borrow().get(&activity.id)
+            && preview.source_len == source_len
+        {
+            return Some(preview.clone());
+        }
+        let preview = Rc::new(activity_read::build(
+            activity,
+            self.selected_workspace_path(),
+        )?);
+        self.activity_reads
+            .borrow_mut()
+            .insert(activity.id, preview.clone());
+        Some(preview)
+    }
+
+    /// Labeled fields for an expanded activity's arguments, parsed on first
+    /// sight and held until the activity collapses or its arguments change.
+    fn activity_input(&self, activity: &ActivityItem) -> Option<Rc<activity_input::Input>> {
+        let arguments = activity.arguments.as_deref()?.trim();
+        if let Some(input) = self.activity_inputs.borrow().get(&activity.id)
+            && input.source_len == arguments.len()
+        {
+            return Some(input.clone());
+        }
+        let input = Rc::new(activity_input::build(arguments)?);
+        self.activity_inputs
+            .borrow_mut()
+            .insert(activity.id, input.clone());
+        Some(input)
     }
 
     pub(super) fn toggle_turn_fold(
@@ -2544,7 +2587,18 @@ impl Raku {
             });
             let reasoning = activity.reasoning.as_ref();
             let reasoning_live = live_reasoning_id == Some(id);
-            let sections = if reasoning.is_some() {
+            // A read renders as the file it returned, so its raw arguments and
+            // numbered output are never shown. Skipping the section build also
+            // keeps a frame from cloning that output for nothing.
+            let read_preview_available = reasoning.is_none()
+                && activity.kind == ActivityKind::FileRead
+                && !activity.failed
+                && activity.image_urls.is_empty()
+                && activity
+                    .output
+                    .as_deref()
+                    .is_some_and(|output| !output.trim().is_empty());
+            let sections = if reasoning.is_some() || read_preview_available {
                 Vec::new()
             } else {
                 activity_disclosure_sections(activity)
@@ -2562,16 +2616,27 @@ impl Raku {
             }
             let has_row_detail = !row_detail.is_empty();
             let row_detail = SharedString::from(row_detail);
+            let row_text = row_detail.clone();
             let monospace_detail = match activity.kind {
                 ActivityKind::Command => {
                     activity.display_description.is_none() && activity.display_target.is_some()
                 }
-                ActivityKind::FileChange => activity.file_changes.len() == 1,
-                ActivityKind::FileRead | ActivityKind::FileList | ActivityKind::FileSearch => {
+                ActivityKind::FileList | ActivityKind::FileSearch => {
                     activity.display_target.is_some()
                 }
                 _ => false,
             };
+            // A read is named by the slice it returned, the way an editor's
+            // status line names it, and reads as prose rather than as a path
+            // pasted from a shell.
+            let read_row = activity.kind == ActivityKind::FileRead;
+            // Reads and edits name a file, so they read as a sentence — verb,
+            // file, what it covered — with the disclosure right behind it.
+            let packed_row = read_row || activity.kind == ActivityKind::FileChange;
+            let read_range = read_row
+                .then_some(activity.read_range)
+                .flatten()
+                .map(|range| range.label());
             let file_change_stats = activity_file_change_stats(activity);
             // One changed file is unambiguous, so the row itself can offer to
             // open it. A change touching several names each file in the diff
@@ -2590,6 +2655,7 @@ impl Raku {
             let shows_diff = reasoning.is_none() && activity_shows_diff(activity);
             let has_detail = reasoning
                 .is_some_and(|reasoning| !reasoning.content.trim().is_empty())
+                || read_preview_available
                 || !sections.is_empty()
                 || shows_diff
                 || !activity.image_urls.is_empty();
@@ -2621,15 +2687,17 @@ impl Raku {
                             .hover(|element| element.bg(activity_hover_surface))
                             .active(|element| element.bg(activity_active_surface))
                     })
-                    .child(icon(
-                        activity_icon(activity.kind),
-                        12.0,
-                        theme.text_tertiary,
-                    ))
+                    .when(!packed_row, |row| {
+                        row.child(icon(
+                            activity_icon(activity.kind),
+                            12.0,
+                            theme.text_tertiary,
+                        ))
+                    })
                     .child(
                         div()
                             .flex_none()
-                            .min_w(sp(44.0))
+                            .when(!packed_row, |label| label.min_w(sp(44.0)))
                             .text_color(theme.text_secondary)
                             .child(SharedString::from(action_label)),
                     )
@@ -2637,10 +2705,11 @@ impl Raku {
                         element.child(
                             div()
                                 .id(SharedString::from(format!("activity-target-{id}")))
-                                .flex_1()
                                 .min_w_0()
                                 .truncate()
                                 .text_color(theme.text)
+                                .when(packed_row, |detail| detail.flex_grow_0().flex_shrink_1())
+                                .when(!packed_row, |detail| detail.flex_1())
                                 .when(monospace_detail, |detail| {
                                     detail.font_family(md::render::MONO_FAMILY)
                                 })
@@ -2649,26 +2718,46 @@ impl Raku {
                         )
                     })
                     .when(!has_row_detail, |row| row.child(div().flex_1()))
+                    .children(read_range.map(|range| {
+                        div()
+                            .flex_none()
+                            .text_color(theme.text_tertiary)
+                            .child(SharedString::from(range))
+                    }))
+                    .when_some(file_change_stats, |row, (additions, deletions)| {
+                        // A new file has nothing removed; `-0` would only be
+                        // noise beside its count.
+                        row.when(additions > 0 || deletions == 0, |row| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.success)
+                                    .child(SharedString::from(format!("+{additions}"))),
+                            )
+                        })
+                        .when(deletions > 0, |row| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.danger)
+                                    .child(SharedString::from(format!("-{deletions}"))),
+                            )
+                        })
+                    })
+                    .when(has_detail && packed_row, |row| {
+                        row.child(activity_chevron(item_expanded, theme))
+                    })
+                    // Packed rows keep their text at the start, so a spacer
+                    // keeps any trailing status at the end of the row.
+                    .when(packed_row && has_row_detail, |row| {
+                        row.child(div().flex_1())
+                    })
                     .when_some(reasoning_duration, |row, duration| {
                         row.child(
                             div()
                                 .flex_none()
                                 .text_color(theme.text_tertiary)
                                 .child(SharedString::from(duration)),
-                        )
-                    })
-                    .when_some(file_change_stats, |row, (additions, deletions)| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .text_color(theme.success)
-                                .child(SharedString::from(format!("+{additions}"))),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_color(theme.danger)
-                                .child(SharedString::from(format!("-{deletions}"))),
                         )
                     })
                     .when(activity.failed, |row| {
@@ -2701,16 +2790,8 @@ impl Raku {
                     )
                     .children(background_badge)
                     .children(open_file_button)
-                    .when(has_detail, |element| {
-                        element.child(icon(
-                            if item_expanded {
-                                "icons/chevron-down.svg"
-                            } else {
-                                "icons/chevron-right.svg"
-                            },
-                            10.0,
-                            theme.text_tertiary,
-                        ))
+                    .when(has_detail && !packed_row, |element| {
+                        element.child(activity_chevron(item_expanded, theme))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if has_detail {
@@ -2739,7 +2820,7 @@ impl Raku {
                 .mb(px(4.0))
                 .p(px(4.0))
                 .overflow_hidden()
-                .rounded(px(6.0))
+                .rounded(px(10.0))
                 .border_1()
                 .border_color(theme.border)
                 .flex()
@@ -2846,16 +2927,35 @@ impl Raku {
             if shows_diff {
                 let diff = self.activity_diff_rows(activity);
                 if !diff.is_empty() {
+                    // One file is named above its code, the way a read is;
+                    // several name themselves in headers inside the diff.
+                    let path = match activity.file_changes.as_slice() {
+                        [change] => Some(activity_read::display_path(
+                            &change.path,
+                            self.selected_workspace_path(),
+                        )),
+                        _ => None,
+                    };
                     detail = detail.child(self.render_activity_diff(
                         id,
                         &diff,
+                        path,
                         theme.surface,
                         theme,
                         cx,
                     ));
                 }
             }
-            if reasoning.is_none() && (!sections.is_empty() || !activity.image_urls.is_empty()) {
+            if read_preview_available && let Some(preview) = self.activity_read_preview(activity) {
+                detail = detail.child(self.render_activity_read_preview(
+                    id,
+                    &preview,
+                    surface.viewports,
+                    theme,
+                ));
+            } else if reasoning.is_none()
+                && (!sections.is_empty() || !activity.image_urls.is_empty())
+            {
                 let palette = MarkdownPalette::from_theme(theme);
                 let ctx = self.markdown_ctx(
                     format!("activity-{id}"),
@@ -2864,24 +2964,70 @@ impl Raku {
                     false,
                 );
                 let (mono_size, mono_line) = self.activity_mono_text();
+                let command = activity.kind == ActivityKind::Command;
+                // A command reads as a terminal, so its whole card is mono. A
+                // tool call reads as a form — labels in the interface's own
+                // type, the values and output it carried in code type.
                 let mut detail_card = div()
                     .w_full()
                     .min_w_0()
                     .when(shows_diff, |card| {
                         card.border_t_1().border_color(theme.border)
                     })
-                    .px(px(8.0))
-                    .py(px(8.0))
+                    .when(command, |card| {
+                        card.px(px(8.0))
+                            .py(px(8.0))
+                            .gap(px(8.0))
+                            .font_family(md::render::MONO_FAMILY)
+                            .text_size(px(mono_size))
+                            .line_height(px(mono_line))
+                    })
+                    .when(!command, |card| {
+                        card.px(px(10.0))
+                            .py(px(10.0))
+                            .gap(px(10.0))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
+                            .line_height(sp(18.0))
+                    })
                     .flex()
                     .flex_col()
-                    .gap(px(8.0))
-                    .font_family(md::render::MONO_FAMILY)
-                    .text_size(px(mono_size))
-                    .line_height(px(mono_line))
                     .text_color(theme.text_secondary)
                     .whitespace_normal()
                     .overflow_hidden();
-                let command = activity.kind == ActivityKind::Command;
+                let mono_value = |content: SharedString| {
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .font_family(md::render::MONO_FAMILY)
+                        .text_size(px(mono_size))
+                        .line_height(px(mono_line))
+                        .child(md::render::plain_text(
+                            content,
+                            md::render::MONO_FAMILY,
+                            FontWeight::NORMAL,
+                            theme.text_secondary,
+                            &ctx,
+                        ))
+                };
+                let field_row = |label: SharedString, value: AnyElement| {
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .min_h(px(mono_line.max(18.0)))
+                        .flex()
+                        .items_start()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .w(px(ACTIVITY_FIELD_LABEL_WIDTH))
+                                .flex_none()
+                                .truncate()
+                                .text_color(theme.text_tertiary)
+                                .child(label),
+                        )
+                        .child(value)
+                };
+                let mut shown_sections = 0usize;
                 for section in sections {
                     let section_kind = section.kind;
                     let content = section.content;
@@ -2890,33 +3036,39 @@ impl Raku {
                         ActivityDisclosureSectionKind::McpServer
                             | ActivityDisclosureSectionKind::ToolName
                     ) {
-                        // A command card leads with the shell line itself and
-                        // the row above already says what ran, so the tool's
-                        // name is the one thing it would only repeat.
-                        if command {
+                        // The row already names the tool unless the provider
+                        // gave the call a title of its own; repeating it
+                        // here would only push the input down.
+                        if activity.kind != ActivityKind::Tool
+                            || row_text.contains(content.as_str())
+                        {
                             continue;
                         }
-                        detail_card = detail_card.child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .flex()
-                                .items_start()
-                                .gap(px(8.0))
-                                .child(div().flex_none().text_color(theme.text_tertiary).child(
-                                    format!("{}:", section_kind.label().unwrap_or_default()),
-                                ))
-                                .child(div().flex_1().min_w_0().child(md::render::plain_text(
-                                    content,
-                                    md::render::MONO_FAMILY,
-                                    FontWeight::NORMAL,
-                                    theme.text_secondary,
-                                    &ctx,
-                                ))),
-                        );
+                        let label = SharedString::from(section_kind.label().unwrap_or_default());
+                        detail_card = detail_card.child(field_row(
+                            label,
+                            mono_value(content.into()).into_any_element(),
+                        ));
+                        shown_sections += 1;
                         continue;
                     }
-                    let mut section_view = div().w_full().min_w_0().flex().flex_col().gap(px(3.0));
+                    let input = (section_kind == ActivityDisclosureSectionKind::Arguments)
+                        .then(|| self.activity_input(activity))
+                        .flatten();
+                    let output_frame =
+                        !command && section_kind == ActivityDisclosureSectionKind::Output;
+                    let mut section_view = div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(if command { 3.0 } else { 6.0 }))
+                        // Input and output are two halves of one call; a rule
+                        // keeps the answer from reading as another argument.
+                        .when(output_frame && shown_sections > 0, |section| {
+                            section.pt(px(10.0)).border_t_1().border_color(theme.border)
+                        });
+                    shown_sections += 1;
                     if !command && let Some(label) = section_kind.label() {
                         let copy_content = content.clone();
                         let copied = self
@@ -2942,7 +3094,11 @@ impl Raku {
                                 .justify_between()
                                 .child(
                                     div()
-                                        .font_weight(FontWeight::MEDIUM)
+                                        .font_weight(if command {
+                                            FontWeight::MEDIUM
+                                        } else {
+                                            FontWeight::NORMAL
+                                        })
                                         .text_color(theme.text_secondary)
                                         .child(label),
                                 )
@@ -3060,20 +3216,35 @@ impl Raku {
                                     )))
                                     .child(copy),
                             );
-                        } else if command && section_kind == ActivityDisclosureSectionKind::Output {
+                        } else if let Some(input) = input {
+                            for field in &input.fields {
+                                section_view = section_view.child(field_row(
+                                    field.label.clone(),
+                                    mono_value(field.value.clone()).into_any_element(),
+                                ));
+                            }
+                        } else if section_kind == ActivityDisclosureSectionKind::Output {
                             let group = SharedString::from(format!("activity-output-{id}"));
-                            let copy = self.render_activity_section_copy(
-                                id,
-                                section_kind,
-                                content.clone(),
-                                group.clone(),
-                                theme.surface,
-                                4.0,
-                                12.0,
-                                theme,
-                                window,
-                                cx,
-                            );
+                            // A tool's output is framed like the code it
+                            // usually is, and its header already offers copy.
+                            let copy = command.then(|| {
+                                self.render_activity_section_copy(
+                                    id,
+                                    section_kind,
+                                    content.clone(),
+                                    group.clone(),
+                                    theme.surface,
+                                    4.0,
+                                    12.0,
+                                    theme,
+                                    window,
+                                    cx,
+                                )
+                            });
+                            let trimmed = content.trim_start();
+                            let output_lang = (!command
+                                && (trimmed.starts_with('{') || trimmed.starts_with('[')))
+                            .then_some(md::highlight::Lang::Json);
                             let output_viewport = surface
                                 .viewports
                                 .borrow_mut()
@@ -3089,6 +3260,9 @@ impl Raku {
                                     .relative()
                                     .group(group)
                                     .max_h(px(400.0))
+                                    .when(!command, |frame| {
+                                        frame.rounded(px(8.0)).border_1().border_color(theme.border)
+                                    })
                                     .overflow_hidden()
                                     .child(
                                         div()
@@ -3100,10 +3274,18 @@ impl Raku {
                                             .max_h(px(400.0))
                                             .overflow_y_scroll()
                                             .track_scroll(&output_viewport.scroll_handle)
-                                            .py(px(4.0))
-                                            .pr(px(8.0))
-                                            .child(md::render::plain_text(
+                                            .when(command, |output| output.py(px(4.0)).pr(px(8.0)))
+                                            .when(!command, |output| {
+                                                output
+                                                    .px(px(12.0))
+                                                    .py(px(8.0))
+                                                    .font_family(md::render::MONO_FAMILY)
+                                                    .text_size(px(mono_size))
+                                                    .line_height(px(mono_line))
+                                            })
+                                            .child(md::render::tinted_text(
                                                 content,
+                                                output_lang,
                                                 md::render::MONO_FAMILY,
                                                 FontWeight::NORMAL,
                                                 theme.text_secondary,
@@ -3137,18 +3319,16 @@ impl Raku {
                                         output_viewport,
                                         !activity.complete,
                                     ))
-                                    .child(copy),
+                                    .children(copy),
                             );
                         } else {
-                            section_view = section_view.child(div().w_full().min_w_0().child(
-                                md::render::plain_text(
-                                    content.clone(),
-                                    md::render::MONO_FAMILY,
-                                    FontWeight::NORMAL,
-                                    theme.text_secondary,
-                                    &ctx,
-                                ),
-                            ));
+                            section_view = section_view.child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .flex()
+                                    .child(mono_value(content.clone().into())),
+                            );
                         }
                     }
                     detail_card = detail_card.child(section_view);
@@ -3175,6 +3355,139 @@ impl Raku {
         cluster.child(items).into_any_element()
     }
 
+    /// The code a read returned, drawn as the file it came from: the path it
+    /// names, then numbered, highlighted lines in one capped viewport so a
+    /// long file stays one transcript row tall.
+    fn render_activity_read_preview(
+        &self,
+        id: Uuid,
+        preview: &activity_read::ReadPreview,
+        viewports: &RefCell<HashMap<Uuid, ActivityScrollViewport>>,
+        theme: &Theme,
+    ) -> AnyElement {
+        let viewport = viewports.borrow_mut().entry(id).or_default().clone();
+        let wheel_scroll = viewport.scroll_handle.clone();
+        let (mono_size, mono_line) = self.activity_mono_text();
+        // The gutter is sized to the widest number the file reaches, so it
+        // holds a 4-digit file as readily as a 2-digit one.
+        let digits = preview
+            .lines
+            .iter()
+            .map(|line| line.number)
+            .max()
+            .unwrap_or(0)
+            .to_string()
+            .len()
+            .max(2) as f32;
+        let gutter = (mono_size * 0.62 * digits + 24.0).round();
+        let palette = MarkdownPalette::from_theme(theme);
+        let code_font = font(md::render::MONO_FAMILY);
+        let mut rows = div()
+            .id(SharedString::from(format!("activity-read-scroll-{id}")))
+            .w_full()
+            .min_w_0()
+            .max_h(px(ACTIVITY_DIFF_MAX_HEIGHT))
+            .overflow_y_scroll()
+            .track_scroll(&viewport.scroll_handle)
+            .py(px(8.0))
+            .flex()
+            .flex_col()
+            .font_family(md::render::MONO_FAMILY)
+            .text_size(px(mono_size))
+            .line_height(px(mono_line))
+            .on_scroll_wheel(move |_, _, cx| contain_scroll(&wheel_scroll, cx));
+        for (index, line) in preview.lines.iter().enumerate() {
+            let flat = read_line_flat_text(line, theme, &palette, &code_font);
+            let selectable = md::render::selectable_flat_text(
+                &flat,
+                crate::md::selection::TextKey::new(format!("activity-read-{id}-{index}"), 0),
+                self.transcript_selection.clone(),
+                theme.code_wash,
+                theme.selection,
+                false,
+            );
+            rows = rows.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_none()
+                    .flex()
+                    .items_start()
+                    .child(
+                        div()
+                            .w(px(gutter))
+                            .flex_none()
+                            .pr(px(10.0))
+                            .text_right()
+                            .text_color(theme.text_ghost)
+                            .child(line.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .whitespace_normal()
+                            .text_color(theme.text_secondary)
+                            .child(selectable),
+                    ),
+            );
+        }
+        if preview.hidden_lines > 0 {
+            let note = if preview.hidden_lines == 1 {
+                tr!("diff.rows_hidden_one")
+            } else {
+                tr!("diff.rows_hidden", count = preview.hidden_lines)
+            };
+            rows = rows.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .px(px(12.0))
+                    .py(px(4.0))
+                    .text_color(theme.text_tertiary)
+                    .child(SharedString::from(note)),
+            );
+        }
+        let mut card = div()
+            .relative()
+            .w_full()
+            .min_w_0()
+            .px(px(10.0))
+            .py(px(10.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0));
+        if !preview.path.is_empty() {
+            card = card.child(activity_card_path(preview.path.clone(), theme));
+        }
+        card.child(
+            div()
+                .relative()
+                .w_full()
+                .min_w_0()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(theme.border)
+                .overflow_hidden()
+                .child(rows)
+                .child(scrollbar::edge_fade(
+                    viewport.scroll_handle.clone(),
+                    scrollbar::FadeEdge::Top,
+                    theme.surface,
+                ))
+                .child(scrollbar::edge_fade(
+                    viewport.scroll_handle.clone(),
+                    scrollbar::FadeEdge::Bottom,
+                    theme.surface,
+                ))
+                .child(scrollbar::vertical(
+                    &viewport.scroll_handle,
+                    &viewport.scrollbar,
+                )),
+        )
+        .into_any_element()
+    }
+
     /// The diff for an expanded file-change activity.
     ///
     /// Rows bleed to the card's edges so a changed line reads as a band, and
@@ -3184,6 +3497,7 @@ impl Raku {
         &self,
         id: Uuid,
         diff: &activity_diff::Diff,
+        path: Option<String>,
         surface: Hsla,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -3203,6 +3517,9 @@ impl Raku {
             .max_h(px(ACTIVITY_DIFF_MAX_HEIGHT))
             .overflow_y_scroll()
             .track_scroll(&viewport.scroll_handle)
+            // Bands stop short of the frame's rounded corners, which a
+            // rectangular clip would otherwise let them poke through.
+            .py(px(6.0))
             .flex()
             .flex_col()
             .font_family(md::render::MONO_FAMILY)
@@ -3235,11 +3552,14 @@ impl Raku {
                     .child(SharedString::from(note)),
             );
         }
-        div()
+        let frame = div()
             .w_full()
             .min_w_0()
             .relative()
             .max_h(px(ACTIVITY_DIFF_MAX_HEIGHT))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.border)
             .overflow_hidden()
             .child(rows)
             .child(scrollbar::edge_fade(
@@ -3255,7 +3575,19 @@ impl Raku {
             .child(scrollbar::vertical(
                 &viewport.scroll_handle,
                 &viewport.scrollbar,
-            ))
+            ));
+        div()
+            .w_full()
+            .min_w_0()
+            .px(px(10.0))
+            .py(px(10.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .when_some(path.filter(|path| !path.is_empty()), |card, path| {
+                card.child(activity_card_path(path, theme))
+            })
+            .child(frame)
             .into_any_element()
     }
 
@@ -3339,6 +3671,76 @@ impl Raku {
                 theme,
             ),
         }
+    }
+}
+
+/// The file a read or edit card is about, named above its code.
+fn activity_card_path(path: String, theme: &Theme) -> impl IntoElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .truncate()
+        .text_size(sp(SMALL_UI_FONT_SIZE))
+        .line_height(sp(16.0))
+        .text_color(theme.text)
+        .child(SharedString::from(path))
+}
+
+/// The expand affordance a row ends with. Reads place it right behind their
+/// text; every other row pins it to the end.
+fn activity_chevron(expanded: bool, theme: &Theme) -> impl IntoElement {
+    icon(
+        if expanded {
+            "icons/chevron-down.svg"
+        } else {
+            "icons/chevron-right.svg"
+        },
+        10.0,
+        theme.text_tertiary,
+    )
+}
+
+/// One numbered line of a read, painted from the tokens prepared when the
+/// activity was expanded. A line without tokens still gets its plain run, so
+/// the runs tile the text exactly.
+fn read_line_flat_text(
+    line: &activity_read::ReadLine,
+    theme: &Theme,
+    palette: &MarkdownPalette,
+    code_font: &gpui::Font,
+) -> md::render::FlatText {
+    let mut runs = Vec::with_capacity(line.tokens.len() * 2 + 1);
+    let mut offset = 0;
+    let mut push = |len: usize, color: Hsla| {
+        if len == 0 {
+            return;
+        }
+        runs.push(TextRun {
+            len,
+            font: code_font.clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    };
+    for token in &line.tokens {
+        if token.range.start > offset {
+            push(token.range.start - offset, theme.text_secondary);
+        }
+        push(token.range.len(), palette.token(token.class));
+        offset = token.range.end;
+    }
+    if offset < line.content.len() {
+        push(line.content.len() - offset, theme.text_secondary);
+    }
+    md::render::FlatText {
+        text: line.content.clone(),
+        runs,
+        links: Vec::new(),
+        code_ranges: Vec::new(),
+        math: None,
+        active_link: None,
     }
 }
 

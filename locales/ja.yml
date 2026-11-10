@@ -300,13 +300,14 @@ activity.status_failed: 失敗
 activity.action_think: 思考
 activity.action_run: 実行
 activity.action_edit: 編集
+activity.action_create: 作成
 activity.action_read: 読み込み
 activity.action_search: 検索
 activity.action_list: 一覧
 activity.action_plan: 計画
 activity.action_use: 使用
 activity.ask_questions: 質問する
-activity.arguments: 引数
+activity.input: 入力
 activity.tool_name: ツール
 activity.mcp_server: MCP サーバー
 activity.output: 出力

@@ -283,13 +283,14 @@ activity.status_failed: 失败
 activity.action_think: 思考
 activity.action_run: 运行
 activity.action_edit: 编辑
+activity.action_create: 创建
 activity.action_read: 读取
 activity.action_search: 搜索
 activity.action_list: 列出
 activity.action_plan: 计划
 activity.action_use: 使用
 activity.ask_questions: 提问
-activity.arguments: 参数
+activity.input: 输入
 activity.tool_name: 工具
 activity.mcp_server: MCP 服务器
 activity.output: 输出

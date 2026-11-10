@@ -584,6 +584,8 @@ activity.action_run:
   en: Run
 activity.action_edit:
   en: Edit
+activity.action_create:
+  en: Create
 activity.action_read:
   en: Read
 activity.action_search:
@@ -596,8 +598,8 @@ activity.action_use:
   en: Use
 activity.ask_questions:
   en: Ask questions
-activity.arguments:
-  en: Arguments
+activity.input:
+  en: Input
 activity.tool_name:
   en: Tool
 activity.mcp_server:

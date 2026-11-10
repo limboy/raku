@@ -2383,6 +2383,26 @@ impl PlanStep {
     }
 }
 
+/// The inclusive line range a file read covered, in file line numbers.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityReadRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+impl ActivityReadRange {
+    /// The row label's `(18–117)`: an en dash reads as a span, a hyphen as
+    /// arithmetic.
+    pub fn label(&self) -> String {
+        if self.start == self.end {
+            format!("({})", self.start)
+        } else {
+            format!("({}\u{2013}{})", self.start, self.end)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ActivityItem {
     pub id: Uuid,
@@ -2417,6 +2437,10 @@ pub struct ActivityItem {
     /// directory, or command). The row builder only formats this cached value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_target: Option<String>,
+    /// The slice of the file a read actually returned, prepared when the
+    /// event arrives so the row never scans the output on a frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_range: Option<ActivityReadRange>,
     /// Human-authored command description prepared from native tool input.
     /// This stays separate from `display_target` so the UI can prefer a short
     /// label without discarding the raw command used by detail views.
@@ -2491,6 +2515,7 @@ impl ActivityItem {
             complete,
             file_changes: Vec::new(),
             display_target,
+            read_range: None,
             display_description: None,
             reasoning: None,
             compaction: None,
@@ -2569,11 +2594,13 @@ impl ActivityItem {
 
     pub fn with_image_urls(mut self, image_urls: Vec<String>) -> Self {
         self.image_urls = image_urls;
+        self.refresh_read_range();
         self
     }
 
     pub fn with_failed(mut self, failed: bool) -> Self {
         self.failed = failed;
+        self.refresh_read_range();
         self
     }
 
@@ -2733,7 +2760,92 @@ impl ActivityItem {
                 .take()
                 .and_then(normalize_command_activity_output);
         }
+        self.refresh_read_range();
     }
+
+    /// Which lines of the file a read covered: what the output is numbered
+    /// with when the provider numbers it, otherwise the slice the arguments
+    /// asked for. Runs when the event arrives; a row only formats the result.
+    fn refresh_read_range(&mut self) {
+        // An image read returns a picture, not lines of a file.
+        let reads_lines =
+            self.kind == ActivityKind::FileRead && !self.failed && self.image_urls.is_empty();
+        let range = reads_lines.then(|| {
+            self.output
+                .as_deref()
+                .and_then(read_output_line_range)
+                .or_else(|| {
+                    self.arguments
+                        .as_deref()
+                        .and_then(read_arguments_line_range)
+                })
+        });
+        self.read_range = range.flatten();
+    }
+}
+
+/// The line number a provider prefixed to a read's output line: Claude and Pi
+/// write `<number>\t<code>`, some builds use the `→` arrow instead.
+fn read_output_line_number(line: &str) -> Option<u32> {
+    let trimmed = line.trim_start_matches(' ');
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 7 {
+        return None;
+    }
+    let rest = trimmed.get(digits..)?;
+    if !(rest.starts_with('\t') || rest.starts_with('\u{2192}')) {
+        return None;
+    }
+    trimmed.get(..digits)?.parse().ok()
+}
+
+/// The span a numbered read output covers. Most non-blank lines must carry a
+/// number: a plain file whose lines happen to start with digits is content,
+/// not a gutter.
+fn read_output_line_range(output: &str) -> Option<ActivityReadRange> {
+    let mut first = None;
+    let mut last = None;
+    let mut lines = 0usize;
+    let mut numbered = 0usize;
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        lines += 1;
+        if let Some(number) = read_output_line_number(line) {
+            numbered += 1;
+            first.get_or_insert(number);
+            last = Some(number);
+        }
+    }
+    if lines == 0 || numbered * 4 < lines * 3 {
+        return None;
+    }
+    let (start, end) = (first?, last?);
+    (end >= start).then_some(ActivityReadRange { start, end })
+}
+
+/// The span a read asked for, for the running state the output does not cover
+/// yet. An end is required: an offset alone cannot say where the slice stops.
+fn read_arguments_line_range(arguments: &str) -> Option<ActivityReadRange> {
+    let value = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+    let number = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(serde_json::Value::as_u64))
+    };
+    // Line numbers start at 1; an `offset: 0` means the top of the file.
+    let start = number(&["offset", "start_line", "startLine", "line", "start"])
+        .unwrap_or(1)
+        .max(1);
+    let start = u32::try_from(start).ok()?;
+    let end = number(&["end_line", "endLine", "end"])
+        .and_then(|end| u32::try_from(end).ok())
+        .or_else(|| {
+            number(&["limit"])
+                .and_then(|limit| u32::try_from(limit).ok())
+                .map(|limit| start.saturating_add(limit).saturating_sub(1))
+        })?;
+    (end >= start).then_some(ActivityReadRange { start, end })
 }
 
 /// Parses an Oh My Pi `xd://` virtual tool device URI into `(device, has_query)`.
@@ -4196,6 +4308,66 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn read_ranges_prefer_numbered_output_then_arguments() {
+        let arguments =
+            serde_json::json!({"file_path": "/tmp/a.swift", "offset": 18, "limit": 100});
+        let mut item = ActivityItem::new(None, ActivityKind::FileRead, "Read", None, false)
+            .with_arguments(Some(arguments.to_string()));
+        assert_eq!(
+            item.read_range,
+            Some(ActivityReadRange {
+                start: 18,
+                end: 117
+            })
+        );
+
+        // Settled output is authoritative: it says which lines came back.
+        item = item.with_output(Some("18\tlet top = 1\n19\t\n20\tlet end = 2\n".to_owned()));
+        assert_eq!(
+            item.read_range,
+            Some(ActivityReadRange { start: 18, end: 20 })
+        );
+
+        // A provider that returns bare content still leaves the asked-for
+        // slice known from its arguments.
+        let plain = ActivityItem::new(None, ActivityKind::FileRead, "Read", None, true)
+            .with_arguments(Some(arguments.to_string()))
+            .with_output(Some("let top = 1\nlet end = 2\n".to_owned()));
+        assert_eq!(
+            plain.read_range,
+            Some(ActivityReadRange {
+                start: 18,
+                end: 117
+            })
+        );
+
+        // Content whose lines merely start with digits is not a gutter.
+        let prose = ActivityItem::new(None, ActivityKind::FileRead, "Read", None, true)
+            .with_output(Some("2026 was a year\n3 things happened\n".to_owned()));
+        assert_eq!(prose.read_range, None);
+
+        // A failed read reports an error, not the file.
+        let failed = ActivityItem::new(None, ActivityKind::FileRead, "Read", None, true)
+            .with_arguments(Some(arguments.to_string()))
+            .with_output(Some("18\tlet top = 1\n".to_owned()))
+            .with_failed(true);
+        assert_eq!(failed.read_range, None);
+    }
+
+    #[test]
+    fn read_range_labels_use_an_en_dash_for_spans() {
+        assert_eq!(
+            ActivityReadRange {
+                start: 18,
+                end: 117
+            }
+            .label(),
+            "(18\u{2013}117)"
+        );
+        assert_eq!(ActivityReadRange { start: 9, end: 9 }.label(), "(9)");
     }
 
     #[test]

@@ -1613,6 +1613,13 @@ pub struct Raku {
     /// activities. Built once when the activity is expanded and dropped when it
     /// collapses or its changes are replaced, so a frame only indexes rows.
     activity_diffs: RefCell<HashMap<Uuid, Rc<activity_diff::Diff>>>,
+    /// Numbered, tokenized lines for expanded read activities. Built once when
+    /// the activity is expanded and dropped when it collapses, so a frame only
+    /// positions rows.
+    activity_reads: RefCell<HashMap<Uuid, Rc<activity_read::ReadPreview>>>,
+    /// Labeled argument fields for expanded tool activities, parsed once on
+    /// expansion and dropped on collapse.
+    activity_inputs: RefCell<HashMap<Uuid, Rc<activity_input::Input>>>,
     /// Viewports for those diffs. Separate from `activity_scroll_viewports`
     /// because a failed edit shows both its diff and the error it returned.
     activity_diff_viewports: RefCell<HashMap<Uuid, ActivityScrollViewport>>,
@@ -1659,6 +1666,8 @@ pub struct Raku {
 }
 
 mod activity_diff;
+mod activity_input;
+mod activity_read;
 mod autocomplete;
 mod background_work;
 mod backup_settings;
@@ -3003,6 +3012,8 @@ impl Raku {
                 reasoning_window_starts: RefCell::new(HashMap::new()),
                 activity_scroll_viewports: RefCell::new(HashMap::new()),
                 activity_diffs: RefCell::new(HashMap::new()),
+                activity_reads: RefCell::new(HashMap::new()),
+                activity_inputs: RefCell::new(HashMap::new()),
                 activity_diff_viewports: RefCell::new(HashMap::new()),
                 markdown_link_handler,
                 markdown_image_renderer,

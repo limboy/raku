@@ -1719,7 +1719,12 @@ pub(super) fn activity_action_label(activity: &ActivityItem) -> String {
     match activity.kind {
         ActivityKind::Reasoning => tr!("activity.action_think"),
         ActivityKind::Command => tr!("activity.action_run"),
-        ActivityKind::FileChange => tr!("activity.action_edit"),
+        ActivityKind::FileChange => match activity.file_changes.as_slice() {
+            [change] if change.status == Some(crate::model::ActivityFileChangeStatus::Added) => {
+                tr!("activity.action_create")
+            }
+            _ => tr!("activity.action_edit"),
+        },
         ActivityKind::FileRead => tr!("activity.action_read"),
         ActivityKind::FileSearch | ActivityKind::Search => tr!("activity.action_search"),
         ActivityKind::FileList => tr!("activity.action_list"),
@@ -1984,7 +1989,7 @@ impl ActivityDisclosureSectionKind {
             Self::McpServer => Some(tr!("activity.mcp_server")),
             Self::ToolName => Some(tr!("activity.tool_name")),
             Self::Command => Some(tr!("activity.command_detail")),
-            Self::Arguments => Some(tr!("activity.arguments")),
+            Self::Arguments => Some(tr!("activity.input")),
             Self::Output => Some(tr!("activity.output")),
             Self::Detail => None,
         }
@@ -2001,6 +2006,14 @@ pub(super) fn activity_disclosure_sections(
     activity: &ActivityItem,
 ) -> Vec<ActivityDisclosureSection> {
     let mut sections = Vec::new();
+    // A read that returned a picture is the picture: the path is already in
+    // the row, and the arguments and payload would only bury it.
+    if activity.kind == ActivityKind::FileRead
+        && !activity.failed
+        && !activity.image_urls.is_empty()
+    {
+        return sections;
+    }
     for (kind, content) in [
         (
             ActivityDisclosureSectionKind::McpServer,
@@ -2071,6 +2084,7 @@ pub(super) fn activity_disclosure_sections(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .filter(|_| !shows_diff || activity.failed)
+        .filter(|output| activity.image_urls.is_empty() || !is_image_payload(output))
     {
         sections.push(ActivityDisclosureSection {
             kind: ActivityDisclosureSectionKind::Output,
@@ -2095,6 +2109,22 @@ pub(super) fn activity_disclosure_sections(
         });
     }
     sections
+}
+
+/// Whether a tool's output text is only the serialized image it returned.
+/// Sessions saved before images were split out of the text still carry that
+/// payload; the image itself renders below, so the base64 is never shown.
+/// Looks only at the head, so a frame never scans a 16 KB payload.
+fn is_image_payload(output: &str) -> bool {
+    if !output.starts_with('{') {
+        return false;
+    }
+    let mut end = output.len().min(80);
+    while !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &output[..end];
+    head.contains("\"type\": \"image\"") || head.contains("\"type\":\"image\"")
 }
 
 pub(super) fn activity_preview(activity: &ActivityItem) -> String {
@@ -2280,6 +2310,36 @@ mod message_time_tests {
     }
 
     #[test]
+    fn image_reads_show_only_the_image() {
+        let payload = "{\n  \"type\": \"image\",\n  \"data\": \"iVBORw0KGgo=\"\n}";
+        let read = ActivityItem::new(
+            None,
+            crate::model::ActivityKind::FileRead,
+            "Read",
+            None,
+            true,
+        )
+        .with_tool_name(Some("read"))
+        .with_arguments(Some("{\"path\": \"/tmp/a.png\"}".into()))
+        .with_output(Some(payload.into()))
+        .with_image_urls(vec!["waku-blob:a.png".into()]);
+        assert!(activity_disclosure_sections(&read).is_empty());
+
+        // A saved session's tool output that is only the serialized image is
+        // dropped; the image renders in its place.
+        let tool = ActivityItem::new(None, crate::model::ActivityKind::Tool, "Shot", None, true)
+            .with_output(Some(payload.into()))
+            .with_image_urls(vec!["waku-blob:a.png".into()]);
+        assert_eq!(
+            activity_disclosure_sections(&tool),
+            vec![ActivityDisclosureSection {
+                kind: ActivityDisclosureSectionKind::Output,
+                content: String::new(),
+            }]
+        );
+    }
+
+    #[test]
     fn activity_disclosure_keeps_arguments_and_output() {
         let activity = ActivityItem::new(
             Some("tool-1".into()),
@@ -2307,7 +2367,7 @@ mod message_time_tests {
         );
         assert_eq!(
             activity_disclosure_text(&activity).as_deref(),
-            Some("Arguments\n{\n  \"actions\": []\n}\n\nOutput\nHelper closed its session")
+            Some("Input\n{\n  \"actions\": []\n}\n\nOutput\nHelper closed its session")
         );
         assert_eq!(activity_preview(&activity), "Helper closed its session");
 

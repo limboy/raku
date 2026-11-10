@@ -208,6 +208,25 @@ mod tests {
     }
 
     #[test]
+    fn image_only_output_is_shown_as_the_image_not_its_payload() {
+        let output =
+            serde_json::json!({"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"});
+        let item = tool_activity(
+            Some("read-1".into()),
+            ActivityKind::FileRead,
+            "Read file".into(),
+            Some(&serde_json::json!({"path": "/tmp/shot.png", "offset": 0, "limit": 1})),
+            Some(&output),
+            Some(&output),
+            false,
+            true,
+        );
+        assert_eq!(item.output, None);
+        assert_eq!(item.image_urls, ["data:image/png;base64,iVBORw0KGgo="]);
+        assert_eq!(item.read_range, None);
+    }
+
+    #[test]
     fn command_activity_detects_exit_code_at_tail_beyond_truncation_limit() {
         let long_log = format!(
             "{}\nCommand exited with code 101",
@@ -243,6 +262,11 @@ pub(super) fn format_json(value: &Value) -> Option<String> {
 }
 
 fn extract_output_text(value: &Value) -> Option<String> {
+    // An image result is shown as the image; its base64 payload is not text
+    // anyone reads.
+    if is_image_item(value) {
+        return None;
+    }
     if let Some(text) = value.as_str() {
         let trimmed = text.trim();
         return (!trimmed.is_empty()).then(|| trimmed.to_owned());
