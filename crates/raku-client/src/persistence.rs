@@ -374,9 +374,9 @@ impl TranscriptFontSize {
 
     pub fn px(self) -> f32 {
         match self {
-            Self::Small => 14.0,
-            Self::Medium => 15.0,
-            Self::Large => 16.0,
+            Self::Small => 15.0,
+            Self::Medium => 16.0,
+            Self::Large => 17.0,
         }
     }
 }
@@ -1688,9 +1688,9 @@ mod tests {
         .unwrap();
         let settings: AppSettings = from_persisted_json(&document).unwrap();
         assert_eq!(settings.transcript_font_size, TranscriptFontSize::Small);
-        assert_eq!(TranscriptFontSize::Small.px(), 14.0);
-        assert_eq!(TranscriptFontSize::Medium.px(), 15.0);
-        assert_eq!(TranscriptFontSize::Large.px(), 16.0);
+        assert_eq!(TranscriptFontSize::Small.px(), 15.0);
+        assert_eq!(TranscriptFontSize::Medium.px(), 16.0);
+        assert_eq!(TranscriptFontSize::Large.px(), 17.0);
     }
 
     #[test]
