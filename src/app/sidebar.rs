@@ -65,6 +65,8 @@ pub fn init(cx: &mut App) {
 /// virtualized sidebar list. Keep the gap inside the list row so measured and
 /// estimated heights stay identical for off-screen sessions.
 const SIDEBAR_SESSION_CARD_HEIGHT: f32 = 32.0;
+const SIDEBAR_SESSION_SHORTCUT_SIZE: f32 = 18.0;
+const SIDEBAR_SESSION_SHORTCUT_GAP: f32 = 6.0;
 const SIDEBAR_SESSION_ROW_GAP: f32 = 1.0;
 const SIDEBAR_SESSION_ROW_HEIGHT: f32 = SIDEBAR_SESSION_CARD_HEIGHT + SIDEBAR_SESSION_ROW_GAP;
 const SIDEBAR_PROJECT_SELECTOR_HEIGHT: f32 = 36.0;
@@ -1236,6 +1238,19 @@ impl Raku {
             SessionStatus::Connecting | SessionStatus::Working
         );
         let pinned = self.state.pinned_session_ids.contains(&session_id);
+        let finished_indicator = sidebar_session_indicates_finished(
+            &self.finished_session_ids,
+            selected,
+            session.status,
+            session_id,
+        );
+        let has_trailing_indicator = pinned
+            || working
+            || matches!(
+                session.status,
+                SessionStatus::Background | SessionStatus::Waiting | SessionStatus::Failed
+            )
+            || finished_indicator;
         let rename_input =
             (self.session_rename == Some(session_id)).then(|| self.session_rename_input.clone());
         let renaming = rename_input.is_some();
@@ -1280,6 +1295,7 @@ impl Raku {
         let keyboard_menu = menu.clone();
         let row = div()
             .id(SharedString::from(format!("session-{}", session.id)))
+            .relative()
             .w_full()
             .min_w_0()
             .h(px(SIDEBAR_SESSION_CARD_HEIGHT))
@@ -1297,6 +1313,15 @@ impl Raku {
                 div()
                     .w_full()
                     .min_w_0()
+                    // The shortcut badge overlays the row's trailing edge
+                    // instead of taking a flex slot, so showing it never moves
+                    // the status indicator. When nothing occupies that edge,
+                    // reserve the badge's width so it does not cover the title.
+                    .when(shortcut.is_some() && !has_trailing_indicator, |element| {
+                        element.pr(px(
+                            SIDEBAR_SESSION_SHORTCUT_SIZE + SIDEBAR_SESSION_SHORTCUT_GAP
+                        ))
+                    })
                     .flex()
                     .items_center()
                     .gap(px(6.0))
@@ -1308,7 +1333,7 @@ impl Raku {
                     })
                     .when(working, |element| {
                         element.child(motion::spin_slow(icon(
-                            "icons/loader-circle.svg",
+                            "icons/loader-circle-bold.svg",
                             12.0,
                             status_color(&theme, session.status),
                         )))
@@ -1334,42 +1359,40 @@ impl Raku {
                             status_color(&theme, session.status),
                         ))
                     })
-                    .when(
-                        sidebar_session_indicates_finished(
-                            &self.finished_session_ids,
-                            selected,
-                            session.status,
-                            session_id,
-                        ),
-                        |element| {
-                            element.child(
-                                div()
-                                    .size(px(12.0))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(div().size(px(6.0)).rounded_full().bg(theme.accent)),
-                            )
-                        },
-                    )
-                    .children(shortcut.map(|number| {
-                        div()
-                            .size(px(18.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(theme.border_strong)
-                            .bg(theme.inset)
-                            .text_size(sp(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_secondary)
-                            .child(number.to_string())
-                    })),
+                    .when(finished_indicator, |element| {
+                        element.child(
+                            div()
+                                .size(px(12.0))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(div().size(px(6.0)).rounded_full().bg(theme.accent)),
+                        )
+                    }),
             )
+            .when_some(shortcut, |row, number| {
+                row.child(
+                    div()
+                        .absolute()
+                        .top(px((SIDEBAR_SESSION_CARD_HEIGHT
+                            - SIDEBAR_SESSION_SHORTCUT_SIZE)
+                            / 2.0))
+                        .right(px(8.0))
+                        .size(px(SIDEBAR_SESSION_SHORTCUT_SIZE))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(theme.border_strong)
+                        .bg(theme.inset)
+                        .text_size(sp(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_secondary)
+                        .child(number.to_string()),
+                )
+            })
             .when(!renaming, |element| {
                 element
                     .track_focus(&row_focus)
