@@ -1508,7 +1508,7 @@ impl Raku {
             TranscriptRowKind::ChangedFiles(turn_id) => self
                 .render_changed_files_row(turn_id, &theme, cx)
                 .unwrap_or_else(|| div().into_any_element()),
-            TranscriptRowKind::WorkingIndicator => self.render_working_indicator_row(&theme),
+            TranscriptRowKind::WorkingIndicator => self.render_working_indicator_row(&theme, cx),
         };
         let row = div()
             .id(("transcript-row", index))
@@ -2000,11 +2000,13 @@ impl Raku {
             .into_any_element()
     }
 
-    /// The live turn's closing row: pulsing dots and "Working for Ns". It is
-    /// on screen from the moment the prompt lands — before the provider has
-    /// produced a single chunk — and stays below whatever streams in until
-    /// the turn settles into its "Worked for N" fold.
-    fn render_working_indicator_row(&self, theme: &Theme) -> AnyElement {
+    /// The live turn's closing row: pulsing dots, what the agent is doing
+    /// right now ("Running a command"), and the elapsed time. It is on screen
+    /// from the moment the prompt lands — before the provider has produced a
+    /// single chunk — and stays below whatever streams in until the turn
+    /// settles into its "Worked for N" fold. While a live activity group sits
+    /// directly above, the row also folds and unfolds that group.
+    fn render_working_indicator_row(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let session = self.selected_session();
         let elapsed = session
             .and_then(|session| session.turns.last())
@@ -2012,30 +2014,132 @@ impl Raku {
             .map(|turn| unix_time().saturating_sub(turn.started_at))
             .unwrap_or(0);
         // A parked turn is waiting on detached work, not working.
-        let label = if session.is_some_and(|session| session.status == SessionStatus::Background) {
+        let parked = session.is_some_and(|session| session.status == SessionStatus::Background);
+        let label = if parked {
             tr!("transcript.waiting_background")
         } else {
-            tr!(
-                "transcript.working_for",
-                duration = format_working_elapsed(elapsed)
-            )
+            session
+                .and_then(live_activity_label)
+                .unwrap_or_else(|| tr!("transcript.working"))
         };
+        // The activity group the chevron controls: only the live one at the
+        // tail, mirroring `render_activities_row`'s own liveness rule.
+        let live_block = session.and_then(|session| {
+            let block_index = session.transcript_blocks.len().checked_sub(1)?;
+            let block = &session.transcript_blocks[block_index];
+            (!block.activities.is_empty()
+                && activity_group_is_live(
+                    session
+                        .active_turn_id()
+                        .is_some_and(|turn_id| block.turn_id == Some(turn_id)),
+                    true,
+                    block.after_message,
+                    session.messages.len(),
+                ))
+            .then_some(block_index)
+        });
         // Same type as the activity summary above it, so the live label reads
         // as part of the same run of work.
         let metrics = self.transcript_markdown_metrics(MarkdownMetrics::BODY);
-        div()
-            .h(px(22.0))
+        let row_height = metrics.line_height.max(24.0);
+        let content = div()
+            .h(px(row_height))
+            .flex_none()
             .flex()
             .items_center()
             .gap(px(8.0))
+            .text_size(px(metrics.text_size))
+            .line_height(px(metrics.line_height))
             .child(working_wave_dots(theme.text_tertiary))
             .child(
                 div()
-                    .text_size(px(metrics.text_size))
-                    .line_height(px(metrics.line_height))
-                    .font_weight(FontWeight::NORMAL)
                     .text_color(theme.text_tertiary)
                     .child(SharedString::from(label)),
+            )
+            .when(!parked, |row| {
+                row.child(
+                    div()
+                        .text_color(theme.text_tertiary)
+                        .child(SharedString::from(format_working_elapsed(elapsed))),
+                )
+            });
+        // The agent's task list sits right above the row that says what it
+        // is doing; both exist exactly while the turn runs.
+        let task_list = self.render_task_list(cx);
+        let Some(block_index) = live_block else {
+            return div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .children(task_list)
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(row_height))
+                        .flex()
+                        .items_center()
+                        .child(content),
+                )
+                .into_any_element();
+        };
+        let expanded = self
+            .activities_expanded
+            .get(&block_index)
+            .copied()
+            .unwrap_or(false);
+        let focus = self.transcript_control_focus("working-indicator".to_string(), cx);
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .children(task_list)
+            .child(
+                div()
+                    .w_full()
+                    .h(px(row_height))
+                    .flex()
+                    .items_center()
+                    .child(
+                div()
+                    .id("working-indicator")
+                    .track_focus(&focus)
+                    .tab_index(0)
+                    .h(px(row_height))
+                    // Padding gives the focus fill room; the negative margin
+                    // keeps the spinner on the body text's left edge.
+                    .px(px(2.0))
+                    .ml(px(-2.0))
+                    .rounded(px(4.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .cursor_default()
+                    .focus_visible(|style| style.bg(theme.overlay))
+                    .child(content)
+                    .child(icon(
+                        if expanded {
+                            "icons/chevron-down.svg"
+                        } else {
+                            "icons/chevron-right.svg"
+                        },
+                        (metrics.text_size * 0.7).round(),
+                        theme.text_tertiary,
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_activities(block_index, expanded, cx);
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        let key = event.keystroke.key.as_str();
+                        if matches!(key, "enter" | "space")
+                            || (key == "right" && !expanded)
+                            || (key == "left" && expanded)
+                        {
+                            this.toggle_activities(block_index, expanded, cx);
+                            cx.stop_propagation();
+                        }
+                    })),
+                    ),
             )
             .into_any_element()
     }
@@ -2208,7 +2312,7 @@ impl Raku {
                     .activities_expanded
                     .get(&block_index)
                     .copied()
-                    .unwrap_or(live_group),
+                    .unwrap_or(false),
                 expanded_items: &self.expanded_activity_items,
                 markdown: &self.activity_markdown,
                 window_starts: &self.reasoning_window_starts,
@@ -2412,7 +2516,10 @@ impl Raku {
             expanded,
             ..
         } = surface;
-        let cluster = if surface.part == ActivityClusterPart::Item {
+        // The live group has no header of its own: the working row below
+        // names what is running and folds this group, so a second "Running …"
+        // line would only repeat it.
+        let cluster = if surface.part == ActivityClusterPart::Item || live_group {
             div().w_full().min_w_0()
         } else {
             let group_key = format!("activity-toggle-{block_index}");

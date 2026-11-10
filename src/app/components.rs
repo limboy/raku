@@ -1458,6 +1458,43 @@ fn summarize_activities<'a>(activities: impl Iterator<Item = &'a ActivityItem> +
     }
 }
 
+/// What the live turn is doing right now, phrased for the working row: the
+/// newest unfinished activity in the turn's tail block, or — in the gap
+/// between one tool finishing and the next starting — the newest finished
+/// one, so the label does not flash back to "Working" on every step. `None`
+/// means the turn has no work at its tail (it has not started, or it is
+/// writing text after its last activity).
+pub(super) fn live_activity_label(session: &AgentSession) -> Option<String> {
+    let turn_id = session.active_turn_id()?;
+    let block = session.transcript_blocks.last()?;
+    if block.turn_id != Some(turn_id) || block.after_message != session.messages.len() {
+        return None;
+    }
+    let labeled = |activity: &&ActivityItem| {
+        !matches!(activity.kind, ActivityKind::Plan | ActivityKind::Notice)
+    };
+    let activity = block
+        .activities
+        .iter()
+        .rev()
+        .filter(labeled)
+        .find(|activity| !activity.complete)
+        .or_else(|| block.activities.iter().rev().find(labeled))?;
+    Some(match activity.kind {
+        ActivityKind::Reasoning => tr!("transcript.thinking"),
+        ActivityKind::Command => tr!("transcript.live_command"),
+        ActivityKind::FileChange => tr!("transcript.live_file_change"),
+        ActivityKind::FileRead => tr!("transcript.live_file_read"),
+        ActivityKind::FileSearch => tr!("transcript.live_file_search"),
+        ActivityKind::FileList => tr!("transcript.live_file_list"),
+        ActivityKind::Search => tr!("transcript.live_search"),
+        ActivityKind::Tool => tr!("transcript.live_tool"),
+        ActivityKind::ImageGeneration => tr!("activity.generating_image"),
+        ActivityKind::Compaction => tr!("activity.compacting_context"),
+        ActivityKind::Plan | ActivityKind::Notice => return None,
+    })
+}
+
 pub(super) fn activity_group_is_live(
     live_turn: bool,
     latest_block: bool,

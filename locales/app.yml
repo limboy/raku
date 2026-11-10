@@ -1836,8 +1836,22 @@ transcript.worked_for:
   en: Worked for %{duration}
 transcript.you_stopped_after:
   en: You stopped after %{duration}
-transcript.working_for:
-  en: Working for %{duration}
+transcript.working:
+  en: Working
+transcript.live_command:
+  en: Running a command
+transcript.live_file_change:
+  en: Editing a file
+transcript.live_file_read:
+  en: Reading a file
+transcript.live_file_search:
+  en: Searching files
+transcript.live_file_list:
+  en: Listing files
+transcript.live_search:
+  en: Searching the web
+transcript.live_tool:
+  en: Using a tool
 transcript.thinking:
   en: Thinking
 transcript.thought_for:

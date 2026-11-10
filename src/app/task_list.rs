@@ -1,8 +1,9 @@
-//! The agent's task list, pinned above the composer while its turn runs.
+//! The agent's task list, shown at the tail of the transcript — directly
+//! above the working row — while its turn runs.
 //!
 //! Providers report the list as plan activities (Claude's `TaskCreate` /
-//! `TaskUpdate`, Codex's `update_plan`). Each also lands in the transcript,
-//! where it scrolls away; this keeps the latest whole list in view.
+//! `TaskUpdate`, Codex's `update_plan`). Those never become transcript rows;
+//! this keeps only the latest whole list.
 
 use super::*;
 use crate::model::{PlanStep, PlanStepStatus};
@@ -39,6 +40,11 @@ impl Raku {
                 turn_id,
             },
         );
+        // The list renders inside the working row, so that row's height
+        // changes with every update.
+        if self.state.selected_session == Some(session_id) {
+            self.remeasure_transcript_row(TranscriptRowKind::WorkingIndicator);
+        }
     }
 
     fn visible_task_list(&self) -> Option<&SessionTaskList> {
@@ -52,11 +58,9 @@ impl Raku {
         let theme = Theme::current(cx);
 
         Some(
-            div().flex_none().px(px(20.0)).pb(px(8.0)).child(
+            div().w_full().pt(px(4.0)).pb(px(10.0)).child(
                 div()
                     .w_full()
-                    .max_w(px(CONTENT_MAX_WIDTH))
-                    .mx_auto()
                     .rounded(px(14.0))
                     .border_1()
                     .border_color(theme.border)

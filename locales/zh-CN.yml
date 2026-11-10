@@ -894,7 +894,14 @@ common.copy_named: 复制%{name}
 transcript.worked: 已完成
 transcript.worked_for: 用时 %{duration}
 transcript.you_stopped_after: 你在工作 %{duration} 后停止了
-transcript.working_for: 工作中 · %{duration}
+transcript.working: 工作中
+transcript.live_command: 正在运行命令
+transcript.live_file_change: 正在编辑文件
+transcript.live_file_read: 正在读取文件
+transcript.live_file_search: 正在搜索文件
+transcript.live_file_list: 正在列出文件
+transcript.live_search: 正在搜索网页
+transcript.live_tool: 正在使用工具
 transcript.thinking: 正在思考
 transcript.thought_for: 思考用时 %{duration}
 transcript.changed_file: 更改了 %{count} 个文件

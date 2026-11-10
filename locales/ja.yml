@@ -939,7 +939,14 @@ common.copy_named: "%{name} をコピー"
 transcript.worked: 完了
 transcript.worked_for: 作業時間 %{duration}
 transcript.you_stopped_after: "%{duration} 後にタスクを停止しました"
-transcript.working_for: 作業中 · %{duration}
+transcript.working: 作業中
+transcript.live_command: コマンドを実行中
+transcript.live_file_change: ファイルを編集中
+transcript.live_file_read: ファイルを読み込み中
+transcript.live_file_search: ファイルを検索中
+transcript.live_file_list: ファイルを一覧中
+transcript.live_search: ウェブを検索中
+transcript.live_tool: ツールを使用中
 transcript.thinking: 思考中
 transcript.thought_for: 思考時間 %{duration}
 transcript.changed_file: "%{count} 個のファイルを変更"

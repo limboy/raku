@@ -333,7 +333,6 @@ impl Render for Raku {
                             .cached(StyleRefinement::default().flex_1().min_h(px(0.0)).w_full())
                             .into_any_element()
                     })
-                    .children(self.render_task_list(cx))
                     .children(permission)
                     .when(self.selected_project().is_some(), |element| {
                         element
