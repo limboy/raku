@@ -16,6 +16,13 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.4.9] - 2026-11-10
+
+- Fix the response footer disappearing for a frame when the pointer moves from a response to its footer
+- Improve footer icon and label contrast in the light theme
+- Fix Settings showing a focus ring on its first tab when opened with ⌘,
+- Fix sidebar shortcut badges and remove buttons staying visible after a missed Cmd or Shift release
+
 ## [2.4.8] - 2026-11-10
 
 - Add interface and transcript font preferences
