@@ -22,28 +22,41 @@ pub(super) fn pulse_dot(size: f32, color: Hsla) -> AnyElement {
     .into_any_element()
 }
 
-/// Three dots chasing a brightness wave, the transcript's "still working"
-/// signal. Each dot rides the shared pulse clock with a phase offset, so the
-/// bright spot travels left to right. Under reduce-motion the clock holds the
-/// cycle's first frame — the lead dot bright, the tail dim — which reads as a
-/// static ellipsis.
+/// Four dots in a 2×2 square chasing a brightness wave, the transcript's
+/// "still working" signal. Each dot rides the shared pulse clock with a phase
+/// offset, so the bright spot circles the square clockwise. Under
+/// reduce-motion the clock holds the cycle's first frame — the lead dot
+/// bright, the rest dimming behind it — which reads as a static glyph.
 pub(super) fn working_wave_dots(color: Hsla) -> AnyElement {
-    const DOT_PHASE_STEP: f32 = 0.18;
+    const DOT_PHASE_STEP: f32 = 0.25;
+    const DOT_SIZE: f32 = 4.0;
+    const DOT_GAP: f32 = 2.5;
     motion::pulse(Duration::from_millis(1400), move |phase| {
+        // Clockwise order: top-left, top-right, bottom-right, bottom-left.
+        let dot = |index: usize| {
+            let dot_phase = (phase + 1.0 - index as f32 * DOT_PHASE_STEP) % 1.0;
+            let wave = ((dot_phase * std::f32::consts::TAU).sin() + 1.0) / 2.0;
+            div()
+                .size(px(DOT_SIZE))
+                .flex_none()
+                .rounded_full()
+                .bg(color)
+                .opacity(0.25 + 0.75 * wave)
+        };
+        let row = |left: usize, right: usize| {
+            div()
+                .flex()
+                .gap(px(DOT_GAP))
+                .child(dot(left))
+                .child(dot(right))
+        };
         div()
             .flex()
-            .items_center()
-            .gap(px(3.5))
-            .children((0..3).map(|index| {
-                let dot_phase = (phase + 1.0 - index as f32 * DOT_PHASE_STEP) % 1.0;
-                let wave = ((dot_phase * std::f32::consts::TAU).sin() + 1.0) / 2.0;
-                div()
-                    .size(px(4.5))
-                    .flex_none()
-                    .rounded_full()
-                    .bg(color)
-                    .opacity(0.25 + 0.75 * wave)
-            }))
+            .flex_col()
+            .flex_none()
+            .gap(px(DOT_GAP))
+            .child(row(0, 1))
+            .child(row(3, 2))
             .into_any_element()
     })
     // Mounted for the whole turn: this is what sets the transcript pane's
