@@ -190,7 +190,7 @@ impl Theme {
             border_strong: hsla(220.0 / 360.0, 0.10, 0.12, 0.15),
             sidebar_border: hsla(0.0, 0.0, 0.078, 0.12),
 
-            text: rgb(0x242424).into(),
+            text: rgb(0x141414).into(),
             text_secondary: rgb(0x666666).into(),
             text_tertiary: rgb(0x858585).into(),
             text_ghost: rgb(0xA4A4A4).into(),
