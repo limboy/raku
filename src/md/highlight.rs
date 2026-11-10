@@ -202,6 +202,9 @@ struct LangSpec {
     capitalized_types: bool,
     /// Highlight `name(` as a function.
     call_functions: bool,
+    /// Highlight the program in a simple command, and the flags after it
+    /// (shells): the first word after a separator is what runs.
+    command_position: bool,
 }
 
 const DEFAULT_SPEC: LangSpec = LangSpec {
@@ -215,7 +218,11 @@ const DEFAULT_SPEC: LangSpec = LangSpec {
     meta_sigils: &[],
     capitalized_types: true,
     call_functions: true,
+    command_position: false,
 };
+
+/// Shell keywords after which the next word is still a command.
+const SHELL_COMMAND_LEAD_INS: &[&str] = &["do", "elif", "else", "if", "then", "until", "while"];
 
 fn spec(lang: Lang) -> LangSpec {
     match lang {
@@ -680,6 +687,7 @@ fn spec(lang: Lang) -> LangSpec {
             extra_identifier: &['_', '-'],
             meta_sigils: &['$'],
             capitalized_types: false,
+            command_position: true,
             ..DEFAULT_SPEC
         },
         Lang::Css => LangSpec {
@@ -819,6 +827,8 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: Carry) -> (Vec<Token>, Carry
     let mut tokens: Vec<Token> = Vec::new();
     let mut index = 0usize;
     let mut carry = carry;
+    // Every line of a shell script opens at a command position.
+    let mut at_command = spec.command_position;
 
     // Resume a construct that opened on an earlier line.
     match carry {
@@ -930,6 +940,11 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: Carry) -> (Vec<Token>, Carry
 
         let ch = rest.chars().next().expect("rest is non-empty");
 
+        // A separator ends a command, so the next word is a program again.
+        if !at_command && matches!(ch, '|' | '&' | ';' | '(' | '{' | '`') {
+            at_command = true;
+        }
+
         if ch.is_ascii_digit() {
             let end = index + number_length(rest);
             push(&mut tokens, index..end, TokenClass::Number);
@@ -950,19 +965,35 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: Carry) -> (Vec<Token>, Carry
             let length = identifier_length(rest, &spec);
             let word = &rest[..length];
             let end = index + length;
-            let class = if spec.keywords.contains(&word) {
+            let next = next_non_space(&rest[length..]);
+            let mut class = if spec.keywords.contains(&word) {
                 Some(TokenClass::Keyword)
             } else if spec.literals.contains(&word) {
                 Some(TokenClass::Literal)
             } else if spec.types.contains(&word) {
                 Some(TokenClass::Type)
-            } else if spec.call_functions && next_non_space(&rest[length..]) == Some('(') {
+            } else if spec.call_functions && next == Some('(') {
                 Some(TokenClass::Function)
             } else if spec.capitalized_types && word.starts_with(char::is_uppercase) {
                 Some(TokenClass::Type)
             } else {
                 None
             };
+            if spec.command_position {
+                // `FOO=1 cmd` assigns before it runs, so an assignment keeps
+                // the position; a flag (`-n`, `--short`) is part of the command
+                // it follows, and a lead-in keyword (`if`, `then`) introduces
+                // the next one.
+                let assignment = next == Some('=');
+                if word.len() > 1 && word.starts_with('-') {
+                    class = class.or(Some(TokenClass::Function));
+                } else if !assignment {
+                    if at_command {
+                        class = class.or(Some(TokenClass::Function));
+                    }
+                    at_command = SHELL_COMMAND_LEAD_INS.contains(&word);
+                }
+            }
             if let Some(class) = class {
                 push(&mut tokens, index..end, class);
             }
@@ -1578,9 +1609,46 @@ mod tests {
         assert_eq!(
             spans(Lang::Shell, "echo $HOME # trailing"),
             vec![
+                ("echo", TokenClass::Function),
                 ("$HOME", TokenClass::Meta),
                 ("# trailing", TokenClass::Comment),
             ]
+        );
+    }
+
+    /// A command reads as a command even before it runs: the program after a
+    /// separator is painted, and its flags travel with it.
+    #[test]
+    fn shell_paints_the_program_after_each_separator_and_its_flags() {
+        assert_eq!(
+            spans(
+                Lang::Shell,
+                "grep -n \"a|b\" src/main.rs | head -60; git status --short"
+            ),
+            vec![
+                ("grep", TokenClass::Function),
+                ("-n", TokenClass::Function),
+                ("\"a|b\"", TokenClass::String),
+                ("head", TokenClass::Function),
+                ("-60", TokenClass::Function),
+                ("git", TokenClass::Function),
+                ("--short", TokenClass::Function),
+            ]
+        );
+        // A lead-in keyword ends on the next program rather than taking it.
+        assert_eq!(
+            spans(Lang::Shell, "then run --fast && skip"),
+            vec![
+                ("then", TokenClass::Keyword),
+                ("run", TokenClass::Function),
+                ("--fast", TokenClass::Function),
+                ("skip", TokenClass::Function),
+            ]
+        );
+        // `FOO=1 cmd` assigns before it runs, so the assignment is not a call.
+        assert_eq!(
+            spans(Lang::Shell, "FOO=1 make all"),
+            vec![("1", TokenClass::Number), ("make", TokenClass::Function)]
         );
     }
 

@@ -1228,6 +1228,47 @@ pub fn plain_text(
     text_element(&flat, key, ctx)
 }
 
+/// A flat string lexer-painted for one language, for surfaces that show code
+/// outside a fenced block — a shell command, shown as it would run.
+pub fn flatten_tinted(
+    text: impl Into<SharedString>,
+    lang: Option<Lang>,
+    family: &'static str,
+    weight: FontWeight,
+    color: Hsla,
+    palette: &Palette,
+) -> FlatText {
+    let text: SharedString = text.into();
+    let mut run_font = font(family);
+    run_font.weight = weight;
+    FlatText {
+        runs: code_runs(&text, lang, &run_font, color, palette),
+        text,
+        links: Vec::new(),
+        code_ranges: Vec::new(),
+        math: None,
+        active_link: None,
+    }
+}
+
+/// The selectable twin of [`flatten_tinted`]. Paint only differs; the runs tile
+/// the same string in the same font, so highlighting never reflows the row.
+pub fn tinted_text(
+    text: impl Into<SharedString>,
+    lang: Option<Lang>,
+    family: &'static str,
+    weight: FontWeight,
+    color: Hsla,
+    ctx: &Ctx,
+) -> AnyElement {
+    let key = ctx.next_key();
+    let palette = ctx.palette;
+    let flat = ctx.flat(key.index, || {
+        flatten_tinted(text, lang, family, weight, color, palette)
+    });
+    text_element(&flat, key, ctx)
+}
+
 /// A zero-size canvas that clears the frame's registry. Paint it *before* any
 /// transcript text so the registry holds exactly this frame's visible elements.
 pub fn frame_reset(selection: TranscriptSelection) -> impl IntoElement {
@@ -2064,7 +2105,7 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
         code_font.weight = FontWeight::NORMAL;
         FlatText {
             text: SharedString::from(code.to_owned()),
-            runs: code_runs(code, lang, &code_font, ctx.palette),
+            runs: code_runs(code, lang, &code_font, ctx.palette.secondary, ctx.palette),
             links: Vec::new(),
             code_ranges: Vec::new(),
             math: None,
@@ -2292,8 +2333,13 @@ fn render_code_run_button(
 /// `TextRun`s that tile `code` exactly, colored by the lexer. Every run shares
 /// one font, so the shaped width of a line is identical with or without
 /// highlighting — the property that makes coloring safe to defer.
-fn code_runs(code: &str, lang: Option<Lang>, code_font: &Font, palette: &Palette) -> Vec<TextRun> {
-    let plain = palette.secondary;
+fn code_runs(
+    code: &str,
+    lang: Option<Lang>,
+    code_font: &Font,
+    plain: Hsla,
+    palette: &Palette,
+) -> Vec<TextRun> {
     let mut runs: Vec<TextRun> = Vec::new();
     let push = |runs: &mut Vec<TextRun>, len: usize, color: Hsla| {
         if len == 0 {
@@ -2956,7 +3002,13 @@ mod tests {
         let code = "fn main() {\n    let x = 1; // c\n}";
         let mut code_font = font(MONO_FAMILY);
         code_font.weight = FontWeight::NORMAL;
-        let runs = code_runs(code, Some(Lang::Rust), &code_font, &palette());
+        let runs = code_runs(
+            code,
+            Some(Lang::Rust),
+            &code_font,
+            palette().secondary,
+            &palette(),
+        );
         assert_eq!(
             runs.iter().map(|run| run.len).sum::<usize>(),
             code.len(),
@@ -2965,7 +3017,7 @@ mod tests {
         assert!(runs.len() > 1, "highlighting should produce several runs");
 
         // Without a language the block is one plain run of the same length.
-        let plain = code_runs(code, None, &code_font, &palette());
+        let plain = code_runs(code, None, &code_font, palette().secondary, &palette());
         assert_eq!(plain.iter().map(|run| run.len).sum::<usize>(), code.len());
         assert_eq!(plain.len(), 1);
     }
@@ -3104,8 +3156,14 @@ mod tests {
         let code = "const a = `t ${b}`;\n// note\nlet n = 0x1F;";
         let mut code_font = font(MONO_FAMILY);
         code_font.weight = FontWeight::NORMAL;
-        let highlighted = code_runs(code, Some(Lang::Script), &code_font, &palette());
-        let plain = code_runs(code, None, &code_font, &palette());
+        let highlighted = code_runs(
+            code,
+            Some(Lang::Script),
+            &code_font,
+            palette().secondary,
+            &palette(),
+        );
+        let plain = code_runs(code, None, &code_font, palette().secondary, &palette());
         assert_eq!(
             highlighted.iter().map(|run| run.len).sum::<usize>(),
             plain.iter().map(|run| run.len).sum::<usize>()

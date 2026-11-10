@@ -2060,6 +2060,99 @@ impl Raku {
         .detach();
     }
 
+    /// Copy for a section that has no header row of its own.
+    ///
+    /// It floats over the block's top-right corner and stays quiet until the
+    /// pointer arrives or the keyboard reaches it, so a command card reads as
+    /// a command rather than as a form. Opacity — not visibility — hides it,
+    /// which keeps the control in the tab order while it is invisible.
+    #[allow(clippy::too_many_arguments)]
+    fn render_activity_section_copy(
+        &self,
+        id: Uuid,
+        section_kind: ActivityDisclosureSectionKind,
+        content: impl Into<SharedString>,
+        group: SharedString,
+        surface: Hsla,
+        top: f32,
+        right: f32,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = *theme;
+        let content: SharedString = content.into();
+        let copied = self
+            .copied_activity_feedback
+            .contains_key(&(id, section_kind));
+        let focus = self
+            .transcript_control_focus(format!("copy-activity-{}-{}", id, section_kind.id()), cx);
+        let revealed = focus.is_focused(window);
+        let name = section_kind.label().unwrap_or_default().to_lowercase();
+        let tooltip = SharedString::from(if copied {
+            tr!("common.copied")
+        } else {
+            tr!("common.copy_named", name = name)
+        });
+        let click_content = content.clone();
+        let click_raku = cx.entity().downgrade();
+        let key_content = content;
+        let key_raku = click_raku.clone();
+        div()
+            .id(SharedString::from(format!(
+                "copy-activity-{}-{}",
+                id,
+                section_kind.id()
+            )))
+            .track_focus(&focus)
+            .tab_index(0)
+            .absolute()
+            .top(px(top))
+            .right(px(right))
+            .size(px(20.0))
+            .rounded(px(5.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_default()
+            .bg(surface)
+            .focus_visible(|button| button.bg(theme.overlay_strong))
+            .hover(|button| button.bg(theme.overlay_strong))
+            .when(!revealed, |button| {
+                button
+                    .opacity(0.0)
+                    .group_hover(group, |button| button.opacity(1.0))
+            })
+            .child(icon(
+                if copied {
+                    "icons/check.svg"
+                } else {
+                    "icons/copy.svg"
+                },
+                11.0,
+                theme.text_ghost,
+            ))
+            .tooltip(Tooltip::text(tooltip))
+            .on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(click_content.to_string()));
+                let _ = click_raku.update(cx, |this, cx| {
+                    this.show_activity_section_copied(id, section_kind, cx);
+                });
+            })
+            .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                if !event.keystroke.modifiers.modified()
+                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                {
+                    cx.write_to_clipboard(ClipboardItem::new_string(key_content.to_string()));
+                    let _ = key_raku.update(cx, |this, cx| {
+                        this.show_activity_section_copied(id, section_kind, cx);
+                    });
+                    cx.stop_propagation();
+                }
+            })
+            .into_any_element()
+    }
+
     pub(super) fn render_activities_row(
         &self,
         activities: &[ActivityItem],
@@ -2789,6 +2882,7 @@ impl Raku {
                     .text_color(theme.text_secondary)
                     .whitespace_normal()
                     .overflow_hidden();
+                let command = activity.kind == ActivityKind::Command;
                 for section in sections {
                     let section_kind = section.kind;
                     let content = section.content;
@@ -2797,6 +2891,12 @@ impl Raku {
                         ActivityDisclosureSectionKind::McpServer
                             | ActivityDisclosureSectionKind::ToolName
                     ) {
+                        // A command card leads with the shell line itself and
+                        // the row above already says what ran, so the tool's
+                        // name is the one thing it would only repeat.
+                        if command {
+                            continue;
+                        }
                         detail_card = detail_card.child(
                             div()
                                 .w_full()
@@ -2818,12 +2918,18 @@ impl Raku {
                         continue;
                     }
                     let mut section_view = div().w_full().min_w_0().flex().flex_col().gap(px(3.0));
-                    if let Some(label) = section_kind.label() {
+                    if !command && let Some(label) = section_kind.label() {
                         let copy_content = content.clone();
                         let copied = self
                             .copied_activity_feedback
                             .contains_key(&(id, section_kind));
                         let copy_raku = cx.entity().downgrade();
+                        let key_content = content.clone();
+                        let key_raku = copy_raku.clone();
+                        let copy_focus = self.transcript_control_focus(
+                            format!("copy-activity-{}-{}", id, section_kind.id()),
+                            cx,
+                        );
                         let copy_tooltip = SharedString::from(if copied {
                             tr!("common.copied")
                         } else {
@@ -2849,12 +2955,15 @@ impl Raku {
                                                 id,
                                                 section_kind.id()
                                             )))
+                                            .track_focus(&copy_focus)
+                                            .tab_index(0)
                                             .size(px(20.0))
                                             .rounded(px(5.0))
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .cursor_default()
+                                            .focus_visible(|button| button.bg(theme.overlay_strong))
                                             .hover(|button| button.bg(theme.overlay_strong))
                                             .child(icon(
                                                 if copied {
@@ -2877,15 +2986,95 @@ impl Raku {
                                                         cx,
                                                     );
                                                 });
+                                            })
+                                            .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                                                if !event.keystroke.modifiers.modified()
+                                                    && matches!(
+                                                        event.keystroke.key.as_str(),
+                                                        "enter" | "space"
+                                                    )
+                                                {
+                                                    cx.write_to_clipboard(
+                                                        ClipboardItem::new_string(
+                                                            key_content.to_string(),
+                                                        ),
+                                                    );
+                                                    let _ = key_raku.update(cx, |this, cx| {
+                                                        this.show_activity_section_copied(
+                                                            id,
+                                                            section_kind,
+                                                            cx,
+                                                        );
+                                                    });
+                                                    cx.stop_propagation();
+                                                }
                                             }),
                                     )
                                 }),
                         );
                     }
                     if !content.is_empty() {
-                        if activity.kind == ActivityKind::Command
-                            && section_kind == ActivityDisclosureSectionKind::Output
-                        {
+                        if command && section_kind == ActivityDisclosureSectionKind::Command {
+                            // The command is what this card is about, so it
+                            // reads the way the shell that ran it did: a
+                            // prompt, the program painted, its flags with it.
+                            let group = SharedString::from(format!("activity-command-{id}"));
+                            let copy = self.render_activity_section_copy(
+                                id,
+                                section_kind,
+                                content.clone(),
+                                group.clone(),
+                                activity_surface,
+                                4.0,
+                                4.0,
+                                theme,
+                                window,
+                                cx,
+                            );
+                            section_view = section_view.child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .relative()
+                                    .group(group)
+                                    .rounded(px(6.0))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .px(px(10.0))
+                                    .py(px(8.0))
+                                    .flex()
+                                    .items_start()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_color(theme.text_tertiary)
+                                            .child("$"),
+                                    )
+                                    .child(div().flex_1().min_w_0().child(md::render::tinted_text(
+                                        content,
+                                        Some(md::highlight::Lang::Shell),
+                                        md::render::MONO_FAMILY,
+                                        FontWeight::NORMAL,
+                                        theme.text_secondary,
+                                        &ctx,
+                                    )))
+                                    .child(copy),
+                            );
+                        } else if command && section_kind == ActivityDisclosureSectionKind::Output {
+                            let group = SharedString::from(format!("activity-output-{id}"));
+                            let copy = self.render_activity_section_copy(
+                                id,
+                                section_kind,
+                                content.clone(),
+                                group.clone(),
+                                activity_surface,
+                                4.0,
+                                12.0,
+                                theme,
+                                window,
+                                cx,
+                            );
                             let output_viewport = surface
                                 .viewports
                                 .borrow_mut()
@@ -2899,6 +3088,7 @@ impl Raku {
                                     .w_full()
                                     .min_w_0()
                                     .relative()
+                                    .group(group)
                                     .max_h(px(400.0))
                                     .overflow_hidden()
                                     .child(
@@ -2914,7 +3104,7 @@ impl Raku {
                                             .py(px(4.0))
                                             .pr(px(8.0))
                                             .child(md::render::plain_text(
-                                                content.clone(),
+                                                content,
                                                 md::render::MONO_FAMILY,
                                                 FontWeight::NORMAL,
                                                 theme.text_secondary,
@@ -2947,7 +3137,8 @@ impl Raku {
                                     .child(activity_scroll_guard(
                                         output_viewport,
                                         !activity.complete,
-                                    )),
+                                    ))
+                                    .child(copy),
                             );
                         } else {
                             section_view = section_view.child(div().w_full().min_w_0().child(
