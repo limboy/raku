@@ -16,6 +16,15 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.0] - 2026-11-11
+
+- Add a pinned task list above the working row that Claude and Codex fill as they plan multi-step work
+- Add follow-up cards under a reply that leaves you a decision, with one button per suggested answer
+- Improve the working row to name the current action, such as "Running a command 12s", and keep it between tool calls
+- Improve the live activity list to open beneath the working row instead of in its own transcript row
+- Improve the working label to match the activity text, with internal actions and reasoning folded by default
+- Remove plan-update rows from the transcript, including in sessions saved earlier
+
 ## [2.4.9] - 2026-11-10
 
 - Fix the response footer disappearing for a frame when the pointer moves from a response to its footer
