@@ -16,6 +16,27 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.4.8] - 2026-11-10
+
+- Add interface and transcript font preferences
+- Add a Text Generation setting that gives thinking rows short generated headlines
+- Pin the agent's task list above the composer as a checklist while a turn runs
+- Filter the sidebar history by project
+- Add a Shift-revealed trash button and Cmd-Backspace to remove sidebar sessions
+- Show reads, edits, and tool calls as framed cards and bash commands as prompt lines
+- Summarize turn work as plain rows such as "Ran 5 commands · 2 file reads"
+- Describe Pi commands and thinking in activity rows
+- Refine markdown typography with typographic punctuation, disc list markers, and softer link underlines
+- Raise transcript font sizes by one pixel and set inline code smaller and in the prose color
+- Render clickable inline code as a regular link
+- Improve text rendering with lighter glyph smoothing and darker light-theme body text
+- Make status, check, and code block icons bolder and keep thin icon strokes legible at small sizes
+- Improve usage popover typography and contrast and standardize small interface text at 13pt
+- Keep sidebar rows highlighted while their menu is open and lighten row hover
+- Fire menu and autocomplete clicks on release instead of press
+- Reduce disk writes while streaming by saving only changed transcript blocks
+- Fix sidebar shortcut badges shifting status icons
+
 ## [2.4.7] - 2026-11-09
 
 - Add model-specific reasoning levels for side chats, defaulting to Pi, DeepSeek, and Low
