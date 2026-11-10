@@ -18,6 +18,8 @@ session.open_snapshot: 打开对话快照
 errors.attach_session: "无法附加会话：%{error}"
 session.pin: 置顶
 session.unpin: 取消置顶
+session.remove_confirm_title: "移除“%{name}”？"
+session.remove_confirm_detail: "该任务及其对话将被删除，且无法撤销。"
 session.exported: "会话已导出到 %{path}"
 session.copied: 已复制到剪贴板
 errors.export_session: "无法导出会话：%{error}"

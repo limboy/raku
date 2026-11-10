@@ -1528,6 +1528,8 @@ pub struct Raku {
     sidebar_rows_snapshot: RefCell<Rc<Vec<SidebarRow>>>,
     /// Reveal the first nine session shortcuts while the primary modifier is held.
     sidebar_session_shortcuts_visible: bool,
+    /// Reveal each session row's remove button while Shift is held.
+    sidebar_session_remove_visible: bool,
     /// Calendar boundaries resolved by one background task; render never
     /// consults the system timezone or filesystem.
     sidebar_date_boundaries: Option<SidebarDateBoundaries>,
@@ -2327,10 +2329,10 @@ impl Raku {
             .detach();
 
             cx.observe_window_activation(window, |this: &mut Self, window, cx| {
-                this.set_sidebar_session_shortcuts_visible(
-                    window.is_window_active() && window.modifiers().secondary(),
-                    cx,
-                );
+                let active = window.is_window_active();
+                let modifiers = window.modifiers();
+                this.set_sidebar_session_shortcuts_visible(active && modifiers.secondary(), cx);
+                this.set_sidebar_session_remove_visible(active && modifiers.shift, cx);
                 if window.is_window_active() {
                     this.reload_clean_right_panel_file_editors(cx);
                     // The working tree and branch may have moved while another
@@ -2986,6 +2988,8 @@ impl Raku {
                 sidebar_rows_snapshot: RefCell::new(Rc::new(Vec::new())),
                 sidebar_session_shortcuts_visible: window.is_window_active()
                     && window.modifiers().secondary(),
+                sidebar_session_remove_visible: window.is_window_active()
+                    && window.modifiers().shift,
                 sidebar_date_boundaries: None,
                 sidebar_date_task: None,
                 transcript_row_kinds: RefCell::new(Vec::new()),

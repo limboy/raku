@@ -36,6 +36,10 @@ session.pin:
   en: Pin
 session.unpin:
   en: Unpin
+session.remove_confirm_title:
+  en: "Remove “%{name}”?"
+session.remove_confirm_detail:
+  en: "The task and its conversation will be deleted. This can’t be undone."
 session.exported:
   en: "Session exported to %{path}"
 session.copied:

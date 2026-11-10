@@ -67,6 +67,8 @@ pub fn init(cx: &mut App) {
 const SIDEBAR_SESSION_CARD_HEIGHT: f32 = 32.0;
 const SIDEBAR_SESSION_SHORTCUT_SIZE: f32 = 18.0;
 const SIDEBAR_SESSION_SHORTCUT_GAP: f32 = 6.0;
+/// The remove button's hit area: larger than its 13px glyph.
+const SIDEBAR_SESSION_REMOVE_SIZE: f32 = 24.0;
 const SIDEBAR_SESSION_ROW_GAP: f32 = 1.0;
 const SIDEBAR_SESSION_ROW_HEIGHT: f32 = SIDEBAR_SESSION_CARD_HEIGHT + SIDEBAR_SESSION_ROW_GAP;
 const TITLEBAR_BUTTON_SIZE: f32 = 26.0;
@@ -871,12 +873,14 @@ impl Raku {
                         div().px(px(10.0)).size_full().child(
                             list(
                                 self.sidebar_list_state.clone(),
-                                move |index, _window, cx| {
+                                move |index, window, cx| {
                                     entity
                                         .upgrade()
                                         .map(|entity| {
                                             entity.update(cx, |this, cx| {
-                                                this.sidebar_row(index, &rows, &shortcuts, cx)
+                                                this.sidebar_row(
+                                                    index, &rows, &shortcuts, window, cx,
+                                                )
                                             })
                                         })
                                         .unwrap_or_else(|| div().into_any_element())
@@ -1041,6 +1045,7 @@ impl Raku {
         index: usize,
         rows: &[SidebarRow],
         shortcuts: &[Option<Uuid>; SESSION_SHORTCUT_COUNT],
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match rows.get(index) {
@@ -1074,7 +1079,7 @@ impl Raku {
                 } else {
                     None
                 };
-                self.render_sidebar_session_item(*session_id, shortcut, cx)
+                self.render_sidebar_session_item(*session_id, shortcut, window, cx)
             }
             None => div().into_any_element(),
         }
@@ -1204,10 +1209,20 @@ impl Raku {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_sidebar_session_shortcuts_visible(
-            window.is_window_active() && event.secondary(),
-            cx,
-        );
+        let active = window.is_window_active();
+        self.set_sidebar_session_shortcuts_visible(active && event.secondary(), cx);
+        self.set_sidebar_session_remove_visible(active && event.modifiers.shift, cx);
+    }
+
+    pub(super) fn set_sidebar_session_remove_visible(
+        &mut self,
+        visible: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sidebar_session_remove_visible != visible {
+            self.sidebar_session_remove_visible = visible;
+            cx.notify();
+        }
     }
 
     pub(super) fn set_sidebar_session_shortcuts_visible(
@@ -1225,6 +1240,7 @@ impl Raku {
         &self,
         session_id: Uuid,
         shortcut: Option<usize>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::current(cx);
@@ -1314,8 +1330,18 @@ impl Raku {
         let row_focus = menu.trigger_focus_handle().clone();
         let keyboard_menu = menu.clone();
         let menu_open = menu.is_open();
+        // Focus changes refresh every cached pane, so reading focus here keeps
+        // the hover-revealed controls in step with keyboard focus too.
+        let row_focused = row_focus.is_focused(window);
+        let row_group = SharedString::from(format!("session-row-{session_id}"));
+        // Holding Shift arms the rows for removal: the button appears on the
+        // hovered or focused row and deletes without asking. It takes the
+        // shortcut badge's edge, which only shows while ⌘ is held.
+        let show_remove =
+            self.sidebar_session_remove_visible && !renaming && shortcut.is_none();
         let row = div()
             .id(SharedString::from(format!("session-{}", session.id)))
+            .group(row_group.clone())
             .relative()
             .w_full()
             .min_w_0()
@@ -1396,6 +1422,15 @@ impl Raku {
                         )
                     }),
             )
+            .when(show_remove, |row| {
+                row.child(self.render_sidebar_session_remove(
+                    session_id,
+                    &row_group,
+                    selected || menu_open,
+                    row_focused,
+                    cx,
+                ))
+            })
             .when_some(shortcut, |row, number| {
                 row.child(
                     div()
@@ -1425,8 +1460,12 @@ impl Raku {
                     .focus_visible(|style| style.border_1().border_color(theme.accent))
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                         let key = event.keystroke.key.as_str();
+                        let modifiers = event.keystroke.modifiers;
                         if matches!(key, "enter" | "space") {
                             this.select_session(session_id, cx);
+                            cx.stop_propagation();
+                        } else if matches!(key, "backspace" | "delete") && modifiers.platform {
+                            this.request_session_removal(session_id, modifiers.shift, window, cx);
                             cx.stop_propagation();
                         } else if key == "f10" && event.keystroke.modifiers.shift {
                             keyboard_menu.open_context_menu(window, cx);
@@ -1462,6 +1501,104 @@ impl Raku {
             .pb(px(SIDEBAR_SESSION_ROW_GAP))
             .child(row)
             .into_any_element()
+    }
+
+    /// The trash button at a session row's trailing edge, rendered only while
+    /// Shift is held. It appears on the hovered or keyboard-focused row and
+    /// covers the status icons with an opaque copy of the row's own
+    /// background, so a long title never shows through. A click removes the
+    /// session at once; Shift is the deliberate gesture.
+    fn render_sidebar_session_remove(
+        &self,
+        session_id: Uuid,
+        row_group: &SharedString,
+        highlighted: bool,
+        row_focused: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let theme = Theme::current(cx);
+        // Row backgrounds are translucent over the sidebar, so flatten them
+        // onto it: an opaque cover that matches the row exactly.
+        let resting = if highlighted {
+            theme.sidebar.blend(theme.sidebar_item_background)
+        } else {
+            theme.sidebar
+        };
+        let hovered = if highlighted {
+            resting
+        } else {
+            theme.sidebar.blend(theme.sidebar_item_hover)
+        };
+        let size = SIDEBAR_SESSION_REMOVE_SIZE;
+        div()
+            .id(SharedString::from(format!("session-remove-{session_id}")))
+            .absolute()
+            .top(px((SIDEBAR_SESSION_CARD_HEIGHT - size) / 2.0))
+            .right(px(4.0))
+            .size(px(size))
+            .rounded(px(6.0))
+            .bg(resting)
+            .group_hover(row_group.clone(), move |style| {
+                style.opacity(1.0).bg(hovered)
+            })
+            .when(!row_focused, |element| element.opacity(0.0))
+            .child(
+                div()
+                    .id("session-remove-glyph")
+                    .size_full()
+                    .rounded(px(6.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_default()
+                    .hover(|element| element.bg(theme.overlay))
+                    .active(|element| element.bg(theme.overlay_strong))
+                    .child(icon("icons/trash.svg", 13.0, theme.text_secondary)),
+            )
+            .tooltip(Tooltip::text(tr!("common.remove")))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.remove_session(session_id, cx);
+            }))
+    }
+
+    /// Remove a session from the sidebar, asking first unless `immediate`.
+    fn request_session_removal(
+        &mut self,
+        session_id: Uuid,
+        immediate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if immediate {
+            self.remove_session(session_id, cx);
+            return;
+        }
+        let Some(session) = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+        else {
+            return;
+        };
+        let title = single_line_label(&localized_session_title(session));
+        let receiver = window.prompt(
+            gpui::PromptLevel::Warning,
+            &tr!("session.remove_confirm_title", name = title),
+            Some(&tr!("session.remove_confirm_detail")),
+            &[
+                gpui::PromptButton::cancel(tr!("common.cancel")),
+                gpui::PromptButton::new(tr!("common.remove")),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if receiver.await.ok() == Some(1) {
+                let _ = this.update(cx, |this, cx| this.remove_session(session_id, cx));
+            }
+        })
+        .detach();
     }
 
     // ── Header ─────────────────────────────────────────────────────────────
