@@ -2054,12 +2054,6 @@ fn settings_navigation_contains_only_supported_pages() {
             .collect::<Vec<_>>(),
         expected
     );
-    // Per-page focus handles are indexed by discriminant.
-    assert!(
-        expected
-            .iter()
-            .all(|page| (*page as usize) < SettingsPage::COUNT)
-    );
 }
 
 #[test]

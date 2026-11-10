@@ -51,25 +51,27 @@ impl Raku {
         let list = self.visible_task_list()?;
         let theme = Theme::current(cx);
 
-        Some(div().flex_none().px(px(20.0)).pb(px(8.0)).child(
-            div()
-                .w_full()
-                .max_w(px(CONTENT_MAX_WIDTH))
-                .mx_auto()
-                .rounded(px(14.0))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.raised)
-                .px(px(16.0))
-                .py(px(12.0))
-                .child(
-                    div()
-                        .id("task-list-steps")
-                        .max_h(px(VISIBLE_STEPS * STEP_HEIGHT))
-                        .overflow_y_scroll()
-                        .children(list.steps.iter().map(|step| task_step_row(step, theme))),
-                ),
-        ))
+        Some(
+            div().flex_none().px(px(20.0)).pb(px(8.0)).child(
+                div()
+                    .w_full()
+                    .max_w(px(CONTENT_MAX_WIDTH))
+                    .mx_auto()
+                    .rounded(px(14.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.raised)
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .child(
+                        div()
+                            .id("task-list-steps")
+                            .max_h(px(VISIBLE_STEPS * STEP_HEIGHT))
+                            .overflow_y_scroll()
+                            .children(list.steps.iter().map(|step| task_step_row(step, theme))),
+                    ),
+            ),
+        )
     }
 }
 

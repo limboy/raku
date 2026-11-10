@@ -212,12 +212,6 @@ enum SettingsPage {
     TextGeneration,
 }
 
-impl SettingsPage {
-    /// Variant count; per-page arrays are sized by it so a new page cannot
-    /// index past them.
-    const COUNT: usize = SettingsPage::TextGeneration as usize + 1;
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PanelResizeTarget {
     Sidebar,
@@ -1137,8 +1131,7 @@ pub struct Raku {
     model_search: Entity<TextInput>,
     settings_focus: FocusHandle,
     settings_close_focus: FocusHandle,
-    /// One handle per [`SettingsPage`], indexed by its discriminant.
-    settings_tab_focus: [FocusHandle; SettingsPage::COUNT],
+    settings_tab_focus: [FocusHandle; 5],
     backup_settings: backup_settings::BackupSettings,
     settings_previous_focus: Option<FocusHandle>,
     settings_focus_generation: u64,

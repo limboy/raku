@@ -2486,7 +2486,6 @@ impl Raku {
             return cluster.into_any_element();
         }
         // `Theme::overlay` is 5% alpha and GPUI's `opacity` multiplies it.
-        let activity_surface = theme.surface.blend(theme.overlay.opacity(0.7));
         let activity_hover_surface = theme.surface.blend(theme.overlay);
         let activity_active_surface = theme.surface.blend(theme.overlay_strong.opacity(0.72));
         let mut items = div()
@@ -2729,8 +2728,9 @@ impl Raku {
                 items = items.child(item);
                 continue;
             }
-            // Only expanded detail owns a surface. Inset its children so diff
-            // bands and edge fades stay inside GPUI's rectangular clipping.
+            // Expanded detail adds no fill of its own, so thinking reads as
+            // transcript prose. Still inset its children so diff bands and edge
+            // fades stay inside GPUI's rectangular clipping.
             let mut detail = div()
                 .min_w_0()
                 .ml(px(28.0))
@@ -2742,7 +2742,6 @@ impl Raku {
                 .rounded(px(6.0))
                 .border_1()
                 .border_color(theme.border)
-                .bg(activity_surface)
                 .flex()
                 .flex_col();
             if let Some(reasoning) = reasoning {
@@ -2830,12 +2829,12 @@ impl Raku {
                         .child(scrollbar::edge_fade(
                             reasoning_viewport.scroll_handle.clone(),
                             scrollbar::FadeEdge::Top,
-                            activity_surface,
+                            theme.surface,
                         ))
                         .child(scrollbar::edge_fade(
                             reasoning_viewport.scroll_handle.clone(),
                             scrollbar::FadeEdge::Bottom,
-                            activity_surface,
+                            theme.surface,
                         ))
                         .child(scrollbar::vertical(
                             &reasoning_viewport.scroll_handle,
@@ -2850,7 +2849,7 @@ impl Raku {
                     detail = detail.child(self.render_activity_diff(
                         id,
                         &diff,
-                        activity_surface,
+                        theme.surface,
                         theme,
                         cx,
                     ));
@@ -3024,7 +3023,7 @@ impl Raku {
                                 section_kind,
                                 content.clone(),
                                 group.clone(),
-                                activity_surface,
+                                theme.surface,
                                 4.0,
                                 4.0,
                                 theme,
@@ -3068,7 +3067,7 @@ impl Raku {
                                 section_kind,
                                 content.clone(),
                                 group.clone(),
-                                activity_surface,
+                                theme.surface,
                                 4.0,
                                 12.0,
                                 theme,
@@ -3123,12 +3122,12 @@ impl Raku {
                                     .child(scrollbar::edge_fade(
                                         output_viewport.scroll_handle.clone(),
                                         scrollbar::FadeEdge::Top,
-                                        activity_surface,
+                                        theme.surface,
                                     ))
                                     .child(scrollbar::edge_fade(
                                         output_viewport.scroll_handle.clone(),
                                         scrollbar::FadeEdge::Bottom,
-                                        activity_surface,
+                                        theme.surface,
                                     ))
                                     .child(scrollbar::vertical(
                                         &output_viewport.scroll_handle,
