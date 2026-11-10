@@ -24,6 +24,7 @@ macro_rules! icons {
 // Stable paths for controls, provider logos, file types, and specialized glyphs.
 const ICONS: &[(&str, &[u8])] = icons![
     "alert" => "ant/warning",
+    "alert-bold",
     "appearance" => "ant/palette",
     "arrow-down" => "ant/arrow-down",
     "arrow-left" => "ant/arrow-left",
@@ -165,11 +166,13 @@ const ICONS: &[(&str, &[u8])] = icons![
     "globe" => "ant/globe",
     "hexagon" => "ant/cube",
     "hourglass" => "ant/clock",
+    "hourglass-bold",
     "info" => "ant/info-circle",
     "laptop" => "ant/laptop",
     "list-filter" => "ant/filter",
     "list" => "ant/list",
     "loader-circle" => "ant/loader",
+    "loader-circle-bold",
     "lock-open" => "ant/unlock",
     "lock" => "ant/lock",
     "package" => "ant/cube",
@@ -208,6 +211,7 @@ const ICONS: &[(&str, &[u8])] = icons![
     "window-restore" => "ant/copy-alt",
     "wrench" => "ant/wrench",
     "x" => "ant/x",
+    "x-bold",
     "zap" => "ant/bolt",
 ];
 

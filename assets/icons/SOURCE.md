@@ -17,7 +17,13 @@ uses `ant/edit`, `terminal` uses `ant/prompt`, and `loader-circle` uses
 Seven specialized glyphs remain because the pack has no direct equivalents:
 the five search controls (`case-sensitive`, `whole-word`, `regex`, `replace`,
 and `replace-all`), the projectless `folder-dashed`, and Raku's six-spoke
-`sparkle`. The search glyphs marked `lucide-static v1.69.0` come from
+`sparkle`. Four Raku derivatives extend the pack so the session status icons
+hold up at a 12px row: `loader-circle-bold` redraws `ant/loader` at the same
+`398`-unit outer radius and 270° arc with a `96`-unit ring instead of `58`,
+and `alert-bold`, `hourglass-bold`, and `x-bold` reuse the supplied
+`ant/warning`, `ant/clock`, and `ant/x` paths with a `38`-unit
+`currentColor` stroke that expands every outline edge by roughly 19 units per
+side. The search glyphs marked `lucide-static v1.69.0` come from
 [`lucide-static` 1.69.0](https://www.npmjs.com/package/lucide-static/v/1.69.0);
 their ISC and Feather MIT notices remain in [LICENSE-lucide.txt](LICENSE-lucide.txt).
 

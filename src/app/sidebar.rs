@@ -1340,21 +1340,21 @@ impl Raku {
                     })
                     .when(session.status == SessionStatus::Background, |element| {
                         element.child(icon(
-                            "icons/hourglass.svg",
+                            "icons/hourglass-bold.svg",
                             12.0,
                             status_color(&theme, session.status),
                         ))
                     })
                     .when(session.status == SessionStatus::Waiting, |element| {
                         element.child(icon(
-                            "icons/alert.svg",
+                            "icons/alert-bold.svg",
                             12.0,
                             status_color(&theme, session.status),
                         ))
                     })
                     .when(session.status == SessionStatus::Failed, |element| {
                         element.child(icon(
-                            "icons/x.svg",
+                            "icons/x-bold.svg",
                             12.0,
                             status_color(&theme, session.status),
                         ))

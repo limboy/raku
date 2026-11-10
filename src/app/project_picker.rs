@@ -895,15 +895,20 @@ fn project_picker_finished_dot(theme: &Theme) -> Div {
 fn project_picker_status_icon(status: SessionStatus, theme: &Theme) -> Option<AnyElement> {
     match status {
         SessionStatus::Connecting | SessionStatus::Working => Some(motion::spin_slow(icon(
-            "icons/loader-circle.svg",
+            "icons/loader-circle-bold.svg",
             12.0,
             status_color(theme, status),
         ))),
-        SessionStatus::Background => {
-            Some(icon("icons/hourglass.svg", 12.0, status_color(theme, status)).into_any_element())
-        }
+        SessionStatus::Background => Some(
+            icon(
+                "icons/hourglass-bold.svg",
+                12.0,
+                status_color(theme, status),
+            )
+            .into_any_element(),
+        ),
         SessionStatus::Waiting => {
-            Some(icon("icons/alert.svg", 12.0, status_color(theme, status)).into_any_element())
+            Some(icon("icons/alert-bold.svg", 12.0, status_color(theme, status)).into_any_element())
         }
         SessionStatus::Idle | SessionStatus::Failed => None,
     }
