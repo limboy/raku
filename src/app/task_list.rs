@@ -10,7 +10,7 @@ use crate::model::{PlanStep, PlanStepStatus};
 /// Rows shown before the list scrolls, so a long plan cannot crowd out the
 /// transcript.
 const VISIBLE_STEPS: f32 = 8.0;
-const STEP_HEIGHT: f32 = 28.0;
+const STEP_HEIGHT: f32 = 30.0;
 
 /// A session's task list as of its latest plan update.
 pub(super) struct SessionTaskList {
@@ -60,9 +60,9 @@ impl Raku {
                     .rounded(px(14.0))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.raised)
+                    .bg(theme.surface)
                     .px(px(16.0))
-                    .py(px(12.0))
+                    .py(px(14.0))
                     .child(
                         div()
                             .id("task-list-steps")
@@ -97,7 +97,7 @@ fn task_step_row(step: &PlanStep, theme: Theme) -> Div {
         ),
         PlanStepStatus::Pending => (
             "icons/ant/circle-dashed.svg",
-            theme.text_tertiary,
+            theme.text_secondary,
             theme.text,
         ),
     };
@@ -105,8 +105,8 @@ fn task_step_row(step: &PlanStep, theme: Theme) -> Div {
         .h(px(STEP_HEIGHT))
         .flex()
         .items_center()
-        .gap(px(10.0))
-        .child(icon(glyph, 15.0, glyph_color))
+        .gap(px(8.0))
+        .child(icon(glyph, 14.0, glyph_color))
         .child(
             div()
                 .flex_1()

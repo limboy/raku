@@ -1312,6 +1312,25 @@ impl AgentSession {
             .any(|message| message.turn_id == Some(turn.id))
     }
 
+    /// Task-list updates feed the pinned task list, not the transcript.
+    /// Sessions saved before that kept them as activity rows; this drops
+    /// them, and any block left empty, when such a session is loaded.
+    pub fn drop_plan_activities(&mut self) {
+        if !self
+            .transcript_blocks
+            .iter()
+            .any(|block| block.activities.iter().any(|activity| activity.kind == ActivityKind::Plan))
+        {
+            return;
+        }
+        self.transcript_blocks.retain_mut(|block| {
+            block
+                .activities
+                .retain(|activity| activity.kind != ActivityKind::Plan);
+            !block.activities.is_empty()
+        });
+    }
+
     pub fn active_turn_id(&self) -> Option<Uuid> {
         self.turns
             .last()

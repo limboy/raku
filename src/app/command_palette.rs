@@ -1112,6 +1112,7 @@ impl Raku {
         session.messages = history.messages;
         session.turns = history.turns;
         session.transcript_blocks = history.transcript_blocks;
+        session.drop_plan_activities();
         let session_id = session.id;
         self.state.push_session(session);
 

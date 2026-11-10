@@ -1483,7 +1483,8 @@ impl StateStore {
             return Ok(());
         }
         match hydrate_session(&self.daemon, session.id)? {
-            Some(stored) => {
+            Some(mut stored) => {
+                stored.drop_plan_activities();
                 *session = stored;
                 Ok(())
             }

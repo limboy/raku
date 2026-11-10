@@ -465,8 +465,12 @@ impl Raku {
                     self.observe_foreground_command_activity(session_id, &item);
                     // Plan steps only ever ride rich activities (Claude's
                     // TaskCreate/TaskUpdate result, Codex's plan update).
+                    // They feed the pinned task list; as transcript rows
+                    // they only repeated it, one row per update.
                     self.observe_plan_steps(session_id, &item);
-                    self.update_activity(session_id, runtime, item);
+                    if item.kind != ActivityKind::Plan {
+                        self.update_activity(session_id, runtime, item);
+                    }
                     if refresh_branch {
                         self.refresh_selected_branch_snapshot(cx);
                     }
