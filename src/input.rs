@@ -2674,7 +2674,16 @@ impl Element for InputElement {
         let theme = Theme::current(cx);
         let content_is_empty = content.is_empty();
         let (display_text, text_color, selected_range, marked_range) = if content_is_empty {
-            (input.placeholder.clone(), theme.text_ghost, None, None)
+            // gpui dilates glyphs whose color is light (luminance ≥ 0.6), which
+            // catches the light theme's ghost grey and draws the placeholder
+            // heavier than typed text. Translucent black composites to the
+            // same grey on the white composer without tripping that.
+            let color = if theme.is_dark {
+                theme.text_ghost
+            } else {
+                gpui::hsla(0.0, 0.0, 0.0, 1.0 - theme.text_ghost.l)
+            };
+            (input.placeholder.clone(), color, None, None)
         } else {
             (
                 content,
