@@ -1294,6 +1294,10 @@ pub struct Raku {
     /// off the runtime: a Codex plan ends its turn, and the idle reaper may
     /// release that runtime long before the user decides.
     pending_plans: HashMap<Uuid, PendingPlan>,
+    /// Each session's task list as of its latest plan update. Runtime-only:
+    /// the transcript keeps the durable record.
+    task_lists: HashMap<Uuid, task_list::SessionTaskList>,
+    task_list_collapsed: bool,
     last_background_work_tick: Instant,
     /// Accepted submissions still creating their workspace/checkpoint, or an
     /// edited past message still rewinding its workspace and provider. The
@@ -1677,6 +1681,7 @@ mod side_chat;
 mod sidebar;
 mod skills_page;
 mod streaming;
+mod task_list;
 mod task_switcher;
 mod transcript;
 mod transcript_search;
@@ -2818,6 +2823,8 @@ impl Raku {
                 runtime_attach_misses: HashMap::new(),
                 background_work: HashMap::new(),
                 pending_plans: HashMap::new(),
+                task_lists: HashMap::new(),
+                task_list_collapsed: false,
                 last_background_work_tick: Instant::now(),
                 submission_preparations: HashSet::new(),
                 escape_stop_confirmation: EscapeStopConfirmation::default(),

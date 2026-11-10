@@ -387,6 +387,7 @@ impl Raku {
                         && self.state.selected_session == Some(session_id);
                     let item = ActivityItem::new(id, kind, title, detail, complete);
                     self.observe_foreground_command_activity(session_id, &item);
+                    self.observe_plan_steps(session_id, &item);
                     self.update_activity(session_id, runtime, item);
                     if refresh_branch {
                         self.refresh_selected_branch_snapshot(cx);
@@ -1297,6 +1298,9 @@ pub(super) fn update_session_activity(
             }
             if item.reasoning.is_some() {
                 activity.reasoning = item.reasoning;
+            }
+            if !item.plan_steps.is_empty() {
+                activity.plan_steps = item.plan_steps;
             }
             session.updated_at = unix_time();
             return (activity.id, false);

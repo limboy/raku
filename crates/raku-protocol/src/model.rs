@@ -1672,7 +1672,13 @@ impl ActivityKind {
             Self::ImageGeneration
         } else if matches!(
             compact.as_str(),
-            "todo" | "todowrite" | "updateplan" | "plan" | "managetask"
+            "todo"
+                | "todowrite"
+                | "updateplan"
+                | "plan"
+                | "managetask"
+                | "taskcreate"
+                | "taskupdate"
         ) {
             Self::Plan
         } else if matches!(
@@ -2319,6 +2325,64 @@ impl ActivityFileChange {
     }
 }
 
+/// Where one step of an agent's task list stands.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanStepStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl PlanStepStatus {
+    /// Reads the spellings the providers use (`in_progress`, `inProgress`).
+    /// Anything unrecognized is still to do.
+    pub fn from_wire(status: Option<&str>) -> Self {
+        match status.map(str::trim) {
+            Some("completed" | "done") => Self::Completed,
+            Some("in_progress" | "inProgress" | "active") => Self::InProgress,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// One step of an agent's task list, in the provider's order.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlanStep {
+    pub text: String,
+    #[serde(default)]
+    pub status: PlanStepStatus,
+}
+
+impl PlanStep {
+    /// Steps from a whole-list tool input: Claude's `TodoWrite`
+    /// (`todos[].content`) and Codex's `update_plan` (`plan[].step`).
+    pub fn list_from_value(source: &serde_json::Value) -> Vec<Self> {
+        let Some(entries) = ["todos", "plan", "steps"]
+            .iter()
+            .find_map(|key| source.get(key).and_then(serde_json::Value::as_array))
+        else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let text = ["content", "step", "subject", "text"]
+                    .iter()
+                    .find_map(|key| entry.get(key).and_then(serde_json::Value::as_str))?
+                    .trim();
+                (!text.is_empty()).then(|| Self {
+                    text: text.to_owned(),
+                    status: PlanStepStatus::from_wire(
+                        entry.get("status").and_then(serde_json::Value::as_str),
+                    ),
+                })
+            })
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ActivityItem {
     pub id: Uuid,
@@ -2365,6 +2429,10 @@ pub struct ActivityItem {
     pub reasoning: Option<ReasoningBlock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<crate::compaction::ContextCompaction>,
+    /// The agent's whole task list as of this plan update, prepared when the
+    /// event arrives so the pinned task list never reparses tool input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_steps: Vec<PlanStep>,
 }
 
 impl ActivityItem {
@@ -2426,7 +2494,13 @@ impl ActivityItem {
             display_description: None,
             reasoning: None,
             compaction: None,
+            plan_steps: Vec::new(),
         }
+    }
+
+    pub fn with_plan_steps(mut self, steps: Vec<PlanStep>) -> Self {
+        self.plan_steps = steps;
+        self
     }
 
     pub fn from_reasoning(reasoning: ReasoningBlock, complete: bool) -> Self {
@@ -2632,6 +2706,12 @@ impl ActivityItem {
         }
         if let Some(target) = extract_activity_display_target(self.kind, source) {
             self.display_target = Some(target);
+        }
+        if self.kind == ActivityKind::Plan {
+            let steps = PlanStep::list_from_value(source);
+            if !steps.is_empty() {
+                self.plan_steps = steps;
+            }
         }
         if self.kind == ActivityKind::Command
             && let Some(description) =

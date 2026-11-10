@@ -26,7 +26,7 @@ use crate::driver::{
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
     BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, GoalOperation, PermissionOption,
-    ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus, UserInputAnswer,
+    PlanStep, ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus, UserInputAnswer,
     UserInputDelivery, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
@@ -1381,13 +1381,16 @@ fn codex_plan_activity(params: &Value) -> Option<ActivityItem> {
         completed = completed,
         total = steps.len()
     ));
-    Some(ActivityItem::new(
-        Some(format!("plan-{}", uuid::Uuid::new_v4())),
-        ActivityKind::Plan,
-        title,
-        Some(checklist),
-        true,
-    ))
+    Some(
+        ActivityItem::new(
+            Some(format!("plan-{}", uuid::Uuid::new_v4())),
+            ActivityKind::Plan,
+            title,
+            Some(checklist),
+            true,
+        )
+        .with_plan_steps(PlanStep::list_from_value(params)),
+    )
 }
 
 /// The native turn count to drop and the first turn `thread/revert` removes.
@@ -2924,6 +2927,7 @@ fn is_visible_stderr_notice(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::PlanStepStatus;
     use std::fs;
 
     #[test]
@@ -4491,6 +4495,22 @@ mod tests {
         );
         assert_ne!(rows[0].source_id, rows[1].source_id);
         assert_eq!(rows[0].title, "Shape it into 5–7–5 syllables");
+        assert_eq!(
+            rows[0]
+                .plan_steps
+                .iter()
+                .map(|step| step.status)
+                .collect::<Vec<_>>(),
+            [
+                PlanStepStatus::Completed,
+                PlanStepStatus::InProgress,
+                PlanStepStatus::Pending
+            ]
+        );
+        assert_eq!(
+            rows[0].plan_steps[2].text,
+            "Polish the haiku’s final wording"
+        );
         assert_eq!(
             rows[0].detail.as_deref(),
             Some(

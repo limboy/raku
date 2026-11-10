@@ -849,6 +849,12 @@ mode.plan_off_tooltip:
   en: Plan first — investigate and propose a plan before changing anything (⌘⇧P)
 mode.plan_on_tooltip:
   en: Planning — the agent proposes a plan for approval before changing anything. Click to turn off (⌘⇧P)
+task_list.title:
+  en: Tasks
+task_list.expand:
+  en: Show tasks
+task_list.collapse:
+  en: Hide tasks
 plan.ready:
   en: Plan ready
 plan.ready_detail:

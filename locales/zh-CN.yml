@@ -415,6 +415,9 @@ mode.plan: 计划
 mode.planning: 计划中
 mode.plan_off_tooltip: 先调查并提出计划，再进行任何修改（⌘⇧P）
 mode.plan_on_tooltip: 代理会在修改前提出计划并等待批准。点击关闭（⌘⇧P）
+task_list.title: 任务
+task_list.expand: 显示任务
+task_list.collapse: 隐藏任务
 plan.ready: 计划已就绪
 plan.ready_detail: "以“%{mode}”实施，或在下方回复以修改计划。"
 plan.implement: 实施计划

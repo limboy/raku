@@ -45,8 +45,8 @@ use crate::driver::{
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
     BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, PermissionOption, PlanDecision,
-    ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputDelivery, UserInputOption,
-    UserInputQuestion, unix_time_millis,
+    PlanStep, PlanStepStatus, ProviderResumeCursor, RuntimeMode, UserInputAnswer,
+    UserInputDelivery, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 enum CommandMessage {
@@ -119,6 +119,146 @@ pub struct ClaudeDriver {
     /// `ExitPlanMode` inputs awaiting the user's decision, by request id.
     pending_plans: Arc<Mutex<HashMap<String, Value>>>,
     mode: RuntimeMode,
+}
+
+const TODO_TOOLS_ENV: &str = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
+const TASK_CREATE_TOOL: &str = "TaskCreate";
+const TASK_UPDATE_TOOL: &str = "TaskUpdate";
+
+/// Claude's task list, rebuilt from the tool stream: `TaskCreate` and
+/// `TaskUpdate` each name one task, never the list, so the whole list the
+/// pinned view needs only exists as the sum of the calls so far.
+#[derive(Debug, Default)]
+struct ClaudeTaskList {
+    /// Task id → step, in creation order.
+    tasks: Vec<(String, PlanStep)>,
+    /// Task tool inputs awaiting their result, by tool-use id.
+    pending: HashMap<String, Value>,
+}
+
+impl ClaudeTaskList {
+    fn is_task_tool(name: &str) -> bool {
+        name == TASK_CREATE_TOOL || name == TASK_UPDATE_TOOL
+    }
+
+    /// The task a call is about, as its row title: the subject it carries,
+    /// or the one its `taskId` already has.
+    fn subject(&self, input: Option<&Value>) -> Option<String> {
+        let input = input?;
+        let text = |key: &str| {
+            input
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+        };
+        text("subject").map(str::to_owned).or_else(|| {
+            let id = text("taskId")?;
+            self.tasks
+                .iter()
+                .find(|(task, _)| task == id)
+                .map(|(_, step)| step.text.clone())
+        })
+    }
+
+    /// Folds one settled task call into the list and returns the list as it
+    /// now stands. `None` when the call changed nothing Raku can show.
+    fn settle(
+        &mut self,
+        tool_use_id: &str,
+        failed: bool,
+        result: Option<&Value>,
+        session_id: &str,
+    ) -> Option<Vec<PlanStep>> {
+        let input = self.pending.remove(tool_use_id)?;
+        if failed || result.and_then(|result| result.get("success")) == Some(&Value::Bool(false)) {
+            return None;
+        }
+        let text = |value: Option<&Value>| {
+            value
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        let status = input.get("status").and_then(Value::as_str);
+        if let Some(id) = text(input.get("taskId")) {
+            let Some(index) = self.tasks.iter().position(|(task, _)| *task == id) else {
+                // A list begun before this process started (a resumed
+                // session): Claude's own store already holds this update.
+                self.tasks = claude_tasks_on_disk(session_id)?;
+                return self.steps();
+            };
+            if status == Some("deleted") {
+                self.tasks.remove(index);
+            } else {
+                let step = &mut self.tasks[index].1;
+                if status.is_some() {
+                    step.status = PlanStepStatus::from_wire(status);
+                }
+                if let Some(subject) = text(input.get("subject")) {
+                    step.text = subject;
+                }
+            }
+        } else {
+            let task = result.and_then(|result| result.get("task"));
+            let id = text(task.and_then(|task| task.get("id")))?;
+            let subject = text(task.and_then(|task| task.get("subject")))
+                .or_else(|| text(input.get("subject")))?;
+            if !self.tasks.iter().any(|(task, _)| *task == id) {
+                self.tasks.push((
+                    id,
+                    PlanStep {
+                        text: subject,
+                        status: PlanStepStatus::Pending,
+                    },
+                ));
+            }
+        }
+        self.steps()
+    }
+
+    fn steps(&self) -> Option<Vec<PlanStep>> {
+        (!self.tasks.is_empty()).then(|| self.tasks.iter().map(|(_, step)| step.clone()).collect())
+    }
+}
+
+/// The session's task list as Claude persists it: one `<id>.json` per task
+/// under `<config>/tasks/<session>/`. Runs on the reader thread, and only
+/// when the stream names a task this process never saw created.
+fn claude_tasks_on_disk(session_id: &str) -> Option<Vec<(String, PlanStep)>> {
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))?;
+    claude_tasks_in(&config.join("tasks"), session_id)
+}
+
+fn claude_tasks_in(root: &Path, session_id: &str) -> Option<Vec<(String, PlanStep)>> {
+    Uuid::parse_str(session_id).ok()?;
+    let mut tasks = std::fs::read_dir(root.join(session_id))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| {
+            let task: Value = serde_json::from_slice(&std::fs::read(entry.path()).ok()?).ok()?;
+            let field = |key: &str| task.get(key).and_then(Value::as_str).map(str::trim);
+            let status = field("status");
+            let (id, subject) = (field("id")?, field("subject")?);
+            (status != Some("deleted") && !subject.is_empty()).then(|| {
+                (
+                    id.to_owned(),
+                    PlanStep {
+                        text: subject.to_owned(),
+                        status: PlanStepStatus::from_wire(status),
+                    },
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    // Ids are decimal counters; creation order is numeric order.
+    tasks.sort_by_key(|(id, _)| id.parse::<u64>().unwrap_or(u64::MAX));
+    (!tasks.is_empty()).then_some(tasks)
 }
 
 /// Claude's native plan-approval tool. In plan mode the agent calls it with
@@ -298,6 +438,15 @@ fn configure_stream_command(command: &mut Command, mode: RuntimeMode, plan_mode:
         "--append-system-prompt",
         super::USER_RUN_INSTRUCTIONS,
     ]);
+    // Print mode leaves the task-list tools out for current models unless
+    // asked (verified on the CLI, 2.1.316); they feed the pinned task list.
+    // A value the user exported themselves wins.
+    if !command
+        .get_envs()
+        .any(|(key, _)| key == std::ffi::OsStr::new(TODO_TOOLS_ENV))
+    {
+        command.env(TODO_TOOLS_ENV, "1");
+    }
     if mode == RuntimeMode::FullAccess {
         // The forcing flag overrides `--permission-mode plan` at launch;
         // the permissive one only makes bypass available, which approving a
@@ -880,6 +1029,7 @@ struct ClaudeStreamState {
     /// the approval as a plan prompt, so the raw tool call and its result
     /// stay out of the activity rows.
     hidden_tools: HashSet<String>,
+    task_list: ClaudeTaskList,
     /// Model of the latest main-thread assistant message, so the settled
     /// turn's `modelUsage` map can be read for that model's context window
     /// rather than a subagent's.
@@ -1876,7 +2026,18 @@ fn handle_message(
                                 })
                                 .flatten()
                             })
+                            .or_else(|| {
+                                ClaudeTaskList::is_task_tool(&wire_title)
+                                    .then(|| state.task_list.subject(block.get("input")))
+                                    .flatten()
+                            })
                             .unwrap_or_else(|| wire_title.clone());
+                        if let Some(id) = &id
+                            && ClaudeTaskList::is_task_tool(&wire_title)
+                            && let Some(input) = block.get("input")
+                        {
+                            state.task_list.pending.insert(id.clone(), input.clone());
+                        }
                         if let Some(id) = &id {
                             let command = block
                                 .pointer("/input/command")
@@ -1949,6 +2110,11 @@ fn handle_message(
                     .then(|| value.get("tool_use_result"))
                     .flatten()
                     .filter(|result| !result.is_null());
+                let plan_steps = id.as_deref().and_then(|id| {
+                    state
+                        .task_list
+                        .settle(id, failed, value.get("tool_use_result"), session_id)
+                });
                 let item = activity::tool_activity(
                     id,
                     kind,
@@ -1960,7 +2126,8 @@ fn handle_message(
                     true,
                 )
                 .with_activity_source(patch)
-                .with_tool_name(Some(&wire_name));
+                .with_tool_name(Some(&wire_name))
+                .with_plan_steps(plan_steps.unwrap_or_default());
                 let _ = events.send(DriverEvent::RichActivity(item));
             }
         }
@@ -3216,6 +3383,136 @@ mod tests {
             ["Hello"],
             "subagent partials leaked or re-armed the fallback"
         );
+    }
+
+    #[test]
+    fn task_tool_calls_accumulate_into_the_whole_task_list() {
+        let (events, event_rx, commands, _command_rx, turn, mut state) = harness();
+        // Payloads from a live CLI 2.1.316 turn with the todo tools enabled.
+        let call = |id: &str, name: &str, input: Value, result: Value| {
+            [
+                json!({"type":"assistant","message":{"content":[
+                    {"type":"tool_use","id":id,"name":name,"input":input}]}}),
+                json!({"type":"user","message":{"content":[
+                    {"type":"tool_result","tool_use_id":id,"content":"ok"}]},
+                    "tool_use_result":result}),
+            ]
+        };
+        let wire = [
+            call(
+                "t1",
+                "TaskCreate",
+                json!({"subject":"Alpha","description":"Step Alpha"}),
+                json!({"task":{"id":"1","subject":"Alpha"}}),
+            ),
+            call(
+                "t2",
+                "TaskCreate",
+                json!({"subject":"Beta","description":"Step Beta"}),
+                json!({"task":{"id":"2","subject":"Beta"}}),
+            ),
+            call(
+                "t3",
+                "TaskUpdate",
+                json!({"taskId":"1","status":"completed"}),
+                json!({"success":true,"taskId":"1","updatedFields":["status"],
+                    "statusChange":{"from":"pending","to":"completed"}}),
+            ),
+            call(
+                "t4",
+                "TaskUpdate",
+                json!({"taskId":"2","status":"in_progress"}),
+                json!({"success":true,"taskId":"2","updatedFields":["status"],
+                    "statusChange":{"from":"pending","to":"in_progress"}}),
+            ),
+        ];
+        for value in wire.iter().flatten() {
+            handle_message(
+                value,
+                "s",
+                &events,
+                &commands,
+                &turn,
+                PermissionPolicy::AutoApprove,
+                &mut state,
+            );
+        }
+        let rows = event_rx
+            .try_iter()
+            .filter_map(|event| match event {
+                DriverEvent::RichActivity(item) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 8);
+        assert!(rows.iter().all(|row| row.kind == ActivityKind::Plan));
+        assert_eq!(
+            rows[0].title, "Alpha",
+            "a new task is titled by its subject"
+        );
+        assert_eq!(
+            rows[6].title, "Beta",
+            "an update is titled by the task it names"
+        );
+        assert!(
+            rows[6].plan_steps.is_empty(),
+            "the list changes on the result"
+        );
+        let step = |text: &str, status| PlanStep {
+            text: text.to_owned(),
+            status,
+        };
+        assert_eq!(
+            rows[3].plan_steps,
+            [
+                step("Alpha", PlanStepStatus::Pending),
+                step("Beta", PlanStepStatus::Pending)
+            ]
+        );
+        assert_eq!(
+            rows[7].plan_steps,
+            [
+                step("Alpha", PlanStepStatus::Completed),
+                step("Beta", PlanStepStatus::InProgress)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_task_is_recovered_from_claudes_task_store() {
+        let root = std::env::temp_dir().join(format!("raku-claude-tasks-test-{}", Uuid::new_v4()));
+        let session = "b2619e11-6131-4712-9830-b48c0b538715";
+        let directory = root.join(session);
+        std::fs::create_dir_all(&directory).unwrap();
+        // File contents as the CLI (2.1.316) writes them.
+        for (id, subject, status) in [
+            ("10", "Gamma", "pending"),
+            ("2", "Beta", "in_progress"),
+            ("1", "Alpha", "completed"),
+        ] {
+            std::fs::write(
+                directory.join(format!("{id}.json")),
+                json!({"id":id,"subject":subject,"description":"","status":status,
+                    "blocks":[],"blockedBy":[]})
+                .to_string(),
+            )
+            .unwrap();
+        }
+        std::fs::write(directory.join(".lock"), "").unwrap();
+        let tasks = claude_tasks_in(&root, session).unwrap();
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|(id, step)| (id.as_str(), step.text.as_str(), step.status))
+                .collect::<Vec<_>>(),
+            [
+                ("1", "Alpha", PlanStepStatus::Completed),
+                ("2", "Beta", PlanStepStatus::InProgress),
+                ("10", "Gamma", PlanStepStatus::Pending)
+            ]
+        );
+        assert!(claude_tasks_in(&root, "../escape").is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

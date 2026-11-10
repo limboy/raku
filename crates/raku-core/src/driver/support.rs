@@ -78,6 +78,11 @@ mod tests {
     fn todo_tools_are_plans_not_file_writes() {
         assert_eq!(classify_tool("TodoWrite"), ActivityKind::Plan);
         assert_eq!(classify_tool("todo_write"), ActivityKind::Plan);
+        assert_eq!(classify_tool("TaskCreate"), ActivityKind::Plan);
+        assert_eq!(classify_tool("TaskUpdate"), ActivityKind::Plan);
+        // The subagent launcher and its stop control are not the task list.
+        assert_eq!(classify_tool("Task"), ActivityKind::Tool);
+        assert_eq!(classify_tool("TaskStop"), ActivityKind::Tool);
         assert_eq!(classify_tool("apply_patch"), ActivityKind::FileChange);
         assert_eq!(classify_tool("read"), ActivityKind::FileRead);
         assert_eq!(classify_tool("ReadFile"), ActivityKind::FileRead);
