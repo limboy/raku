@@ -461,12 +461,13 @@ impl Raku {
         let entity = cx.entity().downgrade();
         // Coalesce mounting and focus into the first draw, rather than
         // refreshing the whole window again after an unfocused frame.
+        // Focus the popup itself, not its first tab: opening from ⌘, counts
+        // as keyboard input, so a focused tab would draw its focus ring
+        // until the mouse moved. Tab still steps into the sidebar from here.
         window.defer(cx, move |window, cx| {
             let _ = entity.update(cx, |this, cx| {
-                if this.settings_focus_generation == generation
-                    && let Some(page) = this.settings_page
-                {
-                    window.focus(&this.settings_tab_focus[page as usize], cx);
+                if this.settings_focus_generation == generation && this.settings_page.is_some() {
+                    window.focus(&this.settings_focus, cx);
                 }
             });
         });
