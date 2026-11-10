@@ -212,6 +212,11 @@ enum SettingsPage {
     TextGeneration,
 }
 
+impl SettingsPage {
+    /// Number of pages; sizes per-page state such as the tab focus handles.
+    const COUNT: usize = SettingsPage::TextGeneration as usize + 1;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PanelResizeTarget {
     Sidebar,
@@ -1131,7 +1136,7 @@ pub struct Raku {
     model_search: Entity<TextInput>,
     settings_focus: FocusHandle,
     settings_close_focus: FocusHandle,
-    settings_tab_focus: [FocusHandle; 5],
+    settings_tab_focus: [FocusHandle; SettingsPage::COUNT],
     backup_settings: backup_settings::BackupSettings,
     settings_previous_focus: Option<FocusHandle>,
     settings_focus_generation: u64,
