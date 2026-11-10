@@ -638,6 +638,10 @@ const TEXT_FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-BoldItalic.ttf"),
+    // Optical-size cut for inline code; see `md::render::INLINE_MONO_FAMILY`
+    // and `scripts/derive-inline-mono.py`.
+    include_bytes!("../assets/fonts/JetBrainsMonoSmall-Regular.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMonoSmall-Italic.ttf"),
 ];
 
 /// Symbols-only icon face resolved via CoreText cascade (`FontFallbacks`),

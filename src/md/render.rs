@@ -196,6 +196,12 @@ pub const SANS_FAMILY: &str = ".SystemUIFont";
 /// with Xcode or Terminal, and silently falls back to the sans face when it
 /// does not — which reads as proportional code.
 pub const MONO_FAMILY: &str = "JetBrains Mono";
+/// Inline `code` in prose. A GPUI paragraph is shaped at one font size, so an
+/// inline run cannot be set smaller than the text around it: this is the same
+/// mono design drawn at 0.9 em inside an unchanged em box (ascender and
+/// descender are preserved), so code sits a notch under the prose size while
+/// sharing its baseline. See `scripts/derive-inline-mono.py`.
+pub const INLINE_MONO_FAMILY: &str = "JetBrains Mono Small";
 
 /// Inline-code wash geometry. Paint-only: the box overhangs the glyphs
 /// horizontally and insets vertically inside the line box.
@@ -379,11 +385,15 @@ pub fn flatten(
         }
 
         let mut run_font = font(if run.style.code {
-            MONO_FAMILY
+            INLINE_MONO_FAMILY
         } else {
             SANS_FAMILY
         });
-        run_font.weight = if run.style.bold && base_weight < FontWeight::SEMIBOLD {
+        run_font.weight = if run.style.code {
+            // Inline code is never bold. It is already the denser face, and the
+            // small cut only ships regular and italic.
+            FontWeight::NORMAL
+        } else if run.style.bold && base_weight < FontWeight::SEMIBOLD {
             FontWeight::SEMIBOLD
         } else {
             base_weight
@@ -2581,6 +2591,36 @@ mod tests {
     }
 
     #[test]
+    fn inline_code_uses_the_small_cut_and_never_bolds() {
+        let code_run = |source: &str, base: FontWeight| {
+            let flat = flatten(&runs_of(source), &palette(), base, palette().text, None);
+            flat.runs
+                .iter()
+                .find(|run| run.font.family == INLINE_MONO_FAMILY)
+                .cloned()
+                .expect("inline code uses the small mono family")
+        };
+
+        let regular = code_run("a `code` b", FontWeight::NORMAL);
+        assert_eq!(regular.font.weight, FontWeight::NORMAL);
+        assert_eq!(regular.font.style, FontStyle::Normal);
+        // Bold prose and headings never bolden the code inside them.
+        assert_eq!(
+            code_run("**`code`**", FontWeight::NORMAL).font.weight,
+            FontWeight::NORMAL
+        );
+        assert_eq!(
+            code_run("`code`", FontWeight::BOLD).font.weight,
+            FontWeight::NORMAL
+        );
+        // Italic code resolves the italic face of the same cut.
+        assert_eq!(
+            code_run("*`code`*", FontWeight::NORMAL).font.style,
+            FontStyle::Italic
+        );
+    }
+
+    #[test]
     fn inline_filenames_link_without_changing_text_or_explicit_links() {
         let source = "Changed **`src/lib/utils.server.ts`**, `articles/new.astro:12`, \
             and `remainingPosts`. [`README.md`](https://example.com/readme) \
@@ -3116,7 +3156,7 @@ mod tests {
         view.sync_style(&palette, &Metrics::BODY, &first.font_family);
         let first = first.with_cache(&view).flat(0, build);
         assert_eq!(first.runs[0].font.family.as_ref(), "Georgia");
-        assert_eq!(first.runs[1].font.family.as_ref(), MONO_FAMILY);
+        assert_eq!(first.runs[1].font.family.as_ref(), INLINE_MONO_FAMILY);
 
         let next = Ctx::new(
             "font-change",
@@ -3129,7 +3169,7 @@ mod tests {
         let next = next.with_cache(&view).flat(0, build);
         assert!(!Rc::ptr_eq(&first, &next));
         assert_eq!(next.runs[0].font.family.as_ref(), "Avenir Next");
-        assert_eq!(next.runs[1].font.family.as_ref(), MONO_FAMILY);
+        assert_eq!(next.runs[1].font.family.as_ref(), INLINE_MONO_FAMILY);
     }
 
     /// Reasoning text goes through the same view as a response, so a plain
