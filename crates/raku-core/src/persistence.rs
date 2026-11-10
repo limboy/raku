@@ -660,6 +660,8 @@ fn live_references(connection: &Connection, scheme: &str) -> io::Result<HashSet<
         .prepare(
             "SELECT data FROM session_details
              UNION ALL
+             SELECT data FROM transcript_blocks
+             UNION ALL
              SELECT attachments FROM messages WHERE attachments != '[]'",
         )
         .map_err(to_io_error)?;
@@ -890,6 +892,9 @@ struct Storage {
     /// wrote it, so a save only touches the messages that actually changed.
     /// See [`write_messages`].
     written_messages: HashMap<Uuid, HashMap<Uuid, u64>>,
+    /// Per session, the fingerprint of each transcript-block row by position,
+    /// as this connection last wrote it. See [`write_transcript_blocks`].
+    written_blocks: HashMap<Uuid, Vec<u64>>,
     saved_projects: u64,
     saved_app_settings: u64,
     saved_app_state: u64,
@@ -1211,6 +1216,7 @@ impl StateStore {
             // A fresh connection has written nothing yet. Sessions loaded here
             // are skeletons anyway, so the first save of one is a full write.
             written_messages: HashMap::new(),
+            written_blocks: HashMap::new(),
             saved_projects: 0,
             saved_app_settings: if app_settings_are_saved {
                 fingerprint(&serde_json::to_string(&app_settings).map_err(to_io_error)?)
@@ -1241,6 +1247,7 @@ impl StateStore {
                 connection: self.open()?,
                 persisted_sessions: HashSet::new(),
                 written_messages: HashMap::new(),
+                written_blocks: HashMap::new(),
                 saved_projects: 0,
                 saved_app_settings: 0,
                 saved_app_state: 0,
@@ -1263,7 +1270,14 @@ impl StateStore {
             return Ok(());
         };
         let stored = from_persisted_json::<AgentSession>(data.as_bytes()).map_err(to_io_error)?;
-        session.transcript_blocks = stored.transcript_blocks;
+        // Blocks are rows now. A detail row that still carries them was last
+        // written before that table existed (or by an older build since), so
+        // its copy is the newer one; the next save moves it into rows.
+        session.transcript_blocks = if stored.transcript_blocks.is_empty() {
+            read_transcript_blocks(connection, &id)?
+        } else {
+            stored.transcript_blocks
+        };
         session.turns = stored.turns;
         session.queued_messages = stored.queued_messages;
         session.workspace = stored.workspace;
@@ -1329,6 +1343,7 @@ impl StateStore {
                 connection: self.open()?,
                 persisted_sessions: HashSet::new(),
                 written_messages: HashMap::new(),
+                written_blocks: HashMap::new(),
                 saved_projects: 0,
                 saved_app_settings: 0,
                 saved_app_state: 0,
@@ -1389,9 +1404,10 @@ impl StateStore {
         // does not leave this connection believing rows it never wrote are on
         // disk — which would make the next save skip them for good.
         let mut written_messages = Vec::new();
+        let mut written_blocks = Vec::new();
         for session in state
             .sessions
-            .iter()
+            .iter_mut()
             .filter(|session| session.has_started())
         {
             live.insert(session.id);
@@ -1434,6 +1450,14 @@ impl StateStore {
                     storage.written_messages.get(&session.id).unwrap_or(&EMPTY),
                 )?,
             ));
+            written_blocks.push((
+                session.id,
+                write_transcript_blocks(
+                    &transaction,
+                    session,
+                    storage.written_blocks.get(&session.id).map(Vec::as_slice),
+                )?,
+            ));
             storage.persisted_sessions.insert(session.id);
         }
 
@@ -1457,14 +1481,24 @@ impl StateStore {
             transaction
                 .execute("DELETE FROM messages WHERE session_id = ?1", params![key])
                 .map_err(to_io_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM transcript_blocks WHERE session_id = ?1",
+                    params![key],
+                )
+                .map_err(to_io_error)?;
             storage.persisted_sessions.remove(&id);
             storage.written_messages.remove(&id);
+            storage.written_blocks.remove(&id);
         }
 
         transaction.commit().map_err(to_io_error)?;
         // Now that the rows are durable, and not before.
         for (session_id, fingerprints) in written_messages {
             storage.written_messages.insert(session_id, fingerprints);
+        }
+        for (session_id, fingerprints) in written_blocks {
+            storage.written_blocks.insert(session_id, fingerprints);
         }
         state.dirty_sessions.clear();
         Ok(())
@@ -1616,16 +1650,100 @@ fn message_from_row(row: MessageColumns) -> Option<Message> {
     })
 }
 
-/// Serializes a session for the `data` column, omitting `messages`.
+/// The session as JSON, without its messages and transcript blocks.
 ///
-/// They are rows in `messages` instead, so there is no copy in `data` that
-/// could go stale.
-fn session_data(session: &AgentSession) -> io::Result<String> {
-    let mut value = serde_json::to_value(session).map_err(to_io_error)?;
+/// Those are rows in `messages` and `transcript_blocks` instead, so there is
+/// no copy in `data` that could go stale — and no transcript-sized document to
+/// rewrite on every save. Both lists are lifted out before serializing rather
+/// than stripped afterwards, so the cost follows what is left, not the history.
+fn session_data(session: &mut AgentSession) -> io::Result<String> {
+    let messages = std::mem::take(&mut session.messages);
+    let transcript_blocks = std::mem::take(&mut session.transcript_blocks);
+    let value = serde_json::to_value(&*session);
+    session.messages = messages;
+    session.transcript_blocks = transcript_blocks;
+    let mut value = value.map_err(to_io_error)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("messages");
+        object.remove("transcript_blocks");
     }
     serde_json::to_string(&value).map_err(to_io_error)
+}
+
+const UPSERT_TRANSCRIPT_BLOCK: &str = "INSERT INTO transcript_blocks(session_id, position, data)
+     VALUES(?1, ?2, ?3)
+     ON CONFLICT(session_id, position) DO UPDATE SET data = excluded.data";
+
+/// Writes the transcript blocks whose stored row would actually differ.
+///
+/// Blocks are nearly all of a long session's bytes — megabytes of tool output
+/// and diffs — and a streaming turn only ever changes the last one or two.
+/// `written` is what this connection last stored for the session, by
+/// position; `None` means nothing yet, which makes the save a full
+/// replacement so rows from an earlier layout or connection cannot linger.
+/// Returns the fingerprints to remember, which the caller installs only once
+/// the transaction commits.
+fn write_transcript_blocks(
+    transaction: &Connection,
+    session: &AgentSession,
+    written: Option<&[u64]>,
+) -> io::Result<Vec<u64>> {
+    use std::hash::{Hash as _, Hasher as _};
+    let session_id = session.id.to_string();
+    if written.is_none() {
+        transaction
+            .execute(
+                "DELETE FROM transcript_blocks WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(to_io_error)?;
+    }
+    let written = written.unwrap_or_default();
+    let mut current = Vec::with_capacity(session.transcript_blocks.len());
+    for (position, block) in session.transcript_blocks.iter().enumerate() {
+        let data = serde_json::to_string(block).map_err(to_io_error)?;
+        // In-memory only, so the hasher need not be stable across builds.
+        let mut hasher = std::hash::DefaultHasher::new();
+        data.hash(&mut hasher);
+        let fingerprint = hasher.finish();
+        current.push(fingerprint);
+        if written.get(position) == Some(&fingerprint) {
+            continue;
+        }
+        transaction
+            .execute(
+                UPSERT_TRANSCRIPT_BLOCK,
+                params![session_id, position as i64, data],
+            )
+            .map_err(to_io_error)?;
+    }
+    if written.len() > current.len() {
+        transaction
+            .execute(
+                "DELETE FROM transcript_blocks WHERE session_id = ?1 AND position >= ?2",
+                params![session_id, current.len() as i64],
+            )
+            .map_err(to_io_error)?;
+    }
+    Ok(current)
+}
+
+fn read_transcript_blocks(
+    connection: &Connection,
+    session_id: &str,
+) -> io::Result<Vec<crate::model::TranscriptBlock>> {
+    let mut statement = connection
+        .prepare("SELECT data FROM transcript_blocks WHERE session_id = ?1 ORDER BY position")
+        .map_err(to_io_error)?;
+    let rows = statement
+        .query_map(params![session_id], |row| row.get::<_, String>(0))
+        .map_err(to_io_error)?;
+    let mut blocks = Vec::new();
+    for data in rows {
+        let data = data.map_err(to_io_error)?;
+        blocks.push(from_persisted_json(data.as_bytes()).map_err(to_io_error)?);
+    }
+    Ok(blocks)
 }
 
 const UPSERT_MESSAGE: &str = "INSERT INTO messages(
@@ -3502,6 +3620,172 @@ mod tests {
             .unwrap();
         assert_eq!(title, AgentSession::DEFAULT_TITLE);
         assert_eq!(auto_title.as_deref(), Some("Investigate the parser"));
+    }
+
+    fn tool_block(title: &str, output: &str) -> TranscriptBlock {
+        let mut activity =
+            ActivityItem::new(Some(title.into()), ActivityKind::Command, title, None, true);
+        activity.output = Some(output.into());
+        TranscriptBlock {
+            after_message: 1,
+            turn_id: None,
+            activities: vec![activity],
+        }
+    }
+
+    fn block_rows(directory: &Path) -> Vec<(i64, String)> {
+        let connection = Connection::open(directory.join("app.db")).unwrap();
+        let mut statement = connection
+            .prepare("SELECT position, data FROM transcript_blocks ORDER BY position")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn block_outputs(session: &AgentSession) -> Vec<Option<&str>> {
+        session
+            .transcript_blocks
+            .iter()
+            .map(|block| block.activities[0].output.as_deref())
+            .collect()
+    }
+
+    #[test]
+    fn transcript_blocks_round_trip_through_their_own_table() {
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        state.sessions[0].begin_turn("Ask");
+        state.sessions[0].transcript_blocks = vec![tool_block("ls", "a"), tool_block("cat", "b")];
+        store.save(&mut state).unwrap();
+        // Saving must hand the session back whole.
+        assert_eq!(state.sessions[0].transcript_blocks.len(), 2);
+        assert!(!state.sessions[0].messages.is_empty());
+
+        let connection = Connection::open(directory.join("app.db")).unwrap();
+        let data: String = connection
+            .query_row("SELECT data FROM session_details LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(
+            !serde_json::from_str::<serde_json::Value>(&data)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("transcript_blocks"),
+            "blocks live only in their own table"
+        );
+        drop(connection);
+        assert_eq!(block_rows(&directory).len(), 2);
+
+        let restored = load_hydrated(&store_in(&directory));
+        assert_eq!(
+            block_outputs(&restored.sessions[0]),
+            vec![Some("a"), Some("b")]
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// The point of the table: a streaming save rewrites the block that grew,
+    /// not the megabytes of settled history before it.
+    #[test]
+    fn a_streaming_save_writes_only_the_blocks_that_changed() {
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let id = state.sessions[0].id;
+        state.sessions[0].begin_turn("Ask");
+        state.sessions[0].transcript_blocks = vec![
+            tool_block("one", "1"),
+            tool_block("two", "2"),
+            tool_block("three", "3"),
+        ];
+        store.save(&mut state).unwrap();
+
+        let changes = |store: &StateStore| {
+            store
+                .storage
+                .lock()
+                .as_ref()
+                .unwrap()
+                .connection
+                .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+                .unwrap()
+        };
+
+        // Nothing but the session row and its small detail row.
+        state.mark_session_dirty(id);
+        let before = changes(&store);
+        store.save(&mut state).unwrap();
+        assert_eq!(changes(&store) - before, 2);
+
+        // The tail grows and a new block arrives: two block rows.
+        let session = state.session_mut(id).unwrap();
+        session.transcript_blocks[2].activities[0].output = Some("3 and more".into());
+        session.transcript_blocks.push(tool_block("four", "4"));
+        let before = changes(&store);
+        store.save(&mut state).unwrap();
+        assert_eq!(changes(&store) - before, 4);
+
+        // A rewind drops the tail rows too.
+        state.session_mut(id).unwrap().transcript_blocks.truncate(1);
+        store.save(&mut state).unwrap();
+        assert_eq!(block_rows(&directory).len(), 1);
+
+        let restored = load_hydrated(&store_in(&directory));
+        assert_eq!(block_outputs(&restored.sessions[0]), vec![Some("1")]);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Sessions saved before the table existed keep their blocks in the detail
+    /// JSON. They must still open, and the next save must move them — over any
+    /// rows a different connection left behind.
+    #[test]
+    fn blocks_stored_in_the_detail_row_are_read_and_moved_on_the_next_save() {
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let id = state.sessions[0].id;
+        state.sessions[0].begin_turn("Ask");
+        state.sessions[0].transcript_blocks = vec![tool_block("stale", "stale")];
+        store.save(&mut state).unwrap();
+        drop(store);
+
+        // Rewrite the row the way an older build would have.
+        let mut legacy = state.sessions[0].clone();
+        legacy.transcript_blocks = vec![tool_block("old", "x"), tool_block("old", "y")];
+        legacy.messages.clear();
+        let connection = Connection::open(directory.join("app.db")).unwrap();
+        connection
+            .execute(
+                "UPDATE session_details SET data = ?1",
+                params![serde_json::to_string(&legacy).unwrap()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = store_in(&directory);
+        let mut restored = load_hydrated(&store);
+        assert_eq!(
+            block_outputs(&restored.sessions[0]),
+            vec![Some("x"), Some("y")]
+        );
+
+        restored.mark_session_dirty(id);
+        store.save(&mut restored).unwrap();
+        let rows = block_rows(&directory);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].1.contains("\"x\"") && rows[1].1.contains("\"y\""));
+        let reopened = load_hydrated(&store_in(&directory));
+        assert_eq!(
+            block_outputs(&reopened.sessions[0]),
+            vec![Some("x"), Some("y")]
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -12,7 +12,7 @@
  * fetched only when a session is opened.
  */
 
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -84,8 +84,10 @@ export const messages = sqliteTable(
 );
 
 /**
- * The rest of `AgentSession` as JSON — transcript blocks, turns, provider
- * cursor.
+ * The rest of `AgentSession` as JSON — turns, provider cursor.
+ *
+ * Rows written before `transcript_blocks` existed also carry the transcript
+ * blocks here; the next save of such a session moves them to that table.
  *
  * Split from `sessions` because it is large and rarely read: keeping it in the
  * row would mean listing sessions pages through every transcript, and every
@@ -95,6 +97,27 @@ export const sessionDetails = sqliteTable("session_details", {
   sessionId: text("session_id").primaryKey(),
   data: text("data").notNull(),
 });
+
+/**
+ * A session's non-message transcript work — tool activity, reasoning, diffs —
+ * one row per block.
+ *
+ * Split out of `session_details.data` for the same reason `messages` was:
+ * these blocks are nearly all of a session's bytes, and a streaming turn saves
+ * once a second. As one JSON document every save rewrote the whole history;
+ * as rows it writes only the block that changed.
+ */
+export const transcriptBlocks = sqliteTable(
+  "transcript_blocks",
+  {
+    sessionId: text("session_id").notNull(),
+    /** Ordinal within the session's block list. */
+    position: integer("position").notNull(),
+    /** JSON-serialized TranscriptBlock. */
+    data: text("data").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.sessionId, table.position] })],
+);
 
 /**
  * Review contexts storing immutable Git snapshot and patch information.
