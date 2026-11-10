@@ -246,6 +246,9 @@ pub struct ContextMenuHandle {
     trigger_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// A flyout sits outside the main card's hitbox but belongs to its menu.
     submenu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// A left press landed on the dropdown trigger and has not been released
+    /// yet; the toggle fires on the matching release, like a native button.
+    trigger_pressed: Rc<Cell<bool>>,
     /// Notified with the new open state whenever the menu toggles, in order.
     /// The composer's caret preservation is one of these; a site can add its
     /// own on top.
@@ -261,6 +264,7 @@ impl ContextMenuHandle {
             focus: cx.focus_handle(),
             trigger_bounds: Rc::new(Cell::new(None)),
             submenu_bounds: Rc::new(Cell::new(None)),
+            trigger_pressed: Rc::new(Cell::new(false)),
             on_toggle: Rc::new(Vec::new()),
         }
     }
@@ -1062,17 +1066,31 @@ where
     E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
 {
     let open_at = handle.state.borrow().open;
+    let press_handle = handle.clone();
     let toggle_handle = handle.clone();
+    let cancel_handle = handle.clone();
     let key_handle = handle.clone();
 
+    // Toggle on release, not press: the press only arms the trigger (and
+    // keeps titlebar dragging and outer handlers from seeing it), and the
+    // release must land back on the trigger to count as a click.
     let trigger = trigger
         .relative()
         .track_focus(&handle.trigger_focus)
         .tab_index(0)
         .child(trigger_bounds_probe(handle))
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            toggle_anchored_surface(&toggle_handle, align, focus_target, window, cx);
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            press_handle.trigger_pressed.set(true);
             cx.stop_propagation();
+        })
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            if toggle_handle.trigger_pressed.replace(false) {
+                toggle_anchored_surface(&toggle_handle, align, focus_target, window, cx);
+                cx.stop_propagation();
+            }
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, _, _| {
+            cancel_handle.trigger_pressed.set(false);
         })
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
             if key_handle.trigger_focus.is_focused(window)
@@ -1492,7 +1510,7 @@ fn render_menu_item(
                         window.refresh();
                     }
                 })
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                .on_click(move |_, window, cx| {
                     open_submenu(&click_handle, index, false);
                     window.refresh();
                     cx.stop_propagation();
@@ -1598,7 +1616,7 @@ fn row(
             element
                 .cursor_default()
                 .hover(move |element| element.bg(hover))
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                .on_click(move |_, window, cx| {
                     handle.close(window, cx);
                     on_click(window, cx);
                     window.refresh();
@@ -1983,15 +2001,17 @@ mod tests {
         let outside = point(px(500.0), px(400.0));
 
         cx.simulate_mouse_down(on_trigger, MouseButton::Left, Modifiers::none());
+        assert!(!handle.is_open(), "a press alone must not open; release does");
+        cx.simulate_mouse_up(on_trigger, MouseButton::Left, Modifiers::none());
         assert!(handle.is_open(), "first trigger click should open");
 
         // The card's capture-phase `on_mouse_down_out` sees this click first;
         // without the trigger exemption it closes the menu and the trigger's
         // own handler reopens it.
-        cx.simulate_mouse_down(on_trigger, MouseButton::Left, Modifiers::none());
+        cx.simulate_click(on_trigger, Modifiers::none());
         assert!(!handle.is_open(), "second trigger click should close");
 
-        cx.simulate_mouse_down(on_trigger, MouseButton::Left, Modifiers::none());
+        cx.simulate_click(on_trigger, Modifiers::none());
         assert!(handle.is_open(), "trigger click after close should reopen");
 
         cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::none());
@@ -2087,9 +2107,8 @@ mod tests {
         };
         let (_view, cx) = cx.add_window_view(|_, _| harness);
 
-        cx.simulate_mouse_down(
+        cx.simulate_click(
             point(px(10.0), px(10.0)),
-            MouseButton::Left,
             Modifiers::none(),
         );
         assert!(handle.is_open());
@@ -2118,9 +2137,8 @@ mod tests {
         };
         let (_view, cx) = cx.add_window_view(|_, _| harness);
 
-        cx.simulate_mouse_down(
+        cx.simulate_click(
             point(px(10.0), px(10.0)),
-            MouseButton::Left,
             Modifiers::none(),
         );
         cx.run_until_parked();
@@ -2174,15 +2192,13 @@ mod tests {
                 assert!(submenu.left() >= parent.right() - px(4.0));
             }
 
-            window.simulate_mouse_down(
+            window.simulate_click(
                 point(submenu.left() + px(20.0), submenu.top() + px(18.0)),
-                MouseButton::Left,
                 Modifiers::none(),
             );
             assert!(handle.is_open(), "a disabled submenu item must not dismiss");
-            window.simulate_mouse_down(
+            window.simulate_click(
                 point(submenu.left() + px(20.0), submenu.top() + px(44.0)),
-                MouseButton::Left,
                 Modifiers::none(),
             );
             assert!(activated.get(), "submenu entries remain clickable");

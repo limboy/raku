@@ -577,12 +577,9 @@ impl Raku {
             .cursor_default()
             .when(highlighted, |element| element.bg(theme.overlay_strong))
             .hover(|element| element.bg(theme.overlay))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    this.accept_autocomplete(Some(index), window, cx);
-                }),
-            );
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.accept_autocomplete(Some(index), window, cx);
+            }));
         match row {
             AutocompleteRow::Command(scored) => {
                 let command = &scored.item;
