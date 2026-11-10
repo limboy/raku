@@ -106,7 +106,6 @@ pub struct Theme {
     /// than as brand color.
     pub selection: Hsla,
     /// Inline `code` foreground and its rounded wash.
-    pub code_text: Hsla,
     pub code_wash: Hsla,
 
     /// Light fill for primary buttons (send, allow), dark glyph on top.
@@ -157,7 +156,6 @@ impl Theme {
             gauge: rgb(0x3B82F6).into(),
 
             selection: hsla(211.0 / 360.0, 1.0, 0.50, 0.55),
-            code_text: rgb(0xE0A882).into(),
             code_wash: hsla(220.0 / 360.0, 0.10, 0.90, 0.08),
 
             inverse: rgb(0xE7E9EC).into(),
@@ -199,7 +197,6 @@ impl Theme {
             gauge: rgb(0x2563EB).into(),
 
             selection: hsla(211.0 / 360.0, 1.0, 0.50, 0.35),
-            code_text: rgb(0x9A5528).into(),
             code_wash: hsla(220.0 / 360.0, 0.10, 0.12, 0.07),
 
             inverse: rgb(0x202227).into(),

@@ -240,7 +240,6 @@ pub struct Palette {
     pub border: Hsla,
     pub inset: Hsla,
     pub overlay: Hsla,
-    pub code_text: Hsla,
     pub code_wash: Hsla,
     pub selection: Hsla,
     pub search_match: Hsla,
@@ -273,7 +272,6 @@ impl Palette {
             border: theme.border,
             inset: theme.inset,
             overlay: theme.overlay,
-            code_text: theme.code_text,
             code_wash: theme.code_wash,
             selection: theme.selection,
             search_match: search_yellow.opacity(if theme.is_dark { 0.18 } else { 0.20 }),
@@ -449,11 +447,9 @@ pub fn flatten(
         let text_run = TextRun {
             len: run.text.len(),
             font: run_font,
-            color: if as_code {
-                palette.code_text
-            } else {
-                base_color
-            },
+            // Inline code keeps the prose color; the mono face and the wash
+            // already set it apart, so a hue would only add noise.
+            color: base_color,
             // Inline code's wash is painted as *rounded* quads by the canvas
             // underlay; a run background could only ever be a square box.
             background_color: None,
