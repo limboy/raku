@@ -28,12 +28,11 @@ impl Raku {
                 transcript_rows_fingerprint(session, &self.expanded_turns)
             });
         if self.transcript_row_kinds_fingerprint.get() != Some(fingerprint) {
-            let (next_kinds, work_rows) = self
+            let next_kinds = self
                 .selected_session()
-                .map(|session| folded_transcript_rows(session, &self.expanded_turns))
+                .map(|session| folded_transcript_row_kinds(session, &self.expanded_turns))
                 .unwrap_or_default();
             *self.transcript_row_kinds.borrow_mut() = next_kinds;
-            *self.transcript_work_rows.borrow_mut() = work_rows;
             self.transcript_row_kinds_fingerprint.set(Some(fingerprint));
         }
         self.transcript_row_kinds.borrow().len()
@@ -1202,7 +1201,6 @@ fn generated_image_repeated_in_answer(
                 })))
 }
 
-#[cfg(test)]
 pub(super) fn folded_transcript_row_kinds(
     session: &AgentSession,
     expanded_turns: &HashSet<Uuid>,

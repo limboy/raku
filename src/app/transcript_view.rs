@@ -15,7 +15,6 @@ const ACTIVITY_FIELD_LABEL_WIDTH: f32 = 120.0;
 /// Aligns a hunk separator with the line numbers in the rows below it; see
 /// `DiffRowStyle::ACTIVITY`.
 const ACTIVITY_DIFF_GUTTER_WIDTH: f32 = 52.0;
-const WORK_FRAME_CORNER_RADIUS: f32 = 8.0;
 
 #[derive(Clone, Debug)]
 struct ConversationNavigationRailSnapshot {
@@ -1293,23 +1292,15 @@ impl Raku {
         // this frame. Recomputing the row list here would rebuild the whole
         // transcript's row kinds — several allocations proportional to the
         // session — once for every visible row, every frame.
-        let (row_count, kind, is_work_row, ends_work) = {
+        let (row_count, kind) = {
             let kinds = self.transcript_row_kinds.borrow();
-            let work_rows = self.transcript_work_rows.borrow();
             let kind = kinds
                 .get(index)
                 .copied()
                 .unwrap_or(TranscriptRowKind::Message(index));
-            let is_work_row = work_rows.contains(&kind);
-            let ends_work = is_work_row
-                && kinds
-                    .get(index + 1)
-                    .is_none_or(|next| !work_rows.contains(next));
-            (kinds.len(), kind, is_work_row, ends_work)
+            (kinds.len(), kind)
         };
         let palette = MarkdownPalette::from_theme(&theme);
-        let opens_work = matches!(kind, TranscriptRowKind::TurnFold(turn_id)
-            if self.expanded_turns.contains(&turn_id));
         let response_turn_id = self
             .selected_session()
             .and_then(|session| response_row_turn_id(session, kind));
@@ -1511,27 +1502,6 @@ impl Raku {
                 .unwrap_or_else(|| div().into_any_element()),
             TranscriptRowKind::WorkingIndicator => self.render_working_indicator_row(&theme),
         };
-        let inner = if is_work_row {
-            div()
-                .w_full()
-                .min_w_0()
-                .border_l_1()
-                .border_r_1()
-                .border_color(theme.border)
-                .px(px(12.0))
-                .py(px(8.0))
-                .when(blank_assistant, |section| section.py(px(0.0)))
-                .when(ends_work, |section| {
-                    section
-                        .border_b_1()
-                        .rounded_bl(px(WORK_FRAME_CORNER_RADIUS))
-                        .rounded_br(px(WORK_FRAME_CORNER_RADIUS))
-                })
-                .child(inner)
-                .into_any_element()
-        } else {
-            inner
-        };
         let row = div()
             .id(("transcript-row", index))
             .w_full()
@@ -1539,9 +1509,7 @@ impl Raku {
             .justify_center()
             .px(px(20.0))
             .py(px(8.0))
-            .when(is_work_row || blank_assistant, |row| row.py(px(0.0)))
-            .when(opens_work, |row| row.pb(px(0.0)))
-            .when(ends_work, |row| row.pb(px(8.0)))
+            .when(blank_assistant, |row| row.py(px(0.0)))
             .when(
                 matches!(kind, TranscriptRowKind::ResponseFooter(_, _)),
                 |element| element.pt(px(0.0)),
@@ -1947,7 +1915,7 @@ impl Raku {
     }
 
     /// Settled reasoning, tool activity, and interim assistant commentary are
-    /// folded into a compact divider while the terminal response stays visible.
+    /// folded into a compact plain-text toggle while the terminal response stays visible.
     pub(super) fn render_turn_fold_row(
         &self,
         turn_id: Uuid,
@@ -1965,39 +1933,24 @@ impl Raku {
             .h(px(24.0))
             .flex()
             .items_center()
-            .gap(px(10.0))
-            .child(
-                div()
-                    .flex_1()
-                    .when(expanded, |line| {
-                        // The centered rule turns into the frame's top edge.
-                        // Draw each corner with its adjacent horizontal and
-                        // vertical edges so a straight rule cannot overlap it.
-                        line.h(px(12.5))
-                            .self_end()
-                            .border_t_1()
-                            .border_l_1()
-                            .border_color(theme.border)
-                            .rounded_tl(px(WORK_FRAME_CORNER_RADIUS))
-                    })
-                    .when(!expanded, |line| line.h(px(1.0)).bg(theme.border)),
-            )
             .child(
                 div()
                     .id(SharedString::from(format!("turn-fold-{turn_id}")))
                     .track_focus(&focus)
                     .tab_index(0)
                     .h(px(24.0))
+                    // Padding gives the focus fill room; the negative margin
+                    // keeps the glyphs on the body text's left edge.
                     .px(px(2.0))
+                    .ml(px(-2.0))
                     .rounded(px(4.0))
                     .flex_none()
                     .flex()
                     .items_center()
                     .gap(px(5.0))
                     .cursor_default()
-                    .text_size(sp(13.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE + 1.0))
                     .line_height(sp(18.0))
-                    .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_tertiary)
                     .focus_visible(|style| style.bg(theme.overlay).text_color(theme.text))
                     .hover(|style| style.text_color(theme.text))
@@ -2024,19 +1977,6 @@ impl Raku {
                             cx.stop_propagation();
                         }
                     })),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .when(expanded, |line| {
-                        line.h(px(12.5))
-                            .self_end()
-                            .border_t_1()
-                            .border_r_1()
-                            .border_color(theme.border)
-                            .rounded_tr(px(WORK_FRAME_CORNER_RADIUS))
-                    })
-                    .when(!expanded, |line| line.h(px(1.0)).bg(theme.border)),
             )
             .into_any_element()
     }
@@ -2471,20 +2411,27 @@ impl Raku {
                         .id(SharedString::from(group_key))
                         .track_focus(&header_focus)
                         .tab_index(0)
-                        .w_full()
+                        .max_w_full()
                         .min_w_0()
                         .h(px(28.0))
-                        .px(px(4.0))
+                        .px(px(2.0))
+                        .ml(px(-2.0))
                         .rounded(px(5.0))
                         .flex()
                         .items_center()
-                        .gap(px(6.0))
-                        .text_size(sp(SMALL_UI_FONT_SIZE))
-                        .line_height(sp(16.0))
+                        .gap(px(5.0))
+                        .text_size(sp(SMALL_UI_FONT_SIZE + 1.0))
+                        .line_height(sp(18.0))
+                        .text_color(theme.text_tertiary)
                         .cursor_default()
-                        .focus_visible(|style| style.bg(theme.overlay))
-                        .hover(|style| style.bg(theme.overlay))
-                        .tooltip(Tooltip::text(activity_summary(activities)))
+                        .focus_visible(|style| style.bg(theme.overlay).text_color(theme.text))
+                        .hover(|style| style.text_color(theme.text))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(header_title)),
+                        )
                         .child(icon(
                             if expanded {
                                 "icons/chevron-down.svg"
@@ -2494,25 +2441,10 @@ impl Raku {
                             10.0,
                             theme.text_tertiary,
                         ))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_secondary)
-                                .child(SharedString::from(header_title)),
-                        )
                         .when(!live_group && group_running, |header| {
-                            header.child(
-                                div()
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.0))
-                                    .text_color(theme.text_secondary)
-                                    .child(pulse_dot(5.0, theme.accent))
-                                    .child(tr!("activity.status_running")),
-                            )
+                            // The label already says "Running …"; the dot
+                            // only adds motion to it.
+                            header.child(pulse_dot(5.0, theme.accent))
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.toggle_activities(block_index, expanded, cx);

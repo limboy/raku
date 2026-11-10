@@ -1427,8 +1427,12 @@ fn message_menu_items(
 }
 
 pub(super) fn activity_summary(activities: &[ActivityItem]) -> String {
+    summarize_activities(activities.iter())
+}
+
+fn summarize_activities<'a>(activities: impl Iterator<Item = &'a ActivityItem> + Clone) -> String {
     let mut counts: Vec<(crate::model::ActivityKind, usize)> = Vec::new();
-    for activity in activities {
+    for activity in activities.clone() {
         if let Some(entry) = counts.iter_mut().find(|(kind, _)| *kind == activity.kind) {
             entry.1 += 1;
         } else {
@@ -1446,7 +1450,7 @@ pub(super) fn activity_summary(activities: &[ActivityItem]) -> String {
             )
         })
         .collect::<Vec<_>>();
-    let running = activities.iter().any(|activity| !activity.complete);
+    let running = activities.clone().any(|activity| !activity.complete);
     if running {
         tr!("activity.running", activities = parts.join(" · "))
     } else {
@@ -1475,14 +1479,21 @@ pub(super) fn activity_header_title(
         );
     }
 
-    tr!(
-        if activities.len() == 1 {
-            "activity.total_one"
-        } else {
-            "activity.total"
-        },
-        count = activities.len()
-    )
+    // A settled group reads as what it did — "Ran 5 commands · 2 file
+    // reads". Thinking only rides along with the work, so it is named only
+    // when a group holds nothing else.
+    let work = activities
+        .iter()
+        .filter(|activity| activity.kind != crate::model::ActivityKind::Reasoning);
+    if work.clone().next().is_some() {
+        return summarize_activities(work);
+    }
+    if let [activity] = activities
+        && let Some(reasoning) = activity.reasoning.as_ref()
+    {
+        return reasoning_activity_title(reasoning, false);
+    }
+    activity_summary(activities)
 }
 
 fn tool_name_leaf(name: &str) -> &str {
@@ -2612,12 +2623,12 @@ mod message_time_tests {
         assert!(!activity_group_is_live(true, true, 1, 2));
         assert_eq!(
             activity_header_title(&activities, false, None),
-            "2 activities"
+            "Ran 1 command"
         );
         assert_eq!(activity_summary(&activities), "Ran 1 thought · 1 command");
         assert_eq!(
             activity_header_title(&activities[..1], false, None),
-            "1 activity"
+            reasoning_activity_title(activities[0].reasoning.as_ref().unwrap(), false)
         );
         assert_eq!(
             activity_row_detail(&activities[0], false),
