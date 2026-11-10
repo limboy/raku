@@ -1928,9 +1928,12 @@ impl Raku {
             .selected_session()
             .map(|session| turn_fold_label(session, turn_id))
             .unwrap_or_else(|| tr!("transcript.worked"));
+        // Same voice as the activity summaries: prose size, secondary color.
+        let metrics = self.transcript_markdown_metrics(MarkdownMetrics::BODY);
+        let row_height = metrics.line_height.max(24.0);
         div()
             .w_full()
-            .h(px(24.0))
+            .h(px(row_height))
             .flex()
             .items_center()
             .child(
@@ -1938,7 +1941,7 @@ impl Raku {
                     .id(SharedString::from(format!("turn-fold-{turn_id}")))
                     .track_focus(&focus)
                     .tab_index(0)
-                    .h(px(24.0))
+                    .h(px(row_height))
                     // Padding gives the focus fill room; the negative margin
                     // keeps the glyphs on the body text's left edge.
                     .px(px(2.0))
@@ -1949,9 +1952,9 @@ impl Raku {
                     .items_center()
                     .gap(px(5.0))
                     .cursor_default()
-                    .text_size(sp(SMALL_UI_FONT_SIZE + 1.0))
-                    .line_height(sp(18.0))
-                    .text_color(theme.text_tertiary)
+                    .text_size(px(metrics.text_size))
+                    .line_height(px(metrics.line_height))
+                    .text_color(theme.text_secondary)
                     .focus_visible(|style| style.bg(theme.overlay).text_color(theme.text))
                     .hover(|style| style.text_color(theme.text))
                     .child(SharedString::from(label))
@@ -1961,8 +1964,8 @@ impl Raku {
                         } else {
                             "icons/chevron-right.svg"
                         },
-                        11.5,
-                        theme.text_tertiary,
+                        (metrics.text_size * 0.7).round(),
+                        theme.text_secondary,
                     ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_turn_fold(turn_id, expanded, cx);
@@ -2400,6 +2403,9 @@ impl Raku {
                 motion::pulse_lease_slow(window.current_view(), cx);
             }
             let header_focus = self.transcript_control_focus(group_key.clone(), cx);
+            // The summary reads as part of the answer, so it takes the
+            // transcript's prose size and leans on color for its hierarchy.
+            let header_metrics = self.transcript_markdown_metrics(MarkdownMetrics::BODY);
             div()
                 .w_full()
                 .min_w_0()
@@ -2420,9 +2426,9 @@ impl Raku {
                         .flex()
                         .items_center()
                         .gap(px(5.0))
-                        .text_size(sp(SMALL_UI_FONT_SIZE + 1.0))
-                        .line_height(sp(18.0))
-                        .text_color(theme.text_tertiary)
+                        .text_size(px(header_metrics.text_size))
+                        .line_height(px(header_metrics.line_height))
+                        .text_color(theme.text_secondary)
                         .cursor_default()
                         .focus_visible(|style| style.bg(theme.overlay).text_color(theme.text))
                         .hover(|style| style.text_color(theme.text))
@@ -2438,8 +2444,8 @@ impl Raku {
                             } else {
                                 "icons/chevron-right.svg"
                             },
-                            10.0,
-                            theme.text_tertiary,
+                            (header_metrics.text_size * 0.7).round(),
+                            theme.text_secondary,
                         ))
                         .when(!live_group && group_running, |header| {
                             // The label already says "Running …"; the dot
