@@ -17,10 +17,11 @@ use crate::theme::{Theme, sp};
 
 /// A monochrome icon from the embedded set, tinted via text color. Sized in
 /// `sp` so icons keep pace with the chrome text they sit beside when the UI
-/// font size setting moves.
+/// font size setting moves. The size-qualified path lets the asset loader
+/// normalize the supplied outline weight for small glyphs.
 pub fn icon(path: &'static str, size: f32, color: Hsla) -> Svg {
     svg()
-        .path(path)
+        .path(crate::assets::sized_icon_path(path, size))
         .w(sp(size))
         .h(sp(size))
         .flex_none()

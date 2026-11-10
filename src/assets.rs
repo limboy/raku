@@ -666,13 +666,125 @@ pub fn register_fonts(cx: &App) -> Result<()> {
     crate::platform::register_fonts_with_coretext(&[SYMBOLS_FONT])
 }
 
+/// Target rendered weight for a supplied outline glyph. The pack's own
+/// 59-unit outline is 1.18px at its authored 20px size, so small controls
+/// get only enough stroke to reach this floor and larger glyphs stay as
+/// supplied.
+const NORMAL_ICON_WEIGHT: f32 = 1.2;
+/// Outline thickness and view box of the supplied pack.
+const PACK_OUTLINE_UNITS: f32 = 59.0;
+const PACK_VIEW_BOX: f32 = 1000.0;
+
+/// Returns the asset path for `path` at `size`, which asks [`Assets::load`]
+/// for the size-specific stroke. Paths are cached because row builders call
+/// this for every visible icon on every frame.
+pub(crate) fn sized_icon_path(path: &'static str, size: f32) -> SharedString {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, RwLock};
+
+    static PATHS: LazyLock<RwLock<HashMap<(&'static str, u32), SharedString>>> =
+        LazyLock::new(|| RwLock::new(HashMap::new()));
+
+    // Half-pixel buckets keep the cache small without visibly changing the
+    // stroke; sizes are authored in 0.5px steps.
+    let half_px = (size * 2.0).round() as u32;
+    if let Some(cached) = PATHS
+        .read()
+        .expect("icon path cache poisoned")
+        .get(&(path, half_px))
+    {
+        return cached.clone();
+    }
+    let sized = SharedString::from(format!("{path}#{half_px}"));
+    PATHS
+        .write()
+        .expect("icon path cache poisoned")
+        .insert((path, half_px), sized.clone());
+    sized
+}
+
+fn split_sized_path(path: &str) -> (&str, Option<f32>) {
+    match path.rsplit_once('#') {
+        Some((base, half_px)) => match half_px.parse::<u32>() {
+            Ok(half_px) => (base, Some(half_px as f32 / 2.0)),
+            Err(_) => (path, None),
+        },
+        None => (path, None),
+    }
+}
+
+/// Rounds a stroke width to whole view-box units.
+fn stroke_units(value: f32) -> String {
+    format!("{value:.0}")
+}
+
+/// Inserts the expanding stroke into the root `<svg>` tag so every unstroked
+/// path inherits it.
+fn inject_stroke(svg: &str, width: &str) -> Option<Vec<u8>> {
+    let open_end = svg.find('>')?;
+    if !svg[..open_end].contains("<svg") {
+        return None;
+    }
+    let mut stroked = String::with_capacity(svg.len() + 96);
+    stroked.push_str(&svg[..open_end]);
+    stroked.push_str(" stroke=\"currentColor\" stroke-width=\"");
+    stroked.push_str(width);
+    stroked.push_str("\" stroke-linejoin=\"round\" stroke-linecap=\"round\"");
+    stroked.push_str(&svg[open_end..]);
+    Some(stroked.into_bytes())
+}
+
+/// Applies the size-specific normal stroke to an outline glyph. Artwork that
+/// already carries its own weight keeps the authored bytes: the hand-tuned
+/// `-bold` derivatives and Lucide glyphs declare a stroke width, filled marks
+/// and provider logos are solid shapes, and file-type icons are polychrome.
+/// `loader-circle-bold` is a redrawn ring rather than a stroked path, so it
+/// stays with its authored geometry too.
+fn stroked_svg(path: &str, bytes: &'static [u8], size: f32) -> Option<Vec<u8>> {
+    if !path.starts_with("icons/")
+        || path.starts_with("icons/file-types/")
+        || path.starts_with("icons/provider-")
+        || path.contains("-filled")
+        || path == "icons/loader-circle-bold.svg"
+    {
+        return None;
+    }
+    let svg = std::str::from_utf8(bytes).ok()?;
+    let total = NORMAL_ICON_WEIGHT * PACK_VIEW_BOX / size;
+    let expansion = total - PACK_OUTLINE_UNITS;
+    // At 20px and above the supplied weight is already normal.
+    if expansion < 2.0 {
+        return None;
+    }
+    if path == "icons/file-diff.svg" {
+        // The box is a filled 59-unit outline while the plus and minus are
+        // stroked paths, so each needs the full target weight rather than
+        // the expanding remainder.
+        let svg = svg.replace(
+            "stroke-width=\"59\"",
+            &format!("stroke-width=\"{}\"", stroke_units(total)),
+        );
+        return inject_stroke(&svg, &stroke_units(expansion));
+    }
+    if svg.contains("stroke-width") {
+        return None;
+    }
+    inject_stroke(svg, &stroke_units(expansion))
+}
+
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        let (base, size) = split_sized_path(path);
         Ok(ICONS
             .iter()
             .chain(ANT_ICONS)
-            .find(|(name, _)| *name == path)
-            .map(|(_, bytes)| Cow::Borrowed(*bytes)))
+            .find(|(name, _)| *name == base)
+            .map(
+                |(_, bytes)| match size.and_then(|size| stroked_svg(base, bytes, size)) {
+                    Some(stroked) => Cow::Owned(stroked),
+                    None => Cow::Borrowed(*bytes),
+                },
+            ))
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
@@ -682,5 +794,75 @@ impl AssetSource for Assets {
             .filter(|(name, _)| name.starts_with(path))
             .map(|(name, _)| SharedString::from(*name))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::AssetSource;
+
+    fn authored(path: &str) -> &'static [u8] {
+        ICONS
+            .iter()
+            .chain(ANT_ICONS)
+            .find(|(name, _)| *name == path)
+            .map(|(_, bytes)| *bytes)
+            .unwrap_or_else(|| panic!("missing embedded icon: {path}"))
+    }
+
+    #[test]
+    fn small_glyphs_load_with_the_normal_stroke() {
+        let loaded = Assets.load("icons/copy.svg#28").unwrap().unwrap();
+        let svg = std::str::from_utf8(&loaded).unwrap();
+        // 14px: target 1.2px * 1000 / 14 = 85.7 units, minus 59 = 26.7.
+        assert!(svg.contains("stroke-width=\"27\""), "{svg}");
+        assert_eq!(svg.matches("stroke-width=").count(), 1);
+
+        let loaded = Assets.load("icons/ant/panel-left.svg#24").unwrap().unwrap();
+        let svg = std::str::from_utf8(&loaded).unwrap();
+        // 12px: target 1.2px * 1000 / 12 = 100 units, minus 59 = 41.
+        assert!(svg.contains("stroke-width=\"41\""), "{svg}");
+    }
+
+    #[test]
+    fn large_glyphs_keep_their_supplied_weight() {
+        for path in ["icons/copy.svg#40", "icons/ant/panel-left.svg#40"] {
+            let loaded = Assets.load(path).unwrap().unwrap();
+            assert_eq!(
+                loaded.as_ref(),
+                authored(path.split('#').next().unwrap()),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_diff_matches_the_normal_weight_at_small_sizes() {
+        let loaded = Assets.load("icons/file-diff.svg#24").unwrap().unwrap();
+        let svg = std::str::from_utf8(&loaded).unwrap();
+        // 12px: the box keeps its 59-unit fill plus a 41-unit expanding
+        // stroke, and the stroked plus and minus use the 100-unit total.
+        assert!(svg.contains("stroke-width=\"41\""), "{svg}");
+        assert!(svg.contains("stroke-width=\"100\""), "{svg}");
+    }
+
+    #[test]
+    fn weighted_and_polychrome_artwork_keeps_its_bytes() {
+        for path in [
+            "icons/copy-bold.svg#28",
+            "icons/loader-circle-bold.svg#24",
+            "icons/sparkle.svg#40",
+            "icons/provider-claude.svg#40",
+            "icons/file-types/rust.svg#32",
+            "icons/star-filled.svg#24",
+        ] {
+            let loaded = Assets.load(path).unwrap().unwrap();
+            assert_eq!(
+                loaded.as_ref(),
+                authored(path.split('#').next().unwrap()),
+                "{path}"
+            );
+        }
     }
 }

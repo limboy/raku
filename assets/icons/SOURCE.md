@@ -1,23 +1,33 @@
 # UI icons
 
 The desktop UI uses the 413 SVGs in [ant/](ant/), supplied as the `ant-icons`
-attachment on 2026-11-05. The supplied files are copied unchanged, including
+attachment on 2026-11-05. The files on disk are copied unchanged, including
 their `1000 × 1000` view boxes, outlined geometry, and `currentColor` fills.
-GPUI renders them as tinted alpha masks through the existing `ui::icon` helper.
-Titlebar controls use the pack's authored 20px size and the primary text color,
-matching the supplied toolbar reference in both light and dark themes.
+The pack's 59-unit outlines are authored for a 20px glyph, where they read as
+a 1.18px stroke; at 14px the same geometry is 0.83px and at 11px 0.65px.
+`ui::icon` therefore requests a size-qualified asset path, and `Assets::load`
+expands every supplied outline glyph with a `currentColor` stroke calibrated
+to hold the rendered weight near 1.2px: about 27 units at 14px, 41 at 12px,
+and none at 20px or above. GPUI renders the result as tinted alpha masks.
+Glyphs that already declare a stroke (the `-bold` derivatives and Lucide
+glyphs), filled marks, provider logos, and polychrome file-type icons are
+served unchanged. Titlebar controls use the pack's authored 20px size and the
+primary text color.
 
 The complete pack is embedded in the binary and available at
 `icons/ant/<name>.svg`. The `ICONS` table in [src/assets.rs](../../src/assets.rs)
 maps existing control paths to these assets through the shared renderer and
 interaction handlers. For example, `alert` uses `ant/warning`, `compose`
 uses `ant/edit`, `terminal` uses `ant/prompt`, and `loader-circle` uses
-`ant/loader`. These aliases reuse the supplied bytes without duplicate SVG files.
+`ant/loader`. These aliases reuse the supplied bytes without duplicate SVG
+files and inherit the loader's normal stroke.
 
 Seven specialized glyphs remain because the pack has no direct equivalents:
 the five search controls (`case-sensitive`, `whole-word`, `regex`, `replace`,
 and `replace-all`), the projectless `folder-dashed`, and Raku's six-spoke
-`sparkle`. Four Raku derivatives extend the pack so the session status icons
+`sparkle`. The dashed folder uses a `1.5`-unit stroke on its 16-unit box so
+the dashes stay legible at 11px. Four Raku derivatives extend the pack so the
+session status icons
 hold up at a 12px row: `loader-circle-bold` redraws `ant/loader` at the same
 `398`-unit outer radius and 270° arc with a `96`-unit ring instead of `58`,
 and `alert-bold`, `hourglass-bold`, and `x-bold` reuse the supplied
@@ -34,8 +44,10 @@ glyphs, for the project picker's selected-project check. The search glyphs marke
 their ISC and Feather MIT notices remain in [LICENSE-lucide.txt](LICENSE-lucide.txt).
 
 The custom `file-diff.svg` reuses the Ant `square-alt` outline with a rounded
-plus and minus at the same 59-unit weight, matching the boxed changes glyph in
-the toolbar reference. The environment summary uses Ant's `card-list` glyph.
+plus and minus. Its filled box receives the same expanding stroke as the pack,
+and its stroked plus and minus are set to the resulting total weight, so the
+boxed changes glyph matches its neighbours at both 12px rows and 20px
+summaries. The environment summary uses Ant's `card-list` glyph.
 
 Provider logos and polychrome file-type icons retain their own artwork.
 File-type icons have separate [source notes](file-types/SOURCE.md).
