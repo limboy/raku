@@ -1495,6 +1495,23 @@ pub(super) fn live_activity_label(session: &AgentSession) -> Option<String> {
     })
 }
 
+/// The live turn's activity group at the transcript tail, if any. It renders
+/// under the working row, which names and folds it, instead of in its own row.
+pub(super) fn live_activity_block(session: &AgentSession) -> Option<usize> {
+    let block_index = session.transcript_blocks.len().checked_sub(1)?;
+    let block = &session.transcript_blocks[block_index];
+    (!block.activities.is_empty()
+        && activity_group_is_live(
+            session
+                .active_turn_id()
+                .is_some_and(|turn_id| block.turn_id == Some(turn_id)),
+            true,
+            block.after_message,
+            session.messages.len(),
+        ))
+    .then_some(block_index)
+}
+
 pub(super) fn activity_group_is_live(
     live_turn: bool,
     latest_block: bool,

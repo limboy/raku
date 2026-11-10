@@ -417,6 +417,11 @@ impl Raku {
 
     pub(super) fn remeasure_transcript_block(&self, block_index: usize) {
         self.remeasure_transcript_row(TranscriptRowKind::TurnBlock(block_index));
+        // The live group draws inside the working row, so its disclosures
+        // resize that row instead.
+        if self.selected_session().and_then(live_activity_block) == Some(block_index) {
+            self.remeasure_transcript_row(TranscriptRowKind::WorkingIndicator);
+        }
     }
 
     pub(super) fn remeasure_transcript_message(&self, message_index: usize) {

@@ -1494,6 +1494,12 @@ impl Raku {
                     rendered
                 })
                 .unwrap_or_else(|| div().into_any_element()),
+            // The live group renders under the working row instead.
+            TranscriptRowKind::TurnBlock(block_index)
+                if self.selected_session().and_then(live_activity_block) == Some(block_index) =>
+            {
+                div().into_any_element()
+            }
             TranscriptRowKind::TurnBlock(block_index) => self
                 .selected_transcript_blocks()
                 .get(block_index)
@@ -1508,7 +1514,9 @@ impl Raku {
             TranscriptRowKind::ChangedFiles(turn_id) => self
                 .render_changed_files_row(turn_id, &theme, cx)
                 .unwrap_or_else(|| div().into_any_element()),
-            TranscriptRowKind::WorkingIndicator => self.render_working_indicator_row(&theme, cx),
+            TranscriptRowKind::WorkingIndicator => {
+                self.render_working_indicator_row(&theme, window, cx)
+            }
         };
         let row = div()
             .id(("transcript-row", index))
@@ -2006,7 +2014,12 @@ impl Raku {
     /// single chunk — and stays below whatever streams in until the turn
     /// settles into its "Worked for N" fold. While a live activity group sits
     /// directly above, the row also folds and unfolds that group.
-    fn render_working_indicator_row(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_working_indicator_row(
+        &self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let session = self.selected_session();
         let elapsed = session
             .and_then(|session| session.turns.last())
@@ -2022,22 +2035,9 @@ impl Raku {
                 .and_then(live_activity_label)
                 .unwrap_or_else(|| tr!("transcript.working"))
         };
-        // The activity group the chevron controls: only the live one at the
-        // tail, mirroring `render_activities_row`'s own liveness rule.
-        let live_block = session.and_then(|session| {
-            let block_index = session.transcript_blocks.len().checked_sub(1)?;
-            let block = &session.transcript_blocks[block_index];
-            (!block.activities.is_empty()
-                && activity_group_is_live(
-                    session
-                        .active_turn_id()
-                        .is_some_and(|turn_id| block.turn_id == Some(turn_id)),
-                    true,
-                    block.after_message,
-                    session.messages.len(),
-                ))
-            .then_some(block_index)
-        });
+        // The activity group the chevron controls. It renders here, under
+        // the row, rather than in its own transcript row.
+        let live_block = session.and_then(live_activity_block);
         // Same type as the activity summary above it, so the live label reads
         // as part of the same run of work.
         let metrics = self.transcript_markdown_metrics(MarkdownMetrics::BODY);
@@ -2141,6 +2141,17 @@ impl Raku {
                     })),
                     ),
             )
+            .when(expanded, |column| {
+                let rows = self
+                    .selected_transcript_blocks()
+                    .get(block_index)
+                    .map(|block| {
+                        self.render_activities_row(&block.activities, block_index, theme, window, cx)
+                    });
+                // Indented to the label, so the list hangs from the row
+                // that opened it.
+                column.children(rows.map(|rows| div().w_full().min_w_0().pl(px(28.0)).child(rows)))
+            })
             .into_any_element()
     }
 
