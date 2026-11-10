@@ -1605,6 +1605,10 @@ pub struct Raku {
     message_markdown: RefCell<HashMap<Uuid, MarkdownView>>,
     /// User-run `sh run` blocks, keyed by message. In memory only.
     shell_runs: shell_runs::ShellRuns,
+    /// Replies whose follow-up card was answered or closed. In memory only.
+    dismissed_follow_ups: HashSet<Uuid>,
+    /// The footer row that carried a follow-up card last frame.
+    follow_up_card_row: Cell<Option<TranscriptRowKind>>,
     /// Stable offsets for capped user bubbles, including across virtualized row rebuilds.
     user_message_viewports: RefCell<HashMap<Uuid, UserMessageScrollViewport>>,
     /// Parsed markdown for reasoning activities, keyed by stable activity id.
@@ -1686,6 +1690,7 @@ mod composer;
 mod composer_history;
 mod drafts;
 mod file_search;
+mod follow_up;
 mod goal_dialog;
 mod image_preview;
 mod project_picker;
@@ -3012,6 +3017,8 @@ impl Raku {
                 transcript_layout_width: Cell::new(Pixels::ZERO),
                 message_markdown: RefCell::new(HashMap::new()),
                 shell_runs: shell_runs::ShellRuns::new(cx.entity().downgrade()),
+                dismissed_follow_ups: HashSet::new(),
+                follow_up_card_row: Cell::new(None),
                 user_message_viewports: RefCell::new(HashMap::new()),
                 activity_markdown: RefCell::new(HashMap::new()),
                 reasoning_window_starts: RefCell::new(HashMap::new()),

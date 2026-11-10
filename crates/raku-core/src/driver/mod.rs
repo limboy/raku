@@ -36,7 +36,16 @@ pub(crate) const USER_RUN_INSTRUCTIONS: &str = concat!(
     "command, its exit code, and the terminal output so you can continue. Only mark self-contained ",
     "commands that are safe to run as written. Use a plain ```sh or ```bash fence for examples, ",
     "explanations, and commands you intend to run yourself. Never mark destructive commands ",
-    "without stating clearly what they will do."
+    "without stating clearly what they will do.\n\n",
+    "When your reply leaves the user a decision that decides your next step (a go-ahead to fix ",
+    "what you found, a choice between approaches, an approval), end the reply with a fenced block ",
+    "whose info string is `follow-up`: first one short question, then one line per answer as ",
+    "`- Label`, your recommended answer first, at most three, each label one to four words ",
+    "written as the user's reply (for example `- Yes, fix it` and `- Not now`). Raku hides the ",
+    "block and shows the question as a card with a button per answer; a click sends that label ",
+    "to you as the user's reply. Put it last, after your full answer, and only when something is ",
+    "genuinely waiting on the user, never for a simple report or after a question you already ",
+    "asked in prose."
 );
 
 /// System instructions for a read-only side chat. The transport also removes

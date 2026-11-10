@@ -175,6 +175,7 @@ impl Raku {
     ) -> AnyElement {
         self.prefetch_checkpoint_refs(cx);
         self.sync_transcript_rows();
+        self.sync_follow_up_row();
         self.sync_transcript_layout_width(window);
         self.apply_pending_transcript_search_reveal(window, cx);
         let search_bar = self.render_transcript_search_bar(chat_viewport_width, cx);
@@ -1439,7 +1440,14 @@ impl Raku {
                     let view = matches!(message.role, MessageRole::User | MessageRole::Assistant)
                         .then(|| {
                             let view = markdown.entry(message.id).or_default();
-                            view.set_text(message.visible_content(), message.streaming);
+                            // A reply's closing `follow-up` fence is a card,
+                            // never code in the transcript.
+                            let text = if message.role == MessageRole::Assistant {
+                                super::follow_up::split_follow_up(message.visible_content()).0
+                            } else {
+                                message.visible_content()
+                            };
+                            view.set_text(text, message.streaming);
                             &*view
                         });
                     let rendered = render_message(
@@ -1595,6 +1603,11 @@ impl Raku {
             .flex_col()
             .gap(px(3.0))
             .group(group_name.clone());
+        // The decision belongs to the reply's text, so it comes before the
+        // turn's file stats and the footer actions.
+        if let Some(card) = self.render_follow_up(message_index, theme, cx) {
+            column = column.child(card);
+        }
         if let Some(changed_files) = self.render_changed_files_row(turn_id, theme, cx) {
             column = column.child(div().w_full().mb(px(3.0)).child(changed_files));
         }

@@ -660,7 +660,7 @@ pub(super) fn assistant_response_footer(
     }
     let message = &session.messages[message_index];
     let Some(turn_id) = message.turn_id else {
-        return Some(message.content.clone());
+        return Some(super::follow_up::split_follow_up(&message.content).0.to_owned());
     };
     let rows = turn_rows(session, turn_id);
     Some(
@@ -674,8 +674,8 @@ pub(super) fn assistant_response_footer(
                 | TranscriptRowKind::ChangedFiles(_)
                 | TranscriptRowKind::WorkingIndicator => None,
             })
-            .filter(|part| !part.content.trim().is_empty())
-            .map(|part| part.content.as_str())
+            .map(|part| super::follow_up::split_follow_up(&part.content).0)
+            .filter(|part| !part.trim().is_empty())
             .collect::<Vec<_>>()
             .join("\n\n"),
     )
