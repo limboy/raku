@@ -1310,7 +1310,6 @@ pub struct Raku {
     /// Each session's task list as of its latest plan update. Runtime-only:
     /// the transcript keeps the durable record.
     task_lists: HashMap<Uuid, task_list::SessionTaskList>,
-    task_list_collapsed: bool,
     last_background_work_tick: Instant,
     /// Accepted submissions still creating their workspace/checkpoint, or an
     /// edited past message still rewinding its workspace and provider. The
@@ -2850,7 +2849,6 @@ impl Raku {
                 background_work: HashMap::new(),
                 pending_plans: HashMap::new(),
                 task_lists: HashMap::new(),
-                task_list_collapsed: false,
                 last_background_work_tick: Instant::now(),
                 submission_preparations: HashSet::new(),
                 escape_stop_confirmation: EscapeStopConfirmation::default(),

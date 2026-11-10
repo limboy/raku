@@ -316,6 +316,7 @@ const ANT_ICONS: &[(&str, &[u8])] = icons![
     "ant/chevrons-left",
     "ant/chevrons-right",
     "ant/circle-dashed",
+    "ant/circle-outline",
     "ant/circle",
     "ant/circles-merge",
     "ant/circles-overlap",
