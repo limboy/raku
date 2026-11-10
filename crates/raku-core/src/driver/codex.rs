@@ -166,7 +166,9 @@ impl CodexDriver {
         let title_binary = binary.clone();
         let title_cwd = cwd.clone();
         let mut command = crate::command_env::command(&binary);
-        command.args(["app-server", "--stdio"]);
+        // Codex leaves `update_plan` out unless config turns it on, and that
+        // tool is what feeds the pinned task list.
+        command.args(["app-server", "--stdio", "-c", UPDATE_PLAN_CONFIG]);
         let command = command
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -1327,12 +1329,15 @@ fn rollback_native_turn_count(
         .map_or(turn_ids.len(), |(index, _)| turn_ids.len() - index)
 }
 
-/// One row per `turn/plan/updated`, like each Claude `TodoWrite` call: the
-/// row names the step in progress and its detail holds the whole checklist,
-/// each status spelled out by a marker rather than color alone.
+/// The `-c` override that offers Codex's `update_plan` tool to the model.
+const UPDATE_PLAN_CONFIG: &str = "tools.update_plan.enabled=true";
+
+/// One activity per `turn/plan/updated`, like each Claude task-tool call. Its
+/// plan steps feed the pinned task list; the app keeps Plan activities out of
+/// the transcript, so the title and checklist detail are never shown there.
 ///
-/// Codex 0.166 only offers the `update_plan` tool when the user's config sets
-/// `tools.update_plan.enabled`; without it this never fires.
+/// Codex 0.166 only offers the `update_plan` tool when config sets
+/// `tools.update_plan.enabled`, so the driver passes [`UPDATE_PLAN_CONFIG`].
 fn codex_plan_activity(params: &Value) -> Option<ActivityItem> {
     let steps = params
         .get("plan")

@@ -1316,11 +1316,12 @@ impl AgentSession {
     /// Sessions saved before that kept them as activity rows; this drops
     /// them, and any block left empty, when such a session is loaded.
     pub fn drop_plan_activities(&mut self) {
-        if !self
-            .transcript_blocks
-            .iter()
-            .any(|block| block.activities.iter().any(|activity| activity.kind == ActivityKind::Plan))
-        {
+        if !self.transcript_blocks.iter().any(|block| {
+            block
+                .activities
+                .iter()
+                .any(|activity| activity.kind == ActivityKind::Plan)
+        }) {
             return;
         }
         self.transcript_blocks.retain_mut(|block| {

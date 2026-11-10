@@ -125,6 +125,28 @@ const TODO_TOOLS_ENV: &str = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
 const TASK_CREATE_TOOL: &str = "TaskCreate";
 const TASK_UPDATE_TOOL: &str = "TaskUpdate";
 
+/// Enabling the task tools only makes them available: the CLI defers them
+/// behind `ToolSearch` and nothing in its own prompt asks for them, so a
+/// multi-step run (a release, say) never fills the pinned task list. A
+/// softer "keep a list for multi-step work" was loaded and then ignored in
+/// favor of the first Bash call; making the list the turn's first action is
+/// what reliably produced it (CLI 2.1.316, Opus 5.5).
+const TASK_LIST_INSTRUCTIONS: &str = concat!(
+    "# Task list (Raku)\n",
+    "The user follows your progress on a task list Raku pins above the composer, not by reading ",
+    "your messages, so keeping it is part of doing the task. It is built only from TaskCreate and ",
+    "TaskUpdate. For every request that involves editing files or running more than one command, ",
+    "your VERY FIRST action of the turn, before any Read, Bash, search, or other tool, MUST be to ",
+    "create the whole plan: if TaskCreate is listed as deferred, call ToolSearch with query ",
+    "\"select:TaskCreate,TaskUpdate\" first, then call TaskCreate once per step (short imperative ",
+    "phrases, at most ~7 words). If you must look around first, make \"Look at how X is set up\" ",
+    "step one and revise the list once you know. Mark a task in_progress (TaskUpdate) when you ",
+    "start it and completed as soon as it is done, keeping exactly one in_progress while you work ",
+    "and none when everything is done. When the plan changes, update the tasks so the list never ",
+    "shows an abandoned plan. Only a single-command answer, a quick question, or pure conversation ",
+    "goes without a list."
+);
+
 /// Claude's task list, rebuilt from the tool stream: `TaskCreate` and
 /// `TaskUpdate` each name one task, never the list, so the whole list the
 /// pinned view needs only exists as the sum of the calls so far.
@@ -435,8 +457,13 @@ fn configure_stream_command(command: &mut Command, mode: RuntimeMode, plan_mode:
         "stdio",
         "--permission-mode",
         effective_permission_mode(mode, plan_mode),
-        "--append-system-prompt",
-        super::USER_RUN_INSTRUCTIONS,
+    ]);
+    command.args([
+        "--append-system-prompt".to_owned(),
+        format!(
+            "{}\n\n{TASK_LIST_INSTRUCTIONS}",
+            super::USER_RUN_INSTRUCTIONS
+        ),
     ]);
     // Print mode leaves the task-list tools out for current models unless
     // asked (verified on the CLI, 2.1.316); they feed the pinned task list.
