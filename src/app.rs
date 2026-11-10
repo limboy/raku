@@ -1109,6 +1109,11 @@ pub struct Raku {
     pending_session_activation: Option<PendingSessionActivation>,
     analytics: crate::analytics::Analytics,
     state: PersistedState,
+    fonts: crate::theme::Fonts,
+    /// Enumerated once on a worker; font menus only read this snapshot.
+    font_families: Rc<Vec<SharedString>>,
+    font_family_indexes: HashMap<SharedString, usize>,
+    font_menu_lists: [ListState; 2],
     store: StateStore,
     /// Cached before rendering so path labels can abbreviate the home prefix
     /// without consulting the environment or account database in a frame.
@@ -1930,6 +1935,11 @@ impl Raku {
             eprintln!("could not normalize daemon settings after migration: {error:#}");
         }
         crate::i18n::set_language(state.language);
+        let fonts = crate::theme::Fonts::new(
+            state.interface_font.as_deref(),
+            state.transcript_font.as_deref(),
+        );
+        cx.set_global(fonts.clone());
         // Chrome text is authored in `sp` rems against this fixed size; only
         // transcript prose has a size setting.
         window.set_rem_size(px(raku_client::persistence::DEFAULT_UI_FONT_SIZE));
@@ -2723,6 +2733,12 @@ impl Raku {
                 pending_session_activation: None,
                 analytics,
                 state,
+                fonts,
+                font_families: Rc::new(Vec::new()),
+                font_family_indexes: HashMap::new(),
+                font_menu_lists: std::array::from_fn(|_| {
+                    ListState::new(1, ListAlignment::Top, px(100.0))
+                }),
                 store,
                 home_directory,
                 composer,
@@ -3023,6 +3039,7 @@ impl Raku {
         // that there is an entity to notify and deliberately not before the
         // first frame.
         entity.update(cx, |this, cx| {
+            this.load_font_families(cx);
             if let Some(error) = restore_error {
                 let message = tr!("backup.restore_failed", error = error);
                 this.backup_settings.set_error(message.clone());

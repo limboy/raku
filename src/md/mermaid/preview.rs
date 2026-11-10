@@ -418,7 +418,7 @@ impl Render for Preview {
             .flex_col()
             .bg(theme.canvas)
             .text_color(theme.text)
-            .font_family(super::super::render::SANS_FAMILY)
+            .font_family(crate::theme::Fonts::current(cx).interface)
             .text_size(px(12.5))
             .track_focus(&self.focus)
             .key_context(KEY_CONTEXT)

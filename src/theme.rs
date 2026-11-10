@@ -1,6 +1,35 @@
-use gpui::{App, Global, Hsla, Rems, Window, WindowAppearance, hsla, rems, rgb};
+use gpui::{App, Global, Hsla, Rems, SharedString, Window, WindowAppearance, hsla, rems, rgb};
 
 pub use raku_client::theme::ThemePreference;
+
+/// Shared family names keep font reads allocation-free on rendering paths.
+#[derive(Clone)]
+pub struct Fonts {
+    pub interface: SharedString,
+    pub transcript: SharedString,
+}
+
+impl Global for Fonts {}
+
+impl Fonts {
+    pub fn new(interface: Option<&str>, transcript: Option<&str>) -> Self {
+        let family = |name: Option<&str>| {
+            name.filter(|name| !name.trim().is_empty())
+                .map(|name| SharedString::from(name.to_owned()))
+                .unwrap_or_else(|| ".SystemUIFont".into())
+        };
+        Self {
+            interface: family(interface),
+            transcript: family(transcript),
+        }
+    }
+
+    pub fn current(cx: &App) -> Self {
+        cx.try_global::<Self>()
+            .cloned()
+            .unwrap_or_else(|| Self::new(None, None))
+    }
+}
 
 /// Scaled pixels: a dimension authored at the fixed 14px chrome size,
 /// expressed in rems. The window's rem size is that same 14px, so this

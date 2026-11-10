@@ -111,6 +111,11 @@ settings.close: 設定を閉じる
 settings.search: 設定を検索
 settings.theme: テーマ
 settings.theme_description: システム、ライト、ダークのいずれかのテーマを選択します
+settings.interface_font: インターフェースのフォント
+settings.interface_font_description: メニュー、設定、アプリの操作部に使うフォント
+settings.transcript_font: 会話のフォント
+settings.transcript_font_description: メッセージと入力欄に使うフォント
+settings.font_system: システム
 settings.transcript_font_size: 会話のフォントサイズ
 settings.transcript_font_size_description: 会話内のメッセージの文字サイズ
 settings.font_size_small: 小

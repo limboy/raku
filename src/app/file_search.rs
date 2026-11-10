@@ -986,7 +986,7 @@ impl Raku {
                 .border_b_1()
                 .border_color(theme.border)
                 .bg(theme.surface)
-                .font_family(".SystemUIFont")
+                .font_family(self.fonts.interface.clone())
                 .cursor_default()
                 .flex()
                 .items_start()

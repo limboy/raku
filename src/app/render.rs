@@ -282,7 +282,7 @@ impl Render for Raku {
             .relative()
             .flex()
             .text_color(theme.text)
-            .font_family(".SystemUIFont")
+            .font_family(self.fonts.interface.clone())
             // Both panels slide through a container that narrows while their
             // content keeps its full width and is clipped: the sidebar list
             // and the right panel's surfaces never reflow on the way in or
@@ -441,7 +441,8 @@ impl Raku {
             &palette,
             self.chrome_markdown_metrics(MarkdownMetrics::COMPACT),
             self.toast_selection.clone(),
-        );
+        )
+        .with_font_family(self.fonts.interface.clone());
         let message = md::render::plain_text(
             message,
             md::render::SANS_FAMILY,

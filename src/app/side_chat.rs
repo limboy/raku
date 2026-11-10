@@ -39,6 +39,12 @@ pub(super) struct SideChatState {
 }
 
 impl SideChatState {
+    pub(super) fn remeasure_rows(&self) {
+        for list in self.lists.borrow().values() {
+            list.state.reset(list.rows.len());
+        }
+    }
+
     pub(super) fn new(composer: Entity<ComposerInput>) -> Self {
         Self {
             composer,
@@ -1063,6 +1069,7 @@ impl Raku {
                     metrics,
                     self.side_chat.selection.clone(),
                 )
+                .with_font_family(self.fonts.transcript.clone())
                 .with_math_enabled(self.state.render_math)
                 .with_link_handler(self.markdown_link_handler.clone())
                 .with_file_links(self.markdown_file_links.clone())

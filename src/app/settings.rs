@@ -13,6 +13,12 @@ const SETTINGS_POPUP_MAX_WIDTH: f32 = 1120.0;
 const SETTINGS_POPUP_MAX_HEIGHT: f32 = 760.0;
 const SETTINGS_CONTEXT: &str = "Settings";
 
+#[derive(Clone, Copy)]
+enum FontTarget {
+    Interface,
+    Transcript,
+}
+
 /// The remaining settings sections, in navigation order.
 const SETTINGS_PAGES: [(SettingsPage, &str, &str); 5] = [
     (
@@ -405,6 +411,8 @@ impl Raku {
         let theme = Theme::current(cx);
         let selected_theme = self.state.theme;
         let selected_language = self.state.language;
+        let interface_font_selector = self.render_font_selector(FontTarget::Interface, cx);
+        let transcript_font_selector = self.render_font_selector(FontTarget::Transcript, cx);
         let weak = cx.entity().downgrade();
         let theme_handle = self.menu_handle("theme-selector", cx);
         let theme_selector = dropdown_menu(
@@ -591,6 +599,20 @@ impl Raku {
                     .child(language_selector),
             )
             .child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
+            .child(self.render_font_setting_row(
+                tr!("settings.interface_font"),
+                tr!("settings.interface_font_description"),
+                interface_font_selector,
+                theme,
+            ))
+            .child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
+            .child(self.render_font_setting_row(
+                tr!("settings.transcript_font"),
+                tr!("settings.transcript_font_description"),
+                transcript_font_selector,
+                theme,
+            ))
+            .child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
             .child(
                 div()
                     .w_full()
@@ -657,6 +679,128 @@ impl Raku {
             .into_any_element()
     }
 
+    fn render_font_setting_row(
+        &self,
+        label: String,
+        description: String,
+        selector: AnyElement,
+        theme: Theme,
+    ) -> Div {
+        div()
+            .w_full()
+            .min_h(px(60.0))
+            .px(px(20.0))
+            .py(px(12.0))
+            .flex()
+            .items_center()
+            .gap(px(24.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(sp(13.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .mt(px(5.0))
+                            .text_size(sp(12.5))
+                            .line_height(sp(18.0))
+                            .text_color(theme.text_secondary)
+                            .child(description),
+                    ),
+            )
+            .child(selector)
+    }
+
+    fn render_font_selector(&self, target: FontTarget, cx: &mut Context<Self>) -> AnyElement {
+        let (id, selected, list_index) = match target {
+            FontTarget::Interface => ("interface-font-selector", &self.state.interface_font, 0),
+            FontTarget::Transcript => ("transcript-font-selector", &self.state.transcript_font, 1),
+        };
+        let handle = self.menu_handle(id, cx);
+        let weak = cx.entity().downgrade();
+        let selected_index = selected.as_deref().map_or(Some(0), |family| {
+            self.font_family_indexes.get(family).copied()
+        });
+        crate::ui::menu::font_dropdown_menu(
+            MenuChip::new(id)
+                .label(
+                    selected
+                        .clone()
+                        .unwrap_or_else(|| tr!("settings.font_system")),
+                )
+                .outlined()
+                .selected(handle.is_open())
+                .w(px(200.0))
+                .flex_none()
+                .justify_between(),
+            &handle,
+            self.font_families.clone(),
+            selected_index,
+            self.font_menu_lists[list_index].clone(),
+            move |family, _, cx| {
+                let _ = weak.update(cx, |this, cx| this.set_font(target, family, cx));
+            },
+        )
+    }
+
+    pub(super) fn load_font_families(&mut self, cx: &mut Context<Self>) {
+        let text_system = cx.text_system().clone();
+        let task = cx.background_executor().spawn(async move {
+            let mut fonts = text_system.all_font_names();
+            fonts.retain(|font| !font.starts_with('.') && !font.trim().is_empty());
+            fonts.sort_by_cached_key(|font| font.to_lowercase());
+            fonts.dedup();
+            let fonts = fonts
+                .into_iter()
+                .map(SharedString::from)
+                .collect::<Vec<_>>();
+            let indexes = fonts
+                .iter()
+                .enumerate()
+                .map(|(index, family)| (family.clone(), index + 1))
+                .collect();
+            (fonts, indexes)
+        });
+        cx.spawn(async move |this, cx| {
+            let (fonts, indexes) = task.await;
+            let _ = this.update(cx, |this, cx| {
+                for list in &this.font_menu_lists {
+                    list.reset(fonts.len() + 1);
+                }
+                this.font_families = Rc::new(fonts);
+                this.font_family_indexes = indexes;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn set_font(&mut self, target: FontTarget, family: Option<String>, cx: &mut Context<Self>) {
+        let preference = match target {
+            FontTarget::Interface => &mut self.state.interface_font,
+            FontTarget::Transcript => &mut self.state.transcript_font,
+        };
+        if *preference == family {
+            return;
+        }
+        *preference = family;
+        self.fonts = crate::theme::Fonts::new(
+            self.state.interface_font.as_deref(),
+            self.state.transcript_font.as_deref(),
+        );
+        cx.set_global(self.fonts.clone());
+        self.remeasure_font_sized_surfaces();
+        self.save();
+        cx.refresh_windows();
+        cx.notify();
+    }
+
     fn set_transcript_font_size(&mut self, size: TranscriptFontSize, cx: &mut Context<Self>) {
         if self.state.transcript_font_size == size {
             return;
@@ -682,7 +826,7 @@ impl Raku {
         cx.notify();
     }
 
-    /// Drop every cached row height that a font size participates in. The
+    /// Drop every cached row height that a font family or size participates in. The
     /// virtualized lists remember measured heights, so a stale entry would
     /// misplace scroll anchors until the row happened to remeasure. The
     /// sidebar list keeps its uniform row height and needs no reset.
@@ -697,6 +841,7 @@ impl Raku {
             .reset(self.right_panel_diff_tree_rows.borrow().len());
         self.skills_list_state
             .reset(self.skills_rows.borrow().len());
+        self.side_chat.remeasure_rows();
     }
 
     fn render_providers_settings(&self, cx: &mut Context<Self>) -> AnyElement {

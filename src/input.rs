@@ -3227,6 +3227,7 @@ impl Render for ComposerInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w_full()
+            .font_family(crate::theme::Fonts::current(cx).transcript)
             // The embedded field propagates SubmitSteer; this ancestor
             // handler is where steering becomes a composer event.
             .on_action(cx.listener(|composer, _: &SubmitSteer, _, cx| {

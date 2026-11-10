@@ -28,9 +28,9 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, Display, Element, ElementId, FocusHandle, FontWeight, GlobalElementId,
-    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, Point, Position, RenderOnce, SharedString, Size,
-    StatefulInteractiveElement, Style, Styled, Window, actions, canvas, deferred, div,
+    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, ListState,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Position, RenderOnce, SharedString,
+    Size, StatefulInteractiveElement, Style, Styled, Window, actions, canvas, deferred, div, list,
     prelude::FluentBuilder, px,
 };
 
@@ -48,6 +48,7 @@ actions!(
 
 /// Key context the open menu declares, and the scope its bindings live in.
 const MENU_CONTEXT: &str = "RakuMenu";
+const FONT_MENU_CONTEXT: &str = "RakuFontMenu";
 
 /// Vertical gap between a trigger and its anchored card.
 const TRIGGER_GAP: f32 = 4.0;
@@ -71,6 +72,9 @@ pub fn init(cx: &mut App) {
     use gpui::KeyBinding;
     cx.bind_keys([
         KeyBinding::new("escape", DismissMenu, Some(MENU_CONTEXT)),
+        KeyBinding::new("escape", DismissMenu, Some(FONT_MENU_CONTEXT)),
+        KeyBinding::new("tab", DismissMenu, Some(FONT_MENU_CONTEXT)),
+        KeyBinding::new("shift-tab", DismissMenu, Some(FONT_MENU_CONTEXT)),
         KeyBinding::new("down", SelectNextEntry, Some(PANEL_FIELD_CONTEXT)),
         KeyBinding::new("up", SelectPreviousEntry, Some(PANEL_FIELD_CONTEXT)),
         KeyBinding::new("tab", SelectNextTab, Some(PANEL_FIELD_CONTEXT)),
@@ -817,6 +821,174 @@ where
         }
         .into_any_element()
     })
+}
+
+/// A font menu can contain hundreds of families. Keep its rows virtualized and
+/// use the same anchoring, focus, checks, and dismissal as other dropdowns.
+pub fn font_dropdown_menu<E>(
+    trigger: E,
+    handle: &ContextMenuHandle,
+    families: Rc<Vec<SharedString>>,
+    selected: Option<usize>,
+    list_state: ListState,
+    on_select: impl Fn(Option<String>, &mut Window, &mut App) + 'static,
+) -> AnyElement
+where
+    E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
+{
+    let trigger_focus = handle.trigger_focus.clone();
+    let on_select: Rc<dyn Fn(Option<String>, &mut Window, &mut App)> =
+        Rc::new(move |family, window, cx| {
+            window.focus(&trigger_focus, cx);
+            on_select(family, window, cx);
+        });
+    anchored_surface(
+        trigger,
+        handle,
+        MenuAlign::BelowRight,
+        SurfaceFocus::Card,
+        move |handle| {
+            FontMenuCard {
+                handle: handle.clone(),
+                families: families.clone(),
+                selected,
+                list_state: list_state.clone(),
+                on_select: on_select.clone(),
+            }
+            .into_any_element()
+        },
+    )
+}
+
+#[derive(IntoElement)]
+struct FontMenuCard {
+    handle: ContextMenuHandle,
+    families: Rc<Vec<SharedString>>,
+    selected: Option<usize>,
+    list_state: ListState,
+    #[allow(clippy::type_complexity)]
+    on_select: Rc<dyn Fn(Option<String>, &mut Window, &mut App)>,
+}
+
+impl RenderOnce for FontMenuCard {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        let count = self.families.len() + 1;
+        let selected = self.selected;
+        let highlighted = {
+            let mut state = self.handle.state.borrow_mut();
+            *state.highlighted.get_or_insert_with(|| {
+                let index = selected.unwrap_or(0);
+                self.list_state.scroll_to_reveal_item(index);
+                index
+            })
+        };
+        let row_handle = self.handle.clone();
+        let row_families = self.families.clone();
+        let row_select = self.on_select.clone();
+        let rows = list(self.list_state.clone(), move |index, _, _| {
+            let family = index
+                .checked_sub(1)
+                .and_then(|i| row_families.get(i))
+                .cloned();
+            let label = family
+                .clone()
+                .unwrap_or_else(|| tr!("settings.font_system").into());
+            let on_select = row_select.clone();
+            let entry = row(
+                index,
+                highlighted == index,
+                &theme,
+                row_handle.clone(),
+                Some(Rc::new(move |window, cx| {
+                    on_select(family.as_ref().map(ToString::to_string), window, cx);
+                })),
+            )
+            .h(px(ROW_HEIGHT))
+            .text_color(theme.text)
+            .child(div().flex_1().min_w_0().truncate().child(label))
+            .when(selected == Some(index), |entry| {
+                entry.child(icon("icons/check.svg", 11.0, theme.text_tertiary))
+            });
+            let hover_handle = row_handle.clone();
+            let entry = entry.on_hover(move |hovered, window, _| {
+                if *hovered {
+                    hover_handle.state.borrow_mut().highlighted = Some(index);
+                    window.refresh();
+                }
+            });
+            div()
+                .child(entry)
+                .when(index == 0, |element| {
+                    element.child(div().my(px(4.0)).mx(px(15.0)).h(px(1.0)).bg(theme.border))
+                })
+                .into_any_element()
+        })
+        .h(px((count as f32 * ROW_HEIGHT + SEPARATOR_HEIGHT)
+            .min(320.0)
+            .min((f32::from(window.viewport_size().height) - 32.0).max(0.0))));
+
+        div()
+            .id("font-menu")
+            .occlude()
+            .track_focus(&self.handle.focus)
+            .tab_index(0)
+            .key_context(FONT_MENU_CONTEXT)
+            .w(px(300.0))
+            .py(px(CARD_PADDING))
+            .rounded(px(CARD_RADIUS))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu)
+            .shadow_lg()
+            .focus_visible(|style| style.border_color(theme.accent))
+            .on_action({
+                let handle = self.handle.clone();
+                move |_: &DismissMenu, window, cx| {
+                    handle.close(window, cx);
+                    window.focus(&handle.trigger_focus, cx);
+                    window.refresh();
+                }
+            })
+            .on_mouse_down_out({
+                let handle = self.handle.clone();
+                move |event, window, cx| handle.dismiss_on_down_out(event, window, cx)
+            })
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                let current = self
+                    .handle
+                    .state
+                    .borrow()
+                    .highlighted
+                    .unwrap_or(highlighted);
+                let next = match event.keystroke.key.as_str() {
+                    "down" => (current + 1) % count,
+                    "up" => (current + count - 1) % count,
+                    "home" => 0,
+                    "end" => count - 1,
+                    "enter" | "space" => {
+                        let family = current
+                            .checked_sub(1)
+                            .and_then(|index| self.families.get(index))
+                            .map(ToString::to_string);
+                        self.handle.close(window, cx);
+                        (self.on_select)(family, window, cx);
+                        window.refresh();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    _ => return,
+                };
+                self.handle.state.borrow_mut().highlighted = Some(next);
+                self.list_state.scroll_to_reveal_item(next);
+                window.refresh();
+                cx.stop_propagation();
+            })
+            .child(rows)
+    }
 }
 
 /// A dropdown-anchored panel holding arbitrary content.

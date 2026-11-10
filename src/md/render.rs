@@ -541,9 +541,9 @@ pub struct MarkdownView {
     /// knows how many text elements each block expands into.
     volatile_from: Cell<usize>,
     /// Style the cached flats were built for. Colors live inside `TextRun`s, so
-    /// a theme switch has to drop them or the transcript keeps painting the old
-    /// palette.
-    style: Cell<Option<(Palette, Metrics)>>,
+    /// a theme or font switch has to drop them or the transcript keeps the old
+    /// colors or glyph geometry.
+    style: RefCell<Option<(Palette, Metrics, SharedString)>>,
     /// Index changes refresh settled links once. A weak reference preserves
     /// identity without off-screen rows keeping obsolete file indexes alive.
     file_links: RefCell<Option<Weak<FileLinks>>>,
@@ -570,7 +570,7 @@ impl MarkdownView {
             tail: Vec::new(),
             flats: RefCell::new(HashMap::new()),
             volatile_from: Cell::new(0),
-            style: Cell::new(None),
+            style: RefCell::new(None),
             file_links: RefCell::new(None),
             veil: RefCell::new(RowVeil::default()),
             copied_code_blocks: Rc::new(RefCell::new(HashMap::new())),
@@ -643,10 +643,11 @@ impl MarkdownView {
     }
 
     /// Drop cached flats if the style they were built for no longer applies.
-    fn sync_style(&self, palette: &Palette, metrics: &Metrics) {
-        let current = (*palette, *metrics);
-        if self.style.get() != Some(current) {
-            self.style.set(Some(current));
+    fn sync_style(&self, palette: &Palette, metrics: &Metrics, font_family: &SharedString) {
+        let current = (*palette, *metrics, font_family.clone());
+        let mut style = self.style.borrow_mut();
+        if style.as_ref() != Some(&current) {
+            *style = Some(current);
             self.flats.borrow_mut().clear();
         }
     }
@@ -700,6 +701,7 @@ pub struct Ctx<'a> {
     row: Rc<str>,
     palette: &'a Palette,
     metrics: Metrics,
+    font_family: SharedString,
     selection: TranscriptSelection,
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
@@ -730,6 +732,7 @@ impl<'a> Ctx<'a> {
             row: row.into(),
             palette,
             metrics,
+            font_family: SANS_FAMILY.into(),
             selection,
             search: None,
             link_handler: None,
@@ -750,6 +753,11 @@ impl<'a> Ctx<'a> {
 
     pub fn selection(&self) -> &TranscriptSelection {
         &self.selection
+    }
+
+    pub fn with_font_family(mut self, family: SharedString) -> Self {
+        self.font_family = family;
+        self
     }
 
     pub fn with_link_handler(mut self, handler: LinkHandler) -> Self {
@@ -814,6 +822,7 @@ impl<'a> Ctx<'a> {
             row: self.row.clone(),
             palette: self.palette,
             metrics: self.metrics,
+            font_family: self.font_family.clone(),
             selection: self.selection.clone(),
             search: self.search.clone(),
             link_handler: self.link_handler.clone(),
@@ -846,6 +855,16 @@ impl<'a> Ctx<'a> {
     /// string and `TextRun`s untouched, so an unchanged paragraph costs one
     /// `Rc` clone per frame instead of a fresh allocation.
     fn flat(&self, ordinal: usize, build: impl FnOnce() -> FlatText) -> Rc<FlatText> {
+        // Apply prose families only on a cache miss; code keeps its mono face.
+        let build = || {
+            let mut flat = build();
+            for run in &mut flat.runs {
+                if run.font.family == SANS_FAMILY {
+                    run.font.family = self.font_family.clone();
+                }
+            }
+            flat
+        };
         match self.cache {
             Some(view) => view.flat(ordinal, build),
             None => Rc::new(build()),
@@ -1576,7 +1595,7 @@ fn markdown_capped<'a>(
         return None;
     };
 
-    view.sync_style(ctx.palette, &ctx.metrics);
+    view.sync_style(ctx.palette, &ctx.metrics, &ctx.font_family);
     view.sync_file_links(ctx.file_links.as_ref());
     let ctx = ctx.with_cache(view);
     if ctx.animate_streaming && view.streaming.get() {
@@ -3047,12 +3066,12 @@ mod tests {
         let dark = Palette::from_theme(&Theme::dark());
         let light = Palette::from_theme(&Theme::light());
 
-        view.sync_style(&dark, &Metrics::BODY);
+        view.sync_style(&dark, &Metrics::BODY, &SANS_FAMILY.into());
         let cached = view.flat(0, || {
             flatten_plain("a", SANS_FAMILY, FontWeight::NORMAL, dark.text)
         });
 
-        view.sync_style(&dark, &Metrics::BODY);
+        view.sync_style(&dark, &Metrics::BODY, &SANS_FAMILY.into());
         assert!(
             Rc::ptr_eq(
                 &cached,
@@ -3061,12 +3080,56 @@ mod tests {
             "re-syncing the same style must not invalidate"
         );
 
-        view.sync_style(&light, &Metrics::BODY);
+        view.sync_style(&light, &Metrics::BODY, &SANS_FAMILY.into());
         let relit = view.flat(0, || {
             flatten_plain("a", SANS_FAMILY, FontWeight::NORMAL, light.text)
         });
         assert!(!Rc::ptr_eq(&cached, &relit));
         assert_eq!(relit.runs[0].color, light.text);
+    }
+
+    #[test]
+    fn changing_prose_font_rebuilds_cached_runs_and_preserves_code_font() {
+        let palette = palette();
+        let view = MarkdownView::new();
+        let runs = vec![
+            InlineRun {
+                text: "Prose ".into(),
+                style: Default::default(),
+            },
+            InlineRun {
+                text: "code".into(),
+                style: super::super::parser::InlineStyle {
+                    code: true,
+                    ..Default::default()
+                },
+            },
+        ];
+        let build = || flatten(&runs, &palette, FontWeight::NORMAL, palette.text, None);
+        let first = Ctx::new(
+            "font-change",
+            &palette,
+            Metrics::BODY,
+            TranscriptSelection::default(),
+        )
+        .with_font_family("Georgia".into());
+        view.sync_style(&palette, &Metrics::BODY, &first.font_family);
+        let first = first.with_cache(&view).flat(0, build);
+        assert_eq!(first.runs[0].font.family.as_ref(), "Georgia");
+        assert_eq!(first.runs[1].font.family.as_ref(), MONO_FAMILY);
+
+        let next = Ctx::new(
+            "font-change",
+            &palette,
+            Metrics::BODY,
+            TranscriptSelection::default(),
+        )
+        .with_font_family("Avenir Next".into());
+        view.sync_style(&palette, &Metrics::BODY, &next.font_family);
+        let next = next.with_cache(&view).flat(0, build);
+        assert!(!Rc::ptr_eq(&first, &next));
+        assert_eq!(next.runs[0].font.family.as_ref(), "Avenir Next");
+        assert_eq!(next.runs[1].font.family.as_ref(), MONO_FAMILY);
     }
 
     /// Reasoning text goes through the same view as a response, so a plain

@@ -219,6 +219,16 @@ settings.theme:
   en: Theme
 settings.theme_description:
   en: Choose between system, light, or dark themes
+settings.interface_font:
+  en: Interface font
+settings.interface_font_description:
+  en: Font used for menus, settings, and app controls
+settings.transcript_font:
+  en: Transcript font
+settings.transcript_font_description:
+  en: Font used for messages and the composer
+settings.font_system:
+  en: System
 settings.transcript_font_size:
   en: Transcript font size
 settings.transcript_font_size_description:

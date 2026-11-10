@@ -4401,6 +4401,7 @@ impl Raku {
             ),
             self.file_preview_selection.clone(),
         )
+        .with_font_family(self.fonts.interface.clone())
         .with_math_enabled(self.state.render_math)
         .with_math_context_menu(self.menu_handle("file-preview-math", cx))
         .with_link_handler(self.markdown_link_handler.clone());

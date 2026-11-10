@@ -107,6 +107,11 @@ settings.close: 关闭设置
 settings.search: 搜索设置
 settings.theme: 主题
 settings.theme_description: 选择跟随系统、浅色或深色主题
+settings.interface_font: 界面字体
+settings.interface_font_description: 菜单、设置和应用控件使用的字体
+settings.transcript_font: 对话字体
+settings.transcript_font_description: 消息和输入框使用的字体
+settings.font_system: 系统
 settings.transcript_font_size: 对话字号
 settings.transcript_font_size_description: 对话中消息的文字大小
 settings.font_size_small: 小
