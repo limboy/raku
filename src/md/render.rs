@@ -1949,6 +1949,11 @@ fn render_image(url: &str, alt: &str, ctx: &Ctx) -> AnyElement {
 }
 
 const CODE_COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(3);
+
+/// Code-block header controls draw at 15px so the copy and run affordances
+/// read as buttons rather than decoration; the `*-bold` derivatives keep
+/// their stroke near 1.5px at this size.
+const CODE_HEADER_ICON_SIZE: f32 = 15.0;
 type CodeCopyFeedback = Rc<RefCell<HashMap<usize, u64>>>;
 
 fn begin_code_copy_feedback(feedback: &CodeCopyFeedback, ordinal: usize) -> u64 {
@@ -2028,7 +2033,11 @@ impl gpui::RenderOnce for MermaidPreviewButton {
             .cursor_default()
             .focus_visible(|style| style.border_1().border_color(self.palette.accent))
             .hover(|style| style.bg(self.palette.overlay))
-            .child(crate::ui::icon("icons/eye.svg", 11.0, self.palette.ghost))
+            .child(crate::ui::icon(
+                "icons/eye-bold.svg",
+                CODE_HEADER_ICON_SIZE,
+                self.palette.ghost,
+            ))
             .tooltip(Tooltip::text(tr!("mermaid.preview")))
             .on_click(move |_, window, cx| {
                 super::mermaid::open(source.clone(), window, cx);
@@ -2109,11 +2118,11 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
         .hover(|style| style.bg(ctx.palette.overlay))
         .child(crate::ui::icon(
             if copied {
-                "icons/check.svg"
+                "icons/check-bold.svg"
             } else {
-                "icons/copy.svg"
+                "icons/copy-bold.svg"
             },
-            11.0,
+            CODE_HEADER_ICON_SIZE,
             ctx.palette.ghost,
         ))
         .tooltip(Tooltip::text(if copied {
@@ -2247,8 +2256,8 @@ fn render_code_run_button(
     if running {
         return button
             .child(crate::ui::motion::spin_slow(crate::ui::icon(
-                "icons/loader-circle.svg",
-                11.0,
+                "icons/loader-circle-bold.svg",
+                CODE_HEADER_ICON_SIZE,
                 palette.ghost,
             )))
             .tooltip(Tooltip::text(tr!("code_run.running")))
@@ -2259,7 +2268,11 @@ fn render_code_run_button(
     let keyboard_action = action.clone();
     button
         .hover(|style| style.bg(palette.overlay))
-        .child(crate::ui::icon("icons/play.svg", 11.0, palette.ghost))
+        .child(crate::ui::icon(
+            "icons/play-bold.svg",
+            CODE_HEADER_ICON_SIZE,
+            palette.ghost,
+        ))
         .tooltip(Tooltip::text(tr!("code_run.run_tooltip")))
         .on_click(move |_, window, cx| {
             click_action(ordinal, click_code.clone(), window, cx);
@@ -2972,8 +2985,9 @@ mod tests {
         assert!(body.contains(".whitespace_normal()"));
         assert!(!body.contains(".overflow_x_scroll()"));
         assert!(!body.contains(".whitespace_nowrap()"));
-        assert!(body.contains("\"icons/copy.svg\""));
-        assert!(body.contains("\"icons/check.svg\""));
+        assert!(body.contains("\"icons/copy-bold.svg\""));
+        assert!(body.contains("\"icons/check-bold.svg\""));
+        assert!(body.contains("CODE_HEADER_ICON_SIZE"));
         assert!(body.contains("ClipboardItem::new_string"));
         assert!(body.contains("show_code_copied"));
         assert!(body.contains(".tab_index(0)"));
