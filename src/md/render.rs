@@ -384,12 +384,30 @@ pub fn flatten(
             });
         }
 
-        let mut run_font = font(if run.style.code {
+        // Only a code span resolves a workspace file, but a span that resolves
+        // is a link: the mono face, the code colour and the wash would put the
+        // link underline inside the chip, so clickable code takes the
+        // paragraph's link styling instead.
+        let file_target = (run.style.code && run.style.link.is_none())
+            .then(|| {
+                file_links.and_then(|index| {
+                    index.resolve(&run.text).or_else(|| {
+                        run.text
+                            .strip_prefix('@')
+                            .and_then(|path| index.resolve(path))
+                    })
+                })
+            })
+            .flatten();
+        let link = run.style.link.as_ref().or(file_target.as_ref());
+        let as_code = run.style.code && link.is_none();
+
+        let mut run_font = font(if as_code {
             INLINE_MONO_FAMILY
         } else {
             SANS_FAMILY
         });
-        run_font.weight = if run.style.code {
+        run_font.weight = if as_code {
             // Inline code is never bold. It is already the denser face, and the
             // small cut only ships regular and italic.
             FontWeight::NORMAL
@@ -404,25 +422,13 @@ pub fn flatten(
             FontStyle::Normal
         };
 
-        if run.style.code {
+        if as_code {
             // Merge neighbouring code runs so their washes form one box.
             match code_ranges.last_mut() {
                 Some(range) if range.end == start => range.end = end,
                 _ => code_ranges.push(start..end),
             }
         }
-        let file_target = (run.style.code && run.style.link.is_none())
-            .then(|| {
-                file_links.and_then(|index| {
-                    index.resolve(&run.text).or_else(|| {
-                        run.text
-                            .strip_prefix('@')
-                            .and_then(|path| index.resolve(path))
-                    })
-                })
-            })
-            .flatten();
-        let link = run.style.link.as_ref().or(file_target.as_ref());
         if let Some(url) = link {
             // A still-streaming link keeps link styling — so the URL settling
             // changes nothing visually — but must not become clickable.
@@ -437,7 +443,7 @@ pub fn flatten(
         let text_run = TextRun {
             len: run.text.len(),
             font: run_font,
-            color: if run.style.code {
+            color: if as_code {
                 palette.code_text
             } else {
                 base_color
@@ -2566,6 +2572,19 @@ mod tests {
         );
     }
 
+    /// Font family covering a byte offset, for asserting per-span styling.
+    fn font_family_at(flat: &FlatText, index: usize) -> SharedString {
+        let mut end = 0;
+        flat.runs
+            .iter()
+            .find(|run| {
+                end += run.len;
+                end > index
+            })
+            .map(|run| run.font.family.clone())
+            .expect("index inside the text")
+    }
+
     #[test]
     fn flattened_runs_tile_the_text_and_carry_styles() {
         let flat = flatten(
@@ -2644,7 +2663,18 @@ mod tests {
         );
         assert_runs_tile(&linked);
         assert_eq!(linked.text, plain.text);
-        assert_eq!(linked.code_ranges, plain.code_ranges);
+        // Resolving makes a span a link, so only code that stayed code keeps the
+        // chip and the mono face.
+        assert_eq!(
+            linked
+                .code_ranges
+                .iter()
+                .map(|range| &linked.text[range.clone()])
+                .collect::<Vec<_>>(),
+            vec!["remainingPosts"]
+        );
+        // The explicit `[`README.md`](…)] span is already a link unindexed.
+        assert_eq!(plain.code_ranges.len(), 3);
         assert_eq!(
             linked
                 .links
@@ -2663,17 +2693,11 @@ mod tests {
                 ("README.md", "https://example.com/readme"),
             ]
         );
+        let linked_path = linked.text.find("src/lib/utils.server.ts").unwrap();
+        assert_eq!(font_family_at(&linked, linked_path).as_ref(), SANS_FAMILY);
         assert_eq!(
-            linked
-                .runs
-                .iter()
-                .map(|run| (&run.font, run.len))
-                .collect::<Vec<_>>(),
-            plain
-                .runs
-                .iter()
-                .map(|run| (&run.font, run.len))
-                .collect::<Vec<_>>()
+            font_family_at(&plain, linked_path).as_ref(),
+            INLINE_MONO_FAMILY
         );
     }
 
@@ -2737,7 +2761,15 @@ mod tests {
         );
         assert_runs_tile(&linked);
         assert_eq!(linked.text, plain.text);
-        assert_eq!(linked.code_ranges, plain.code_ranges);
+        // `@b.rs` is a link now; `cat @a.rs` is not a path, so it stays code.
+        assert_eq!(
+            linked
+                .code_ranges
+                .iter()
+                .map(|range| &linked.text[range.clone()])
+                .collect::<Vec<_>>(),
+            vec!["cat @a.rs"]
+        );
         assert_eq!(
             linked
                 .links
@@ -2754,14 +2786,13 @@ mod tests {
                 ("@a.rs", "https://example.com"),
             ],
         );
-        // Adding underline ranges must not change fonts or byte positions.
-        let fonts = |flat: &FlatText| {
-            flat.runs
-                .iter()
-                .flat_map(|run| std::iter::repeat_n(run.font.clone(), run.len))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(fonts(&linked), fonts(&plain));
+        // A clickable span renders as a paragraph link, not as code.
+        let linked_code = linked.text.find("@b.rs").unwrap();
+        assert_eq!(font_family_at(&linked, linked_code).as_ref(), SANS_FAMILY);
+        assert_eq!(
+            font_family_at(&plain, linked_code).as_ref(),
+            INLINE_MONO_FAMILY
+        );
     }
 
     #[gpui::test]
