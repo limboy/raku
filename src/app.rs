@@ -2329,10 +2329,7 @@ impl Raku {
             .detach();
 
             cx.observe_window_activation(window, |this: &mut Self, window, cx| {
-                let active = window.is_window_active();
-                let modifiers = window.modifiers();
-                this.set_sidebar_session_shortcuts_visible(active && modifiers.secondary(), cx);
-                this.set_sidebar_session_remove_visible(active && modifiers.shift, cx);
+                this.sync_sidebar_modifier_hints(window.modifiers(), window, cx);
                 if window.is_window_active() {
                     this.reload_clean_right_panel_file_editors(cx);
                     // The working tree and branch may have moved while another

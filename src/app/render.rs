@@ -275,8 +275,16 @@ impl Render for Raku {
             .on_action(cx.listener(Self::replace_all_matches_action))
             .on_modifiers_changed(cx.listener(Self::task_switcher_modifiers_changed))
             .on_modifiers_changed(cx.listener(Self::sidebar_session_shortcuts_modifiers_changed))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.sync_sidebar_modifier_hints(event.keystroke.modifiers, window, cx);
+            }))
             .capture_any_mouse_down(cx.listener(Self::navigation_mouse_down))
-            .on_mouse_move(cx.listener(Self::resize_panel_mouse_move))
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                    this.sync_sidebar_modifier_hints(event.modifiers, window, cx);
+                    this.resize_panel_mouse_move(event, window, cx);
+                }),
+            )
             .capture_any_mouse_up(cx.listener(Self::finish_panel_resize))
             .size_full()
             .relative()

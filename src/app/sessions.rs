@@ -760,6 +760,7 @@ impl Raku {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.sync_sidebar_modifier_hints(event.modifiers, window, cx);
         match event.button {
             MouseButton::Navigate(NavigationDirection::Back) => {
                 cx.stop_propagation();

@@ -1209,9 +1209,23 @@ impl Raku {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.sync_sidebar_modifier_hints(event.modifiers, window, cx);
+    }
+
+    /// Re-derive the modifier-revealed sidebar hints from any input event
+    /// that carries modifiers. A `flagsChanged` release can be delivered to a
+    /// native subview instead of GPUI — the embedded browser when it holds
+    /// first responder — which would otherwise leave the Cmd badges stuck
+    /// until the next modifier press.
+    pub(super) fn sync_sidebar_modifier_hints(
+        &mut self,
+        modifiers: gpui::Modifiers,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let active = window.is_window_active();
-        self.set_sidebar_session_shortcuts_visible(active && event.secondary(), cx);
-        self.set_sidebar_session_remove_visible(active && event.modifiers.shift, cx);
+        self.set_sidebar_session_shortcuts_visible(active && modifiers.secondary(), cx);
+        self.set_sidebar_session_remove_visible(active && modifiers.shift, cx);
     }
 
     pub(super) fn set_sidebar_session_remove_visible(
