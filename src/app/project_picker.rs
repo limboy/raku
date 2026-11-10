@@ -352,7 +352,7 @@ impl Raku {
                                                             |style| style.invisible(),
                                                         )
                                                         .child(icon(
-                                                            "icons/check.svg",
+                                                            "icons/check-bold-stroke.svg",
                                                             11.0,
                                                             theme.text_secondary,
                                                         )),
@@ -362,7 +362,7 @@ impl Raku {
                                         .child(
                                             icon_button(
                                                 ("project-remove", index),
-                                                "icons/x.svg",
+                                                "icons/x-bold.svg",
                                                 theme,
                                             )
                                             .tab_index(index as isize)
@@ -470,7 +470,11 @@ impl Raku {
                                 }),
                         )
                         .when(selected, |element| {
-                            element.child(icon("icons/check.svg", 11.0, theme.text_secondary))
+                            element.child(icon(
+                                "icons/check-bold-stroke.svg",
+                                11.0,
+                                theme.text_secondary,
+                            ))
                         })
                         .on_click(move |_, window, cx| {
                             popover.close(window, cx);

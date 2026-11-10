@@ -23,7 +23,10 @@ hold up at a 12px row: `loader-circle-bold` redraws `ant/loader` at the same
 and `alert-bold`, `hourglass-bold`, and `x-bold` reuse the supplied
 `ant/warning`, `ant/clock`, and `ant/x` paths with a `38`-unit
 `currentColor` stroke that expands every outline edge by roughly 19 units per
-side. The search glyphs marked `lucide-static v1.69.0` come from
+side. `check-bold-stroke` keeps the `1000`-unit box and uses the same `38`-unit
+`currentColor` stroke as the session glyphs, for the project picker's
+selected-project check. The search glyphs marked `lucide-static v1.69.0` come
+from
 [`lucide-static` 1.69.0](https://www.npmjs.com/package/lucide-static/v/1.69.0);
 their ISC and Feather MIT notices remain in [LICENSE-lucide.txt](LICENSE-lucide.txt).
 

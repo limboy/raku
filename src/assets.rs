@@ -37,6 +37,7 @@ const ICONS: &[(&str, &[u8])] = icons![
     "changes" => "ant/git-compare",
     "chart-column" => "ant/bar-chart",
     "check" => "ant/check",
+    "check-bold-stroke",
     "chevron-down" => "ant/chevron-down",
     "chevron-right" => "ant/chevron-right",
     "chevron-up" => "ant/chevron-up",
