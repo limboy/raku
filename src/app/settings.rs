@@ -558,7 +558,7 @@ impl Raku {
                             .child(
                                 div()
                                     .mt(px(5.0))
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .line_height(sp(18.0))
                                     .text_color(theme.text_secondary)
                                     .child(tr!("settings.theme_description")),
@@ -590,7 +590,7 @@ impl Raku {
                             .child(
                                 div()
                                     .mt(px(5.0))
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .line_height(sp(18.0))
                                     .text_color(theme.text_secondary)
                                     .child(tr!("language.description")),
@@ -636,7 +636,7 @@ impl Raku {
                             .child(
                                 div()
                                     .mt(px(5.0))
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .line_height(sp(18.0))
                                     .text_color(theme.text_secondary)
                                     .child(tr!("settings.transcript_font_size_description")),
@@ -668,7 +668,7 @@ impl Raku {
                             .child(
                                 div()
                                     .mt(px(5.0))
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .line_height(sp(18.0))
                                     .text_color(theme.text_secondary)
                                     .child(tr!("settings.code_font_size_description")),
@@ -708,7 +708,7 @@ impl Raku {
                     .child(
                         div()
                             .mt(px(5.0))
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .line_height(sp(18.0))
                             .text_color(theme.text_secondary)
                             .child(description),
@@ -865,7 +865,7 @@ impl Raku {
             .items_center()
             .gap(px(6.0))
             .cursor_default()
-            .text_size(sp(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .text_color(theme.text_secondary)
             .opacity(if checking { 0.6 } else { 1.0 })
             .hover(|element| element.bg(theme.overlay))
@@ -1003,7 +1003,7 @@ impl Raku {
                                 .gap(px(7.0))
                                 .child(
                                     div()
-                                        .text_size(sp(12.5))
+                                        .text_size(sp(SMALL_UI_FONT_SIZE))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(if installed {
                                             theme.text
@@ -1016,7 +1016,7 @@ impl Raku {
                                     element.child(
                                         div()
                                             .font_family(crate::md::render::MONO_FAMILY)
-                                            .text_size(sp(12.5))
+                                            .text_size(sp(SMALL_UI_FONT_SIZE))
                                             .text_color(theme.text_tertiary)
                                             .child(SharedString::from(format!("v{version}"))),
                                     )
@@ -1025,7 +1025,7 @@ impl Raku {
                         .child(
                             div()
                                 .mt(px(3.0))
-                                .text_size(sp(12.5))
+                                .text_size(sp(SMALL_UI_FONT_SIZE))
                                 .text_color(theme.text_tertiary)
                                 .child(detail),
                         ),
@@ -1074,7 +1074,7 @@ impl Raku {
                             .child(
                                 div()
                                     .mt(px(5.0))
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .line_height(sp(18.0))
                                     .text_color(theme.text_secondary)
                                     .child(tr!("providers.description")),
@@ -1091,7 +1091,7 @@ impl Raku {
                             .when_some(checked_label, |element, label| {
                                 element.child(
                                     div()
-                                        .text_size(sp(12.5))
+                                        .text_size(sp(SMALL_UI_FONT_SIZE))
                                         .text_color(theme.text_ghost)
                                         .child(SharedString::from(label)),
                                 )
@@ -1140,7 +1140,7 @@ impl Raku {
             .flex_none()
             .items_center()
             .cursor_default()
-            .text_size(sp(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .text_color(theme.text_secondary)
             .hover(|element| element.bg(theme.overlay))
             .child(tr!("common.reset"))
@@ -1158,14 +1158,14 @@ impl Raku {
             .gap(px(5.0))
             .child(
                 div()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(tr!("providers.binary_path")),
             )
             .child(
                 div()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(15.0))
                     .text_color(theme.text_tertiary)
                     .child(SharedString::from(tr!(
@@ -1191,7 +1191,7 @@ impl Raku {
             )
             .child(
                 div()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(theme.text_ghost)
                     .child(SharedString::from(caption)),
             )

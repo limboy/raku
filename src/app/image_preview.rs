@@ -364,7 +364,7 @@ impl Raku {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(color)
                     .child(icon(
                         if activity.failed {
@@ -383,7 +383,7 @@ impl Raku {
         if let Some(detail) = activity.detail.as_ref() {
             card = card.child(
                 div()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(color)
                     .child(detail.clone()),
             );
@@ -667,7 +667,7 @@ impl Raku {
                             .flex_col()
                             .items_center()
                             .gap(px(8.0))
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(unavailable_color)
                             .child(icon("icons/alert.svg", 18.0, unavailable_color))
                             .child(tr_cow!("attachments.preview_unavailable"))
@@ -697,7 +697,7 @@ impl Raku {
                     .py(px(5.0))
                     .rounded_full()
                     .bg(gpui::hsla(0.0, 0.0, 0.0, 0.48))
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(gpui::white().opacity(0.9))
                     .truncate()
                     .child(name),

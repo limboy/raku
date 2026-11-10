@@ -1387,7 +1387,7 @@ impl Raku {
                             div()
                                 .max_w(px(540.0))
                                 .mt(px(5.0))
-                                .text_size(sp(12.5))
+                                .text_size(sp(SMALL_UI_FONT_SIZE))
                                 .text_color(theme.text_tertiary)
                                 .child(hint),
                         )
@@ -1407,7 +1407,7 @@ impl Raku {
                                 ))
                                 .child(
                                     div()
-                                        .text_size(sp(12.5))
+                                        .text_size(sp(SMALL_UI_FONT_SIZE))
                                         .text_color(theme.text_secondary)
                                         .child(provider.display_name().to_owned()),
                                 ),
@@ -1437,7 +1437,7 @@ impl Raku {
                                 ))
                                 .child(
                                     div()
-                                        .text_size(sp(12.5))
+                                        .text_size(sp(SMALL_UI_FONT_SIZE))
                                         .text_color(theme.text_secondary)
                                         .child(provider.display_name().to_owned()),
                                 )
@@ -1462,7 +1462,7 @@ impl Raku {
                                 .pt(px(10.0))
                                 .flex()
                                 .items_center()
-                                .text_size(sp(12.5))
+                                .text_size(sp(SMALL_UI_FONT_SIZE))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_tertiary)
                                 .child(item.section.label()),
@@ -1574,7 +1574,7 @@ impl Raku {
                                                         detail.flex_none().max_w(px(160.0))
                                                     })
                                                     .truncate()
-                                                    .text_size(sp(12.5))
+                                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                                     .text_color(theme.text_tertiary)
                                                     .child(detail),
                                             )
@@ -1587,7 +1587,7 @@ impl Raku {
                                             .w_full()
                                             .overflow_hidden()
                                             .whitespace_nowrap()
-                                            .text_size(sp(12.5))
+                                            .text_size(sp(SMALL_UI_FONT_SIZE))
                                             .child(palette_content_match_text(
                                                 &matched,
                                                 &search_query,

@@ -485,7 +485,7 @@ fn usage_panel(
         .flex()
         .flex_col()
         .gap(px(12.0))
-        .text_size(sp(13.0))
+        .text_size(sp(SMALL_UI_FONT_SIZE))
         .font_weight(FontWeight::NORMAL);
 
     // The context row always renders; a session with nothing measured yet

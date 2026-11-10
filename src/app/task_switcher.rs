@@ -523,7 +523,7 @@ impl Raku {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_secondary)
                             .child(provider.display_name()),
@@ -579,7 +579,7 @@ impl Raku {
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_tertiary)
                             .child(model.to_owned()),
                     ),
@@ -598,7 +598,7 @@ impl Raku {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .text_color(theme.text_tertiary)
                                     .child(branch),
                             )
@@ -607,7 +607,7 @@ impl Raku {
                     .child(
                         div()
                             .flex_none()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_ghost)
                             .child(time),
                     ),

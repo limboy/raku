@@ -83,7 +83,7 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-use crate::theme::{Theme, sp};
+use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::icon;
 
 /// One row of a menu.
@@ -1431,7 +1431,7 @@ fn render_menu_item(
             .px(px(CARD_PADDING + ROW_PADDING))
             .pt(px(6.0))
             .pb(px(2.0))
-            .text_size(sp(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .line_height(sp(14.0))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_tertiary)

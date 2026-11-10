@@ -507,7 +507,7 @@ impl Raku {
                     div()
                         .min_w(px(62.0))
                         .flex_1()
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .whitespace_nowrap()
                         .text_color(if !query_empty && !has_matches {
                             theme.danger

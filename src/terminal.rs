@@ -31,7 +31,7 @@ use gpui::{
 use parking_lot::Mutex;
 
 use crate::persistence::DEFAULT_RIGHT_PANEL_WIDTH;
-use crate::theme::{Theme, sp};
+use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::scrollbar::{self, ScrollbarState};
 
 /// Fallback advance width, used only until the font has been measured.
@@ -1308,7 +1308,7 @@ impl Render for TerminalView {
             screen = screen.child(
                 div()
                     .p(px(12.0))
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(17.0))
                     .text_color(if self.error.is_some() {
                         theme.danger
@@ -1454,14 +1454,14 @@ impl Render for TerminalView {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_secondary)
                             .child(SharedString::from(title.to_owned())),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_tertiary)
                             .child(directory),
                     ),

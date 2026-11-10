@@ -2,6 +2,9 @@ use gpui::{App, Global, Hsla, Rems, SharedString, Window, WindowAppearance, hsla
 
 pub use raku_client::theme::ThemePreference;
 
+/// Standard size for compact interface controls, descriptions, and metadata.
+pub const SMALL_UI_FONT_SIZE: f32 = 13.0;
+
 /// Shared family names keep font reads allocation-free on rendering paths.
 #[derive(Clone)]
 pub struct Fonts {

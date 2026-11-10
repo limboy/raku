@@ -1669,7 +1669,7 @@ impl Raku {
             .items_center()
             .gap(px(5.0))
             .cursor_default()
-            .text_size(sp(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_secondary)
             .focus_visible(|style| style.border_color(theme.accent))
@@ -1732,7 +1732,7 @@ impl Raku {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.text)
                                     .child(title),
@@ -1742,7 +1742,7 @@ impl Raku {
                                     .flex()
                                     .items_center()
                                     .gap(px(6.0))
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .line_height(sp(14.0))
                                     .child(
                                         div()
@@ -1809,21 +1809,21 @@ impl Raku {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_secondary)
                             .child(file.path.clone()),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.success)
                             .child(format!("+{}", file.additions)),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.danger)
                             .child(format!("-{}", file.deletions)),
                     ),
@@ -1856,7 +1856,7 @@ impl Raku {
                     .items_center()
                     .gap(px(6.0))
                     .cursor_default()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_secondary)
                     .focus_visible(|style| style.bg(theme.overlay_strong))
@@ -2343,7 +2343,7 @@ impl Raku {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .line_height(sp(16.0))
                         .cursor_default()
                         .focus_visible(|style| style.bg(theme.overlay))
@@ -2433,7 +2433,7 @@ impl Raku {
                     .flex()
                     .items_center()
                     .cursor_default()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(color)
                     .focus_visible(|style| style.border_color(theme.accent))
                     .hover(|style| style.bg(theme.overlay_strong))
@@ -2516,7 +2516,7 @@ impl Raku {
                     .items_center()
                     .gap(px(8.0))
                     .rounded(px(5.0))
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(16.0))
                     .font_weight(FontWeight::NORMAL)
                     .when(has_detail, |element| {
@@ -3155,7 +3155,7 @@ fn activity_diff_break_row(label: Option<String>, theme: &Theme) -> AnyElement {
         .font_family(md::render::MONO_FAMILY)
         // Fixed like the Review panel's gap and hunk captions: a caption in
         // the code surface follows neither font setting.
-        .text_size(px(12.5))
+        .text_size(sp(SMALL_UI_FONT_SIZE))
         .bg(theme.overlay)
         .text_color(theme.text_ghost)
         .child(

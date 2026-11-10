@@ -900,7 +900,7 @@ impl Raku {
                 div()
                     .min_w(px(56.0))
                     .flex_none()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .whitespace_nowrap()
                     .text_color(if count_is_bad {
                         theme.danger
@@ -1081,7 +1081,7 @@ impl Raku {
             .flex()
             .items_center()
             .gap(px(2.0))
-            .text_size(sp(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .line_height(sp(16.0))
             .child(div().min_w_0().flex_1().child(input.clone()))
     }

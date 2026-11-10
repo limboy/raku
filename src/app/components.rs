@@ -233,7 +233,7 @@ pub(super) fn render_message_footer(
         .px(px(4.0))
         .flex()
         .items_center()
-        .text_size(sp(12.5))
+        .text_size(sp(SMALL_UI_FONT_SIZE))
         .line_height(sp(14.0))
         .text_color(footer_color)
         .child(format_message_time(footer_time));
@@ -418,7 +418,7 @@ pub(super) fn render_message_footer(
                     div()
                         .min_w_0()
                         .px(px(4.0))
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .line_height(sp(14.0))
                         .text_color(footer_color)
                         .truncate()
@@ -809,7 +809,7 @@ fn render_sent_message_attachments(
                             .w_full()
                             .truncate()
                             .text_center()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_secondary)
                             .child(attachment.name.clone()),
                     ),
@@ -1076,7 +1076,7 @@ pub(super) fn render_message(
                                         .bg(theme.overlay)
                                         .flex()
                                         .items_center()
-                                        .text_size(sp(12.5))
+                                        .text_size(sp(SMALL_UI_FONT_SIZE))
                                         .text_color(theme.text_secondary)
                                         .cursor_default()
                                         .focus_visible(|element| element.border_color(theme.accent))
@@ -1124,7 +1124,7 @@ pub(super) fn render_message(
                                         })
                                         .flex()
                                         .items_center()
-                                        .text_size(sp(12.5))
+                                        .text_size(sp(SMALL_UI_FONT_SIZE))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(if can_submit {
                                             theme.on_inverse
@@ -1369,7 +1369,7 @@ pub(super) fn render_message(
                 .py(px(4.0))
                 .rounded_full()
                 .bg(theme.overlay)
-                .text_size(sp(12.5))
+                .text_size(sp(SMALL_UI_FONT_SIZE))
                 .line_height(sp(16.0))
                 .child(md::render::plain_text(
                     content.clone(),

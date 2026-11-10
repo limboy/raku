@@ -253,7 +253,7 @@ impl Raku {
                         .gap(px(1.0))
                         .child(
                             div()
-                                .text_size(sp(12.5))
+                                .text_size(sp(SMALL_UI_FONT_SIZE))
                                 .line_height(sp(16.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text)

@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use crate::input::TextInput;
-use crate::theme::{Theme, sp};
+use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
 
 use super::icon;
 
@@ -78,7 +78,7 @@ impl RenderOnce for TextField {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .text_size(sp(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .line_height(sp(16.0))
             .when_some(self.icon, |element, (path, size)| {
                 element.child(icon(path, size, theme.text_tertiary))

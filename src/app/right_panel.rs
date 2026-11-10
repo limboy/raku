@@ -3231,7 +3231,7 @@ impl Raku {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(if active {
                                 theme.text
                             } else {
@@ -3497,7 +3497,7 @@ impl Raku {
                                 .items_center()
                                 .justify_center()
                                 .text_center()
-                                .text_size(sp(12.5))
+                                .text_size(sp(SMALL_UI_FONT_SIZE))
                                 .text_color(theme.text_tertiary)
                                 .child(message),
                         )
@@ -3575,7 +3575,7 @@ impl Raku {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(theme.text_secondary)
                     .child(entry.name),
             );
@@ -3905,7 +3905,7 @@ impl Raku {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_secondary)
                             .child(display_path),
                     )
@@ -4154,7 +4154,7 @@ impl Raku {
                                     .items_center()
                                     .justify_center()
                                     .gap(px(8.0))
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .text_color(theme.text_secondary)
                                     .child(icon("icons/alert.svg", 20.0, theme.text_tertiary))
                                     .child(unavailable.clone())
@@ -4754,14 +4754,14 @@ impl Raku {
             .child(source)
             .child(
                 div()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.success)
                     .child(format!("+{additions}")),
             )
             .child(
                 div()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.danger)
                     .child(format!("-{deletions}")),
@@ -4769,7 +4769,7 @@ impl Raku {
             .when(truncated, |row| {
                 row.child(
                     div()
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .text_color(theme.warning)
                         .child(tr!("diff.truncated")),
                 )
@@ -4895,7 +4895,7 @@ impl Raku {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_size(px(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_secondary)
                     .tooltip(Tooltip::text(file.path.clone()))
@@ -4903,13 +4903,13 @@ impl Raku {
             )
             .child(
                 div()
-                    .text_size(px(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(theme.success)
                     .child(format!("+{}", file.additions)),
             )
             .child(
                 div()
-                    .text_size(px(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(theme.danger)
                     .child(format!("-{}", file.deletions)),
             )
@@ -5019,7 +5019,7 @@ impl Raku {
                     .min_w_0()
                     .flex()
                     .items_center()
-                    .text_size(px(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(theme.text_tertiary)
                     .child(gutter)
                     .child(label)
@@ -5032,7 +5032,7 @@ impl Raku {
                 .flex()
                 .items_stretch()
                 .font_family(md::render::MONO_FAMILY)
-                .text_size(px(12.5))
+                .text_size(sp(SMALL_UI_FONT_SIZE))
                 .line_height(px(16.0))
                 .text_color(theme.text_tertiary)
                 .child(
@@ -5067,7 +5067,7 @@ impl Raku {
                 .flex()
                 .items_stretch()
                 .font_family(md::render::MONO_FAMILY)
-                .text_size(px(12.5))
+                .text_size(sp(SMALL_UI_FONT_SIZE))
                 .line_height(px(16.0))
                 .text_color(theme.text_tertiary)
                 .child(
@@ -5323,7 +5323,7 @@ impl Raku {
                                 .min_w_0()
                                 .flex_1()
                                 .truncate()
-                                .text_size(sp(12.5))
+                                .text_size(sp(SMALL_UI_FONT_SIZE))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_secondary)
                                 .child(name),
@@ -5385,7 +5385,7 @@ impl Raku {
                                     .min_w_0()
                                     .flex_1()
                                     .truncate()
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .text_color(if selected {
                                         theme.text
                                     } else {
@@ -5405,7 +5405,7 @@ impl Raku {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(status_color)
                                     .child(status),
@@ -5450,7 +5450,7 @@ impl Raku {
                     .mt(px(6.0))
                     .max_w(px(300.0))
                     .text_center()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(17.0))
                     .text_color(theme.text_tertiary)
                     .child(description),

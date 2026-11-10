@@ -789,7 +789,7 @@ impl Raku {
                 )
                 .child(
                     div()
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .text_color(theme.text_tertiary)
                         .child(tr!("side_chat.missing_description")),
                 )
@@ -840,7 +840,7 @@ impl Raku {
                 .child(icon("icons/ant/messages.svg", 22.0, theme.text_tertiary))
                 .child(
                     div()
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .text_color(theme.text_tertiary)
                         .child(if loaded {
                             tr!("side_chat.empty_description")
@@ -1041,7 +1041,7 @@ impl Raku {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(theme.text_tertiary)
                     .child(pulse_dot(6.0, theme.accent))
                     .child(
@@ -1272,7 +1272,7 @@ impl Raku {
                         div()
                             .min_w_0()
                             .px(px(4.0))
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(color)
                             .truncate()
                             .child(label),
@@ -1282,7 +1282,7 @@ impl Raku {
                     div()
                         .flex_none()
                         .px(px(4.0))
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .text_color(color)
                         .child(format_message_time(message.created_at)),
                 )
@@ -1658,7 +1658,7 @@ impl Raku {
                     .w_full()
                     .min_w_0()
                     .px(px(4.0))
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(18.0))
                     .text_color(theme.text_secondary)
                     .whitespace_normal()

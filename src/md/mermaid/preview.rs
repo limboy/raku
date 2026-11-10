@@ -2,6 +2,7 @@
 //! checked; zoom/pan read an already rasterized image and never rerun Pele.
 
 use super::*;
+use crate::theme::{SMALL_UI_FONT_SIZE, sp};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, Div, FocusHandle, Global, IntoElement, KeyBinding,
@@ -419,7 +420,7 @@ impl Render for Preview {
             .bg(theme.canvas)
             .text_color(theme.text)
             .font_family(crate::theme::Fonts::current(cx).interface)
-            .text_size(px(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .track_focus(&self.focus)
             .key_context(KEY_CONTEXT)
             .tab_group()

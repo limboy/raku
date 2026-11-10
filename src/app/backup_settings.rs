@@ -452,7 +452,7 @@ impl Raku {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .text_size(sp(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .line_height(sp(18.0))
             .text_color(theme.text_secondary);
         if ui.loading {
@@ -490,7 +490,7 @@ impl Raku {
             .gap(px(16.0))
             .child(
                 div()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(19.0))
                     .text_color(theme.text_secondary)
                     .child(tr!("backup.description")),
@@ -539,7 +539,7 @@ impl Raku {
             .when_some(ui.busy, |page, key| {
                 page.child(
                     div()
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .text_color(theme.text_secondary)
                         .child(tr!(key)),
                 )
@@ -547,7 +547,7 @@ impl Raku {
             .when_some(ui.message.as_ref(), |page, message| {
                 page.child(
                     div()
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .line_height(sp(19.0))
                         .text_color(theme.text_secondary)
                         .child(message.clone()),
@@ -556,7 +556,7 @@ impl Raku {
             .when_some(ui.error.as_ref(), |page, error| {
                 page.child(
                     div()
-                        .text_size(sp(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .line_height(sp(19.0))
                         .text_color(theme.danger)
                         .child(error.clone()),
@@ -585,7 +585,7 @@ fn backup_button(
         .flex()
         .items_center()
         .cursor_default()
-        .text_size(sp(12.5))
+        .text_size(sp(SMALL_UI_FONT_SIZE))
         .text_color(theme.text_secondary)
         .focus_visible(|style| style.border_color(theme.accent))
         .when(disabled, |style| style.opacity(0.45))

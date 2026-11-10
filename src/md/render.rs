@@ -43,7 +43,7 @@ use super::selection::{
     RegisteredText, SelectionRegistry, SelectionState, TextKey, line_range, word_range,
 };
 use super::veil::{RowVeil, apply_veil};
-use crate::theme::Theme;
+use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::menu::{ContextMenuHandle, context_menu};
 use crate::ui::tooltip::Tooltip;
 
@@ -2149,7 +2149,7 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
                         .min_w_0()
                         .flex_1()
                         .truncate()
-                        .text_size(px(12.5))
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
                         .line_height(px(14.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(ctx.palette.ghost)

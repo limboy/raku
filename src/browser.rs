@@ -34,7 +34,7 @@ use gpui::{
 use gpui::{AsyncApp, ForegroundExecutor, WeakEntity};
 
 use crate::input::{InputEvent, TextInput};
-use crate::theme::{Theme, sp};
+use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::icon;
 use crate::ui::text_field::TextField;
 use crate::ui::tooltip::Tooltip;
@@ -2288,7 +2288,7 @@ impl BrowserView {
                     .mt(px(6.0))
                     .max_w(px(310.0))
                     .text_center()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(17.0))
                     .text_color(theme.text_tertiary)
                     .whitespace_normal()
@@ -2323,7 +2323,7 @@ impl BrowserView {
                     .mt(px(6.0))
                     .max_w(px(340.0))
                     .text_center()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(17.0))
                     .text_color(theme.text_tertiary)
                     .whitespace_normal()
@@ -2350,7 +2350,7 @@ impl BrowserView {
             .border_color(theme.border_strong)
             .flex()
             .items_center()
-            .text_size(sp(12.5))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
             .text_color(theme.text)
             .cursor_default()
             .focus_visible(|style| style.border_color(theme.accent))
@@ -2394,7 +2394,7 @@ impl BrowserView {
                     .mt(px(6.0))
                     .max_w(px(340.0))
                     .text_center()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(17.0))
                     .text_color(theme.text_secondary)
                     .whitespace_normal()

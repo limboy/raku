@@ -508,7 +508,7 @@ impl Raku {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(theme.text_tertiary)
                     .child(crate::ui::motion::spin(icon(
                         "icons/loader-circle.svg",
@@ -606,7 +606,7 @@ impl Raku {
                             .flex_none()
                             .max_w(px(260.0))
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .child(matched_text(
                                 composer_text,
                                 name_ranges,
@@ -625,7 +625,7 @@ impl Raku {
                                 .min_w_0()
                                 .max_w(px(180.0))
                                 .truncate()
-                                .text_size(sp(12.5))
+                                .text_size(sp(SMALL_UI_FONT_SIZE))
                                 .text_color(theme.text_ghost)
                                 .child(hint),
                         )
@@ -635,7 +635,7 @@ impl Raku {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_tertiary)
                             .child(SharedString::from(command.description.clone())),
                     )
@@ -654,7 +654,7 @@ impl Raku {
                                     .border_color(theme.border)
                                     .flex()
                                     .items_center()
-                                    .text_size(sp(12.5))
+                                    .text_size(sp(SMALL_UI_FONT_SIZE))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.text_tertiary)
                                     .child(command.scope.label()),
@@ -687,7 +687,7 @@ impl Raku {
                             .flex_none()
                             .max_w(px(300.0))
                             .truncate()
-                            .text_size(sp(12.5))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
                             .child(matched_text(
                                 name.to_owned(),
                                 highlight_byte_ranges(name, &scored.positions, name_char_offset),
@@ -702,7 +702,7 @@ impl Raku {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(sp(12.5))
+                                .text_size(sp(SMALL_UI_FONT_SIZE))
                                 .child(matched_text(
                                     parent.to_owned(),
                                     highlight_byte_ranges(parent, &scored.positions, 0),

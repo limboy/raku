@@ -100,7 +100,7 @@ impl Raku {
             .child(
                 div()
                     .flex_none()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(tr!("task_list.title")),
@@ -110,7 +110,7 @@ impl Raku {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .text_color(theme.text_secondary)
                     .children(current.map(|step| SharedString::from(step.text.clone()))),
             )
@@ -194,7 +194,7 @@ fn task_step_row(step: &PlanStep, theme: Theme) -> Div {
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(sp(12.5))
+                .text_size(sp(SMALL_UI_FONT_SIZE))
                 .text_color(text_color)
                 .when(step.status == PlanStepStatus::InProgress, |element| {
                     element.font_weight(FontWeight::MEDIUM)

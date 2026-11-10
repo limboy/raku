@@ -9,7 +9,7 @@ use gpui::{
     div, px,
 };
 
-use crate::theme::{Theme, sp};
+use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
 
 /// A compact hover hint.
 pub struct Tooltip {
@@ -56,7 +56,7 @@ impl Render for Tooltip {
                 .border_color(theme.border_strong)
                 .bg(theme.raised)
                 .shadow_md()
-                .text_size(sp(12.5))
+                .text_size(sp(SMALL_UI_FONT_SIZE))
                 .line_height(sp(16.0))
                 .text_color(theme.text_secondary)
                 .whitespace_normal()

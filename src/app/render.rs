@@ -503,7 +503,7 @@ impl Raku {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .text_size(sp(12.5))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(16.0))
                     .text_color(theme.text)
                     .on_hover(cx.listener(|this, hovering: &bool, _, cx| {
