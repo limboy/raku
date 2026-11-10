@@ -156,6 +156,9 @@ fn options() -> Options {
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_MATH
         | Options::ENABLE_CJK_FRIENDLY_EMPHASIS
+        // Typographic quotes, apostrophes, dashes, and ellipses in prose.
+        // Code spans and blocks keep their literal ASCII.
+        | Options::ENABLE_SMART_PUNCTUATION
 }
 
 /// Parse a whole source into a [`BlockTree`].

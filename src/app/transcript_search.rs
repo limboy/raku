@@ -524,11 +524,43 @@ impl Raku {
     }
 }
 
+/// A literal, case-insensitive pattern for `query`. Markdown prose is set with
+/// typographic punctuation, so a straight or curly quote in the query matches
+/// either form, and so does a hyphen run or ellipsis.
 fn literal_find_regex(query: &str) -> Regex {
-    RegexBuilder::new(&regex::escape(query))
+    let mut pattern = String::with_capacity(query.len() * 2);
+    let mut chars = query.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' | '‘' | '’' => pattern.push_str("['‘’]"),
+            '"' | '“' | '”' => pattern.push_str("[\"“”]"),
+            '…' => pattern.push_str("(?:…|\\.\\.\\.)"),
+            '.' if query_has_prefix(&mut chars, "..") => pattern.push_str("(?:…|\\.\\.\\.)"),
+            '–' | '—' => pattern.push_str("(?:[–—]|--)"),
+            '-' if chars.peek() == Some(&'-') => {
+                while chars.peek() == Some(&'-') {
+                    chars.next();
+                }
+                pattern.push_str("(?:[–—]|--+)");
+            }
+            _ => pattern.push_str(&regex::escape(ch.encode_utf8(&mut [0; 4]))),
+        }
+    }
+    RegexBuilder::new(&pattern)
         .case_insensitive(true)
         .build()
         .expect("an escaped literal is always a valid regex")
+}
+
+/// Consume `rest` from `chars` when it follows immediately.
+fn query_has_prefix(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, rest: &str) -> bool {
+    let mut probe = chars.clone();
+    if rest.chars().all(|expected| probe.next() == Some(expected)) {
+        *chars = probe;
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -557,6 +589,21 @@ mod tests {
                 .iter()
                 .all(|found| found.range.start < found.range.end)
         );
+    }
+
+    #[test]
+    fn literal_find_matches_typographic_punctuation() {
+        let regex = literal_find_regex("doesn't");
+        let (matches, _) = md::render::markdown_search_matches("It doesn't open.", &regex, 20);
+        assert_eq!(matches.len(), 1);
+
+        let regex = literal_find_regex("wait...");
+        let (matches, _) = md::render::markdown_search_matches("Just wait... ok", &regex, 20);
+        assert_eq!(matches.len(), 1);
+
+        let regex = literal_find_regex("a--b");
+        let (matches, _) = md::render::markdown_search_matches("a--b", &regex, 20);
+        assert_eq!(matches.len(), 1);
     }
 
     #[test]

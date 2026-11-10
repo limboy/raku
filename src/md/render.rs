@@ -209,6 +209,12 @@ const CODE_WASH_RADIUS: f32 = 4.0;
 const CODE_WASH_PAD_X: f32 = 2.5;
 const CODE_WASH_INSET_Y: f32 = 1.5;
 
+/// A link's underline: a faint stroke of the link's own text color, so the
+/// rule marks the link without competing with the words above it.
+fn link_underline(text: Hsla) -> Hsla {
+    text.opacity(0.32)
+}
+
 /// Heading scale relative to body text, by level.
 fn heading_metrics(level: u8, metrics: &Metrics) -> (f32, f32, FontWeight) {
     let (scale, weight) = match level {
@@ -452,7 +458,7 @@ pub fn flatten(
             // underlay; a run background could only ever be a square box.
             background_color: None,
             underline: link.is_some().then_some(UnderlineStyle {
-                color: Some(palette.tertiary),
+                color: Some(link_underline(base_color)),
                 thickness: px(1.0),
                 wavy: false,
             }),
@@ -477,7 +483,7 @@ pub fn flatten(
                 out.push(TextRun {
                     len: range.len(),
                     underline: Some(UnderlineStyle {
-                        color: Some(palette.tertiary),
+                        color: Some(link_underline(base_color)),
                         thickness: px(1.0),
                         wavy: false,
                     }),
@@ -1830,7 +1836,11 @@ fn render_block(block: &Block, ctx: &Ctx) -> AnyElement {
 }
 
 fn render_list(ordered_start: Option<u64>, items: &[ListItem], ctx: &Ctx) -> AnyElement {
-    let marker_width = if ordered_start.is_some() { 22.0 } else { 14.0 };
+    let marker_width = if ordered_start.is_some() {
+        22.0
+    } else {
+        (ctx.metrics.text_size * 1.45).round()
+    };
     let rendered = items
         .iter()
         .enumerate()
@@ -1846,7 +1856,7 @@ fn render_list(ordered_start: Option<u64>, items: &[ListItem], ctx: &Ctx) -> Any
                 (Some(start), None) => {
                     marker_text(format!("{}.", start + index as u64), marker_width, ctx)
                 }
-                (None, None) => marker_text("•".to_owned(), marker_width, ctx),
+                (None, None) => bullet(marker_width, ctx),
             };
             let blocks = item
                 .blocks
@@ -1895,6 +1905,32 @@ fn marker_text(label: String, width: f32, ctx: &Ctx) -> AnyElement {
         .line_height(px(ctx.metrics.line_height))
         .text_color(ctx.palette.tertiary)
         .child(SharedString::from(label))
+        .into_any_element()
+}
+
+/// An unordered-list marker: a solid disc in the body text color, set
+/// slightly in from the margin and centred on the first line's x-height, so
+/// the list hangs from the prose instead of trailing a faint glyph.
+fn bullet(width: f32, ctx: &Ctx) -> AnyElement {
+    let em = ctx.metrics.text_size;
+    let diameter = ((em * 0.36) * 2.0).round() / 2.0;
+    // Half-pixel snapped centre of the x-height band: the line box centre plus
+    // the system face's baseline offset (≈ 0.09 em below centre).
+    let top = ((ctx.metrics.line_height / 2.0 + em * 0.09 - diameter / 2.0) * 2.0).round() / 2.0;
+    div()
+        .w(px(width))
+        .h(px(ctx.metrics.line_height))
+        .flex_none()
+        .child(
+            div()
+                .absolute()
+                .left(px((em * 0.3).round()))
+                .top(px(top))
+                .size(px(diameter))
+                .rounded_full()
+                .bg(ctx.palette.text),
+        )
+        .relative()
         .into_any_element()
 }
 
