@@ -2189,7 +2189,7 @@ impl Raku {
         // Same type as the activity summary above it, so the live label reads
         // as part of the same run of work.
         let metrics = self.transcript_markdown_metrics(MarkdownMetrics::BODY);
-        let row_height = metrics.line_height.max(24.0);
+        let row_height = metrics.line_height.max(28.0);
         let content = div()
             .h(px(row_height))
             .flex_none()
@@ -2302,9 +2302,7 @@ impl Raku {
                             cx,
                         )
                     });
-                // Indented to the label, so the list hangs from the row
-                // that opened it.
-                column.children(rows.map(|rows| div().w_full().min_w_0().pl(px(28.0)).child(rows)))
+                column.children(rows)
             })
             .into_any_element()
     }
@@ -2762,7 +2760,10 @@ impl Raku {
         let activity_active_surface = theme.surface.blend(theme.overlay_strong.opacity(0.72));
         let mut items = div()
             .min_w_0()
-            .ml(px(6.0))
+            // Match the settled disclosure's 6 px inset from its label.
+            // The live label follows a 10.5 px dot grid and an 8 px gap.
+            .ml(px(if live_group { 10.5 + 8.0 + 6.0 } else { 6.0 }))
+            .when(live_group, |items| items.mt(px(4.0)))
             .pl(px(12.0))
             .pb(px(2.0))
             .border_l_1()
