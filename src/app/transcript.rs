@@ -665,7 +665,11 @@ pub(super) fn assistant_response_footer(
     }
     let message = &session.messages[message_index];
     let Some(turn_id) = message.turn_id else {
-        return Some(super::follow_up::split_follow_up(&message.content).0.to_owned());
+        return Some(
+            super::follow_up::split_follow_up(&message.content)
+                .0
+                .to_owned(),
+        );
     };
     let rows = turn_rows(session, turn_id);
     Some(

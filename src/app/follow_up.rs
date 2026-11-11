@@ -45,7 +45,9 @@ pub(super) fn split_follow_up(content: &str) -> (&str, Option<FollowUp>) {
         offset += line.len();
         let text = line.trim_end_matches(['\n', '\r']);
         let indent = text.len() - text.trim_start_matches(' ').len();
-        let fence = (indent <= 3).then(|| fence_marker(&text[indent..])).flatten();
+        let fence = (indent <= 3)
+            .then(|| fence_marker(&text[indent..]))
+            .flatten();
         if let Some(current) = &open {
             if let Some((marker, len, info)) = fence
                 && marker == current.marker
@@ -78,9 +80,12 @@ pub(super) fn split_follow_up(content: &str) -> (&str, Option<FollowUp>) {
         }
     }
     if let Some(current) = open {
-        trailing = current
-            .follow_up
-            .then(|| (current.start, current.body_start.min(content.len())..content.len()));
+        trailing = current.follow_up.then(|| {
+            (
+                current.start,
+                current.body_start.min(content.len())..content.len(),
+            )
+        });
     }
     let Some((start, body)) = trailing else {
         return (content, None);
@@ -330,7 +335,10 @@ mod tests {
         let content = "Done.\n\n```follow-up\nShould I add retry?\n- Yes, fix it\n- Not now\n```\n";
         assert_eq!(
             split_follow_up(content),
-            ("Done.", follow_up("Should I add retry?", &["Yes, fix it", "Not now"]))
+            (
+                "Done.",
+                follow_up("Should I add retry?", &["Yes, fix it", "Not now"])
+            )
         );
     }
 
@@ -361,6 +369,9 @@ mod tests {
     #[test]
     fn answers_are_capped() {
         let content = "```follow-up\nPick\n- A\n- B\n- C\n- D\n```";
-        assert_eq!(split_follow_up(content), ("", follow_up("Pick", &["A", "B", "C"])));
+        assert_eq!(
+            split_follow_up(content),
+            ("", follow_up("Pick", &["A", "B", "C"]))
+        );
     }
 }

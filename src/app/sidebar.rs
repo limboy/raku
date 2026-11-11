@@ -871,21 +871,16 @@ impl Raku {
                     .relative()
                     .child(
                         div().px(px(10.0)).size_full().child(
-                            list(
-                                self.sidebar_list_state.clone(),
-                                move |index, window, cx| {
-                                    entity
-                                        .upgrade()
-                                        .map(|entity| {
-                                            entity.update(cx, |this, cx| {
-                                                this.sidebar_row(
-                                                    index, &rows, &shortcuts, window, cx,
-                                                )
-                                            })
+                            list(self.sidebar_list_state.clone(), move |index, window, cx| {
+                                entity
+                                    .upgrade()
+                                    .map(|entity| {
+                                        entity.update(cx, |this, cx| {
+                                            this.sidebar_row(index, &rows, &shortcuts, window, cx)
                                         })
-                                        .unwrap_or_else(|| div().into_any_element())
-                                },
-                            )
+                                    })
+                                    .unwrap_or_else(|| div().into_any_element())
+                            })
                             .size_full(),
                         ),
                     )
@@ -1351,8 +1346,7 @@ impl Raku {
         // Holding Shift arms the rows for removal: the button appears on the
         // hovered or focused row and deletes without asking. It takes the
         // shortcut badge's edge, which only shows while ⌘ is held.
-        let show_remove =
-            self.sidebar_session_remove_visible && !renaming && shortcut.is_none();
+        let show_remove = self.sidebar_session_remove_visible && !renaming && shortcut.is_none();
         let row = div()
             .id(SharedString::from(format!("session-{}", session.id)))
             .group(row_group.clone())

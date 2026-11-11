@@ -2100,45 +2100,45 @@ impl Raku {
                     .flex()
                     .items_center()
                     .child(
-                div()
-                    .id("working-indicator")
-                    .track_focus(&focus)
-                    .tab_index(0)
-                    .h(px(row_height))
-                    // Padding gives the focus fill room; the negative margin
-                    // keeps the spinner on the body text's left edge.
-                    .px(px(2.0))
-                    .ml(px(-2.0))
-                    .rounded(px(4.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .cursor_default()
-                    .focus_visible(|style| style.bg(theme.overlay))
-                    .child(content)
-                    .child(icon(
-                        if expanded {
-                            "icons/chevron-down.svg"
-                        } else {
-                            "icons/chevron-right.svg"
-                        },
-                        (metrics.text_size * 0.7).round(),
-                        theme.text_tertiary,
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_activities(block_index, expanded, cx);
-                    }))
-                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                        let key = event.keystroke.key.as_str();
-                        if matches!(key, "enter" | "space")
-                            || (key == "right" && !expanded)
-                            || (key == "left" && expanded)
-                        {
-                            this.toggle_activities(block_index, expanded, cx);
-                            cx.stop_propagation();
-                        }
-                    })),
+                        div()
+                            .id("working-indicator")
+                            .track_focus(&focus)
+                            .tab_index(0)
+                            .h(px(row_height))
+                            // Padding gives the focus fill room; the negative margin
+                            // keeps the spinner on the body text's left edge.
+                            .px(px(2.0))
+                            .ml(px(-2.0))
+                            .rounded(px(4.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .cursor_default()
+                            .focus_visible(|style| style.bg(theme.overlay))
+                            .child(content)
+                            .child(icon(
+                                if expanded {
+                                    "icons/chevron-down.svg"
+                                } else {
+                                    "icons/chevron-right.svg"
+                                },
+                                (metrics.text_size * 0.7).round(),
+                                theme.text_tertiary,
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_activities(block_index, expanded, cx);
+                            }))
+                            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                                let key = event.keystroke.key.as_str();
+                                if matches!(key, "enter" | "space")
+                                    || (key == "right" && !expanded)
+                                    || (key == "left" && expanded)
+                                {
+                                    this.toggle_activities(block_index, expanded, cx);
+                                    cx.stop_propagation();
+                                }
+                            })),
                     ),
             )
             .when(expanded, |column| {
@@ -2146,7 +2146,13 @@ impl Raku {
                     .selected_transcript_blocks()
                     .get(block_index)
                     .map(|block| {
-                        self.render_activities_row(&block.activities, block_index, theme, window, cx)
+                        self.render_activities_row(
+                            &block.activities,
+                            block_index,
+                            theme,
+                            window,
+                            cx,
+                        )
                     });
                 // Indented to the label, so the list hangs from the row
                 // that opened it.
