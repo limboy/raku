@@ -11,7 +11,8 @@ use crate::model::{PlanStep, PlanStepStatus};
 /// Rows shown before the list scrolls, so a long plan cannot crowd out the
 /// transcript.
 const VISIBLE_STEPS: f32 = 8.0;
-const STEP_HEIGHT: f32 = 30.0;
+/// Vertical room around each step's text line.
+const STEP_PADDING: f32 = 16.0;
 
 /// A session's task list as of its latest plan update.
 pub(super) struct SessionTaskList {
@@ -56,6 +57,9 @@ impl Raku {
     pub(super) fn render_task_list(&self, cx: &mut Context<Self>) -> Option<Div> {
         let list = self.visible_task_list()?;
         let theme = Theme::current(cx);
+        // Steps read as transcript prose, so they follow its font size.
+        let text_size = self.state.transcript_font_size.px();
+        let step_height = text_size + STEP_PADDING;
 
         Some(
             div().w_full().pt(px(4.0)).pb(px(10.0)).child(
@@ -70,9 +74,13 @@ impl Raku {
                     .child(
                         div()
                             .id("task-list-steps")
-                            .max_h(px(VISIBLE_STEPS * STEP_HEIGHT))
+                            .max_h(px(VISIBLE_STEPS * step_height))
                             .overflow_y_scroll()
-                            .children(list.steps.iter().map(|step| task_step_row(step, theme))),
+                            .children(
+                                list.steps
+                                    .iter()
+                                    .map(|step| task_step_row(step, text_size, step_height, theme)),
+                            ),
                     ),
             ),
         )
@@ -87,7 +95,7 @@ fn list_is_live(list_turn: Option<Uuid>, active_turn: Option<Uuid>) -> bool {
 
 /// One step. Its state is carried by the glyph's shape and the text tone,
 /// never by color alone.
-fn task_step_row(step: &PlanStep, theme: Theme) -> Div {
+fn task_step_row(step: &PlanStep, text_size: f32, height: f32, theme: Theme) -> Div {
     let (glyph, glyph_color, text_color) = match step.status {
         PlanStepStatus::Completed => (
             "icons/ant/check-circle-filled.svg",
@@ -106,17 +114,18 @@ fn task_step_row(step: &PlanStep, theme: Theme) -> Div {
         ),
     };
     div()
-        .h(px(STEP_HEIGHT))
+        .h(px(height))
         .flex()
         .items_center()
         .gap(px(8.0))
-        .child(icon(glyph, 14.0, glyph_color))
+        // A point under the text size, so the circle doesn't outweigh it.
+        .child(icon(glyph, text_size - 1.0, glyph_color))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(sp(14.0))
+                .text_size(px(text_size))
                 .text_color(text_color)
                 .child(SharedString::from(step.text.clone())),
         )
