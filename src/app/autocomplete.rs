@@ -339,7 +339,7 @@ impl Raku {
     /// `subagent` tool. A subagent or side chat does not.
     fn composer_offers_subagents(&self) -> bool {
         self.selected_session()
-            .is_some_and(|session| !session.is_child() && session.provider == ProviderKind::Pi)
+            .is_some_and(|session| !session.is_child())
     }
 
     /// Drop memoized rows after the agent list changed.

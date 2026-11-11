@@ -294,12 +294,10 @@ impl Raku {
     }
 
     /// The agents a task on `provider` may delegate to, as its model and the
-    /// composer's `@` list see them. Empty where the provider has no Raku
-    /// `subagent` tool.
+    /// composer's `@` list see them. Every provider carries Raku's `subagent`
+    /// tool: Pi through its extension, Claude Code through an in-process MCP
+    /// server, Codex as a dynamic tool.
     pub(super) fn subagent_tool_agents(&self, provider: ProviderKind) -> Vec<SubagentToolAgent> {
-        if provider != ProviderKind::Pi {
-            return Vec::new();
-        }
         self.state
             .subagents
             .iter()

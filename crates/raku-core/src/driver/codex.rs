@@ -43,6 +43,11 @@ enum CommandMessage {
         request_id: String,
         answers: Vec<UserInputAnswer>,
     },
+    /// Answer an `item/tool/call` for the `subagent` dynamic tool.
+    RespondSubagent {
+        request_id: String,
+        result: String,
+    },
     Rollback {
         turns: usize,
         response: Sender<Result<(), String>>,
@@ -154,6 +159,9 @@ impl CodexDriver {
             read_only,
             subagent,
         } = options;
+        // A subagent cannot delegate further, and a read-only launch has no
+        // tools beyond reading.
+        let delegates = !read_only && !subagent.child && !subagent.agents.is_empty();
         let provider_session_id = match provider_cursor {
             Some(ProviderResumeCursor::Codex { thread_id }) => Some(thread_id),
             Some(cursor) => {
@@ -300,6 +308,18 @@ impl CodexDriver {
                         "serviceName": "raku",
                         "developerInstructions": developer_instructions
                     });
+                    // A dynamic tool is declared once and stored with the
+                    // thread, so a resumed thread keeps it. Its description is
+                    // the agent list as of this start; Raku validates the
+                    // agent on every call either way.
+                    if delegates {
+                        params["dynamicTools"] = json!([{
+                            "type": "function",
+                            "name": crate::model::SUBAGENT_TOOL,
+                            "description": crate::model::subagent_tool_description(&subagent.agents),
+                            "inputSchema": crate::model::subagent_tool_input_schema(&subagent.agents),
+                        }]);
+                    }
                     if let Some(model) = model.as_deref() {
                         params["model"] = json!(model);
                     }
@@ -477,6 +497,13 @@ impl CodexDriver {
                                 "result": {"answers": answers}
                             })
                         }
+                        CommandMessage::RespondSubagent { request_id, result } => json!({
+                            "id": parse_rpc_id(&request_id),
+                            "result": {
+                                "contentItems": [{"type": "inputText", "text": result}],
+                                "success": crate::model::subagent_result_succeeded(&result),
+                            }
+                        }),
                         CommandMessage::Rollback { turns, response } => {
                             let Some(thread_id) = wait_for_thread_id(&writer_thread_id) else {
                                 let _ = response
@@ -986,6 +1013,12 @@ impl DriverControl for CodexDriver {
             request_id,
             option_id,
         });
+    }
+
+    fn respond_subagent(&self, request_id: String, result: String) {
+        let _ = self
+            .commands
+            .send(CommandMessage::RespondSubagent { request_id, result });
     }
 
     fn respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) {
@@ -2354,6 +2387,22 @@ fn handle_codex_message(
                 let _ = events.send(DriverEvent::Error(format!("{name}: {message}")));
             }
         }
+        "item/tool/call"
+            if value.get("id").is_some()
+                && params.get("tool").and_then(Value::as_str)
+                    == Some(crate::model::SUBAGENT_TOOL) =>
+        {
+            let _ = events.send(DriverEvent::SubagentRequested(
+                crate::model::subagent_request_from_arguments(
+                    rpc_id_string(value.get("id").unwrap()),
+                    params
+                        .get("callId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    params.get("arguments").unwrap_or(&Value::Null),
+                ),
+            ));
+        }
         "item/tool/requestUserInput" if value.get("id").is_some() => {
             let questions = codex_user_input_questions(&params);
             if !questions.is_empty() {
@@ -2672,7 +2721,7 @@ fn codex_item_detail(item: &Value, output: Option<&str>) -> Option<String> {
 
 fn codex_item_arguments(item: &Value) -> Option<String> {
     match item.get("type").and_then(Value::as_str) {
-        Some("mcpToolCall") => item
+        Some("mcpToolCall" | "dynamicToolCall") => item
             .get("arguments")
             .filter(|value| !value.is_null())
             .and_then(format_activity_json),
@@ -2728,6 +2777,16 @@ fn codex_command_action_presentation(item: &Value) -> Option<(ActivityKind, Stri
 
 fn codex_item_output(item: &Value) -> Option<String> {
     match item.get("type").and_then(Value::as_str) {
+        // What the client answered: Raku's `subagent` result, as text.
+        Some("dynamicToolCall") => non_empty_activity_text(
+            item.get("contentItems")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|content| content.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
         Some("mcpToolCall") => {
             if let Some(message) = item.pointer("/error/message").and_then(Value::as_str) {
                 return non_empty_activity_text(message.to_owned());
@@ -3597,6 +3656,94 @@ mod tests {
         assert_eq!(
             turn["input"],
             json!([{"type":"text","text":"Fix task titles"}])
+        );
+    }
+
+    /// One real delegation through the `subagent` dynamic tool: the model
+    /// calls it, the driver surfaces the call with its id, the answer reaches
+    /// the model, and the transcript item carries the tool's name.
+    #[test]
+    #[ignore = "requires an installed, authenticated codex"]
+    fn codex_subagent_call_through_the_dynamic_tool() {
+        let binary = crate::command_env::find_executable("codex").expect("codex is not installed");
+        let cwd = std::env::temp_dir().join(format!("raku-codex-live-subagent-{}", Uuid::new_v4()));
+        fs::create_dir_all(&cwd).unwrap();
+        let (events, received) = crate::driver::test_event_channel();
+        let driver = CodexDriver::start(
+            DriverStartOptions {
+                binary,
+                cwd,
+                mode: RuntimeMode::Ask,
+                plan_mode: false,
+                model: None,
+                reasoning_effort: Some("low".to_owned()),
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                provider_cursor: None,
+                read_only: false,
+                subagent: crate::model::SubagentLaunch {
+                    agents: vec![crate::model::SubagentToolAgent {
+                        name: "explore".into(),
+                        description: "Answers questions about the project.".into(),
+                    }],
+                    child: false,
+                },
+            },
+            events,
+        )
+        .unwrap();
+        driver.prompt(
+            "@explore what is the project's codename? Delegate exactly once, then reply with \
+             only the codename."
+                .to_owned(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let mut requested = None;
+        let mut reply = String::new();
+        let mut row_named = false;
+        loop {
+            match received
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("Codex never settled the delegating turn")
+            {
+                DriverEvent::SubagentRequested(request) => {
+                    assert_eq!(request.agent, "explore");
+                    driver.respond_subagent(
+                        request.request_id.clone(),
+                        crate::model::subagent_result(
+                            None,
+                            crate::model::SubagentOutcome::Completed,
+                            "The project's codename is BLUEHERON.",
+                        ),
+                    );
+                    requested = Some(request);
+                }
+                DriverEvent::RichActivity(activity) if activity.is_subagent() => {
+                    row_named = true;
+                }
+                DriverEvent::Permission { title, .. } => {
+                    panic!("the dynamic tool should not need approval, but asked: {title}")
+                }
+                DriverEvent::TextDelta(delta) => reply.push_str(&delta),
+                DriverEvent::TurnFinished { success, summary } => {
+                    assert!(success, "Codex failed: {summary:?}");
+                    break;
+                }
+                DriverEvent::Error(error) => panic!("Codex reported: {error}"),
+                DriverEvent::ProcessExited => panic!("Codex exited before completing the turn"),
+                _ => {}
+            }
+        }
+        let request = requested.expect("Codex never called the subagent tool");
+        assert!(request.call_id.is_some(), "the call carries its id");
+        assert!(
+            row_named,
+            "the transcript row is recognised as a subagent call"
+        );
+        assert!(
+            reply.contains("BLUEHERON"),
+            "the reply used the result: {reply}"
         );
     }
 

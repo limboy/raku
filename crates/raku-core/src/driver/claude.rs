@@ -73,7 +73,143 @@ enum CommandMessage {
         key: BackgroundWorkKey,
         control_id: String,
     },
+    /// A message written as-is: replies to the CLI's own control requests.
+    Raw(Value),
     Shutdown,
+}
+
+/// Raku's in-process MCP server, declared on the command line. The CLI's MCP
+/// client reaches it through `mcp_message` control requests on this same
+/// stream, so delegation needs no subprocess, socket or token.
+fn subagent_mcp_config() -> String {
+    json!({"mcpServers": {crate::model::SUBAGENT_MCP_SERVER: {
+        "type": "sdk",
+        "name": crate::model::SUBAGENT_MCP_SERVER,
+    }}})
+    .to_string()
+}
+
+/// The tool's name as Claude Code's permission rules spell it.
+fn subagent_tool_permission() -> String {
+    format!(
+        "mcp__{}__{}",
+        crate::model::SUBAGENT_MCP_SERVER,
+        crate::model::SUBAGENT_TOOL
+    )
+}
+
+/// Registers the in-process server before the first prompt, as the Agent
+/// SDK's `initialize` does.
+fn subagent_initialize_request() -> Value {
+    json!({
+        "type": "control_request",
+        "request_id": "raku-initialize",
+        "request": {
+            "subtype": "initialize",
+            "sdkMcpServers": [crate::model::SUBAGENT_MCP_SERVER],
+        }
+    })
+}
+
+/// Answers one `mcp_message` control request with a JSON-RPC message.
+fn mcp_control_response(request_id: &str, response: Value) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {"mcp_response": response},
+        }
+    })
+}
+
+/// Serves the `raku` in-process MCP server: its handshake, its one tool, and
+/// calls to that tool, which become `SubagentRequested` and are answered
+/// later by `respond_subagent`. Returns whether the request was Raku's.
+fn handle_subagent_mcp_message(
+    value: &Value,
+    events: &DriverEventSender,
+    commands: &Sender<CommandMessage>,
+    state: &ClaudeStreamState,
+) -> bool {
+    if value.pointer("/request/subtype").and_then(Value::as_str) != Some("mcp_message")
+        || value
+            .pointer("/request/server_name")
+            .and_then(Value::as_str)
+            != Some(crate::model::SUBAGENT_MCP_SERVER)
+    {
+        return false;
+    }
+    let Some(request_id) = value.get("request_id").and_then(Value::as_str) else {
+        return true;
+    };
+    let message = value
+        .pointer("/request/message")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let rpc_id = message.get("id").cloned();
+    let reply = |result: Value| {
+        let _ = commands.send(CommandMessage::Raw(mcp_control_response(
+            request_id,
+            json!({"jsonrpc": "2.0", "id": rpc_id.clone().unwrap_or(json!(0)), "result": result}),
+        )));
+    };
+    match message.get("method").and_then(Value::as_str) {
+        Some("initialize") => reply(json!({
+            "protocolVersion": message
+                .pointer("/params/protocolVersion")
+                .cloned()
+                .unwrap_or(json!("2025-06-18")),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": crate::model::SUBAGENT_MCP_SERVER, "version": "1"},
+        })),
+        Some("tools/list") => reply(json!({"tools": [{
+            "name": crate::model::SUBAGENT_TOOL,
+            "description": crate::model::subagent_tool_description(&state.subagent_agents),
+            "inputSchema": crate::model::subagent_tool_input_schema(&state.subagent_agents),
+            // MCP tools otherwise wait behind tool search, where the model
+            // reaches for its built-in Agent tool first.
+            "_meta": {"anthropic/alwaysLoad": true},
+        }]})),
+        Some("tools/call")
+            if message.pointer("/params/name").and_then(Value::as_str)
+                == Some(crate::model::SUBAGENT_TOOL)
+                && rpc_id.is_some() =>
+        {
+            let call_id = message
+                .pointer("/params/_meta/claudecode~1toolUseId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            state
+                .subagent_calls
+                .lock()
+                .insert(request_id.to_owned(), rpc_id.clone().unwrap_or(json!(0)));
+            let arguments = message
+                .pointer("/params/arguments")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let _ = events.send(DriverEvent::SubagentRequested(
+                crate::model::subagent_request_from_arguments(
+                    request_id.to_owned(),
+                    call_id,
+                    &arguments,
+                ),
+            ));
+        }
+        Some(method) if rpc_id.is_some() => {
+            let _ = commands.send(CommandMessage::Raw(mcp_control_response(
+                request_id,
+                json!({"jsonrpc": "2.0", "id": rpc_id, "error": {
+                    "code": -32601,
+                    "message": format!("{method} is not supported"),
+                }}),
+            )));
+        }
+        // Notifications, including a cancelled call: acknowledge the control
+        // request. Stopping the turn already stops the subagent.
+        _ => reply(json!({})),
+    }
+    true
 }
 
 /// The stream-json user message both prompts and steers are delivered as.
@@ -118,6 +254,9 @@ pub struct ClaudeDriver {
     pending_user_inputs: Arc<Mutex<HashMap<String, Value>>>,
     /// `ExitPlanMode` inputs awaiting the user's decision, by request id.
     pending_plans: Arc<Mutex<HashMap<String, Value>>>,
+    /// `subagent` calls awaiting their result: control request id → the
+    /// JSON-RPC id of the `tools/call` it carried.
+    subagent_calls: Arc<Mutex<HashMap<String, Value>>>,
     mode: RuntimeMode,
 }
 
@@ -505,6 +644,9 @@ impl ClaudeDriver {
             subagent,
         } = options;
         let instructions = super::system_instructions(read_only, &subagent);
+        // A subagent cannot delegate further, and a read-only launch has no
+        // tools beyond reading.
+        let delegates = !read_only && !subagent.child && !subagent.agents.is_empty();
         let (resume_session_id, resume_at) = match provider_cursor {
             Some(ProviderResumeCursor::Claude {
                 session_id,
@@ -545,6 +687,13 @@ impl ClaudeDriver {
         } else {
             command.args(["--session-id", &session_id]);
         }
+        if delegates {
+            command
+                .arg("--mcp-config")
+                .arg(subagent_mcp_config())
+                .arg("--allowedTools")
+                .arg(subagent_tool_permission());
+        }
 
         let command = command
             .stdin(Stdio::piped())
@@ -580,6 +729,12 @@ impl ClaudeDriver {
         let pending_task_stops = Arc::new(Mutex::new(HashMap::<String, BackgroundWorkKey>::new()));
         let pending_user_inputs = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
         let pending_plans = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
+        let subagent_calls = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
+        if delegates {
+            // Queued ahead of every prompt, so the server exists before the
+            // first turn's tool list is built.
+            let _ = commands.send(CommandMessage::Raw(subagent_initialize_request()));
+        }
 
         let manual_compaction = Arc::new(Mutex::new(None::<ContextCompaction>));
         let reader_compaction = manual_compaction.clone();
@@ -593,6 +748,12 @@ impl ClaudeDriver {
         let reader_pending_task_stops = pending_task_stops.clone();
         let reader_pending_user_inputs = pending_user_inputs.clone();
         let reader_pending_plans = pending_plans.clone();
+        let reader_subagent_calls = subagent_calls.clone();
+        let reader_subagent_agents = if delegates {
+            subagent.agents.clone()
+        } else {
+            Vec::new()
+        };
         let reader_thread = thread::Builder::new()
             .name("raku-claude-reader".into())
             .spawn(move || {
@@ -600,6 +761,8 @@ impl ClaudeDriver {
                     pending_task_stops: reader_pending_task_stops,
                     pending_user_inputs: reader_pending_user_inputs,
                     pending_plans: reader_pending_plans,
+                    subagent_agents: reader_subagent_agents,
+                    subagent_calls: reader_subagent_calls,
                     manual_compaction: reader_compaction,
                     compaction_cancelled: reader_compaction_cancelled,
                     ..ClaudeStreamState::default()
@@ -864,6 +1027,7 @@ impl ClaudeDriver {
                                 .insert(request_id, key.clone());
                             write_line(&mut stdin, &stop_task_request(next_request_id, &control_id))
                         }
+                        CommandMessage::Raw(value) => write_line(&mut stdin, &value),
                         CommandMessage::Shutdown => break,
                     };
                     if let Err(error) = written {
@@ -928,6 +1092,7 @@ impl ClaudeDriver {
             commands,
             pending_user_inputs,
             pending_plans,
+            subagent_calls,
             mode,
         })
     }
@@ -980,6 +1145,19 @@ impl DriverControl for ClaudeDriver {
             input,
             answers,
         });
+    }
+
+    fn respond_subagent(&self, request_id: String, result: String) {
+        let Some(rpc_id) = self.subagent_calls.lock().remove(&request_id) else {
+            return;
+        };
+        let _ = self.commands.send(CommandMessage::Raw(mcp_control_response(
+            &request_id,
+            json!({"jsonrpc": "2.0", "id": rpc_id, "result": {
+                "content": [{"type": "text", "text": result}],
+                "isError": !crate::model::subagent_result_succeeded(&result),
+            }}),
+        )));
     }
 
     fn respond_plan(&self, request_id: String, decision: PlanDecision) {
@@ -1059,6 +1237,10 @@ struct ClaudeStreamState {
     pending_task_stops: Arc<Mutex<HashMap<String, BackgroundWorkKey>>>,
     pending_user_inputs: Arc<Mutex<HashMap<String, Value>>>,
     pending_plans: Arc<Mutex<HashMap<String, Value>>>,
+    /// Agents the `subagent` tool offers; empty when this session cannot
+    /// delegate.
+    subagent_agents: Vec<crate::model::SubagentToolAgent>,
+    subagent_calls: Arc<Mutex<HashMap<String, Value>>>,
     /// `ExitPlanMode` tool uses. The plan reaches the transcript as text and
     /// the approval as a plan prompt, so the raw tool call and its result
     /// stay out of the activity rows.
@@ -1875,6 +2057,9 @@ fn handle_message(
             handle_claude_system(value, session_id, events, state);
         }
         Some("control_request") => {
+            if handle_subagent_mcp_message(value, events, commands, state) {
+                return;
+            }
             if value.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool") {
                 begin_unprompted_turn(turn_active, state, events);
                 if !request_plan_approval(value, events, state)
@@ -2850,6 +3035,160 @@ mod tests {
     /// on the same process — the whole point of the transport. Ignored by
     /// default: needs the CLI installed, credentials, and the network.
     #[test]
+    fn the_in_process_server_lists_its_tool_and_surfaces_calls() {
+        let (events, received) = crate::driver::test_event_channel();
+        let (commands, command_rx) = unbounded();
+        let state = ClaudeStreamState {
+            subagent_agents: vec![crate::model::SubagentToolAgent {
+                name: "explore".into(),
+                description: "Search".into(),
+            }],
+            ..ClaudeStreamState::default()
+        };
+        let mcp = |request_id: &str, message: Value| {
+            json!({"type": "control_request", "request_id": request_id, "request": {
+                "subtype": "mcp_message", "server_name": "raku", "message": message}})
+        };
+
+        assert!(handle_subagent_mcp_message(
+            &mcp(
+                "list-1",
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            ),
+            &events,
+            &commands,
+            &state,
+        ));
+        let Ok(CommandMessage::Raw(reply)) = command_rx.try_recv() else {
+            panic!("tools/list is answered");
+        };
+        let tool = &reply["response"]["response"]["mcp_response"]["result"]["tools"][0];
+        assert_eq!(reply["response"]["request_id"], "list-1");
+        assert_eq!(tool["name"], "subagent");
+        assert_eq!(tool["_meta"]["anthropic/alwaysLoad"], true);
+        assert!(
+            tool["description"]
+                .as_str()
+                .unwrap()
+                .contains("- explore: Search")
+        );
+
+        assert!(handle_subagent_mcp_message(
+            &mcp(
+                "call-1",
+                json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+                "name": "subagent",
+                "arguments": {"agent": "explore", "description": "Find it", "prompt": "Find foo."},
+                "_meta": {"claudecode/toolUseId": "toolu_1", "progressToken": 7}}})
+            ),
+            &events,
+            &commands,
+            &state,
+        ));
+        let Ok(DriverEvent::SubagentRequested(request)) = received.try_recv() else {
+            panic!("tools/call becomes a subagent request");
+        };
+        assert_eq!(request.request_id, "call-1");
+        assert_eq!(request.call_id.as_deref(), Some("toolu_1"));
+        assert_eq!(request.prompt, "Find foo.");
+        assert_eq!(state.subagent_calls.lock().get("call-1"), Some(&json!(7)));
+
+        // Another server's messages are not Raku's.
+        assert!(!handle_subagent_mcp_message(
+            &json!({"type": "control_request", "request_id": "x", "request": {
+                "subtype": "mcp_message", "server_name": "other", "message": {}}}),
+            &events,
+            &commands,
+            &state,
+        ));
+    }
+
+    /// One real delegation through Raku's in-process MCP server: the model
+    /// calls `subagent`, the driver surfaces it with its tool use id, and the
+    /// answer reaches the model.
+    #[test]
+    #[ignore = "requires an installed, authenticated claude"]
+    fn claude_subagent_call_through_the_in_process_server() {
+        let binary =
+            crate::command_env::find_executable("claude").expect("claude is not installed");
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let driver = ClaudeDriver::start(
+            DriverStartOptions {
+                binary,
+                cwd: std::env::temp_dir(),
+                mode: RuntimeMode::Ask,
+                plan_mode: false,
+                model: Some("claude-haiku-4-5-20251001".into()),
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                provider_cursor: None,
+                read_only: false,
+                subagent: crate::model::SubagentLaunch {
+                    agents: vec![crate::model::SubagentToolAgent {
+                        name: "explore".into(),
+                        description: "Answers questions about the project.".into(),
+                    }],
+                    child: false,
+                },
+            },
+            events,
+        )
+        .expect("the streaming session should start");
+        driver.prompt(
+            "@explore what is the project's codename? Delegate exactly once, then reply with \
+             only the codename."
+                .into(),
+        );
+        let mut requested = None;
+        let mut reply = String::new();
+        let mut finished = false;
+        while let Ok(event) = event_rx.recv_timeout(std::time::Duration::from_secs(180)) {
+            match event {
+                DriverEvent::SubagentRequested(request) => {
+                    assert_eq!(request.agent, "explore");
+                    driver.respond_subagent(
+                        request.request_id.clone(),
+                        crate::model::subagent_result(
+                            None,
+                            crate::model::SubagentOutcome::Completed,
+                            "The project's codename is BLUEHERON.",
+                        ),
+                    );
+                    requested = Some(request);
+                }
+                // Supervised mode would ask for any tool not pre-approved.
+                DriverEvent::Permission { title, detail, .. } => {
+                    panic!("the subagent tool should be pre-approved, but asked: {title} {detail}")
+                }
+                DriverEvent::TextDelta(text) => reply.push_str(&text),
+                DriverEvent::TurnFinished { success, .. } => {
+                    assert!(success, "Claude should finish the delegating turn");
+                    finished = true;
+                    break;
+                }
+                DriverEvent::Error(error) => panic!("Claude reported: {error}"),
+                _ => {}
+            }
+        }
+        assert!(finished, "Claude never settled the delegating turn");
+        let request = requested.expect("Claude never called the subagent tool");
+        assert!(
+            request
+                .call_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("toolu_")),
+            "the call carries its tool use id: {:?}",
+            request.call_id
+        );
+        assert!(
+            reply.contains("BLUEHERON"),
+            "the reply used the result: {reply}"
+        );
+    }
+
+    #[test]
     #[ignore = "requires an installed, authenticated claude"]
     fn claude_streaming_session_against_the_real_cli() {
         let binary =
@@ -3009,6 +3348,7 @@ mod tests {
             commands,
             pending_user_inputs: Arc::new(Mutex::new(HashMap::new())),
             pending_plans: Default::default(),
+            subagent_calls: Default::default(),
             mode: RuntimeMode::FullAccess,
         };
 

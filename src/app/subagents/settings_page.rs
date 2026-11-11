@@ -247,9 +247,11 @@ impl Raku {
         let theme = Theme::current(cx);
         let editing = self.subagents.settings.editing;
         let count = self.state.subagents.len();
-        // Availability is judged against Pi, the provider whose tasks can
-        // delegate today.
-        let task_provider = ProviderKind::Pi;
+        // An agent on a fixed provider needs that provider; one that runs on
+        // the task's provider needs any.
+        let any_provider_available = ProviderKind::ALL
+            .into_iter()
+            .any(|provider| self.provider_is_available(provider));
 
         let mut card = div()
             .w_full()
@@ -263,7 +265,9 @@ impl Raku {
                 card = card.child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border));
             }
             let expanded = editing == Some(index);
-            let available = self.subagent_is_available(agent, task_provider);
+            let available = agent.provider.map_or(any_provider_available, |provider| {
+                self.provider_is_available(provider)
+            });
             let enabled = agent.enabled;
             let toggle = toggle_switch(
                 SharedString::from(format!("subagent-enabled-{index}")),

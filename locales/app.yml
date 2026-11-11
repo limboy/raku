@@ -2194,7 +2194,7 @@ subagent.instructions_placeholder:
 subagent.unavailable:
   en: "Provider unavailable"
 subagent.settings_description:
-  en: "Subagents run delegated work in their own context window and return a final report. Type @name in a Pi task to ask the agent to delegate to one."
+  en: "Subagents run delegated work in their own context window and return a final report. Type @name in a task to ask its agent to delegate to one, or /name followed by a task to start one in the background."
 subagent.command_hint:
   en: "<task>"
 subagent.too_many:

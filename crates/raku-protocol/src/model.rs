@@ -1118,6 +1118,113 @@ pub fn parse_subagent_result(text: &str) -> Option<ParsedSubagentResult<'_>> {
     })
 }
 
+/// The in-process MCP server that carries the `subagent` tool for Claude Code.
+pub const SUBAGENT_MCP_SERVER: &str = "raku";
+/// The tool every provider's model delegates with.
+pub const SUBAGENT_TOOL: &str = "subagent";
+
+/// The `subagent` tool's description for providers whose tool Raku declares
+/// itself (Claude Code and Codex; Pi's extension writes the same text).
+pub fn subagent_tool_description(agents: &[SubagentToolAgent]) -> String {
+    let mut text = String::from(
+        "Delegate a task to one of the agents configured in Raku. They are not your built-in \
+         agent or subagent tools: each runs as its own session, possibly on another provider and \
+         model, and returns only its final report. When the user writes @name for one of the \
+         agents listed below, call this tool with that agent, never a built-in agent tool.\n\
+         Use it for work whose intermediate steps you do not need to see: broad searches, reading \
+         many files to answer one question, or a self-contained piece of a larger change.\n\
+         The subagent starts with no knowledge of this conversation, so the prompt must be \
+         self-contained: say what to do, what you already know, and what to report back.\n\
+         Call it several times in one message to run subagents in parallel.\n\
+         When the user names an agent with @name, delegate to that agent.\n\
+         A call can take minutes. Wait for it quietly: do not poll it, report that it is still \
+         running, or redo its work.\n\
+         Set background to true when you have other work to do meanwhile: the call returns at \
+         once, and the report arrives later as a message.\n\
+         Every result carries the subagent's session_id. Pass it as session_id to send that same \
+         subagent a follow-up; it keeps its context.\n\nAvailable agents:",
+    );
+    for agent in agents {
+        text.push_str(&format!("\n- {}: {}", agent.name, agent.description));
+    }
+    text
+}
+
+/// The `subagent` tool's JSON Schema input, shared like its description.
+pub fn subagent_tool_input_schema(agents: &[SubagentToolAgent]) -> serde_json::Value {
+    let names = agents
+        .iter()
+        .map(|agent| agent.name.as_str())
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "agent": {
+                "type": "string",
+                "description": format!("Which agent to run. One of: {}.", names.join(", ")),
+            },
+            "description": {
+                "type": "string",
+                "description": "A short label for the task, 3-5 words, shown to the user.",
+            },
+            "prompt": {
+                "type": "string",
+                "description": "The complete task for the subagent, including everything it needs to know.",
+            },
+            "background": {
+                "type": "boolean",
+                "description": "Return at once and receive the report later as a message.",
+            },
+            "session_id": {
+                "type": "string",
+                "description": "Continue the subagent with this session_id instead of starting a new one.",
+            },
+        },
+        "required": ["agent", "description", "prompt"],
+        "additionalProperties": false,
+    })
+}
+
+/// A `subagent` call from tool arguments, for providers whose calls arrive
+/// as plain JSON arguments.
+pub fn subagent_request_from_arguments(
+    request_id: String,
+    call_id: Option<String>,
+    arguments: &serde_json::Value,
+) -> SubagentRequest {
+    let text = |field: &str| {
+        arguments
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    SubagentRequest {
+        request_id,
+        call_id,
+        agent: text("agent"),
+        description: text("description"),
+        prompt: text("prompt"),
+        session_id: Some(text("session_id")).filter(|id| !id.is_empty()),
+        background: arguments
+            .get("background")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+    }
+}
+
+/// Whether a `subagent` result text is a successful tool result: a completed
+/// run or one continuing in the background.
+pub fn subagent_result_succeeded(text: &str) -> bool {
+    parse_subagent_result(text).is_some_and(|result| {
+        matches!(
+            result.outcome,
+            SubagentOutcome::Completed | SubagentOutcome::Running
+        )
+    })
+}
+
 /// First line of a subagent's first prompt. Everything up to
 /// [`SUBAGENT_TASK_MARKER`] is context the transcript does not show.
 pub const SUBAGENT_PROMPT_PREFIX: &str = "You are a subagent spawned by another session.";
@@ -2762,9 +2869,13 @@ pub struct ActivityItem {
 }
 
 impl ActivityItem {
-    /// Whether this activity is a call to Raku's `subagent` tool.
+    /// Whether this activity is a call to Raku's `subagent` tool: Pi's
+    /// extension tool and Codex's dynamic tool have no MCP server, Claude
+    /// Code's is served by Raku's in-process `raku` server. Another MCP
+    /// server's tool of the same name is not Raku's.
     pub fn is_subagent(&self) -> bool {
         self.tool_name.as_deref() == Some("subagent")
+            && matches!(self.mcp_server.as_deref(), None | Some(SUBAGENT_MCP_SERVER))
     }
 
     /// Content that keeps its own ordered row, including after ordinary work folds.

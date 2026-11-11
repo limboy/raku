@@ -1,8 +1,8 @@
 # Subagents
 
-**Status: phases 1 and 2 implemented** — Pi tasks delegate in the foreground
-or background, resume subagents, and launch them with `/agent`; reports reach
-the task as notices. Phase 3 (Claude Code and Codex) is design. Sections marked *Unverified* must be probed
+**Status: phases 1–3 implemented** — Pi, Claude Code and Codex tasks
+delegate in the foreground or background, resume subagents, and launch them
+with `/agent`; reports reach the task as notices. Sections marked *Unverified* must be probed
 against the real CLIs before the code that depends on them is written.
 
 A subagent is a child agent that a task's main agent delegates a piece of work
@@ -17,15 +17,16 @@ OpenCode where Raku's architecture differs; see
 
 ## Scope
 
-- **Pi first.** Pi has no subagents at all, so it gets a Raku-owned `subagent`
-  tool.
-- **Claude Code and Codex keep their native subagents.** They already surface
-  as `BackgroundWorkKind::Subagent` through
+- **Every provider gets Raku's `subagent` tool**, carried in-band: Pi through
+  a bundled extension, Claude Code through an in-process MCP server, Codex as
+  a dynamic tool. See [Phase 3 bridge](#phase-3-bridge).
+- **Claude Code and Codex keep their native subagents too.** They surface as
+  `BackgroundWorkKind::Subagent` through
   [driver/claude.rs](../crates/raku-core/src/driver/claude.rs) and
-  [driver/codex.rs](../crates/raku-core/src/driver/codex.rs).
-- **Cross-provider delegation for Claude and Codex comes last**, through an MCP
-  bridge. Both can hold a foreground call open as long as a subagent runs,
-  given the launch settings in [MCP call limits](#mcp-call-limits).
+  [driver/codex.rs](../crates/raku-core/src/driver/codex.rs). Raku's agents
+  differ in running on any configured provider and model.
+- **A subagent may run on another provider than its task**, as its agent's
+  settings say: a Claude Code task can delegate to a cheap Pi model.
 
 ## Why the app orchestrates
 
@@ -126,10 +127,10 @@ A subagent starts in one of four ways. The first two need no UI at all.
 `/agent` commands are listed in the command palette and the slash-command
 autocomplete, so every trigger is reachable from the keyboard.
 
-`@agent` needs the parent's model to make the tool call, so it is offered only
-where the parent's provider has the Raku subagent tool (Pi at first). `/agent`
-does not: the app launches the child itself and delivers the result as a
-message, so it works with any parent provider.
+`@agent` needs the parent's model to make the tool call; every provider now
+has the tool. `/agent` does not: the app launches the child itself and
+delivers the result as a message. Neither is offered in a side chat or a
+subagent.
 
 ## Bridge
 
@@ -286,8 +287,8 @@ See [performance.md](performance.md).
    transcript row, right-panel viewer, Stop.
 2. **Background.** Promotion on steer, completion delivery, resume, Background
    Work projection, `/agent` direct launch.
-3. **Reach.** MCP bridge so Claude and Codex parents get the tool and
-   `@agent`.
+3. **Reach.** Claude Code and Codex tasks get the tool and `@agent` through
+   the in-band bridges.
 
 ## Open
 
@@ -318,25 +319,85 @@ Measured: Claude Code completed 70, 330 and 660 s silent calls and aborted a
 1800 s one; Codex completed 70 and 90 s calls on its defaults and aborted 330,
 660 and 1800 s ones at exactly 300 s.
 
-What phase 3 does with this:
+These limits apply to an MCP server the CLI spawns. Phase 3 does not spawn
+one: both CLIs can carry the tool over the connection Raku already holds,
+which removes the subprocess, the socket and its token, and — as measured
+below — the timeouts.
 
-- **Claude Code.** The bridge sends a progress notification on a heartbeat
-  (every 30 s) while the child runs. That alone keeps a foreground call open
-  indefinitely, with no setting the user's own MCP configuration could
-  override; a per-server `timeout` in Raku's `--mcp-config` entry is a
-  fallback.
-- **Codex.** Raku launches `codex app-server` and names its own MCP server on
-  the command line, so it sets that server's `tool_timeout_sec` high (a day)
-  there. Progress cannot help. A `notifications/cancelled` for a call stops
-  its child, as the parent's Stop does.
-- **Neither needs `running` for every call.** Foreground stays the default on
-  all providers.
+## Phase 3 bridge
 
-## Unverified
+Each provider gets the `subagent` tool in-band, the way Pi's extension dialog
+already works. Probed on 2026-11-11 through each CLI's own session protocol.
 
-- The probes used `claude -p` and `codex exec`. Raku drives Claude's
-  long-lived stream-json session and `codex app-server`, which should share
-  each CLI's MCP client; confirm through Raku's own transports when phase 3
-  is wired.
-- Whether `tool_timeout_sec` set with `-c` on `codex app-server` reaches a
-  server configured the same way, rather than only `codex exec`.
+### Claude Code: an in-process MCP server
+
+The Agent SDK's in-process MCP servers are part of the stream-json control
+protocol Raku already speaks:
+
+1. Raku launches with `--mcp-config '{"mcpServers":{"raku":{"type":"sdk","name":"raku"}}}'`
+   and `--allowedTools mcp__raku__subagent`, and writes an `initialize` control
+   request naming `sdkMcpServers: ["raku"]` before the first prompt.
+2. The CLI's MCP client talks to the server through `control_request`s with
+   `subtype: "mcp_message"` (`server_name`, `message`); Raku answers each with
+   a `control_response` whose `response` is `{mcp_response: <JSON-RPC>}`. It
+   answers `initialize`, `tools/list` (the `subagent` tool, listing the
+   agents) and `tools/call`.
+3. A `tools/call` carries the tool use id in `_meta["claudecode/toolUseId"]`
+   and becomes `SubagentRequested`; `respond_subagent` answers it with
+   `{content: [text], isError}`.
+
+Measured: a 60 s silent call completed under a 30 s
+`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, so the idle limit that cut the stdio
+server off does not apply here; a per-server `timeout` of 30 s did not stop a
+60 s call either. A 1900 s call completed both silent and with progress
+notifications, past the 1800 s at which the stdio server was aborted. No
+heartbeat is needed.
+
+MCP tools otherwise wait behind Claude Code's tool search, and the model
+reaches for its built-in `Agent` tool first — asked to delegate to `explore`,
+it ran its own Explore subagent. The tool is listed with
+`_meta: {"anthropic/alwaysLoad": true}`, and its description says these agents
+are Raku's, not a built-in agent tool, and that `@name` means this tool. With
+both, `@explore …` reached Raku's tool in Supervised mode without a prompt.
+
+### Codex: a dynamic tool
+
+`codex app-server` takes client-implemented tools (experimental API):
+
+1. `thread/start` declares `dynamicTools: [{type: "function", name: "subagent",
+   description, inputSchema}]`.
+2. A call arrives as the server request `item/tool/call`
+   (`threadId`, `turnId`, `callId`, `tool`, `arguments`) and becomes
+   `SubagentRequested`; Raku answers the request with
+   `{contentItems: [{type: "inputText", text}], success}`.
+3. The transcript sees `item/started` / `item/completed` of type
+   `dynamicToolCall`, whose `id` equals the request's `callId`.
+
+Measured: a 330 s call completed, past the 300 s MCP limit. The declaration is
+stored with the thread: after `thread/resume` in a new process the tool was
+still there and called. Approval policy `never` does not block it.
+
+Two things to handle:
+
+- **Names collide with code mode.** Codex's code mode exposes its own `wait`;
+  a dynamic tool named `wait` was never offered to the model. `subagent` does
+  not collide, but the name is checked against the live tool list in the live
+  test.
+- **The tool list is fixed at `thread/start`.** A thread started before any
+  agent was enabled never gains the tool, and later agent edits do not reach
+  an existing thread's description. Raku still validates the agent name on
+  every call and answers an unknown one with the current list, so a stale
+  description degrades to one rejected call.
+- **Code mode polls.** While a long call is pending, the model in code mode
+  polls it with its built-in `wait`, writing a line each time. The tool
+  description asks it to wait quietly.
+
+### Shared
+
+- Both answer with the same `<subagent …>` result text, and both report every
+  `state` but `running` and `completed` as a failed call.
+- Foreground stays the default on all providers; no call is forced into the
+  background.
+- A subagent never gets the tool (depth 1), and neither does a side chat or a
+  read-only launch.
+
