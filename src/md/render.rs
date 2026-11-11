@@ -2026,7 +2026,8 @@ const CODE_COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(3);
 /// Code-block header controls draw at 15px so the copy and run affordances
 /// read as buttons rather than decoration; the `*-bold` derivatives keep
 /// their stroke near 1.5px at this size.
-const CODE_HEADER_ICON_SIZE: f32 = 15.0;
+const CODE_HEADER_ICON_SIZE: f32 = 13.0;
+const CODE_HEADER_BUTTON_SIZE: f32 = 22.0;
 type CodeCopyFeedback = Rc<RefCell<HashMap<usize, u64>>>;
 
 fn begin_code_copy_feedback(feedback: &CodeCopyFeedback, ordinal: usize) -> u64 {
@@ -2097,7 +2098,7 @@ impl gpui::RenderOnce for MermaidPreviewButton {
             .id(self.id)
             .track_focus(&focus)
             .tab_index(0)
-            .size(px(24.0))
+            .size(px(CODE_HEADER_BUTTON_SIZE))
             .flex_none()
             .rounded(px(5.0))
             .flex()
@@ -2180,7 +2181,7 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
             key.row, key.index
         )))
         .tab_index(0)
-        .size(px(24.0))
+        .size(px(CODE_HEADER_BUTTON_SIZE))
         .flex_none()
         .rounded(px(5.0))
         .flex()
@@ -2318,7 +2319,7 @@ fn render_code_run_button(
     let button = div()
         .id(id)
         .tab_index(0)
-        .size(px(24.0))
+        .size(px(CODE_HEADER_BUTTON_SIZE))
         .flex_none()
         .rounded(px(5.0))
         .flex()
