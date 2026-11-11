@@ -53,6 +53,8 @@ export default function (pi: ExtensionAPI) {
       "The subagent starts with no knowledge of this conversation, so the prompt must be self-contained: say what to do, what you already know, and what to report back.",
       "Call it several times in one message to run subagents in parallel.",
       "When the user names an agent with @name, delegate to that agent.",
+      "Set background to true when you have other work to do meanwhile: the call returns at once, and the report arrives later as a message. Do not sleep, poll, or redo a background subagent's work while you wait.",
+      "Every result carries the subagent's session_id. Pass it as session_id to send that same subagent a follow-up; it keeps its context.",
       "",
       "Available agents:",
       ...agents.map((agent) => `- ${agent.name}: ${agent.description}`),
@@ -68,6 +70,16 @@ export default function (pi: ExtensionAPI) {
       prompt: Type.String({
         description: "The complete task for the subagent, including everything it needs to know.",
       }),
+      background: Type.Optional(
+        Type.Boolean({
+          description: "Return at once and receive the report later as a message.",
+        }),
+      ),
+      session_id: Type.Optional(
+        Type.String({
+          description: "Continue the subagent with this session_id instead of starting a new one.",
+        }),
+      ),
     }),
     executionMode: "parallel",
 
@@ -79,6 +91,8 @@ export default function (pi: ExtensionAPI) {
           agent: params.agent,
           description: params.description,
           prompt: params.prompt,
+          background: params.background ?? false,
+          sessionId: params.session_id ?? "",
         }),
         { signal },
       );
@@ -87,9 +101,10 @@ export default function (pi: ExtensionAPI) {
           signal?.aborted ? "The subagent was stopped." : "Raku did not run the subagent.",
         );
       }
-      // Raku reports every outcome as `<subagent … state="…">`; anything but
-      // a completed run is a failed tool call.
-      if (!/^<subagent\b[^>]*\bstate="completed"/.test(answer)) {
+      // Raku reports every outcome as `<subagent … state="…">`. A completed
+      // run, or one that continues in the background, is a result; anything
+      // else is a failed tool call.
+      if (!/^<subagent\b[^>]*\bstate="(completed|running)"/.test(answer)) {
         throw new Error(answer);
       }
       return { content: [{ type: "text", text: answer }], details: {} };

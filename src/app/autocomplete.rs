@@ -147,9 +147,9 @@ impl Raku {
         let command_key = (provider, project_path.clone(), binary_override.clone());
         match self.slash_commands.read(&command_key) {
             Query::Ready(commands) => {
-                self.slash_command_index = Rc::new(composer_complete::merge_reported_commands(
-                    &commands, &reported,
-                ));
+                let mut index = composer_complete::merge_reported_commands(&commands, &reported);
+                index.extend(self.agent_slash_commands(&index));
+                self.slash_command_index = Rc::new(index);
                 self.slash_command_index_key = Some(command_key);
                 self.slash_command_index_loading = false;
             }

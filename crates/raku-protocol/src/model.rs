@@ -899,6 +899,11 @@ pub struct SubagentOrigin {
     /// Launch under the read-only execution policy.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+    /// Nothing is blocked on this child: it was launched in the background,
+    /// by `/agent`, or promoted when the user steered its task. Its result is
+    /// delivered to the task as a message when it settles.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     /// The result has been handed to the parent. Guards against a second
     /// delivery after a relaunch.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1025,11 +1030,19 @@ pub struct SubagentRequest {
     #[serde(default)]
     pub description: String,
     pub prompt: String,
+    /// Continue this existing subagent instead of starting one.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Return at once and deliver the result as a message later.
+    #[serde(default)]
+    pub background: bool,
 }
 
 /// How a delegation ended, as reported to the delegating model.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SubagentOutcome {
+    /// Still working; the result arrives later as a message.
+    Running,
     Completed,
     Failed,
     Cancelled,
@@ -1040,6 +1053,7 @@ pub enum SubagentOutcome {
 impl SubagentOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Running => "running",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -1050,6 +1064,7 @@ impl SubagentOutcome {
 
     pub fn from_state(state: &str) -> Option<Self> {
         match state {
+            "running" => Some(Self::Running),
             "completed" => Some(Self::Completed),
             "failed" => Some(Self::Failed),
             "cancelled" => Some(Self::Cancelled),

@@ -1120,4 +1120,7 @@ subagent.instructions: "指示"
 subagent.instructions_placeholder: "このサブエージェントに渡す任意の指示…"
 subagent.unavailable: "プロバイダー利用不可"
 subagent.settings_description: "サブエージェントは独自のコンテキストウィンドウで委任された作業を実行し、最終レポートを返します。Pi のタスクで @名前 と入力すると、そのエージェントへの委任を指示できます。"
-
+subagent.command_hint: "<タスク>"
+subagent.too_many: "このタスクではすでに %{count} 個のサブエージェントが実行中です。"
+subagent.status_running: "実行中"
+subagent.status_failed: "失敗"

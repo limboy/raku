@@ -991,6 +991,82 @@ impl Raku {
             .into_any_element()
     }
 
+    /// The row for a subagent report delivered as a message: the outcome as an
+    /// icon and a word, the agent and task, and a button that opens the
+    /// subagent's full run.
+    fn render_subagent_notice(
+        &self,
+        message_id: Uuid,
+        child: Option<Uuid>,
+        outcome: crate::model::SubagentOutcome,
+        label: String,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::model::SubagentOutcome;
+        let (status_icon, color, status) = match outcome {
+            SubagentOutcome::Completed => (
+                "icons/check.svg",
+                theme.text_secondary,
+                tr!("subagent.status_completed"),
+            ),
+            SubagentOutcome::Cancelled | SubagentOutcome::Interrupted => (
+                "icons/stop.svg",
+                theme.text_secondary,
+                tr!("subagent.status_cancelled"),
+            ),
+            SubagentOutcome::Running => (
+                "icons/bot.svg",
+                theme.text_secondary,
+                tr!("subagent.status_running"),
+            ),
+            SubagentOutcome::Failed | SubagentOutcome::Rejected => {
+                ("icons/x.svg", theme.danger, tr!("subagent.status_failed"))
+            }
+        };
+        let open = child
+            .filter(|child| self.is_subagent_session(*child))
+            .map(|child| {
+                self.render_activity_open_subagent_button(
+                    format!("subagent-notice-open-{message_id}"),
+                    child,
+                    theme,
+                    cx,
+                )
+            });
+        div()
+            .w_full()
+            .min_w_0()
+            .my(px(4.0))
+            .px(px(6.0))
+            .py(px(4.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(sp(SMALL_UI_FONT_SIZE))
+            .child(icon("icons/bot.svg", 13.0, theme.text_tertiary))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .text_color(color)
+                    .child(icon(status_icon, 11.0, color))
+                    .child(status),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_color(theme.text_secondary)
+                    .child(single_line_label(&label)),
+            )
+            .children(open)
+            .into_any_element()
+    }
+
     /// Diff rows for an expanded file-change activity, built on first sight and
     /// held until the activity collapses or its changes are replaced.
     fn activity_diff_rows(&self, activity: &ActivityItem) -> Rc<activity_diff::Diff> {
@@ -1372,8 +1448,36 @@ impl Raku {
                     })
                 })
         );
+        // A background subagent's report reaches the task as a user message
+        // carrying the `<subagent>` result. It reads as a notice of what came
+        // back, not as something the user typed. The prefix check rejects
+        // every other message before any parsing.
+        let subagent_notice = match kind {
+            TranscriptRowKind::Message(message_index) => {
+                self.selected_session().and_then(|session| {
+                    let message = session.messages.get(message_index)?;
+                    (message.role == MessageRole::User && message.content.starts_with("<subagent"))
+                        .then(|| {
+                            let result = crate::model::parse_subagent_result(&message.content)?;
+                            Some((
+                                message.id,
+                                result.session_id,
+                                result.outcome,
+                                message.visible_content().to_owned(),
+                            ))
+                        })
+                        .flatten()
+                })
+            }
+            _ => None,
+        };
         let inner = match kind {
             TranscriptRowKind::Message(_) if blank_assistant => div().into_any_element(),
+            TranscriptRowKind::Message(_) if subagent_notice.is_some() => {
+                let (message_id, child, outcome, label) =
+                    subagent_notice.expect("checked by the guard");
+                self.render_subagent_notice(message_id, child, outcome, label, &theme, cx)
+            }
             TranscriptRowKind::Message(message_index) => self
                 .selected_session()
                 .and_then(|session| session.messages.get(message_index))
@@ -2775,21 +2879,26 @@ impl Raku {
             };
             // The index is rebuilt only when subagents change; this is two
             // map lookups per subagent row.
-            let open_subagent_button = activity
+            let subagent = activity
                 .is_subagent()
                 .then(|| {
                     let parent = self.state.selected_session?;
                     self.subagent_for_call(parent, activity.source_id.as_deref()?)
                 })
-                .flatten()
-                .map(|subagent| {
-                    self.render_activity_open_subagent_button(
-                        format!("activity-open-subagent-{id}"),
-                        subagent,
-                        theme,
-                        cx,
-                    )
-                });
+                .flatten();
+            // A background call returns at once, but its subagent works on:
+            // the row says so until the report is delivered.
+            let subagent_working = activity.complete
+                && !activity.failed
+                && subagent.is_some_and(|subagent| self.subagent_is_working(subagent));
+            let open_subagent_button = subagent.map(|subagent| {
+                self.render_activity_open_subagent_button(
+                    format!("activity-open-subagent-{id}"),
+                    subagent,
+                    theme,
+                    cx,
+                )
+            });
             let shows_diff = reasoning.is_none() && activity_shows_diff(activity);
             let has_detail = reasoning
                 .is_some_and(|reasoning| !reasoning.content.trim().is_empty())
@@ -2914,7 +3023,9 @@ impl Raku {
                     })
                     .when(
                         !activity.failed
-                            && (reasoning_live || (reasoning.is_none() && !activity.complete)),
+                            && (subagent_working
+                                || reasoning_live
+                                || (reasoning.is_none() && !activity.complete)),
                         |row| {
                             row.child(
                                 div()

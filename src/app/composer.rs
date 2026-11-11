@@ -1940,6 +1940,7 @@ impl Raku {
         cx: &mut Context<Self>,
     ) -> bool {
         self.execute_resume_composer_command(prompt, cx)
+            || self.execute_agent_command(prompt, cx)
             || self.execute_plan_mode_toggle(prompt, cx)
             || self.execute_fast_mode_toggle(prompt, cx)
             || self.execute_goal_composer_command(prompt, cx)

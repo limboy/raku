@@ -1,8 +1,8 @@
 # Subagents
 
-**Status: phase 1 implemented** — Pi tasks delegate in the foreground, with
-the settings page, `@agent` completion, the transcript row and the right-panel
-viewer. Later phases are design. Sections marked *Unverified* must be probed
+**Status: phases 1 and 2 implemented** — Pi tasks delegate in the foreground
+or background, resume subagents, and launch them with `/agent`; reports reach
+the task as notices. Phase 3 (Claude Code and Codex) is design. Sections marked *Unverified* must be probed
 against the real CLIs before the code that depends on them is written.
 
 A subagent is a child agent that a task's main agent delegates a piece of work
@@ -80,8 +80,7 @@ pub struct SubagentOrigin {
 ## Tool
 
 ```text
-subagent({ agent, description, prompt })            // phase 1
-subagent({ …, session_id?, background? })           // phase 2
+subagent({ agent, description, prompt, background?, session_id? })
 ```
 
 | Field | Meaning |
@@ -100,13 +99,13 @@ The model-visible result is:
 </subagent>
 ```
 
-`state` is `completed`, `failed`, `cancelled`, `interrupted`, `rejected` (the
-call could not run: an unknown agent, an empty prompt, too many live
-subagents) or, from phase 2, `running`. Anything but `completed` is reported to
-the model as a failed tool call. A
-`running` result tells the model the subagent is working in the background,
-that it will be notified when it finishes, and that it must not sleep, poll or
-duplicate the work.
+`state` is `running`, `completed`, `failed`, `cancelled`, `interrupted` or
+`rejected` (the call could not run: an unknown agent, an unknown or foreign
+`session_id`, an empty prompt, too many live subagents). `running` and
+`completed` are successful tool results; anything else is reported to the
+model as a failed tool call. A `running` result tells the model the subagent
+is working in the background, that its report will arrive as a message, and
+that it must not sleep, poll or duplicate the work.
 
 ## Triggering
 
@@ -117,7 +116,7 @@ A subagent starts in one of four ways. The first two need no UI at all.
 | The model decides | The agent calls `subagent` on its own when the tool description fits the task. | 1 |
 | The user asks in prose | "Use a subagent to find every caller of X." The model makes the call. | 1 |
 | `@agent` in the composer | Typing `@` offers the available agents beside files in the existing autocomplete. The chosen agent becomes a chip, and the prompt is sent with an instruction to delegate to it. The model still makes the call, so the result returns to it in the same turn. | 1 |
-| `/agent <task>` | Launches a background child directly, with no parent model turn. The result arrives through background completion delivery. Works while the parent is busy. | 2 |
+| `/agent <task>` | Launches a background child directly, with no parent model turn. The result arrives through background completion delivery. Works while the parent is busy, for any parent provider. A project, user or provider command of the same name wins over the agent. | 2 |
 
 `agent` here is the name of any enabled agent from
 [Settings → Subagents](#custom-agents): with agents named `explore` and
@@ -219,56 +218,66 @@ addition; Settings is the only source for now.
 
 - **Foreground (default).** The tool call blocks until the child's turn
   settles. Stopping the parent cancels its foreground children.
-- **Phase 2 from here on.**
-- **Promotion on steer.** If the user steers the parent while a foreground
-  call blocks, the app answers the call with `state="running"` and the child
-  continues in the background. The parent can respond to the user at once.
-- **Background completion.** If the parent is busy and its runtime supports
-  steering, the result is steered in. Otherwise it becomes a synthetic entry
-  in the existing `queued_messages`, which starts a turn as soon as the parent
-  is idle. It is drawn as a compact notice, not a user bubble, and is not
-  editable.
-- **Resume.** Passing `session_id` continues a child with its context intact.
-  If that child is still running, the prompt steers it.
-- **App quit mid-run.** In phase 1 the parent's Pi process, and with it the
-  blocked call, ends with the app; on relaunch the child's turn is marked
-  interrupted like any orphaned runtime. Phase 2 reports `state="interrupted"`
-  to the parent once, guarded by `SubagentOrigin::delivered`, which phase 1
-  already sets on every delivery.
+- **Background.** `background: true` answers the call with `running` at
+  once and launches the child; `/agent` launches one with no call at all.
+- **Promotion on steer.** When the user steers, or presses Enter in, a task
+  whose model is blocked on subagent calls, the app answers those calls with
+  `running` and steers the message in. The children continue in the
+  background and the model responds to the user at once. Enter steers rather
+  than queues here, as it does for a parked task: a queued message would wait
+  on the very calls it should interrupt.
+- **Delivery.** When a background child settles, its report reaches the task
+  once (`SubagentOrigin::delivered`): steered into a running turn when the
+  runtime can, otherwise sent as the next turn, which waits in the follow-up
+  queue while the task is busy and starts at once when it is idle. The
+  message's content is the `<subagent>` result; the transcript draws it as a
+  compact notice — outcome icon and word, `agent · description`, an open
+  button — not as an editable bubble. A background child keeps running when
+  its task is stopped; the work menu stops it.
+- **Resume.** `session_id` continues a child of the same task with its
+  context. An idle child takes the prompt as a new turn, tracked like a fresh
+  call (foreground or background). A running background child is steered and
+  the call answered `running`; its pending report covers both. Any other busy
+  child is rejected.
+- **App quit mid-run.** The parent's Pi process, and with it any blocked call,
+  ends with the app; on relaunch a child's turn is marked interrupted like any
+  orphaned runtime. Nothing is delivered for it yet: reporting
+  `state="interrupted"` once on relaunch is still open (see
+  [Open](#open)).
 
 ## UI
 
 - **Transcript row.** The `subagent` tool row reads `agent · description` and
   carries an open button (panel icon, Tab-focusable, Enter/Space) once the
-  child exists. In phase 1 its status is the tool call's own, which is the
-  child's; phase 2 reads the child session so a backgrounded child keeps
-  showing as running after its call has returned.
+  child exists. A background call returns at once, so the row reads the child
+  instead: it shows Running until the report is delivered (one map lookup per
+  row), and its disclosure stays empty, since the report arrives as its own
+  notice.
 - **Result.** Once the child settles, the row gains a disclosure that expands
   the child's final report in place, rendered as Markdown and collapsed by
   default. It is the same text the parent's model received. Space toggles it;
-  a failed or interrupted child shows its error there instead. The notice left
-  by a `/agent` launch or a background completion is this same row, so every
-  result is readable in the parent's transcript wherever it came from.
+  a failed or interrupted child shows its error there instead. A background
+  report is read from its notice's open button.
 - **Right panel.** The open button shows the child in the side chat's surface
   (`RightPanelSurface::SideChat`, with a bot tab icon), reusing its
   virtualized transcript. A subagent's rows interleave its tool calls with its
   messages. A header shows status (icon and word), agent, provider and model,
   and read-only access; the composer's Stop button stops the child, which
   answers the parent's call as `cancelled`. While the child runs, the composer
-  steers it. Escape returns focus to the main composer. Elapsed time is
-  phase 2.
+  steers it. Escape returns focus to the main composer.
 - **Work menu.** The header's work menu lists the task's subagents under
   **Agents**, beside the provider's own, newest first: title, status (icon and
   word) and a Stop button. A running subagent counts toward the agent badge on
   its trigger. Clicking a row opens the subagent's panel; Stop stops the
-  child, which answers the task's call as `cancelled`. Phase 2 adds the same
-  rows for background subagents, whose calls have already returned.
+  child: a blocked call is answered `cancelled`, and a background child
+  delivers a `cancelled` notice. Background subagents are listed and counted
+  like any other.
 - **Usage.** Child tokens stay out of the parent's context meter and show on
   the child's header.
 
-Everything the row and header draw comes from sessions already in memory. The
-elapsed time ticks at 1 Hz and is skipped under reduce-motion only where it
-animates; see [performance.md](performance.md).
+Everything the row, notice and header draw comes from sessions already in
+memory; the notice's prefix check rejects every other message before parsing.
+See [performance.md](performance.md).
 
 ## Phases
 
@@ -279,6 +288,14 @@ animates; see [performance.md](performance.md).
    Work projection, `/agent` direct launch.
 3. **Reach.** MCP bridge so Claude and Codex parents get the tool and
    `@agent`.
+
+## Open
+
+- Reporting `state="interrupted"` once to a task whose subagent was cut off by
+  quitting Raku. Delivering it unasked on launch would start a paid turn, so
+  it needs a quieter shape — likely a queued notice the user sends.
+- Elapsed time in the subagent panel header.
+- `@agent` is plain text, not a chip.
 
 ## Unverified
 

@@ -303,6 +303,8 @@ fn pi_subagent_request(value: &Value) -> Option<crate::model::SubagentRequest> {
         agent: text("agent"),
         description: text("description"),
         prompt: text("prompt"),
+        session_id: Some(text("sessionId")).filter(|id| !id.is_empty()),
+        background: call.get("background").and_then(Value::as_bool) == Some(true),
     })
 }
 
@@ -2379,6 +2381,8 @@ mod tests {
                 "agent": "explore",
                 "description": " Find callers ",
                 "prompt": "Find every caller of foo.",
+                "sessionId": "",
+                "background": true,
             }).to_string(),
         }))
         .expect("the dialog carries a subagent call");
@@ -2387,6 +2391,8 @@ mod tests {
         assert_eq!(request.agent, "explore");
         assert_eq!(request.description, "Find callers");
         assert_eq!(request.prompt, "Find every caller of foo.");
+        assert_eq!(request.session_id, None);
+        assert!(request.background);
 
         // Any other dialog is still an extension prompt Raku cancels.
         assert!(
@@ -2514,6 +2520,98 @@ mod tests {
         assert!(
             reply.contains("BLUEHERON"),
             "the reply used the result: {reply}"
+        );
+    }
+
+    /// A background call returns at once with `state="running"`, and the
+    /// extension reports that as a successful tool result.
+    #[test]
+    #[ignore = "requires an installed, authenticated pi"]
+    fn pi_background_subagent_call_against_the_real_rpc() {
+        let binary = crate::command_env::find_executable("pi").expect("pi is not installed");
+        let extension = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../resources/pi/subagent.ts")
+            .canonicalize()
+            .expect("the extension source exists");
+        let fake_host = std::env::temp_dir().join("raku-subagent-bg-probe/MacOS/raku");
+        std::fs::create_dir_all(fake_host.parent().unwrap()).unwrap();
+        let resources = fake_host.parent().unwrap().parent().unwrap();
+        for directory in ["Resources/pi", "resources/pi"] {
+            let directory = resources.join(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::copy(&extension, directory.join("subagent.ts")).unwrap();
+        }
+        // SAFETY: ignored by default, run one at a time when asked for.
+        unsafe { std::env::set_var(crate::APP_EXECUTABLE_ENV, &fake_host) };
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let driver = PiDriver::start(
+            DriverStartOptions {
+                binary,
+                cwd: std::env::temp_dir(),
+                mode: RuntimeMode::FullAccess,
+                plan_mode: false,
+                model: None,
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                provider_cursor: None,
+                read_only: false,
+                subagent: crate::model::SubagentLaunch {
+                    agents: vec![crate::model::SubagentToolAgent {
+                        name: "explore".into(),
+                        description: "Answers questions about the project.".into(),
+                    }],
+                    child: false,
+                },
+            },
+            events,
+        )
+        .expect("the Pi RPC session should start");
+        driver.prompt(
+            "Call the subagent tool exactly once with agent \"explore\" and background set to \
+             true, asking it to count the project's files. Then reply with only the session_id \
+             the tool returned."
+                .into(),
+        );
+        let child = uuid::Uuid::new_v4();
+        let mut requested = None;
+        let mut reply = String::new();
+        let mut failed_tool = false;
+        let mut finished = false;
+        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(180)) {
+            match event {
+                DriverEvent::SubagentRequested(request) => {
+                    assert!(request.background, "the model asked for background");
+                    driver.respond_subagent(
+                        request.request_id.clone(),
+                        crate::model::subagent_result(
+                            Some(child),
+                            crate::model::SubagentOutcome::Running,
+                            "The subagent is working in the background.",
+                        ),
+                    );
+                    requested = Some(request);
+                }
+                DriverEvent::RichActivity(activity) if activity.is_subagent() => {
+                    failed_tool |= activity.complete && activity.failed;
+                }
+                DriverEvent::TextDelta(text) => reply.push_str(&text),
+                DriverEvent::TurnFinished { success, .. } => {
+                    assert!(success, "Pi should finish the delegating turn");
+                    finished = true;
+                    break;
+                }
+                DriverEvent::Error(error) => panic!("Pi reported: {error}"),
+                _ => {}
+            }
+        }
+        assert!(finished, "Pi never settled the delegating turn");
+        assert!(requested.is_some(), "Pi never called the subagent tool");
+        assert!(!failed_tool, "a running answer is a successful tool result");
+        assert!(
+            reply.contains(&child.to_string()),
+            "the reply used the id: {reply}"
         );
     }
 

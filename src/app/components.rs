@@ -2137,8 +2137,16 @@ pub(super) fn activity_disclosure_sections(
             .map(str::trim)
             .filter(|output| !output.is_empty())
         {
-            let report =
-                crate::model::parse_subagent_result(output).map_or(output, |result| result.body);
+            let result = crate::model::parse_subagent_result(output);
+            // A background call's answer only says the work continues; the
+            // report arrives later as its own notice.
+            if result
+                .as_ref()
+                .is_some_and(|result| result.outcome == crate::model::SubagentOutcome::Running)
+            {
+                return sections;
+            }
+            let report = result.map_or(output, |result| result.body);
             sections.push(ActivityDisclosureSection {
                 kind: ActivityDisclosureSectionKind::Output,
                 content: report.to_owned(),

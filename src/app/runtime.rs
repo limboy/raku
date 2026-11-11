@@ -2857,10 +2857,14 @@ impl Raku {
             self.enqueue_follow_up_submission(id, submission, cx);
             return;
         }
-        if session.status == SessionStatus::Background {
+        if session.status == SessionStatus::Background
+            || self.has_blocking_subagent_calls(session.id)
+        {
             // The turn is parked on detached work and the provider is idle,
             // so the message goes straight in as a steer: queued, it would
             // wait for a settle that only the message itself could hasten.
+            // A model blocked on subagents is the same wait: steering lets
+            // them continue in the background while the model answers.
             self.steer_composer_submission(submission, cx);
             return;
         }
@@ -2891,6 +2895,9 @@ impl Raku {
             self.submit_composer_submission(submission, cx);
             return;
         }
+        // The user wants the model's attention now: subagent calls it is
+        // blocked on return at once, and their reports follow as messages.
+        self.promote_subagent_calls(session.id);
         // A turn that has not reached the provider yet cannot be steered; the
         // driver reports the outcome asynchronously via SteerAccepted or
         // SteerRejected once it is handed off.

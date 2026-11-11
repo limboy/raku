@@ -106,6 +106,7 @@ impl Raku {
         if changed {
             self.subagents.settings.dirty = true;
             self.invalidate_agent_completions();
+            self.composer_sources_stale = true;
             cx.notify();
         }
     }
@@ -237,6 +238,7 @@ impl Raku {
     fn subagent_settings_changed(&mut self, cx: &mut Context<Self>) {
         self.subagents.settings.dirty = false;
         self.invalidate_agent_completions();
+        self.composer_sources_stale = true;
         self.save();
         cx.notify();
     }
