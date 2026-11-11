@@ -109,6 +109,12 @@ pub type TranscriptSelection = SelectionState<TextGeometry>;
 /// markdown view continues to use GPUI's ordinary URL opener.
 pub type LinkHandler = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
 
+/// Target prefix for a clickable agent pill.
+///
+/// The renderer only says which agent the pill stands for; the app resolves
+/// it against Settings and ignores a name that no longer exists.
+pub(crate) const AGENT_LINK_PREFIX: &str = "raku-agent:";
+
 /// App-owned hooks that make a `sh run` fence runnable. The block itself is
 /// never rewritten; a run's terminal renders beneath it. Keys are the block's
 /// element ordinal, stable for a settled message.
@@ -414,6 +420,14 @@ pub fn flatten(
                 latex: std::sync::Arc::from(run.text.as_str()),
                 display: false,
             });
+        }
+        // An agent pill stays a pill, with none of a link's underline, but
+        // clicking or activating it can reach the agent it names.
+        if run.style.prompt_token == Some(raku_protocol::composer::PromptTokenKind::Agent)
+            && let Some(name) = run.text.strip_prefix('@')
+            && !name.is_empty()
+        {
+            links.push((start..end, format!("{AGENT_LINK_PREFIX}{name}")));
         }
 
         // Only a code span resolves a workspace file, but a span that resolves
@@ -2732,6 +2746,33 @@ mod tests {
             assert_eq!(flat.token_ranges[0], 0..7);
             assert_eq!(flat.links.is_empty(), kind == PromptTokenKind::Skill);
         }
+    }
+
+    #[test]
+    fn agent_pills_link_to_their_agent_without_an_underline() {
+        use raku_protocol::composer::{PromptToken, PromptTokenKind};
+        let source = "subagent @explore ?";
+        let tree = parser::parse_with_tokens(
+            source,
+            &[PromptToken {
+                start: 9,
+                end: 17,
+                kind: PromptTokenKind::Agent,
+                name: "explore".into(),
+            }],
+        );
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("paragraph");
+        };
+        let palette = palette();
+        let flat = flatten(runs, &palette, FontWeight::NORMAL, palette.text, None);
+        assert_eq!(flat.text.as_ref(), source);
+        assert_eq!(
+            flat.links,
+            vec![(9..17, format!("{AGENT_LINK_PREFIX}explore"))]
+        );
+        // The pill is the affordance; a link's underline would draw inside it.
+        assert!(flat.runs.iter().all(|run| run.underline.is_none()));
     }
 
     #[gpui::test]

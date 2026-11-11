@@ -82,6 +82,12 @@ impl SubagentsState {
     }
 }
 
+/// The agent an agent-pill link names, if `target` is such a link.
+pub(super) fn agent_link_name(target: &str) -> Option<&str> {
+    let name = target.strip_prefix(md::render::AGENT_LINK_PREFIX)?;
+    SubagentDefinition::is_valid_name(name).then_some(name)
+}
+
 fn build_subagent_index(sessions: &[AgentSession]) -> SubagentIndex {
     let mut children = sessions
         .iter()
@@ -931,6 +937,17 @@ pub(super) mod settings_page;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_links_name_only_a_valid_agent() {
+        let target = |name: &str| format!("{}{name}", md::render::AGENT_LINK_PREFIX);
+        assert_eq!(agent_link_name(&target("explore")), Some("explore"));
+        assert_eq!(agent_link_name(&target("review-bot")), Some("review-bot"));
+        assert_eq!(agent_link_name(&target("Explore")), None);
+        assert_eq!(agent_link_name(&target("")), None);
+        assert_eq!(agent_link_name("https://example.com"), None);
+        assert_eq!(agent_link_name("raku-agent"), None);
+    }
 
     fn child_of(parent: &AgentSession, call_id: &str) -> AgentSession {
         let mut child = AgentSession::new(parent.project_id, ProviderKind::Pi);

@@ -2779,6 +2779,13 @@ impl Raku {
             let markdown_link_handler: md::render::LinkHandler = {
                 let raku = cx.entity().downgrade();
                 Rc::new(move |target, window, cx| {
+                    if let Some(name) = subagents::agent_link_name(target) {
+                        // A missing agent is still a handled link: its pill
+                        // must not fall through to opening a browser URL.
+                        let _ =
+                            raku.update(cx, |raku, cx| raku.open_agent_settings(name, window, cx));
+                        return;
+                    }
                     if let Some(side_chat) = side_chat::side_chat_link_target(target) {
                         let _ =
                             raku.update(cx, |raku, cx| raku.open_side_chat(side_chat, window, cx));

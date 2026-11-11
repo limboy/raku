@@ -138,6 +138,30 @@ impl Raku {
             .update(cx, |input, cx| input.set_content(agent.instructions, cx));
     }
 
+    /// Open the agent a transcript pill names. A pill outlives the agent it
+    /// was chosen for, so a name with no definition now has nothing to show.
+    pub(in crate::app) fn open_agent_settings(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .state
+            .subagents
+            .iter()
+            .position(|agent| agent.name == name)
+        else {
+            return;
+        };
+        if self.settings_page.is_none() {
+            self.open_settings_action(&OpenSettings, window, cx);
+        }
+        self.open_settings_page(SettingsPage::Subagents, cx);
+        self.load_subagent_editor(index, cx);
+        cx.notify();
+    }
+
     fn toggle_subagent_editor(
         &mut self,
         index: usize,
