@@ -1158,7 +1158,13 @@ impl Raku {
                             div()
                                 .min_w_0()
                                 .flex_1()
+                                // Center a short field beside the 28px action;
+                                // wrapped prompts keep the action at the bottom.
+                                .min_h(px(28.0))
                                 .max_h(px(180.0))
+                                .flex()
+                                .flex_col()
+                                .justify_center()
                                 .child(self.side_chat.composer.clone()),
                         )
                         .child(action),
