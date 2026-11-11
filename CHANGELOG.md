@@ -16,6 +16,16 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.2] - 2026-11-12
+
+- Add configurable subagents for Pi, Claude Code, and Codex, with provider and model choices in Settings
+- Run subagents in the background, resume them, and open their reports from the transcript
+- Launch subagents with @ references or /agent-name commands
+- Keep composer commands and references as inline pills through drafts, history, editing, and copy/paste
+- Find commands, prompts, and skills under /, and files, agents, and skills under @
+- Simplify composer suggestions and hide the project chip when the sidebar already names the project
+- Refine live activity disclosures and animate in-progress task list steps
+
 ## [2.5.1] - 2026-11-11
 
 - Improve the task list to follow the transcript font size setting
