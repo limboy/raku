@@ -28,10 +28,10 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, Display, Element, ElementId, FocusHandle, FontWeight, GlobalElementId,
-    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, ListState,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Position, RenderOnce, SharedString,
-    Size, StatefulInteractiveElement, Style, Styled, Window, actions, canvas, deferred, div, list,
-    prelude::FluentBuilder, px,
+    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, ListAlignment,
+    ListState, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Position, RenderOnce,
+    SharedString, Size, StatefulInteractiveElement, Style, Styled, Window, actions, canvas,
+    deferred, div, list, prelude::FluentBuilder, px,
 };
 
 actions!(
@@ -222,6 +222,8 @@ struct MenuState {
     context_items: Vec<MenuItem>,
     /// Keyboard cursor over focusable entries.
     highlighted: Option<usize>,
+    /// Lazily allocated for a scrollable dropdown and retained until it closes.
+    list: Option<ListState>,
     /// Parent item whose flyout is visible.
     active_submenu: Option<usize>,
     /// Keyboard cursor inside the visible flyout.
@@ -329,6 +331,7 @@ impl ContextMenuHandle {
             state.pending_context_items.clear();
             state.context_items.clear();
             state.highlighted = None;
+            state.list = None;
             state.active_submenu = None;
             state.submenu_highlighted = None;
             state.submenu_focused = false;
@@ -380,6 +383,7 @@ impl ContextMenuHandle {
             state.open = Some(position);
             state.context_items = std::mem::take(&mut state.pending_context_items);
             state.highlighted = None;
+            state.list = None;
             state.active_submenu = None;
             state.submenu_highlighted = None;
             state.submenu_focused = false;
@@ -822,6 +826,31 @@ where
             id: id.clone(),
             handle: handle.clone(),
             items: items.clone(),
+            scrollable: false,
+        }
+        .into_any_element()
+    })
+}
+
+/// A dropdown for large, flat option catalogs, with a bounded, virtualized list.
+pub fn scrollable_dropdown_menu<E>(
+    trigger: E,
+    id: impl Into<ElementId>,
+    handle: &ContextMenuHandle,
+    align: MenuAlign,
+    items: impl Fn(&mut App) -> Vec<MenuItem> + 'static,
+) -> AnyElement
+where
+    E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
+{
+    let id: ElementId = id.into();
+    let items = Rc::new(items);
+    anchored_surface(trigger, handle, align, SurfaceFocus::Card, move |handle| {
+        MenuCard {
+            id: id.clone(),
+            handle: handle.clone(),
+            items: items.clone(),
+            scrollable: true,
         }
         .into_any_element()
     })
@@ -1247,6 +1276,7 @@ where
                     id,
                     handle: handle.clone(),
                     items,
+                    scrollable: false,
                 }
                 .into_any_element(),
                 Bounds::new(position, Size::default()),
@@ -1263,6 +1293,7 @@ where
 struct MenuCard {
     id: ElementId,
     handle: ContextMenuHandle,
+    scrollable: bool,
     #[allow(clippy::type_complexity)]
     items: Rc<dyn Fn(&mut App) -> Vec<MenuItem>>,
 }
@@ -1283,6 +1314,40 @@ impl RenderOnce for MenuCard {
         };
         let items = item_builder(cx);
         let focusable = focusable_indexes(&items);
+        let list_state = self.scrollable.then(|| {
+            let mut state = self.handle.state.borrow_mut();
+            if state
+                .list
+                .as_ref()
+                .is_none_or(|list| list.item_count() != items.len())
+            {
+                let list = ListState::new(items.len(), ListAlignment::Top, px(ROW_HEIGHT))
+                    .with_uniform_item_height(px(ROW_HEIGHT));
+                state.highlighted = items
+                    .iter()
+                    .position(|item| {
+                        matches!(
+                            item,
+                            MenuItem::Entry {
+                                selected: true,
+                                disabled: false,
+                                ..
+                            }
+                        )
+                    })
+                    .or_else(|| focusable.first().copied());
+                if let Some(index) = state.highlighted {
+                    // The list has no viewport before its first layout, so
+                    // reveal-item would align past the selected row's bottom.
+                    list.scroll_to(gpui::ListOffset {
+                        item_ix: index,
+                        offset_in_item: px(0.0),
+                    });
+                }
+                state.list = Some(list);
+            }
+            state.list.as_ref().unwrap().clone()
+        });
         let (highlighted, active_submenu, submenu_highlighted) = {
             let state = self.handle.state.borrow();
             (
@@ -1316,6 +1381,10 @@ impl RenderOnce for MenuCard {
             .id(self.id)
             .min_w(px(176.0))
             .max_w(px(320.0))
+            .when(self.scrollable, |card| {
+                card.w(px(320.0))
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            })
             .py(px(CARD_PADDING))
             .rounded(px(CARD_RADIUS))
             .border_1()
@@ -1329,17 +1398,39 @@ impl RenderOnce for MenuCard {
             root_card = root_card.debug_selector(|| "MENU_ROOT".into());
         }
 
-        for (index, item) in items.into_iter().enumerate() {
-            root_card = root_card.child(render_menu_item(
-                item,
-                index,
-                highlighted == Some(index) || active_submenu == Some(index),
-                false,
-                &theme,
-                self.handle.clone(),
-                window,
-                cx,
-            ));
+        if let Some(list_state) = list_state {
+            let height = (items.len() as f32 * ROW_HEIGHT)
+                .min(320.0)
+                .min((f32::from(window.viewport_size().height) - 32.0).max(0.0));
+            let handle = self.handle.clone();
+            root_card = root_card.child(
+                list(list_state, move |index, window, cx| {
+                    render_menu_item(
+                        items[index].clone(),
+                        index,
+                        highlighted == Some(index),
+                        false,
+                        &theme,
+                        handle.clone(),
+                        window,
+                        cx,
+                    )
+                })
+                .h(px(height)),
+            );
+        } else {
+            for (index, item) in items.into_iter().enumerate() {
+                root_card = root_card.child(render_menu_item(
+                    item,
+                    index,
+                    highlighted == Some(index) || active_submenu == Some(index),
+                    false,
+                    &theme,
+                    self.handle.clone(),
+                    window,
+                    cx,
+                ));
+            }
         }
 
         let mut surface = div()
@@ -1748,6 +1839,9 @@ fn on_menu_key(
     if let Some(next) = next_highlight(focusable, current, key) {
         let mut state = handle.state.borrow_mut();
         state.highlighted = Some(next);
+        if let Some(list) = &state.list {
+            list.scroll_to_reveal_item(next);
+        }
         state.active_submenu = None;
         state.submenu_highlighted = None;
         state.submenu_focused = false;
@@ -1802,6 +1896,7 @@ mod tests {
     enum Surface {
         Popover,
         Dropdown,
+        ScrollableDropdown,
         Context,
         DeferredContext,
     }
@@ -1907,6 +2002,20 @@ mod tests {
                         &self.handle,
                         MenuAlign::BelowLeft,
                         |_| vec![MenuItem::new("Entry", |_, _| {})],
+                    ),
+                    Surface::ScrollableDropdown => scrollable_dropdown_menu(
+                        trigger,
+                        "catalog-dropdown",
+                        &self.handle,
+                        MenuAlign::BelowLeft,
+                        |_| {
+                            (0..1_000)
+                                .map(|index| {
+                                    MenuItem::new(format!("Model {index}"), |_, _| {})
+                                        .selected(index == 400)
+                                })
+                                .collect()
+                        },
                     ),
                     Surface::Context => context_menu(trigger, "context", &self.handle, |_| {
                         vec![MenuItem::new("Entry", |_, _| {})]
@@ -2029,6 +2138,60 @@ mod tests {
     #[gpui::test]
     fn dropdown_trigger_toggles(cx: &mut TestAppContext) {
         assert_trigger_toggles(Surface::Dropdown, cx);
+    }
+
+    #[gpui::test]
+    fn scrollable_dropdown_keeps_large_catalog_reachable(cx: &mut TestAppContext) {
+        let handle = cx.update(ContextMenuHandle::new);
+        let (_, window) = cx.add_window_view(|_, _| Harness {
+            handle: handle.clone(),
+            surface: Surface::ScrollableDropdown,
+        });
+        window.simulate_resize(size(px(800.0), px(240.0)));
+        window.simulate_click(point(px(10.0), px(10.0)), Modifiers::none());
+        window.run_until_parked();
+
+        let card = window.debug_bounds("MENU_ROOT").expect("catalog menu");
+        assert!(card.top() >= px(8.0));
+        assert!(card.bottom() <= px(232.0));
+        let list = handle.state.borrow().list.as_ref().unwrap().clone();
+        let viewport = list.viewport_bounds();
+        let selected = list
+            .bounds_for_item(400)
+            .expect("selected model is visible");
+        assert!(
+            viewport.contains(&selected.center()),
+            "selected {selected:?} outside {viewport:?}; scroll {:?}",
+            list.logical_scroll_top(),
+        );
+        let before = list.logical_scroll_top().item_ix;
+
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-560.0))),
+            ..Default::default()
+        });
+        window.run_until_parked();
+        assert!(list.logical_scroll_top().item_ix > before);
+
+        window.update(|window, cx| window.focus(handle.focus_handle(), cx));
+        window.simulate_keystrokes("home");
+        assert_eq!(handle.state.borrow().highlighted, Some(0));
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
+        window.simulate_keystrokes("end");
+        assert_eq!(handle.state.borrow().highlighted, Some(999));
+        let last = list.bounds_for_item(999).expect("last model is visible");
+        assert!(list.viewport_bounds().contains(&last.center()));
+        window.simulate_keystrokes("enter");
+        assert!(!handle.is_open(), "the last model can be activated");
+
+        window.simulate_click(point(px(10.0), px(10.0)), Modifiers::none());
+        window.run_until_parked();
+        let reopened = handle.state.borrow().list.as_ref().unwrap().clone();
+        let selected = reopened
+            .bounds_for_item(400)
+            .expect("selected model on reopen");
+        assert!(reopened.viewport_bounds().contains(&selected.center()));
     }
 
     #[gpui::test]

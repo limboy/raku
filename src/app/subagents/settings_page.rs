@@ -583,7 +583,7 @@ impl Raku {
         };
         let model_handle = self.menu_handle("subagent-model-selector", cx);
         let weak = cx.entity().downgrade();
-        let model_selector = dropdown_menu(
+        let model_selector = crate::ui::menu::scrollable_dropdown_menu(
             MenuChip::new("subagent-model-selector")
                 .label(model_label)
                 .outlined()
