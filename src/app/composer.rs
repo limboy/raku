@@ -3227,18 +3227,22 @@ impl Raku {
         } else {
             "icons/folder.svg"
         };
-        let project_handle = self.project_picker_handle(ProjectPickerSite::Composer, cx);
-        let project_selector = self.render_project_picker(
-            MenuChip::new("workspace-project")
-                .icon(location_icon, theme.text_tertiary)
-                .label(self.project_picker_label())
-                .caret(false)
-                .selected(project_handle.is_open())
-                .max_w(px(220.0)),
-            &project_handle,
-            ProjectPickerSite::Composer,
-            cx,
-        );
+        // A sidebar filtered to one project (or to "No project") already
+        // names the composer's project, so the chip would only repeat it.
+        let project_selector = self.sidebar_project_filter.is_none().then(|| {
+            let project_handle = self.project_picker_handle(ProjectPickerSite::Composer, cx);
+            self.render_project_picker(
+                MenuChip::new("workspace-project")
+                    .icon(location_icon, theme.text_tertiary)
+                    .label(self.project_picker_label())
+                    .caret(false)
+                    .selected(project_handle.is_open())
+                    .max_w(px(220.0)),
+                &project_handle,
+                ProjectPickerSite::Composer,
+                cx,
+            )
+        });
 
         let branch_selector = self.render_branch_selector(cx);
 
@@ -3266,7 +3270,7 @@ impl Raku {
                     .tab_stop(false)
                     .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(14.0))
-                    .child(project_selector)
+                    .children(project_selector)
                     .children(branch_selector)
                     .child(div().flex_1())
                     .children(usage_meter),
