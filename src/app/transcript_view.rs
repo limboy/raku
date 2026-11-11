@@ -1642,11 +1642,12 @@ impl Raku {
                     rendered
                 })
                 .unwrap_or_else(|| div().into_any_element()),
-            // The live group renders under the working row instead.
+            // The live group renders inside the working row. Skip this row's
+            // padding too, so the first activity does not push the label down.
             TranscriptRowKind::TurnBlock(block_index)
                 if self.selected_session().and_then(live_activity_block) == Some(block_index) =>
             {
-                div().into_any_element()
+                return div().into_any_element();
             }
             TranscriptRowKind::TurnBlock(block_index) => self
                 .selected_transcript_blocks()

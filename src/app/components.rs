@@ -51,6 +51,9 @@ pub(super) fn working_wave_dots(color: Hsla) -> AnyElement {
                 .child(dot(right))
         };
         div()
+            // Align with the visible text rather than the center of its line box.
+            .relative()
+            .top(px(1.5))
             .flex()
             .flex_col()
             .flex_none()
