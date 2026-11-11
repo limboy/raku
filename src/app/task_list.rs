@@ -102,16 +102,20 @@ fn task_step_row(step: &PlanStep, text_size: f32, height: f32, theme: Theme) -> 
             theme.text_secondary,
             theme.text_secondary,
         ),
-        PlanStepStatus::InProgress => (
-            "icons/ant/circle-outline.svg",
-            theme.text_tertiary,
-            theme.text,
-        ),
+        PlanStepStatus::InProgress => ("icons/loader-circle.svg", theme.text_tertiary, theme.text),
         PlanStepStatus::Pending => (
             "icons/ant/circle-dashed.svg",
             theme.text_secondary,
             theme.text,
         ),
+    };
+    // Share the transcript's pulse clock and respect reduced motion. The
+    // slower spinner cadence keeps a long-running plan inexpensive to paint.
+    let glyph = icon(glyph, text_size - 1.0, glyph_color);
+    let glyph = if step.status == PlanStepStatus::InProgress {
+        crate::ui::motion::spin_slow(glyph)
+    } else {
+        glyph.into_any_element()
     };
     div()
         .h(px(height))
@@ -119,7 +123,7 @@ fn task_step_row(step: &PlanStep, text_size: f32, height: f32, theme: Theme) -> 
         .items_center()
         .gap(px(8.0))
         // A point under the text size, so the circle doesn't outweigh it.
-        .child(icon(glyph, text_size - 1.0, glyph_color))
+        .child(glyph)
         .child(
             div()
                 .flex_1()
