@@ -203,22 +203,6 @@ pub fn status_color(theme: &Theme, status: SessionStatus) -> Hsla {
     }
 }
 
-pub fn activity_icon(kind: ActivityKind) -> &'static str {
-    match kind {
-        ActivityKind::Reasoning => "icons/sparkle.svg",
-        ActivityKind::Command => "icons/terminal.svg",
-        ActivityKind::FileChange => "icons/pencil.svg",
-        ActivityKind::FileRead => "icons/file.svg",
-        ActivityKind::FileSearch => "icons/search.svg",
-        ActivityKind::FileList => "icons/folder.svg",
-        ActivityKind::Search => "icons/search.svg",
-        ActivityKind::Plan => "icons/list.svg",
-        ActivityKind::ImageGeneration => "icons/file-types/image.svg",
-        ActivityKind::Notice => "icons/alert.svg",
-        ActivityKind::Tool | ActivityKind::Compaction => "icons/wrench.svg",
-    }
-}
-
 pub fn activity_noun(kind: ActivityKind) -> (String, String) {
     match kind {
         ActivityKind::Reasoning => (tr!("activity.thought"), tr!("activity.thoughts")),
