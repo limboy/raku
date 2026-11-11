@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.1] - 2026-11-11
+
+- Improve the task list to follow the transcript font size setting
+- Shrink the code block header buttons
+
 ## [2.5.0] - 2026-11-11
 
 - Add a pinned task list above the working row that Claude and Codex fill as they plan multi-step work
