@@ -24,8 +24,8 @@ OpenCode where Raku's architecture differs; see
   [driver/claude.rs](../crates/raku-core/src/driver/claude.rs) and
   [driver/codex.rs](../crates/raku-core/src/driver/codex.rs).
 - **Cross-provider delegation for Claude and Codex comes last**, through an MCP
-  bridge. Their MCP tool timeouts need probing before a blocking call can be
-  trusted.
+  bridge. Both can hold a foreground call open as long as a subagent runs,
+  given the launch settings in [MCP call limits](#mcp-call-limits).
 
 ## Why the app orchestrates
 
@@ -297,7 +297,46 @@ See [performance.md](performance.md).
 - Elapsed time in the subagent panel header.
 - `@agent` is plain text, not a chip.
 
+## MCP call limits
+
+Phase 3 exposes the `subagent` tool to Claude Code and Codex as an MCP server,
+so a foreground call lasts only as long as the CLI lets an MCP tool call
+block. Probed on 2026-11-11 against Claude Code 2.1.316 and codex-cli 0.166.0
+with a stdio MCP server whose tool waits a given time, called from `claude -p`
+and `codex exec` (Codex with approvals bypassed, as Raku's Full access runs
+it; under approval policy `never` it refuses MCP calls that need approval).
+
+| | Claude Code | Codex |
+| --- | --- | --- |
+| Limit | **Idle** timeout: 1800 s with neither a response nor a progress notification | **Total** timeout: 300 s |
+| Progress notifications | Reset the idle timer: a 90 s call under a 30 s limit completed with a notification every 10 s, and aborted at 30 s without | Ignored: a 330 s call with a notification every 10 s still timed out at 300 s |
+| Raise it | Per-server `timeout` (ms) in the MCP config, or `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (ms, 0 disables) | Per-server `tool_timeout_sec`: a 330 s call completed with it at 600 |
+| On expiry | Tool error: `MCP server "probe" tool "wait" sent no response or progress for 1800s; aborting` | Tool error: `timed out awaiting tools/call after 300s`, and the server receives `notifications/cancelled` (`MCP response future dropped`) |
+| Progress token | Sent on every call | Sent on every call |
+
+Measured: Claude Code completed 70, 330 and 660 s silent calls and aborted a
+1800 s one; Codex completed 70 and 90 s calls on its defaults and aborted 330,
+660 and 1800 s ones at exactly 300 s.
+
+What phase 3 does with this:
+
+- **Claude Code.** The bridge sends a progress notification on a heartbeat
+  (every 30 s) while the child runs. That alone keeps a foreground call open
+  indefinitely, with no setting the user's own MCP configuration could
+  override; a per-server `timeout` in Raku's `--mcp-config` entry is a
+  fallback.
+- **Codex.** Raku launches `codex app-server` and names its own MCP server on
+  the command line, so it sets that server's `tool_timeout_sec` high (a day)
+  there. Progress cannot help. A `notifications/cancelled` for a call stops
+  its child, as the parent's Stop does.
+- **Neither needs `running` for every call.** Foreground stays the default on
+  all providers.
+
 ## Unverified
 
-- MCP tool-call timeouts in Claude Code and Codex, which decide whether a
-  foreground call can block for minutes or must always return `running`.
+- The probes used `claude -p` and `codex exec`. Raku drives Claude's
+  long-lived stream-json session and `codex app-server`, which should share
+  each CLI's MCP client; confirm through Raku's own transports when phase 3
+  is wired.
+- Whether `tool_timeout_sec` set with `-c` on `codex app-server` reaches a
+  server configured the same way, rather than only `codex exec`.
