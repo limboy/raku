@@ -1031,6 +1031,7 @@ fn command_targets_runtime(command: &Command) -> bool {
             | Command::StopBackgroundWork { .. }
             | Command::Respond { .. }
             | Command::RespondUserInput { .. }
+            | Command::RespondSubagent { .. }
             | Command::RespondPlan { .. }
             | Command::ApplyOptions { .. }
             | Command::Rollback { .. }
@@ -1663,6 +1664,7 @@ mod tests {
                         agent_preset: None,
                         provider_cursor: None,
                         read_only: false,
+                        subagent: Default::default(),
                     },
                 },
             )
@@ -1731,6 +1733,7 @@ mod tests {
                         agent_preset: None,
                         provider_cursor: None,
                         read_only: false,
+                        subagent: Default::default(),
                     },
                 },
             )
@@ -2267,6 +2270,7 @@ mod tests {
             agent_preset: None,
             provider_cursor: None,
             read_only: false,
+            subagent: Default::default(),
         }
     }
 }

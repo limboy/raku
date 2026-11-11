@@ -834,6 +834,10 @@ activity.tool_call:
   en: tool call
 activity.tool_calls:
   en: tool calls
+activity.subagent:
+  en: subagent
+activity.subagents:
+  en: subagents
 
 mode.supervised:
   en: Supervised
@@ -2121,3 +2125,74 @@ message_error.details:
   en: "Details"
 message_error.hide_details:
   en: "Hide details"
+transcript.live_subagent:
+  en: "Running subagent"
+transcript.live_subagents:
+  en: "Running subagents"
+subagent.settings_title:
+  en: "Subagents"
+subagent.title:
+  en: "Subagent"
+subagent.badge:
+  en: "Agent"
+subagent.builtin:
+  en: "Built-in"
+subagent.placeholder:
+  en: "Steer this subagent…"
+subagent.loading:
+  en: "Loading subagent…"
+subagent.missing:
+  en: "Subagent unavailable"
+subagent.missing_description:
+  en: "This subagent was deleted."
+subagent.empty_description:
+  en: "This subagent has not started yet."
+subagent.status_completed:
+  en: "Completed"
+subagent.status_cancelled:
+  en: "Stopped"
+subagent.open:
+  en: "Open subagent"
+subagent.show_report:
+  en: "Show report"
+subagent.hide_report:
+  en: "Hide report"
+subagent.add:
+  en: "Add agent"
+subagent.delete:
+  en: "Delete agent"
+subagent.move_up:
+  en: "Move up"
+subagent.move_down:
+  en: "Move down"
+subagent.name:
+  en: "Name"
+subagent.name_placeholder:
+  en: "reviewer"
+subagent.name_hint:
+  en: "Lowercase letters, digits, - and _, starting with a letter."
+subagent.name_invalid:
+  en: "Enter a valid, unique lowercase name."
+subagent.description:
+  en: "Description"
+subagent.description_placeholder:
+  en: "When the task agent should delegate to this agent…"
+subagent.same_as_task:
+  en: "Same as task"
+subagent.default_model:
+  en: "Default"
+subagent.access:
+  en: "Access"
+subagent.access_read_only:
+  en: "Read-only"
+subagent.access_same_as_task:
+  en: "Same as task"
+subagent.instructions:
+  en: "Instructions"
+subagent.instructions_placeholder:
+  en: "Optional instructions passed to this subagent…"
+subagent.unavailable:
+  en: "Provider unavailable"
+subagent.settings_description:
+  en: "Subagents run delegated work in their own context window and return a final report. Type @name in a Pi task to ask the agent to delegate to one."
+

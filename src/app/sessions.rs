@@ -275,12 +275,15 @@ impl Raku {
             .state
             .sessions
             .iter()
-            .any(|session| session.id == session_id && session.is_side_chat())
+            .any(|session| session.id == session_id && session.is_child())
         {
             self.remove_side_chat(session_id, cx);
             return;
         }
-        // Side chats branch off this task and go with it.
+        // Side chats and subagents branch off this task and go with it.
+        for subagent_id in self.subagent_ids_for(session_id) {
+            self.remove_side_chat(subagent_id, cx);
+        }
         for side_chat_id in self.side_chat_ids_for(session_id) {
             self.remove_side_chat(side_chat_id, cx);
         }
@@ -364,7 +367,7 @@ impl Raku {
                 .state
                 .sessions
                 .iter()
-                .filter(|session| session.project_id == project_id && !session.is_side_chat())
+                .filter(|session| session.project_id == project_id && !session.is_child())
                 .max_by_key(|session| session.updated_at)
                 .map(|session| session.id);
             if let Some(session_id) = next_session {
@@ -1428,6 +1431,9 @@ impl Raku {
         }
         self.remeasure_transcript_tail();
         self.save();
+        // Stopping a task stops the subagents it is waiting on, and stopping
+        // a subagent answers the call that is waiting on it.
+        self.reconcile_subagents(cx);
         cx.notify();
     }
 

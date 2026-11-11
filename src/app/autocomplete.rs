@@ -59,6 +59,9 @@ pub fn init(cx: &mut App) {
 }
 
 pub(super) enum AutocompleteRow {
+    /// A subagent the task's agent can delegate to, offered by `@` ahead of
+    /// files.
+    Agent(Scored<crate::model::SubagentToolAgent>),
     Command(Scored<SlashCommand>),
     File(Scored<FileEntry>),
 }
@@ -332,12 +335,30 @@ impl Raku {
 
     /// The filtered rows for `trigger`, shared by the popup body, the keyboard
     /// cursor and `enter` so an index always means the same row everywhere.
+    /// Whether `@` offers agents: the selected task's own agent has the
+    /// `subagent` tool. A subagent or side chat does not.
+    fn composer_offers_subagents(&self) -> bool {
+        self.selected_session()
+            .is_some_and(|session| !session.is_child() && session.provider == ProviderKind::Pi)
+    }
+
+    /// Drop memoized rows after the agent list changed.
+    pub(super) fn invalidate_agent_completions(&self) {
+        self.composer_autocomplete.results.borrow_mut().take();
+    }
+
     fn autocomplete_rows(&self, trigger: &Trigger) -> Rc<Vec<AutocompleteRow>> {
         let source = match trigger.kind {
             TriggerKind::Command | TriggerKind::Skill => {
                 Rc::as_ptr(&self.slash_command_index) as usize
             }
-            TriggerKind::File => Arc::as_ptr(&self.mention_file_index) as usize,
+            // Whether the task can delegate rides in the pointer's free low
+            // bit, so switching to a task that cannot drops the agent rows.
+            // Agent edits clear the memo; see `invalidate_agent_completions`.
+            TriggerKind::File => {
+                Arc::as_ptr(&self.mention_file_index) as usize
+                    | usize::from(self.composer_offers_subagents())
+            }
         };
         {
             let memo = self.composer_autocomplete.results.borrow();
@@ -363,14 +384,27 @@ impl Raku {
                     .map(AutocompleteRow::Command)
                     .collect()
             }
-            TriggerKind::File => composer_complete::filter_files(
-                &self.mention_file_index,
-                &trigger.query,
-                &mut matcher,
-            )
-            .into_iter()
-            .map(AutocompleteRow::File)
-            .collect(),
+            TriggerKind::File => {
+                // Reached on a keystroke, not a frame: the rows are memoized.
+                let agents = self
+                    .selected_session()
+                    .filter(|_| self.composer_offers_subagents())
+                    .map(|session| self.subagent_tool_agents(session.provider))
+                    .unwrap_or_default();
+                composer_complete::filter_subagents(&agents, &trigger.query, &mut matcher)
+                    .into_iter()
+                    .map(AutocompleteRow::Agent)
+                    .chain(
+                        composer_complete::filter_files(
+                            &self.mention_file_index,
+                            &trigger.query,
+                            &mut matcher,
+                        )
+                        .into_iter()
+                        .map(AutocompleteRow::File),
+                    )
+                    .collect()
+            }
         };
         let rows = Rc::new(rows);
         *self.composer_autocomplete.results.borrow_mut() = Some(ResultsMemo {
@@ -444,6 +478,7 @@ impl Raku {
                 format!("{composer_text} ")
             }
             AutocompleteRow::File(scored) => format!("@{} ", scored.item.path),
+            AutocompleteRow::Agent(scored) => format!("@{} ", scored.item.name),
         };
         if matches!(row, AutocompleteRow::Command(_)) {
             let mut submission = self.composer.read(cx).content(cx).to_owned();
@@ -657,6 +692,52 @@ impl Raku {
                                     .child(command.scope.label()),
                             )
                         },
+                    )
+                    .into_any_element()
+            }
+            AutocompleteRow::Agent(scored) => {
+                let agent = &scored.item;
+                let mut name_font = font.clone();
+                name_font.weight = FontWeight::MEDIUM;
+                base.child(icon("icons/bot.svg", 13.0, theme.text_tertiary))
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(220.0))
+                            .truncate()
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
+                            .child(matched_text(
+                                agent.name.clone(),
+                                highlight_byte_ranges(&agent.name, &scored.positions, 0),
+                                theme.text,
+                                theme.accent,
+                                name_font,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
+                            .text_color(theme.text_tertiary)
+                            .child(SharedString::from(single_line_label(&agent.description))),
+                    )
+                    // The icon alone would not say what the row is.
+                    .child(
+                        div()
+                            .h(px(18.0))
+                            .px(px(5.0))
+                            .flex_none()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text_tertiary)
+                            .child(tr!("subagent.badge")),
                     )
                     .into_any_element()
             }

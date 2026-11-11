@@ -41,6 +41,7 @@ pub(crate) fn start_remote(
                 .map(serde_json::to_value)
                 .transpose()?,
             read_only: options.read_only,
+            subagent: options.subagent,
         },
     };
     let capabilities = match client.request(session_id, runtime_id, command) {
@@ -285,6 +286,10 @@ impl DriverControl for RemoteDriverControl {
             request_id,
             answers,
         });
+    }
+
+    fn respond_subagent(&self, request_id: String, result: String) {
+        self.notify(raku_client::Command::RespondSubagent { request_id, result });
     }
 
     fn respond_plan(&self, request_id: String, decision: raku_protocol::model::PlanDecision) {

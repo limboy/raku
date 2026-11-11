@@ -20,7 +20,7 @@ enum FontTarget {
 }
 
 /// The remaining settings sections, in navigation order.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str); 6] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str); 7] = [
     (
         SettingsPage::Appearance,
         "settings.appearance",
@@ -35,6 +35,11 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str); 6] = [
         SettingsPage::SideChat,
         "side_chat.settings_title",
         "icons/ant/messages.svg",
+    ),
+    (
+        SettingsPage::Subagents,
+        "subagent.settings_title",
+        "icons/bot.svg",
     ),
     (
         SettingsPage::TextGeneration,
@@ -76,6 +81,7 @@ fn settings_popup_size(viewport_width: f32, viewport_height: f32) -> (f32, f32) 
 
 impl Raku {
     pub(super) fn open_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        self.commit_subagent_settings(cx);
         self.settings_page = Some(page);
         // Each page starts at its own top; a scroll position carried over
         // from the previous page would land mid-content.
@@ -190,6 +196,7 @@ impl Raku {
         if self.settings_page.take().is_none() {
             return;
         }
+        self.commit_subagent_settings(cx);
         self.settings_focus_generation = self.settings_focus_generation.wrapping_add(1);
         let menus = self
             .menus
@@ -350,6 +357,7 @@ impl Raku {
             SettingsPage::Skills => tr!("settings.skills"),
             SettingsPage::Backups => tr!("settings.backups"),
             SettingsPage::SideChat => tr!("side_chat.settings_title"),
+            SettingsPage::Subagents => tr!("subagent.settings_title"),
             SettingsPage::TextGeneration => tr!("text_generation.settings_title"),
         };
         let header = div()
@@ -377,6 +385,7 @@ impl Raku {
                     SettingsPage::Providers => self.render_providers_settings(cx),
                     SettingsPage::Backups => self.render_backup_settings(cx),
                     SettingsPage::SideChat => self.render_side_chat_settings(cx),
+                    SettingsPage::Subagents => self.render_subagent_settings(cx),
                     SettingsPage::TextGeneration => self.render_text_generation_settings(cx),
                     SettingsPage::Skills => unreachable!(),
                 });

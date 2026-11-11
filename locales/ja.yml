@@ -425,6 +425,8 @@ activity.plan_step: プランのステップ
 activity.plan_steps: プランのステップ
 activity.tool_call: ツール呼び出し
 activity.tool_calls: ツール呼び出し
+activity.subagent: サブエージェント
+activity.subagents: サブエージェント
 
 mode.supervised: 監督モード
 mode.auto_accept_edits: 編集を自動承認
@@ -1083,3 +1085,39 @@ errors.start_agent_headline: "%{provider} を起動できませんでした"
 errors.provider_stopped_before_response: "%{provider} が応答前に停止しました"
 message_error.details: "詳細"
 message_error.hide_details: "詳細を隠す"
+transcript.live_subagent: "サブエージェントを実行中"
+transcript.live_subagents: "複数のサブエージェントを実行中"
+subagent.settings_title: "サブエージェント"
+subagent.title: "サブエージェント"
+subagent.badge: "エージェント"
+subagent.builtin: "組み込み"
+subagent.placeholder: "このサブエージェントに指示する…"
+subagent.loading: "サブエージェントを読み込み中…"
+subagent.missing: "サブエージェントを利用できません"
+subagent.missing_description: "このサブエージェントは削除されました。"
+subagent.empty_description: "このサブエージェントはまだ開始していません。"
+subagent.status_completed: "完了"
+subagent.status_cancelled: "停止済み"
+subagent.open: "サブエージェントを開く"
+subagent.show_report: "レポートを表示"
+subagent.hide_report: "レポートを隠す"
+subagent.add: "エージェントを追加"
+subagent.delete: "エージェントを削除"
+subagent.move_up: "上へ移動"
+subagent.move_down: "下へ移動"
+subagent.name: "名前"
+subagent.name_placeholder: "reviewer"
+subagent.name_hint: "英小文字、数字、-、_（先頭は英小文字）。"
+subagent.name_invalid: "有効で重複しない小文字の名前を入力してください。"
+subagent.description: "説明"
+subagent.description_placeholder: "タスクのエージェントがいつこのエージェントに委任するか…"
+subagent.same_as_task: "タスクと同じ"
+subagent.default_model: "デフォルト"
+subagent.access: "アクセス"
+subagent.access_read_only: "読み取り専用"
+subagent.access_same_as_task: "タスクと同じ"
+subagent.instructions: "指示"
+subagent.instructions_placeholder: "このサブエージェントに渡す任意の指示…"
+subagent.unavailable: "プロバイダー利用不可"
+subagent.settings_description: "サブエージェントは独自のコンテキストウィンドウで委任された作業を実行し、最終レポートを返します。Pi のタスクで @名前 と入力すると、そのエージェントへの委任を指示できます。"
+

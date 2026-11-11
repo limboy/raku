@@ -89,6 +89,9 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "options": options,
             }),
         ),
+        DriverEvent::SubagentRequested(request) => {
+            ("subagentRequested", serde_json::to_value(request)?)
+        }
         DriverEvent::PlanProposed { request_id } => {
             ("planProposed", json!({ "requestId": request_id }))
         }
@@ -188,6 +191,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 options: permission.options,
             }
         }
+        "subagentRequested" => DriverEvent::SubagentRequested(serde_json::from_value(payload)?),
         "planProposed" => DriverEvent::PlanProposed {
             request_id: payload
                 .get("requestId")

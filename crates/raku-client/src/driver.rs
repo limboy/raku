@@ -81,6 +81,10 @@ impl DriverHandle {
         self.inner.respond_plan(request_id, decision);
     }
 
+    pub fn respond_subagent(&self, request_id: String, result: String) {
+        self.inner.respond_subagent(request_id, result);
+    }
+
     /// Read or mutate the provider-persisted thread goal. Outcomes arrive
     /// asynchronously as `DriverEvent::GoalUpdated` or `DriverEvent::Error`.
     pub fn goal(&self, operation: GoalOperation) {
@@ -115,6 +119,7 @@ pub trait DriverControl: Send + Sync {
     fn respond(&self, request_id: String, option_id: String);
     fn respond_user_input(&self, _request_id: String, _answers: Vec<UserInputAnswer>) {}
     fn respond_plan(&self, _request_id: String, _decision: PlanDecision) {}
+    fn respond_subagent(&self, _request_id: String, _result: String) {}
     fn goal(&self, _operation: GoalOperation) {}
     fn apply_options(&self, _options: SessionOptions) -> bool {
         false
@@ -140,6 +145,9 @@ pub struct DriverStartOptions {
     /// Side-chat execution policy: the agent may read and search the project
     /// but has no tools that modify files, run commands, or reach MCP servers.
     pub read_only: bool,
+    /// Delegation role: which agents this runtime's model may delegate to,
+    /// and whether the runtime is itself a subagent.
+    pub subagent: raku_protocol::model::SubagentLaunch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

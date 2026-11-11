@@ -152,6 +152,7 @@ impl CodexDriver {
             agent_preset: _,
             provider_cursor,
             read_only,
+            subagent,
         } = options;
         let provider_session_id = match provider_cursor {
             Some(ProviderResumeCursor::Codex { thread_id }) => Some(thread_id),
@@ -201,7 +202,7 @@ impl CodexDriver {
         let background_rpcs = Arc::new(Mutex::new(BackgroundRpcState::default()));
         let goal_rpcs = Arc::new(Mutex::new(GoalRpcState::default()));
         let title_generation = Arc::new(Mutex::new(CodexTitleGeneration {
-            enabled: provider_session_id.is_none(),
+            enabled: provider_session_id.is_none() && !subagent.child,
             launched: false,
             pending: None,
         }));
@@ -261,11 +262,7 @@ impl CodexDriver {
                 } else {
                     codex_permissions(mode)
                 };
-                let developer_instructions = if read_only {
-                    super::SIDE_CHAT_INSTRUCTIONS
-                } else {
-                    super::USER_RUN_INSTRUCTIONS
-                };
+                let developer_instructions = super::system_instructions(read_only, &subagent);
                 let mut model = model;
                 let mut reasoning_effort = reasoning_effort;
                 let mut service_tier = service_tier;
@@ -3138,6 +3135,7 @@ mod tests {
                     thread_id: "thread-original".into(),
                 }),
                 read_only: false,
+                subagent: Default::default(),
             },
             events,
         )
@@ -3204,6 +3202,7 @@ mod tests {
                     agent_preset: None,
                     provider_cursor: Some(cursor),
                     read_only: false,
+                    subagent: Default::default(),
                 },
                 events,
             )
@@ -3290,6 +3289,7 @@ mod tests {
                     agent_preset: None,
                     provider_cursor: cursor,
                     read_only: false,
+                    subagent: Default::default(),
                 },
                 events,
             )

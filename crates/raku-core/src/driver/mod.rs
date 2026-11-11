@@ -61,6 +61,44 @@ pub(crate) const SIDE_CHAT_INSTRUCTIONS: &str = concat!(
     "Answer concisely."
 );
 
+/// System instructions for a subagent. It reports to the agent that
+/// delegated to it, so the run-block and follow-up conventions do not apply.
+pub(crate) const SUBAGENT_INSTRUCTIONS: &str = concat!(
+    "You are a subagent inside Raku. Another coding agent delegated a task to you; your first ",
+    "message is that task. You report to that agent, not to a person: nobody can answer ",
+    "questions, so make reasonable assumptions and say which ones you made. Work until the task ",
+    "is done, then end with one final message that is your complete report. Only that final ",
+    "message is returned, so put everything the other agent needs in it: the answer or what you ",
+    "changed, the file paths and line numbers that matter, and anything you could not do."
+);
+
+/// [`SUBAGENT_INSTRUCTIONS`] for a subagent under the read-only execution
+/// policy, whose transport has removed every tool that could act.
+pub(crate) const SUBAGENT_READ_ONLY_INSTRUCTIONS: &str = concat!(
+    "You are a subagent inside Raku. Another coding agent delegated a task to you; your first ",
+    "message is that task. You report to that agent, not to a person: nobody can answer ",
+    "questions, so make reasonable assumptions and say which ones you made. You can read and ",
+    "search project files, and search and fetch the web when your tools allow it. You cannot ",
+    "modify files or run commands; if the task needs a change, report what to change instead. ",
+    "Work until the task is done, then end with one final message that is your complete report. ",
+    "Only that final message is returned, so put everything the other agent needs in it: the ",
+    "answer, and the file paths and line numbers that matter."
+);
+
+/// The system instructions a runtime launches with, by its role: a task's
+/// own agent, a read-only side chat, or a subagent of either access.
+pub(crate) fn system_instructions(
+    read_only: bool,
+    subagent: &crate::model::SubagentLaunch,
+) -> &'static str {
+    match (subagent.child, read_only) {
+        (true, true) => SUBAGENT_READ_ONLY_INSTRUCTIONS,
+        (true, false) => SUBAGENT_INSTRUCTIONS,
+        (false, true) => SIDE_CHAT_INSTRUCTIONS,
+        (false, false) => USER_RUN_INSTRUCTIONS,
+    }
+}
+
 /// Provider events remain synchronous to send from reader threads, while the
 /// bounded wake channel lets the UI sleep until at least one event is ready.
 /// Multiple provider writes coalesce into one wake without ever blocking the
@@ -168,6 +206,10 @@ impl DriverHandle {
         self.inner.respond_plan(request_id, decision);
     }
 
+    pub fn respond_subagent(&self, request_id: String, result: String) {
+        self.inner.respond_subagent(request_id, result);
+    }
+
     /// Read or mutate the provider-persisted thread goal. Outcomes arrive
     /// asynchronously as `DriverEvent::GoalUpdated` or `DriverEvent::Error`.
     pub fn goal(&self, operation: GoalOperation) {
@@ -204,6 +246,9 @@ pub trait DriverControl: Send + Sync {
     /// Answer a plan the provider is blocked on. Only transports that emit
     /// `PlanProposed` with a request id implement this.
     fn respond_plan(&self, _request_id: String, _decision: PlanDecision) {}
+    /// Answer a `SubagentRequested` event. Only transports that expose the
+    /// `subagent` tool implement this.
+    fn respond_subagent(&self, _request_id: String, _result: String) {}
     /// Providers without persisted goals ignore the request; the UI only
     /// offers goal controls where the provider reports one.
     fn goal(&self, _operation: GoalOperation) {}
@@ -234,6 +279,9 @@ pub struct DriverStartOptions {
     /// Side-chat execution policy: the agent may read and search the project
     /// but has no tools that modify files, run commands, or reach MCP servers.
     pub read_only: bool,
+    /// Delegation role: which agents this runtime's model may delegate to,
+    /// and whether the runtime is itself a subagent.
+    pub subagent: crate::model::SubagentLaunch,
 }
 
 /// The subset of `DriverStartOptions` a user can change without starting a new
@@ -293,6 +341,7 @@ mod tests {
                     agent_preset: None,
                     provider_cursor: None,
                     read_only: false,
+                    subagent: Default::default(),
                 },
                 events,
             );

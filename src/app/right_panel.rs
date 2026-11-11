@@ -3192,8 +3192,14 @@ impl Raku {
                     right_panel_tab_label(&surface, self.right_panel_files_selected_path.as_deref())
                 }
             });
-            let icon_path =
-                right_panel_tab_icon(&surface, self.right_panel_files_selected_path.as_deref());
+            let icon_path = match &surface {
+                RightPanelSurface::SideChat { id, .. } if self.is_subagent_session(*id) => {
+                    "icons/bot.svg"
+                }
+                _ => {
+                    right_panel_tab_icon(&surface, self.right_panel_files_selected_path.as_deref())
+                }
+            };
             let uses_file_icon = matches!(
                 &surface,
                 RightPanelSurface::File(_) | RightPanelSurface::AttachmentFile(_)

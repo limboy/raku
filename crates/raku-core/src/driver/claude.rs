@@ -406,7 +406,7 @@ fn start_claude_title_refresh(
 /// does not deny them.
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob,WebSearch,WebFetch";
 
-fn configure_read_only_command(command: &mut Command) {
+fn configure_read_only_command(command: &mut Command, instructions: &str) {
     command.args([
         "-p",
         "--input-format",
@@ -430,11 +430,16 @@ fn configure_read_only_command(command: &mut Command) {
         "--strict-mcp-config",
         "--disable-slash-commands",
         "--append-system-prompt",
-        super::SIDE_CHAT_INSTRUCTIONS,
+        instructions,
     ]);
 }
 
-fn configure_stream_command(command: &mut Command, mode: RuntimeMode, plan_mode: bool) {
+fn configure_stream_command(
+    command: &mut Command,
+    mode: RuntimeMode,
+    plan_mode: bool,
+    instructions: &str,
+) {
     command.args([
         "-p",
         "--input-format",
@@ -460,10 +465,7 @@ fn configure_stream_command(command: &mut Command, mode: RuntimeMode, plan_mode:
     ]);
     command.args([
         "--append-system-prompt".to_owned(),
-        format!(
-            "{}\n\n{TASK_LIST_INSTRUCTIONS}",
-            super::USER_RUN_INSTRUCTIONS
-        ),
+        format!("{instructions}\n\n{TASK_LIST_INSTRUCTIONS}"),
     ]);
     // Print mode leaves the task-list tools out for current models unless
     // asked (verified on the CLI, 2.1.316); they feed the pinned task list.
@@ -500,7 +502,9 @@ impl ClaudeDriver {
             agent_preset: _,
             provider_cursor,
             read_only,
+            subagent,
         } = options;
+        let instructions = super::system_instructions(read_only, &subagent);
         let (resume_session_id, resume_at) = match provider_cursor {
             Some(ProviderResumeCursor::Claude {
                 session_id,
@@ -519,14 +523,15 @@ impl ClaudeDriver {
         let session_id = resume_session_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let request_title = resume_session_id.is_none();
+        let request_title = resume_session_id.is_none() && !subagent.child;
+        let track_title = !subagent.child;
 
         let mut command = crate::command_env::command(&binary);
         command.current_dir(&cwd);
         if read_only {
-            configure_read_only_command(&mut command);
+            configure_read_only_command(&mut command, instructions);
         } else {
-            configure_stream_command(&mut command, mode, plan_mode);
+            configure_stream_command(&mut command, mode, plan_mode, instructions);
         }
         let launch_model = wire_model(model.as_deref(), context_window.as_deref());
         if let Some(model) = launch_model.as_deref() {
@@ -645,11 +650,13 @@ impl ClaudeDriver {
                         CommandMessage::Prompt(text) => {
                             compaction_cancelled.store(false, Ordering::Release);
                             *writer_turn.lock() = true;
-                            start_claude_title_refresh(
-                                &writer_title_refresh,
-                                &title_session_id,
-                                &writer_events,
-                            );
+                            if track_title {
+                                start_claude_title_refresh(
+                                    &writer_title_refresh,
+                                    &title_session_id,
+                                    &writer_events,
+                                );
+                            }
                             let _ = writer_events.send(DriverEvent::TurnStarted);
                             let written = write_line(&mut stdin, &user_message_payload(&text));
                             if written.is_ok()
@@ -2453,7 +2460,12 @@ mod tests {
     #[test]
     fn streaming_command_requests_readable_reasoning_summary() {
         let mut command = Command::new("/usr/bin/true");
-        configure_stream_command(&mut command, RuntimeMode::AutoAcceptEdits, false);
+        configure_stream_command(
+            &mut command,
+            RuntimeMode::AutoAcceptEdits,
+            false,
+            super::super::USER_RUN_INSTRUCTIONS,
+        );
         let arguments = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -2469,7 +2481,7 @@ mod tests {
     #[test]
     fn a_read_only_side_chat_has_only_pre_approved_read_tools() {
         let mut command = Command::new("/usr/bin/true");
-        configure_read_only_command(&mut command);
+        configure_read_only_command(&mut command, super::super::SIDE_CHAT_INSTRUCTIONS);
         let arguments = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -2499,7 +2511,12 @@ mod tests {
     fn a_full_access_session_can_still_launch_into_plan_mode() {
         let arguments = |mode, plan_mode| {
             let mut command = Command::new("/usr/bin/true");
-            configure_stream_command(&mut command, mode, plan_mode);
+            configure_stream_command(
+                &mut command,
+                mode,
+                plan_mode,
+                super::super::USER_RUN_INSTRUCTIONS,
+            );
             command
                 .get_args()
                 .map(|argument| argument.to_string_lossy().into_owned())
@@ -2575,6 +2592,7 @@ mod tests {
                         resume_at: None,
                     }),
                     read_only: false,
+                    subagent: Default::default(),
                 },
                 events,
             )
@@ -2850,6 +2868,7 @@ mod tests {
                 agent_preset: None,
                 provider_cursor: None,
                 read_only: false,
+                subagent: Default::default(),
             },
             events,
         )
@@ -2919,6 +2938,7 @@ mod tests {
                 agent_preset: None,
                 provider_cursor: None,
                 read_only: false,
+                subagent: Default::default(),
             },
             events,
         )

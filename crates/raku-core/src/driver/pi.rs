@@ -112,6 +112,11 @@ enum CommandMessage {
     Steer(String),
     Cancel,
     CancelExtensionRequest(String),
+    /// Answer an extension's `input` request with a value.
+    AnswerExtensionRequest {
+        id: String,
+        value: String,
+    },
     Options(SessionOptions),
     Rollback {
         turns: usize,
@@ -229,7 +234,7 @@ fn configure_pi_extension(
 const PI_READ_ONLY_TOOLS: &str =
     "read,grep,find,ls,web_search,fetch_content,get_search_content,source_check";
 
-fn configure_pi_read_only_command(command: &mut std::process::Command) {
+fn configure_pi_read_only_command(command: &mut std::process::Command, instructions: &str) {
     command.args([
         "--tools",
         PI_READ_ONLY_TOOLS,
@@ -237,8 +242,68 @@ fn configure_pi_read_only_command(command: &mut std::process::Command) {
         "--no-skills",
         "--no-prompt-templates",
         "--append-system-prompt",
-        super::SIDE_CHAT_INSTRUCTIONS,
+        instructions,
     ]);
+}
+
+/// The extension that gives Pi the `subagent` tool. Its calls reach Raku as
+/// `input` requests titled [`PI_SUBAGENT_REQUEST_TITLE`].
+pub(crate) fn pi_subagent_extension_path() -> anyhow::Result<PathBuf> {
+    pi_extension_path("subagent.ts", "Raku Pi subagent extension")
+}
+
+/// Title of the extension `input` request that carries a `subagent` call.
+/// The request's placeholder is the call as JSON, and its answer is the text
+/// the model receives as the tool result.
+const PI_SUBAGENT_REQUEST_TITLE: &str = "raku:subagent";
+
+/// Environment variable naming the agents the `subagent` tool offers, as a
+/// JSON array of `{name, description}`.
+const PI_SUBAGENTS_ENV: &str = "RAKU_SUBAGENTS";
+
+/// Delegation needs the tool and the agents it may name. A missing asset
+/// only costs delegation, so it is reported and skipped.
+fn configure_pi_subagent_command(
+    command: &mut std::process::Command,
+    flavor: PiFlavor,
+    agents: &[crate::model::SubagentToolAgent],
+    extension: impl FnOnce() -> anyhow::Result<PathBuf>,
+) {
+    let Ok(agents) = serde_json::to_string(agents) else {
+        return;
+    };
+    command.env(PI_SUBAGENTS_ENV, agents);
+    configure_pi_extension(command, extension, || {
+        format!(
+            "{} sessions cannot delegate to subagents",
+            flavor.display_name()
+        )
+    });
+}
+
+/// Reads a `subagent` call out of the extension request that carries it.
+fn pi_subagent_request(value: &Value) -> Option<crate::model::SubagentRequest> {
+    if value.get("method").and_then(Value::as_str) != Some("input")
+        || value.get("title").and_then(Value::as_str) != Some(PI_SUBAGENT_REQUEST_TITLE)
+    {
+        return None;
+    }
+    let request_id = value.get("id").and_then(Value::as_str)?.to_owned();
+    let call: Value = serde_json::from_str(value.get("placeholder")?.as_str()?).ok()?;
+    let text = |field: &str| {
+        call.get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    Some(crate::model::SubagentRequest {
+        request_id,
+        call_id: Some(text("callId")).filter(|id| !id.is_empty()),
+        agent: text("agent"),
+        description: text("description"),
+        prompt: text("prompt"),
+    })
 }
 
 impl PiDriver {
@@ -256,7 +321,9 @@ impl PiDriver {
             agent_preset: _,
             provider_cursor,
             read_only,
+            subagent,
         } = options;
+        let instructions = super::system_instructions(read_only, &subagent);
         flavor.provider().validate_access_mode(mode)?;
         let resume_session_file = match provider_cursor {
             Some(cursor) if flavor.owns_cursor(&cursor) => {
@@ -284,9 +351,9 @@ impl PiDriver {
         let mut command = crate::command_env::command(&binary);
         command.args(["--mode", "rpc", flavor.full_access_arg()]);
         if read_only {
-            configure_pi_read_only_command(&mut command);
+            configure_pi_read_only_command(&mut command, instructions);
         } else {
-            command.args(["--append-system-prompt", super::USER_RUN_INSTRUCTIONS]);
+            command.args(["--append-system-prompt", instructions]);
             configure_pi_command_description_command(
                 &mut command,
                 flavor,
@@ -296,7 +363,20 @@ impl PiDriver {
         if flavor.skips_version_check_by_env() {
             command.env("PI_SKIP_VERSION_CHECK", "1");
         }
-        configure_pi_title_command(&mut command, flavor, pi_title_extension_path);
+        // A subagent is named by the call that launched it, and cannot
+        // delegate further: without the tool, depth one is structural. The
+        // read-only tool allowlist would drop the tool anyway.
+        if !subagent.child {
+            configure_pi_title_command(&mut command, flavor, pi_title_extension_path);
+            if !read_only && !subagent.agents.is_empty() {
+                configure_pi_subagent_command(
+                    &mut command,
+                    flavor,
+                    &subagent.agents,
+                    pi_subagent_extension_path,
+                );
+            }
+        }
         let command = command
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -684,6 +764,20 @@ impl PiDriver {
                                 break;
                             }
                         }
+                        CommandMessage::AnswerExtensionRequest { id, value } => {
+                            if write_json_line(
+                                &mut stdin,
+                                &json!({
+                                    "type": "extension_ui_response",
+                                    "id": id,
+                                    "value": value
+                                }),
+                            )
+                            .is_err()
+                            {
+                                break;
+                            }
+                        }
                         CommandMessage::Rollback { turns, response } => {
                             let result = fork_pi_session(
                                 flavor,
@@ -794,6 +888,13 @@ impl DriverControl for PiDriver {
     }
 
     fn respond(&self, _request_id: String, _option_id: String) {}
+
+    fn respond_subagent(&self, request_id: String, result: String) {
+        let _ = self.commands.send(CommandMessage::AnswerExtensionRequest {
+            id: request_id,
+            value: result,
+        });
+    }
 
     fn apply_options(&self, options: SessionOptions) -> bool {
         // Both flavors have setters for the model and thinking level, so those
@@ -1686,6 +1787,10 @@ fn handle_pi_message(
             }
         }
         "extension_ui_request" => {
+            if let Some(request) = pi_subagent_request(&value) {
+                let _ = events.send(DriverEvent::SubagentRequested(request));
+                return;
+            }
             let method = value.get("method").and_then(Value::as_str);
             let id = value.get("id").and_then(Value::as_str);
             if matches!(method, Some("select" | "confirm" | "input" | "editor"))
@@ -1888,7 +1993,7 @@ mod tests {
     #[test]
     fn a_read_only_side_chat_allows_only_reading_tools() {
         let mut command = std::process::Command::new("/usr/bin/true");
-        configure_pi_read_only_command(&mut command);
+        configure_pi_read_only_command(&mut command, super::super::SIDE_CHAT_INSTRUCTIONS);
         let arguments = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -2215,6 +2320,7 @@ mod tests {
                 agent_preset: None,
                 provider_cursor: None,
                 read_only: false,
+                subagent: Default::default(),
             },
             events,
         )
@@ -2259,6 +2365,156 @@ mod tests {
         assert!(finished, "Pi never settled the probe turn");
         assert!(context_tokens.is_some_and(|tokens| tokens > 0));
         assert!(context_window.is_some_and(|window| window > 0));
+    }
+
+    #[test]
+    fn a_subagent_dialog_becomes_a_subagent_request() {
+        let request = pi_subagent_request(&json!({
+            "type": "extension_ui_request",
+            "id": "ui-1",
+            "method": "input",
+            "title": PI_SUBAGENT_REQUEST_TITLE,
+            "placeholder": json!({
+                "callId": "call-7",
+                "agent": "explore",
+                "description": " Find callers ",
+                "prompt": "Find every caller of foo.",
+            }).to_string(),
+        }))
+        .expect("the dialog carries a subagent call");
+        assert_eq!(request.request_id, "ui-1");
+        assert_eq!(request.call_id.as_deref(), Some("call-7"));
+        assert_eq!(request.agent, "explore");
+        assert_eq!(request.description, "Find callers");
+        assert_eq!(request.prompt, "Find every caller of foo.");
+
+        // Any other dialog is still an extension prompt Raku cancels.
+        assert!(
+            pi_subagent_request(&json!({
+                "type": "extension_ui_request",
+                "id": "ui-2",
+                "method": "input",
+                "title": "Your name?",
+            }))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn only_a_delegating_task_gets_the_subagent_extension() {
+        let agents = [crate::model::SubagentToolAgent {
+            name: "explore".into(),
+            description: "Search".into(),
+        }];
+        let mut command = std::process::Command::new("/usr/bin/true");
+        configure_pi_subagent_command(&mut command, PiFlavor::Pi, &agents, || {
+            Ok(PathBuf::from("/bundle/pi/subagent.ts"))
+        });
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(arguments, ["--extension", "/bundle/pi/subagent.ts"]);
+        let env = command
+            .get_envs()
+            .find(|(key, _)| *key == PI_SUBAGENTS_ENV)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+            .expect("the agents are passed to the extension");
+        assert!(env.contains("\"explore\""));
+    }
+
+    /// Drives one real delegation through Pi: the model calls the bundled
+    /// `subagent` tool, Raku answers, and the model's reply uses the answer.
+    #[test]
+    #[ignore = "requires an installed, authenticated pi"]
+    fn pi_subagent_call_against_the_real_rpc() {
+        let binary = crate::command_env::find_executable("pi").expect("pi is not installed");
+        let extension = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../resources/pi/subagent.ts")
+            .canonicalize()
+            .expect("the extension source exists");
+        // Point resource lookup at the source tree.
+        let fake_host = std::env::temp_dir().join("raku-subagent-probe/MacOS/raku");
+        std::fs::create_dir_all(fake_host.parent().unwrap()).unwrap();
+        let resources = fake_host.parent().unwrap().parent().unwrap();
+        for directory in ["Resources/pi", "resources/pi"] {
+            let directory = resources.join(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::copy(&extension, directory.join("subagent.ts")).unwrap();
+        }
+        // SAFETY: tests that read this variable are ignored by default and
+        // run one at a time when asked for.
+        unsafe { std::env::set_var(crate::APP_EXECUTABLE_ENV, &fake_host) };
+
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let driver = PiDriver::start(
+            DriverStartOptions {
+                binary,
+                cwd: std::env::temp_dir(),
+                mode: RuntimeMode::FullAccess,
+                plan_mode: false,
+                model: None,
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                provider_cursor: None,
+                read_only: false,
+                subagent: crate::model::SubagentLaunch {
+                    agents: vec![crate::model::SubagentToolAgent {
+                        name: "explore".into(),
+                        description: "Answers questions about the project.".into(),
+                    }],
+                    child: false,
+                },
+            },
+            events,
+        )
+        .expect("the Pi RPC session should start");
+        driver.prompt(
+            "Use the subagent tool exactly once with agent \"explore\" to ask for the \
+             project's codename, then reply with only that codename."
+                .into(),
+        );
+        let mut requested = None;
+        let mut reply = String::new();
+        let mut finished = false;
+        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(180)) {
+            match event {
+                DriverEvent::SubagentRequested(request) => {
+                    assert_eq!(request.agent, "explore");
+                    assert!(!request.prompt.is_empty());
+                    driver.respond_subagent(
+                        request.request_id.clone(),
+                        crate::model::subagent_result(
+                            None,
+                            crate::model::SubagentOutcome::Completed,
+                            "The project's codename is BLUEHERON.",
+                        ),
+                    );
+                    requested = Some(request);
+                }
+                DriverEvent::TextDelta(text) => reply.push_str(&text),
+                DriverEvent::TurnFinished { success, .. } => {
+                    assert!(success, "Pi should finish the delegating turn");
+                    finished = true;
+                    break;
+                }
+                DriverEvent::Error(error) => panic!("Pi reported: {error}"),
+                _ => {}
+            }
+        }
+        assert!(finished, "Pi never settled the delegating turn");
+        let request = requested.expect("Pi never called the subagent tool");
+        assert!(
+            request.call_id.is_some(),
+            "the call carries its tool call id"
+        );
+        assert!(
+            reply.contains("BLUEHERON"),
+            "the reply used the result: {reply}"
+        );
     }
 
     #[test]

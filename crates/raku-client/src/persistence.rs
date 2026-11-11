@@ -19,7 +19,7 @@ use raku_protocol::i18n::AppLanguage;
 use raku_protocol::identity::DATA_DIRECTORY_NAME;
 use raku_protocol::model::{
     AgentSession, FavoriteModel, Project, ProviderKind, ProviderResumeCursor,
-    ProviderSessionHistory, ProviderSessionSummary, RuntimeMode,
+    ProviderSessionHistory, ProviderSessionSummary, RuntimeMode, SubagentDefinition,
 };
 use raku_protocol::persistence::{from_persisted_json, migrate_retired_provider_references};
 use raku_protocol::theme::ThemePreference;
@@ -317,6 +317,26 @@ pub struct AppSettings {
     pub text_generation_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_generation_reasoning_effort: Option<String>,
+    /// Agents a task's agent may delegate to, in the order Settings lists
+    /// them. The built-ins are always present; see
+    /// [`normalize_subagents`].
+    pub subagents: Vec<SubagentDefinition>,
+}
+
+/// Brings a stored agent list back to a usable shape: the built-ins exist,
+/// names are valid and unique, and only the built-ins claim to be built in.
+pub fn normalize_subagents(agents: &mut Vec<SubagentDefinition>) {
+    let builtins = SubagentDefinition::builtins();
+    let mut seen = HashSet::new();
+    agents.retain_mut(|agent| {
+        agent.builtin = builtins.iter().any(|builtin| builtin.name == agent.name);
+        SubagentDefinition::is_valid_name(&agent.name) && seen.insert(agent.name.clone())
+    });
+    for (position, builtin) in builtins.into_iter().enumerate() {
+        if !seen.contains(&builtin.name) {
+            agents.insert(position.min(agents.len()), builtin);
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -339,6 +359,7 @@ impl Default for AppSettings {
             text_generation_provider: None,
             text_generation_model: None,
             text_generation_reasoning_effort: None,
+            subagents: SubagentDefinition::builtins(),
         }
     }
 }
@@ -351,6 +372,7 @@ impl AppSettings {
         self.side_chat_provider.get_or_insert(ProviderKind::Pi);
         self.side_chat_reasoning_effort
             .get_or_insert_with(|| "low".into());
+        normalize_subagents(&mut self.subagents);
     }
 }
 
@@ -522,6 +544,8 @@ pub struct PersistedState {
     pub text_generation_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_generation_reasoning_effort: Option<String>,
+    #[serde(default = "SubagentDefinition::builtins")]
+    pub subagents: Vec<SubagentDefinition>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
     #[serde(default = "default_right_panel_visibility")]
@@ -601,6 +625,7 @@ impl PersistedState {
             text_generation_provider: None,
             text_generation_model: None,
             text_generation_reasoning_effort: None,
+            subagents: SubagentDefinition::builtins(),
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -831,6 +856,7 @@ impl PersistedState {
             text_generation_provider: self.text_generation_provider,
             text_generation_model: self.text_generation_model.clone(),
             text_generation_reasoning_effort: self.text_generation_reasoning_effort.clone(),
+            subagents: self.subagents.clone(),
         };
         settings.normalize_desktop_defaults();
         settings
@@ -882,6 +908,7 @@ impl PersistedState {
         self.text_generation_provider = settings.text_generation_provider;
         self.text_generation_model = settings.text_generation_model;
         self.text_generation_reasoning_effort = settings.text_generation_reasoning_effort;
+        self.subagents = settings.subagents;
     }
 
     fn apply_app_state(&mut self, app_state: AppState) {

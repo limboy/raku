@@ -1,9 +1,9 @@
 # Subagents
 
-**Status: design, not implemented.** This records the intended shape of
-Raku-owned subagents so the work can be phased. Sections marked *Unverified*
-must be probed against the real CLIs before the code that depends on them is
-written.
+**Status: phase 1 implemented** — Pi tasks delegate in the foreground, with
+the settings page, `@agent` completion, the transcript row and the right-panel
+viewer. Later phases are design. Sections marked *Unverified* must be probed
+against the real CLIs before the code that depends on them is written.
 
 A subagent is a child agent that a task's main agent delegates a piece of work
 to. It runs in its own context window and hands back a final report, so the
@@ -53,11 +53,11 @@ A subagent is a hidden child `AgentSession`, the same pattern as
 ```rust
 pub struct SubagentOrigin {
     parent_session_id: Uuid,
-    call_id: String,        // the parent's tool activity id
-    agent: String,          // "explore" | "general" | custom
-    description: String,    // 3–5 word label from the model
-    background: bool,
-    delivered: bool,        // result handed to the parent exactly once
+    call_id: Option<String>, // the parent's tool call id = its activity source_id
+    agent: String,           // "explore" | "general" | custom
+    description: String,     // 3–5 word label from the model
+    read_only: bool,         // launched under the read-only execution policy
+    delivered: bool,         // result handed to the parent exactly once
 }
 // AgentSession.subagent: Option<SubagentOrigin>
 ```
@@ -73,13 +73,15 @@ pub struct SubagentOrigin {
 - **Workspace.** The child runs in the parent's workspace and never creates a
   worktree of its own.
 - **Deletion.** Deleting a task deletes its subagents.
-- **Lookups.** Raku keeps a parent → subagents index, rebuilt only when
-  subagents are created, deleted or synced, never per frame.
+- **Lookups.** Raku keeps a parent → subagents and a (parent, call id) →
+  subagent index ([src/app/subagents.rs](../src/app/subagents.rs)), rebuilt
+  only when subagents are created or deleted, never per frame.
 
 ## Tool
 
 ```text
-subagent({ agent, description, prompt, session_id?, background? })
+subagent({ agent, description, prompt })            // phase 1
+subagent({ …, session_id?, background? })           // phase 2
 ```
 
 | Field | Meaning |
@@ -98,7 +100,10 @@ The model-visible result is:
 </subagent>
 ```
 
-`state` is `completed`, `failed`, `cancelled`, `interrupted` or `running`. A
+`state` is `completed`, `failed`, `cancelled`, `interrupted`, `rejected` (the
+call could not run: an unknown agent, an empty prompt, too many live
+subagents) or, from phase 2, `running`. Anything but `completed` is reported to
+the model as a failed tool call. A
 `running` result tells the model the subagent is working in the background,
 that it will be notified when it finishes, and that it must not sleep, poll or
 duplicate the work.
@@ -130,30 +135,33 @@ message, so it works with any parent provider.
 ## Bridge
 
 A tool call is a request the app answers, following the existing
-`Permission` → `Respond` pattern:
+`Permission` → `Respond` pattern. It travels **in-band, over the RPC stdio Raku
+already holds** — no socket, port or token:
 
-1. A bundled Pi extension (`resources/pi/subagent.ts`) registers the tool and
-   posts the call to the daemon over loopback.
-2. The daemon emits a `SubagentRequested { call_id, … }` driver event on the
-   parent's stream and holds the request open.
-3. The app creates or resumes the child, submits the prompt, and on the child's
-   `TurnFinished` sends `Command::RespondSubagent { call_id, result }`.
-4. The daemon answers the held request, and the extension returns the result
-   to the model.
+1. A bundled Pi extension ([resources/pi/subagent.ts](../resources/pi/subagent.ts))
+   registers the tool. Its `execute` opens an extension `input` dialog titled
+   `raku:subagent` whose placeholder is the call as JSON. Pi's RPC mode forwards
+   that to the host as an `extension_ui_request` and waits for the answer.
+2. The Pi driver recognizes the title and emits
+   `DriverEvent::SubagentRequested` instead of auto-cancelling the dialog, as it
+   does every other extension prompt.
+3. The app queues the request and, once the drain has put every runtime back,
+   creates the child, submits the prompt, and when the child's turn settles
+   sends `Command::RespondSubagent { request_id, result }`.
+4. The driver writes `extension_ui_response { id, value }`; the dialog resolves
+   and the tool returns the result to the model.
 
-The extension authenticates with a per-runtime token passed in the Pi
-process's environment and scoped to that one session and endpoint. The
-daemon's own token never reaches a provider process. The event and command are
-protocol version 19.
+The dialog has no timeout. The tool's `AbortSignal` resolves it early when the
+parent is stopped, and the app stops the child when it sees the parent is no
+longer waiting. `executionMode: "parallel"` lets several calls run at once. The
+agents on offer reach the extension through `RAKU_SUBAGENTS` (a JSON list of
+`{name, description}`), and a runtime without agents, a side chat, or a
+subagent itself gets no extension. The event and command are protocol
+version 19.
 
-Pi's extension API supports this directly. A tool's
-`execute(toolCallId, params, signal, onUpdate, ctx)` is an unbounded async
-call: the `AbortSignal` carries the parent's Stop to the bridge, `onUpdate`
-can stream child progress into the parent's tool row, and
-`executionMode: "parallel"` lets several subagent calls run at once. Pi's own
-example extension (`packages/coding-agent/examples/extensions/subagent`) holds
-a call open the same way while it runs child `pi` processes. Read from the Pi
-source; still run one real delegated turn before shipping.
+Verified against Pi 1.5.2 by `pi_subagent_call_against_the_real_rpc`
+(`cargo test -p raku-core pi_subagent -- --ignored`): the model called the
+tool, received the answer, and used it in its reply.
 
 ## Agents
 
@@ -211,6 +219,7 @@ addition; Settings is the only source for now.
 
 - **Foreground (default).** The tool call blocks until the child's turn
   settles. Stopping the parent cancels its foreground children.
+- **Phase 2 from here on.**
 - **Promotion on steer.** If the user steers the parent while a foreground
   call blocks, the app answers the call with `state="running"` and the child
   continues in the background. The parent can respond to the user at once.
@@ -221,31 +230,39 @@ addition; Settings is the only source for now.
   editable.
 - **Resume.** Passing `session_id` continues a child with its context intact.
   If that child is still running, the prompt steers it.
-- **App quit mid-run.** On relaunch, an undelivered child reports
-  `state="interrupted"` once. `SubagentOrigin::delivered` guards against a
-  second delivery.
+- **App quit mid-run.** In phase 1 the parent's Pi process, and with it the
+  blocked call, ends with the app; on relaunch the child's turn is marked
+  interrupted like any orphaned runtime. Phase 2 reports `state="interrupted"`
+  to the parent once, guarded by `SubagentOrigin::delivered`, which phase 1
+  already sets on every delivery.
 
 ## UI
 
-- **Transcript row.** Bot icon, description, agent and model, with status as
-  an icon plus text. Status reads the child session's in-memory state rather
-  than the tool call, so a backgrounded child keeps showing as running after
-  its call has returned.
+- **Transcript row.** The `subagent` tool row reads `agent · description` and
+  carries an open button (panel icon, Tab-focusable, Enter/Space) once the
+  child exists. In phase 1 its status is the tool call's own, which is the
+  child's; phase 2 reads the child session so a backgrounded child keeps
+  showing as running after its call has returned.
 - **Result.** Once the child settles, the row gains a disclosure that expands
   the child's final report in place, rendered as Markdown and collapsed by
   default. It is the same text the parent's model received. Space toggles it;
   a failed or interrupted child shows its error there instead. The notice left
   by a `/agent` launch or a background completion is this same row, so every
   result is readable in the parent's transcript wherever it came from.
-- **Right panel.** Click or Enter on the row opens a
-  `RightPanelSurface::Subagent` tab that reuses the side chat's virtualized
-  transcript. The header shows status, elapsed time, agent, provider and
-  model, and a Stop button. Its composer steers the child. Escape returns
-  focus to the main composer.
-- **Background Work.** Each child is projected as a `BackgroundWorkItem`
-  (`control_id` is the child session id, `origin_activity_id` is the call id),
-  so the existing chip, menu and stop control work unchanged for native and
-  Raku subagents alike.
+- **Right panel.** The open button shows the child in the side chat's surface
+  (`RightPanelSurface::SideChat`, with a bot tab icon), reusing its
+  virtualized transcript. A subagent's rows interleave its tool calls with its
+  messages. A header shows status (icon and word), agent, provider and model,
+  and read-only access; the composer's Stop button stops the child, which
+  answers the parent's call as `cancelled`. While the child runs, the composer
+  steers it. Escape returns focus to the main composer. Elapsed time is
+  phase 2.
+- **Work menu.** The header's work menu lists the task's subagents under
+  **Agents**, beside the provider's own, newest first: title, status (icon and
+  word) and a Stop button. A running subagent counts toward the agent badge on
+  its trigger. Clicking a row opens the subagent's panel; Stop stops the
+  child, which answers the task's call as `cancelled`. Phase 2 adds the same
+  rows for background subagents, whose calls have already returned.
 - **Usage.** Child tokens stay out of the parent's context meter and show on
   the child's header.
 

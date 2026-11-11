@@ -1162,7 +1162,8 @@ impl StateStore {
         let mut sessions = connection
             .prepare(
                 "SELECT id, project_id, title, auto_title, provider, model, status,
-                        created_at, updated_at, last_reply_at, active_compaction, side_chat
+                        created_at, updated_at, last_reply_at, active_compaction, side_chat,
+                        subagent
                  FROM sessions ORDER BY updated_at",
             )
             .map_err(to_io_error)?;
@@ -1182,6 +1183,7 @@ impl StateStore {
                     row.get::<_, Option<i64>>(9)?,
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             })
             .map_err(to_io_error)?
@@ -1563,6 +1565,7 @@ type SessionColumns = (
     Option<i64>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 /// Builds a list-only session from its columns. `messages`,
@@ -1584,6 +1587,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         last_reply_at,
         active_compaction,
         side_chat,
+        subagent,
     ) = row;
     Some(AgentSession {
         id: Uuid::parse_str(&id).ok()?,
@@ -1612,6 +1616,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         context_usage_pending: false,
         runtime_event_cursor: None,
         side_chat: side_chat.and_then(|json| serde_json::from_str(&json).ok()),
+        subagent: subagent.and_then(|json| serde_json::from_str(&json).ok()),
         provider_session_id: None,
         messages: Vec::new(),
         transcript_blocks: Vec::new(),
@@ -1932,8 +1937,8 @@ fn message_fingerprint(message: &Message, position: usize) -> u64 {
 /// listing sessions never has to deserialize a transcript.
 const UPSERT_SESSION: &str = "INSERT INTO sessions(
          id, project_id, title, auto_title, provider, model, status,
-         created_at, updated_at, last_reply_at, active_compaction, side_chat
-     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         created_at, updated_at, last_reply_at, active_compaction, side_chat, subagent
+     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
      ON CONFLICT(id) DO UPDATE SET
          project_id    = excluded.project_id,
          title         = excluded.title,
@@ -1945,7 +1950,8 @@ const UPSERT_SESSION: &str = "INSERT INTO sessions(
          updated_at    = excluded.updated_at,
          last_reply_at = excluded.last_reply_at,
          active_compaction = excluded.active_compaction,
-         side_chat     = excluded.side_chat";
+         side_chat     = excluded.side_chat,
+         subagent      = excluded.subagent";
 
 const INSERT_PROJECT: &str = "INSERT INTO projects(id, name, path, position, created_at)
      VALUES(?1, ?2, ?3, ?4, ?5)
@@ -1990,6 +1996,11 @@ fn session_params(session: &AgentSession) -> Vec<rusqlite::types::Value> {
             .map_or(Value::Null, Value::Text),
         session
             .side_chat
+            .as_ref()
+            .and_then(|origin| serde_json::to_string(origin).ok())
+            .map_or(Value::Null, Value::Text),
+        session
+            .subagent
             .as_ref()
             .and_then(|origin| serde_json::to_string(origin).ok())
             .map_or(Value::Null, Value::Text),

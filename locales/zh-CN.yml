@@ -408,6 +408,8 @@ activity.plan_step: 计划步骤
 activity.plan_steps: 计划步骤
 activity.tool_call: 工具调用
 activity.tool_calls: 工具调用
+activity.subagent: 子智能体
+activity.subagents: 子智能体
 mode.supervised: 监督
 mode.auto_accept_edits: 自动接受修改
 mode.auto: 自动
@@ -1035,3 +1037,39 @@ errors.start_agent_headline: "无法启动 %{provider}"
 errors.provider_stopped_before_response: "%{provider} 在回复前停止了"
 message_error.details: "详情"
 message_error.hide_details: "隐藏详情"
+transcript.live_subagent: "运行子智能体"
+transcript.live_subagents: "运行多个子智能体"
+subagent.settings_title: "子智能体"
+subagent.title: "子智能体"
+subagent.badge: "智能体"
+subagent.builtin: "内置"
+subagent.placeholder: "引导此子智能体…"
+subagent.loading: "正在加载子智能体…"
+subagent.missing: "子智能体不可用"
+subagent.missing_description: "此子智能体已被删除。"
+subagent.empty_description: "此子智能体尚未开始运行。"
+subagent.status_completed: "已完成"
+subagent.status_cancelled: "已停止"
+subagent.open: "打开子智能体"
+subagent.show_report: "展开报告"
+subagent.hide_report: "收起报告"
+subagent.add: "添加智能体"
+subagent.delete: "删除智能体"
+subagent.move_up: "上移"
+subagent.move_down: "下移"
+subagent.name: "名称"
+subagent.name_placeholder: "reviewer"
+subagent.name_hint: "小写字母、数字、- 和 _，以字母开头。"
+subagent.name_invalid: "请输入有效且唯一的小写名称。"
+subagent.description: "描述"
+subagent.description_placeholder: "主智能体何时应将工作委派给此智能体…"
+subagent.same_as_task: "跟随任务"
+subagent.default_model: "默认"
+subagent.access: "权限"
+subagent.access_read_only: "只读"
+subagent.access_same_as_task: "跟随任务"
+subagent.instructions: "系统指令"
+subagent.instructions_placeholder: "传给此子智能体的可选指令…"
+subagent.unavailable: "提供方不可用"
+subagent.settings_description: "子智能体在独立的上下文窗口中执行委派的工作并返回最终报告。在 Pi 任务中输入 @名称 即可让主智能体委派给它。"
+

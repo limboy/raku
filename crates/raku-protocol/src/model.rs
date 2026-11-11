@@ -786,6 +786,12 @@ pub struct AgentSession {
     /// list column so a skeleton knows it is a side chat before hydration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_chat: Option<SideChatOrigin>,
+    /// Set when this session is a subagent another task's agent delegated
+    /// work to. Like side chats, subagents never appear in task lists; they
+    /// are reached from the tool row that launched them. Stored as a list
+    /// column so a skeleton knows it is a subagent before hydration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<SubagentOrigin>,
     /// Read-only compatibility field for v1 state files. New saves omit it.
     #[serde(default, skip_serializing)]
     pub provider_session_id: Option<String>,
@@ -877,6 +883,242 @@ pub struct SideChatAnchorSpan {
     pub end: usize,
 }
 
+/// Where a subagent came from: the task whose agent delegated to it and the
+/// tool call that did.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SubagentOrigin {
+    pub parent_session_id: Uuid,
+    /// The parent's tool call, which is also its transcript activity's
+    /// `source_id`. `None` when the provider did not report one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// Name of the [`SubagentDefinition`] this child runs as.
+    pub agent: String,
+    /// The short label the parent's model gave the delegated work.
+    pub description: String,
+    /// Launch under the read-only execution policy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+    /// The result has been handed to the parent. Guards against a second
+    /// delivery after a relaunch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delivered: bool,
+}
+
+/// An agent the user can delegate to, edited in Settings → Subagents.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SubagentDefinition {
+    /// What the user types after `@` and what the model passes as `agent`.
+    pub name: String,
+    /// One line telling the model when to pick this agent.
+    #[serde(default)]
+    pub description: String,
+    /// `None` runs on the delegating task's provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
+    /// `None` uses the task's model when the provider is the task's, and the
+    /// provider's default model otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// Read and search only. Otherwise the child takes the task's access.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Extra instructions the child receives ahead of its task.
+    #[serde(default)]
+    pub instructions: String,
+    #[serde(default = "enabled_default")]
+    pub enabled: bool,
+    /// Built-in agents can be edited and disabled, but not deleted.
+    #[serde(default)]
+    pub builtin: bool,
+}
+
+fn enabled_default() -> bool {
+    true
+}
+
+impl SubagentDefinition {
+    pub const EXPLORE: &'static str = "explore";
+    pub const GENERAL: &'static str = "general";
+
+    /// The agents every installation starts with.
+    pub fn builtins() -> Vec<Self> {
+        vec![
+            Self {
+                name: Self::EXPLORE.into(),
+                description: "Fast read-only search of the codebase. Use it to find files, \
+                              locate code, and answer questions about how something works."
+                    .into(),
+                provider: None,
+                model: None,
+                reasoning_effort: None,
+                read_only: true,
+                instructions: String::new(),
+                enabled: true,
+                builtin: true,
+            },
+            Self {
+                name: Self::GENERAL.into(),
+                description: "General-purpose agent with the task's own tools. Use it for \
+                              multi-step work that would otherwise fill your context."
+                    .into(),
+                provider: None,
+                model: None,
+                reasoning_effort: None,
+                read_only: false,
+                instructions: String::new(),
+                enabled: true,
+                builtin: true,
+            },
+        ]
+    }
+
+    /// Whether `name` can be typed after `@` and passed as a tool argument:
+    /// lowercase letters, digits, `-` and `_`, starting with a letter.
+    pub fn is_valid_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars.next().is_some_and(|first| first.is_ascii_lowercase())
+            && name.len() <= 32
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    }
+}
+
+/// One agent as the delegating model sees it in the `subagent` tool.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SubagentToolAgent {
+    pub name: String,
+    pub description: String,
+}
+
+/// How a provider runtime takes part in delegation.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentLaunch {
+    /// Agents this runtime's model may delegate to. Empty means the runtime
+    /// gets no `subagent` tool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<SubagentToolAgent>,
+    /// This runtime is itself a subagent: it reports to another agent rather
+    /// than to the user, and cannot delegate further.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub child: bool,
+}
+
+impl SubagentLaunch {
+    pub fn is_default(&self) -> bool {
+        self.agents.is_empty() && !self.child
+    }
+}
+
+/// A delegation the provider's model asked for and is blocked on.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentRequest {
+    /// Identifies the blocked call; answered with `respond_subagent`.
+    pub request_id: String,
+    /// The provider's tool call id, matching the activity's `source_id`.
+    #[serde(default)]
+    pub call_id: Option<String>,
+    pub agent: String,
+    #[serde(default)]
+    pub description: String,
+    pub prompt: String,
+}
+
+/// How a delegation ended, as reported to the delegating model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SubagentOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+    Rejected,
+}
+
+impl SubagentOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    pub fn from_state(state: &str) -> Option<Self> {
+        match state {
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            "interrupted" => Some(Self::Interrupted),
+            "rejected" => Some(Self::Rejected),
+            _ => None,
+        }
+    }
+}
+
+/// The text a delegating model receives for a settled subagent call.
+pub fn subagent_result(session_id: Option<Uuid>, outcome: SubagentOutcome, body: &str) -> String {
+    let session = session_id
+        .map(|id| format!(" session_id=\"{id}\""))
+        .unwrap_or_default();
+    format!(
+        "<subagent{session} state=\"{}\">\n{}\n</subagent>",
+        outcome.as_str(),
+        body.trim()
+    )
+}
+
+/// A parsed [`subagent_result`] envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedSubagentResult<'a> {
+    pub session_id: Option<Uuid>,
+    pub outcome: SubagentOutcome,
+    pub body: &'a str,
+}
+
+/// Reads the session id, outcome, and report body out of a [`subagent_result`]
+/// envelope.
+pub fn parse_subagent_result(text: &str) -> Option<ParsedSubagentResult<'_>> {
+    let trimmed = text.trim();
+    let rest = trimmed.strip_prefix("<subagent")?;
+    let (header, after_header) = rest.split_once('>')?;
+    let body = after_header.strip_suffix("</subagent>")?.trim();
+    let attr = |name: &str| -> Option<&str> {
+        let prefix = format!("{name}=\"");
+        let start = header.find(&prefix)? + prefix.len();
+        let tail = &header[start..];
+        let end = tail.find('"')?;
+        Some(&tail[..end])
+    };
+    let outcome = SubagentOutcome::from_state(attr("state")?)?;
+    let session_id = attr("session_id").and_then(|id| Uuid::parse_str(id).ok());
+    Some(ParsedSubagentResult {
+        session_id,
+        outcome,
+        body,
+    })
+}
+
+/// First line of a subagent's first prompt. Everything up to
+/// [`SUBAGENT_TASK_MARKER`] is context the transcript does not show.
+pub const SUBAGENT_PROMPT_PREFIX: &str = "You are a subagent spawned by another session.";
+pub const SUBAGENT_TASK_MARKER: &str = "\nYour task:\n";
+
+/// The delegated task in a subagent's first prompt, stripped of its launch
+/// preamble.
+pub fn subagent_task(prompt: &str) -> &str {
+    if !prompt.starts_with(SUBAGENT_PROMPT_PREFIX) {
+        return prompt;
+    }
+    prompt
+        .rsplit_once(SUBAGENT_TASK_MARKER)
+        .map_or(prompt, |(_, task)| task)
+}
+
 impl AgentSession {
     pub const DEFAULT_TITLE: &'static str = "New task";
 
@@ -884,16 +1126,36 @@ impl AgentSession {
         self.side_chat.is_some()
     }
 
+    pub fn is_subagent(&self) -> bool {
+        self.subagent.is_some()
+    }
+
+    /// A hidden session that belongs to another task: a side chat or a
+    /// subagent. It takes no git checkpoints, raises no notifications or
+    /// unread markers, and is deleted with its parent.
+    pub fn is_child(&self) -> bool {
+        self.is_side_chat() || self.is_subagent()
+    }
+
+    /// The task a side chat or subagent belongs to.
+    pub fn parent_session(&self) -> Option<Uuid> {
+        self.subagent
+            .as_ref()
+            .map(|origin| origin.parent_session_id)
+            .or_else(|| self.side_chat_parent())
+    }
+
     /// A started task that belongs in task lists: sidebar, task switcher,
-    /// command palette and project activity. Side chats never do.
+    /// command palette and project activity. Side chats and subagents never
+    /// do.
     pub fn is_listed_task(&self) -> bool {
-        self.has_started() && !self.is_side_chat()
+        self.has_started() && !self.is_child()
     }
 
     /// An unsent New Task draft that New Task may reuse. A side chat that has
     /// not sent its first message is not a draft.
     pub fn is_task_draft(&self) -> bool {
-        !self.has_started() && !self.is_side_chat()
+        !self.has_started() && !self.is_child()
     }
 
     pub fn side_chat_parent(&self) -> Option<Uuid> {
@@ -931,6 +1193,7 @@ impl AgentSession {
             context_usage_pending: false,
             runtime_event_cursor: None,
             side_chat: None,
+            subagent: None,
             provider_session_id: None,
             messages: Vec::new(),
             transcript_blocks: Vec::new(),
@@ -971,6 +1234,7 @@ impl AgentSession {
             context_usage_pending: false,
             runtime_event_cursor: None,
             side_chat: self.side_chat.clone(),
+            subagent: self.subagent.clone(),
             provider_session_id: None,
             messages: Vec::new(),
             transcript_blocks: Vec::new(),
@@ -1849,6 +2113,9 @@ pub enum DriverEvent {
         detail: String,
         options: Vec<PermissionOption>,
     },
+    /// The model called the `subagent` tool and is blocked until the app
+    /// answers with `respond_subagent`.
+    SubagentRequested(SubagentRequest),
     /// The agent finished planning in plan mode and is waiting for the user
     /// to approve the plan. The plan text itself has already streamed as
     /// assistant text. `request_id` is set when the provider is blocked on
@@ -2480,9 +2747,15 @@ pub struct ActivityItem {
 }
 
 impl ActivityItem {
+    /// Whether this activity is a call to Raku's `subagent` tool.
+    pub fn is_subagent(&self) -> bool {
+        self.tool_name.as_deref() == Some("subagent")
+    }
+
     /// Content that keeps its own ordered row, including after ordinary work folds.
     pub fn is_standalone(&self) -> bool {
         self.compaction.is_some()
+            || self.is_subagent()
             || matches!(
                 self.kind,
                 ActivityKind::ImageGeneration | ActivityKind::Notice
@@ -2566,6 +2839,9 @@ impl ActivityItem {
                     .is_some_and(|existing| !matches!(existing, "write" | "read"));
             if !keeps_unwrapped_xdev_tool {
                 self.apply_tool_name(name);
+                if self.is_subagent() {
+                    self.refresh_activity_metadata();
+                }
             }
         }
         self
@@ -2767,6 +3043,14 @@ impl ActivityItem {
                 find_activity_string(source, &["description", "toolSummary"], 0)
         {
             self.display_description = Some(compact_activity_target(&description));
+        }
+        if self.is_subagent() {
+            if let Some(agent) = find_activity_string(source, &["agent"], 0) {
+                self.display_target = Some(compact_activity_target(&agent));
+            }
+            if let Some(description) = find_activity_string(source, &["description"], 0) {
+                self.display_description = Some(compact_activity_target(&description));
+            }
         }
     }
 

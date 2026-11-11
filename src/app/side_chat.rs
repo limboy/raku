@@ -70,6 +70,9 @@ struct SideChatList {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SideChatRow {
     Message(usize),
+    /// One tool call of a subagent: transcript block, then activity. The
+    /// `bool` is whether it has finished, so a settling row is re-laid out.
+    Activity(usize, usize, bool),
     Working,
 }
 
@@ -191,7 +194,7 @@ pub(super) fn resolve_side_chat_reasoning_effort<'a>(
 
 /// The least privileged interactive mode the provider accepts. The driver's
 /// read-only tool policy is what actually keeps a side chat from writing.
-fn side_chat_runtime_mode(provider: ProviderKind) -> RuntimeMode {
+pub(super) fn side_chat_runtime_mode(provider: ProviderKind) -> RuntimeMode {
     [RuntimeMode::Ask, RuntimeMode::FullAccess]
         .into_iter()
         .find(|mode| provider.validate_access_mode(*mode).is_ok())
@@ -203,7 +206,11 @@ fn side_chat_runtime_mode(provider: ProviderKind) -> RuntimeMode {
 fn side_chat_display_title(session: &AgentSession) -> String {
     let title = session.display_title();
     if title == AgentSession::DEFAULT_TITLE {
-        tr!("side_chat.title")
+        if session.is_subagent() {
+            tr!("subagent.title")
+        } else {
+            tr!("side_chat.title")
+        }
     } else {
         title.to_owned()
     }
@@ -350,11 +357,13 @@ impl Raku {
         self.side_chat_session(id).map(side_chat_display_title)
     }
 
+    /// The hidden session a side-chat tab shows: a side chat, or a subagent,
+    /// which shares the panel.
     fn side_chat_session(&self, id: Uuid) -> Option<&AgentSession> {
         self.state
             .sessions
             .iter()
-            .find(|session| session.id == id && session.is_side_chat())
+            .find(|session| session.id == id && session.is_child())
     }
 
     fn standard_side_chat_id(&self, parent: Uuid) -> Option<Uuid> {
@@ -368,7 +377,7 @@ impl Raku {
     /// The task side chats branch from: the selected task, never a side chat.
     fn side_chat_parent_session(&self) -> Option<&AgentSession> {
         self.selected_session()
-            .filter(|session| !session.is_side_chat())
+            .filter(|session| !session.is_child())
     }
 
     pub(super) fn side_chat_target(&self) -> Option<(ProviderKind, Option<String>)> {
@@ -397,7 +406,7 @@ impl Raku {
             .state
             .sessions
             .iter()
-            .find(|session| session.id == parent_id && !session.is_side_chat())?;
+            .find(|session| session.id == parent_id && !session.is_child())?;
         let Some((provider, model)) = self.side_chat_target() else {
             self.show_toast(tr!("side_chat.no_provider"));
             cx.notify();
@@ -448,7 +457,7 @@ impl Raku {
             return;
         };
         let title = SharedString::from(side_chat_display_title(session));
-        if let Some(parent) = session.side_chat_parent()
+        if let Some(parent) = session.parent_session()
             && self.state.selected_session != Some(parent)
         {
             self.select_session(parent, cx);
@@ -542,10 +551,11 @@ impl Raku {
             .state
             .sessions
             .iter()
-            .position(|session| session.id == id && session.is_side_chat())
+            .position(|session| session.id == id && session.is_child())
         else {
             return;
         };
+        self.forget_subagent_session(id);
         self.submission_preparations.remove(&id);
         self.reset_session_runtime(id);
         self.state.sessions.remove(index);
@@ -598,9 +608,20 @@ impl Raku {
             .and_then(|target| self.side_chat.drafts.get(&target).cloned())
             .unwrap_or_default();
         self.side_chat.composer_target = target;
-        self.side_chat
-            .composer
-            .update(cx, |composer, cx| composer.set_content(next, cx));
+        let subagent = target
+            .and_then(|target| self.side_chat_session(target))
+            .is_some_and(AgentSession::is_subagent);
+        self.side_chat.composer.update(cx, |composer, cx| {
+            composer.set_placeholder(
+                if subagent {
+                    tr!("subagent.placeholder")
+                } else {
+                    tr!("side_chat.placeholder")
+                },
+                cx,
+            );
+            composer.set_content(next, cx);
+        });
     }
 
     /// Send the side-chat composer's prompt to its side chat.
@@ -618,7 +639,22 @@ impl Raku {
         let busy = session.is_busy() || self.submission_preparations.contains(&id);
         let first = session.messages.is_empty() && session.turns.is_empty();
         if busy {
+            // A running subagent is steered: a queued follow-up would start
+            // only after its report went back to the task, and nobody would
+            // read the answer.
+            let steer = (session.is_subagent() && self.session_can_steer(session))
+                .then(|| self.resolve_skill_submission(session.provider, &prompt));
             self.side_chat.drafts.remove(&id);
+            if let Some(provider_prompt) = steer
+                && let Some(runtime) = self.runtimes.get_mut(&id)
+            {
+                runtime.driver.steer(provider_prompt);
+                runtime
+                    .pending_steers
+                    .push_back(ComposerSubmission::plain(prompt));
+                cx.notify();
+                return;
+            }
             self.enqueue_follow_up_submission(id, ComposerSubmission::plain(prompt), cx);
             return;
         }
@@ -705,13 +741,50 @@ impl Raku {
     // ── Panel surface ──────────────────────────────────────────────────────
 
     fn side_chat_rows(session: &AgentSession, busy: bool) -> (Vec<SideChatRow>, usize) {
-        let mut rows = session
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(_, message)| !message.visible_content().trim().is_empty())
-            .map(|(index, _)| SideChatRow::Message(index))
-            .collect::<Vec<_>>();
+        let message_row = |(index, message): (usize, &Message)| {
+            (!message.visible_content().trim().is_empty()).then_some(SideChatRow::Message(index))
+        };
+        let mut rows = if session.is_subagent() {
+            // A subagent's work is the point of watching it, so its tool
+            // calls sit between its messages in the order they happened.
+            let mut rows = Vec::new();
+            let mut blocks = session.transcript_blocks.iter().enumerate().peekable();
+            for position in 0..=session.messages.len() {
+                while let Some((block_index, block)) =
+                    blocks.next_if(|(_, block)| block.after_message <= position)
+                {
+                    rows.extend(
+                        block
+                            .activities
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, activity)| {
+                                activity.reasoning.is_none()
+                                    && !matches!(
+                                        activity.kind,
+                                        ActivityKind::Reasoning
+                                            | ActivityKind::Plan
+                                            | ActivityKind::Notice
+                                    )
+                            })
+                            .map(|(index, activity)| {
+                                SideChatRow::Activity(block_index, index, activity.complete)
+                            }),
+                    );
+                }
+                if let Some(message) = session.messages.get(position) {
+                    rows.extend(message_row((position, message)));
+                }
+            }
+            rows
+        } else {
+            session
+                .messages
+                .iter()
+                .enumerate()
+                .filter_map(message_row)
+                .collect::<Vec<_>>()
+        };
         let replying = session
             .messages
             .last()
@@ -797,6 +870,81 @@ impl Raku {
         };
         let loaded = session.detail_loaded;
         let busy = session.is_busy() || self.submission_preparations.contains(&id);
+        let subagent_header = session.subagent.as_ref().map(|origin| {
+            // Status pairs its color with an icon and a word.
+            let (status_icon, status_color, status) = if busy {
+                (None, theme.accent, tr!("activity.status_running"))
+            } else {
+                match session.turns.last().map(|turn| turn.status) {
+                    Some(TurnStatus::Completed) => (
+                        Some("icons/check.svg"),
+                        theme.text_secondary,
+                        tr!("subagent.status_completed"),
+                    ),
+                    Some(TurnStatus::Failed) | None => (
+                        Some("icons/x.svg"),
+                        theme.danger,
+                        tr!("activity.status_failed"),
+                    ),
+                    Some(TurnStatus::Interrupted | TurnStatus::Running) => (
+                        Some("icons/stop.svg"),
+                        theme.text_secondary,
+                        tr!("subagent.status_cancelled"),
+                    ),
+                }
+            };
+            let model = self.model_display_name(session.provider, self.model_for_session(session));
+            div()
+                .flex_none()
+                .w_full()
+                .px(px(14.0))
+                .py(px(8.0))
+                .border_b_1()
+                .border_color(theme.border)
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .text_size(sp(SMALL_UI_FONT_SIZE))
+                .text_color(theme.text_tertiary)
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .text_color(status_color)
+                        .child(match status_icon {
+                            Some(path) => icon(path, 11.0, status_color).into_any_element(),
+                            None => pulse_dot(6.0, status_color),
+                        })
+                        .child(status),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .text_color(theme.text_secondary)
+                        .child(icon("icons/bot.svg", 12.0, theme.text_tertiary))
+                        .child(origin.agent.clone()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(format!("{} · {model}", session.provider.short_name())),
+                )
+                .when(origin.read_only, |header| {
+                    header.child(
+                        div()
+                            .flex_none()
+                            .ml_auto()
+                            .child(tr!("subagent.access_read_only")),
+                    )
+                })
+                .into_any_element()
+        });
         // Until the first prompt is sent, the quote rides in the composer
         // like a staged pasted-text attachment; afterwards it sits above that
         // prompt in the transcript.
@@ -842,10 +990,11 @@ impl Raku {
                     div()
                         .text_size(sp(SMALL_UI_FONT_SIZE))
                         .text_color(theme.text_tertiary)
-                        .child(if loaded {
-                            tr!("side_chat.empty_description")
-                        } else {
-                            tr!("side_chat.loading")
+                        .child(match (loaded, subagent_header.is_some()) {
+                            (true, false) => tr!("side_chat.empty_description"),
+                            (false, false) => tr!("side_chat.loading"),
+                            (true, true) => tr!("subagent.empty_description"),
+                            (false, true) => tr!("subagent.loading"),
                         }),
                 )
                 .into_any_element()
@@ -1004,6 +1153,7 @@ impl Raku {
             .flex()
             .flex_col()
             // Escape from the composer is routed by `cancel_turn_action`.
+            .children(subagent_header)
             .child(body)
             .child(composer)
             .into_any_element()
@@ -1028,6 +1178,52 @@ impl Raku {
         };
         let element = match row {
             None => div().into_any_element(),
+            Some(SideChatRow::Activity(block, index, _)) => {
+                let Some(activity) = session
+                    .transcript_blocks
+                    .get(block)
+                    .and_then(|block| block.activities.get(index))
+                else {
+                    return div().into_any_element();
+                };
+                let detail = activity_row_detail(activity, false);
+                // Status is an icon as well as a color.
+                let (status_icon, status_color) = if activity.failed {
+                    ("icons/x.svg", theme.danger)
+                } else {
+                    ("icons/check-bold.svg", theme.text_ghost)
+                };
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
+                    .text_color(theme.text_tertiary)
+                    .child(
+                        div()
+                            .size(px(12.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(if activity.complete {
+                                icon(status_icon, 10.0, status_color).into_any_element()
+                            } else {
+                                pulse_dot(5.0, theme.accent).into_any_element()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme.text_secondary)
+                            .child(single_line_label(&activity_display_title(activity))),
+                    )
+                    .when(!detail.trim().is_empty(), |row| {
+                        row.child(div().min_w_0().truncate().child(single_line_label(&detail)))
+                    })
+                    .into_any_element()
+            }
             Some(SideChatRow::Working) => {
                 let activity = session
                     .transcript_blocks
@@ -1166,11 +1362,12 @@ impl Raku {
             }
         };
         let _ = window;
+        let compact = matches!(row, Some(SideChatRow::Activity(..)));
         div()
             .id(("side-chat-row", index))
             .w_full()
             .px(px(14.0))
-            .py(px(6.0))
+            .py(px(if compact { 2.0 } else { 6.0 }))
             .when(index == 0, |row| row.pt(px(12.0)))
             .child(element)
             .into_any_element()

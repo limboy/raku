@@ -951,6 +951,46 @@ impl Raku {
             .into_any_element()
     }
 
+    /// Opens the subagent a `subagent` tool row launched in the right panel.
+    ///
+    /// Like the open-file button, it sits inside a row that toggles on click.
+    fn render_activity_open_subagent_button(
+        &self,
+        id: String,
+        subagent: Uuid,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let focus = self.transcript_control_focus(id.clone(), cx);
+        div()
+            .id(SharedString::from(id))
+            .track_focus(&focus)
+            .tab_index(0)
+            .size(px(20.0))
+            .flex_none()
+            .rounded(px(5.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_default()
+            .focus_visible(|button| button.bg(theme.overlay_strong))
+            .hover(|button| button.bg(theme.overlay_strong))
+            .child(icon("icons/panel-right.svg", 14.0, theme.text_ghost))
+            .tooltip(Tooltip::text(tr!("subagent.open")))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.open_side_chat(subagent, window, cx);
+            }))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.open_side_chat(subagent, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .into_any_element()
+    }
+
     /// Diff rows for an expanded file-change activity, built on first sight and
     /// held until the activity collapses or its changes are replaced.
     fn activity_diff_rows(&self, activity: &ActivityItem) -> Rc<activity_diff::Diff> {
@@ -2733,6 +2773,23 @@ impl Raku {
                 }
                 _ => None,
             };
+            // The index is rebuilt only when subagents change; this is two
+            // map lookups per subagent row.
+            let open_subagent_button = activity
+                .is_subagent()
+                .then(|| {
+                    let parent = self.state.selected_session?;
+                    self.subagent_for_call(parent, activity.source_id.as_deref()?)
+                })
+                .flatten()
+                .map(|subagent| {
+                    self.render_activity_open_subagent_button(
+                        format!("activity-open-subagent-{id}"),
+                        subagent,
+                        theme,
+                        cx,
+                    )
+                });
             let shows_diff = reasoning.is_none() && activity_shows_diff(activity);
             let has_detail = reasoning
                 .is_some_and(|reasoning| !reasoning.content.trim().is_empty())
@@ -2873,6 +2930,7 @@ impl Raku {
                     )
                     .children(background_badge)
                     .children(open_file_button)
+                    .children(open_subagent_button)
                     .when(has_detail && !packed_row, |element| {
                         element.child(activity_chevron(item_expanded, theme))
                     })

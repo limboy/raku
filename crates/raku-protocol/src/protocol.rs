@@ -19,7 +19,7 @@ use crate::skills::SkillsCatalog;
 use crate::usage::PlanUsage;
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "RAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "RAKU_DAEMON_ADDRESS";
@@ -107,6 +107,12 @@ pub enum Command {
     RespondUserInput {
         request_id: String,
         answers: Vec<UserInputAnswer>,
+    },
+    /// Answer a `subagentRequested` event with the text the delegating model
+    /// receives as its tool result.
+    RespondSubagent {
+        request_id: String,
+        result: String,
     },
     /// Answer a plan the provider is blocked on (`planProposed` with a
     /// request id).
@@ -271,6 +277,13 @@ pub struct WireDriverStartOptions {
     /// interactive access mode with a read-only tool allowlist.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+    /// Delegation role: the agents this runtime may delegate to, and whether
+    /// it is itself a subagent. Protocol 19.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::SubagentLaunch::is_default"
+    )]
+    pub subagent: crate::model::SubagentLaunch,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

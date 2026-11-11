@@ -123,29 +123,40 @@ impl BackgroundSummaryRow {
     }
 }
 
+/// What a summary row stands for: work the provider reports, or a subagent
+/// session Raku runs for this task.
 #[derive(Clone)]
-struct BackgroundSummaryTarget(BackgroundWorkKey);
+enum BackgroundSummaryTarget {
+    Native(BackgroundWorkKey),
+    Subagent(Uuid),
+}
 
 impl BackgroundSummaryTarget {
     fn control_id(&self) -> String {
-        format!("native-{}-{}", self.0.provider_id, self.0.kind as u8)
+        match self {
+            Self::Native(key) => format!("native-{}-{}", key.provider_id, key.kind as u8),
+            Self::Subagent(id) => format!("subagent-{id}"),
+        }
     }
 
-    fn open(
-        &self,
-        session_id: Uuid,
-        raku: &mut Raku,
-        _window: &mut Window,
-        cx: &mut Context<Raku>,
-    ) {
-        if raku.state.selected_session == Some(session_id) {
-            raku.open_background_work_surface(session_id, self.0.clone(), cx);
+    fn open(&self, session_id: Uuid, raku: &mut Raku, window: &mut Window, cx: &mut Context<Raku>) {
+        if raku.state.selected_session != Some(session_id) {
+            return;
+        }
+        match self {
+            Self::Native(key) => raku.open_background_work_surface(session_id, key.clone(), cx),
+            Self::Subagent(id) => raku.open_side_chat(*id, window, cx),
         }
     }
 
     fn stop(&self, session_id: Uuid, raku: &mut Raku, cx: &mut Context<Raku>) {
-        if raku.state.selected_session == Some(session_id) {
-            raku.stop_background_work(session_id, self.0.clone(), cx);
+        if raku.state.selected_session != Some(session_id) {
+            return;
+        }
+        match self {
+            Self::Native(key) => raku.stop_background_work(session_id, key.clone(), cx),
+            // Stopping the child answers the task's call as cancelled.
+            Self::Subagent(id) => raku.cancel_session_turn(*id, cx),
         }
     }
 }
@@ -707,11 +718,15 @@ impl Raku {
             .is_some_and(BackgroundWorkRegistry::has_live_detached)
     }
 
+    /// Live processes and agents for the header badge. Agents include the
+    /// subagents Raku is running for this task.
     pub(super) fn background_work_counts(&self, session_id: Uuid) -> (usize, usize) {
-        self.background_work
+        let (processes, agents) = self
+            .background_work
             .get(&session_id)
             .map(BackgroundWorkRegistry::counts)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (processes, agents + self.live_subagent_count(session_id))
     }
 
     pub(super) fn background_work_for_activity(
@@ -869,7 +884,7 @@ impl Raku {
                 {
                     continue;
                 }
-                let target = BackgroundSummaryTarget(item.key.clone());
+                let target = BackgroundSummaryTarget::Native(item.key.clone());
                 let id = target.control_id();
                 let status = BackgroundSummaryStatus(item.status);
                 let tooltip = match item.model.as_deref() {
@@ -889,6 +904,44 @@ impl Raku {
                         .transcript_control_focus(format!("background-summary-stop-{id}"), cx),
                 });
             }
+        }
+        // Raku's own subagents sit with the provider's, newest first.
+        let subagents = self
+            .subagent_work_statuses(session_id, MAX_SETTLED_BACKGROUND_ITEMS)
+            .into_iter()
+            .map(|(session, status)| {
+                let agent = session
+                    .subagent
+                    .as_ref()
+                    .map(|origin| origin.agent.clone())
+                    .unwrap_or_default();
+                let model =
+                    self.model_display_name(session.provider, self.model_for_session(session));
+                (
+                    session.id,
+                    session.display_title().to_owned(),
+                    agent,
+                    model,
+                    status,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (child, title, agent, model, status) in subagents {
+            let target = BackgroundSummaryTarget::Subagent(child);
+            let id = target.control_id();
+            let status = BackgroundSummaryStatus(status);
+            entries.push(BackgroundSummaryEntry {
+                target,
+                kind: BackgroundWorkKind::Subagent,
+                tooltip: format!("{title}\n{agent} · {model}\n{}", status.label()),
+                title,
+                status,
+                can_stop: status.is_stoppable(),
+                row_focus: self
+                    .transcript_control_focus(format!("background-summary-row-{id}"), cx),
+                stop_focus: self
+                    .transcript_control_focus(format!("background-summary-stop-{id}"), cx),
+            });
         }
         let workspace_path = self
             .selected_workspace_path()

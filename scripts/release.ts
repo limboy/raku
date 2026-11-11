@@ -421,6 +421,7 @@ try {
     mountedDaemon,
     join(mountedContents, "Resources", "pi", "session-title.ts"),
     join(mountedContents, "Resources", "pi", "command-descriptions.ts"),
+    join(mountedContents, "Resources", "pi", "subagent.ts"),
     join(mountedSparkleFramework, "Sparkle"),
   ]) {
     await access(artifact);

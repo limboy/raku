@@ -64,6 +64,13 @@
       "when": 1794281808583,
       "tag": "0008_transcript_blocks",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1794378536280,
+      "tag": "0009_subagent",
+      "breakpoints": true
     }
   ]
 }

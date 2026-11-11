@@ -376,6 +376,7 @@ mod tests {
                     agent_preset: None,
                     provider_cursor: None,
                     read_only: false,
+                    subagent: Default::default(),
                 },
                 events,
             )

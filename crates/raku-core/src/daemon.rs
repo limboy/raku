@@ -682,6 +682,7 @@ impl Backend for RakuBackend {
                         .transpose()
                         .context("daemon received an invalid provider cursor")?,
                     read_only: options.read_only,
+                    subagent: options.subagent,
                 };
                 let (wake, _wake_events) = smol::channel::bounded(1);
                 let (event_sender, event_receiver) = driver::event_channel(wake);
@@ -1175,6 +1176,7 @@ impl RakuBackend {
                 agent_preset: source.agent_preset.clone(),
                 provider_cursor: source.provider_cursor.clone(),
                 read_only: false,
+                subagent: Default::default(),
             },
             event_sender,
         )?;
@@ -1254,6 +1256,7 @@ impl RakuBackend {
                 agent_preset: source.agent_preset.clone(),
                 provider_cursor: source.provider_cursor.clone(),
                 read_only: false,
+                subagent: Default::default(),
             },
             event_sender,
         )?;
@@ -1453,6 +1456,9 @@ fn handle_driver_command(
             request_id,
             answers,
         } => driver.respond_user_input(request_id, answers),
+        Command::RespondSubagent { request_id, result } => {
+            driver.respond_subagent(request_id, result)
+        }
         Command::RespondPlan {
             request_id,
             decision,
@@ -1752,6 +1758,9 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "options": options,
             }),
         ),
+        DriverEvent::SubagentRequested(request) => {
+            ("subagentRequested", serde_json::to_value(request)?)
+        }
         DriverEvent::PlanProposed { request_id } => {
             ("planProposed", json!({ "requestId": request_id }))
         }
@@ -1851,6 +1860,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 options: permission.options,
             }
         }
+        "subagentRequested" => DriverEvent::SubagentRequested(serde_json::from_value(payload)?),
         "planProposed" => DriverEvent::PlanProposed {
             request_id: payload
                 .get("requestId")

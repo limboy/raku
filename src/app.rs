@@ -209,6 +209,7 @@ enum SettingsPage {
     Skills,
     Backups,
     SideChat,
+    Subagents,
     TextGeneration,
 }
 
@@ -1642,6 +1643,8 @@ pub struct Raku {
     transcript_selection: TranscriptSelection,
     /// Read-only side chats: shared composer, drafts, lists and indexes.
     side_chat: side_chat::SideChatState,
+    /// Delegations in flight, the subagent index, and the settings editor.
+    subagents: subagents::SubagentsState,
     /// Programmatic focus for the transcript canvas. Clicking the transcript
     /// moves focus here so the shared find action can distinguish it from the
     /// right-panel file editor without putting the canvas in the tab order.
@@ -1707,6 +1710,7 @@ mod side_chat;
 mod sidebar;
 mod skills_page;
 mod streaming;
+mod subagents;
 mod task_list;
 mod task_switcher;
 mod text_generation;
@@ -1992,6 +1996,7 @@ impl Raku {
             composer.set_text_size(transcript_text_size, cx);
             composer
         });
+        let subagents = subagents::SubagentsState::new(window, cx);
         let side_chat_composer = cx.new(|cx| {
             let mut composer = ComposerInput::new(window, cx).padding_x(px(12.0), cx);
             composer.set_text_size(transcript_text_size, cx);
@@ -2625,6 +2630,18 @@ impl Raku {
                 },
             )
             .detach();
+            for input in [
+                &subagents.settings.name,
+                &subagents.settings.description,
+                &subagents.settings.instructions,
+            ] {
+                cx.subscribe(input, |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        this.sync_subagent_editor(cx);
+                    }
+                })
+                .detach();
+            }
             cx.subscribe(
                 &provider_path_input,
                 |this: &mut Self, _, event: &InputEvent, cx| {
@@ -3031,6 +3048,7 @@ impl Raku {
                 markdown_image_renderer,
                 transcript_selection: TranscriptSelection::default(),
                 side_chat: side_chat::SideChatState::new(side_chat_composer),
+                subagents,
                 transcript_focus: cx.focus_handle(),
                 transcript_search: None,
                 toast_selection: TranscriptSelection::default(),

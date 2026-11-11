@@ -7,7 +7,7 @@ use nucleo_matcher::{Matcher, Utf32Str};
 pub use raku_protocol::composer::{
     CommandScope, FileEntry, SlashCommand, Trigger, TriggerKind, detect_trigger,
 };
-use raku_protocol::model::{ProviderKind, ProviderModelOption, ReportedCommand};
+use raku_protocol::model::{ProviderKind, ProviderModelOption, ReportedCommand, SubagentToolAgent};
 
 pub const FILTER_CAP: usize = 64;
 pub const FILE_INDEX_CAP: usize = 50_000;
@@ -364,6 +364,26 @@ pub fn filter_files(
         .into_iter()
         .map(|(index, positions)| Scored {
             item: files[index].clone(),
+            positions,
+        })
+        .collect()
+}
+
+/// The `@` agent list: enabled subagents matched by name, placed ahead of
+/// workspace files when the task's provider supports delegation.
+pub fn filter_subagents(
+    agents: &[SubagentToolAgent],
+    query: &str,
+    matcher: &mut Matcher,
+) -> Vec<Scored<SubagentToolAgent>> {
+    let names = agents
+        .iter()
+        .map(|agent| agent.name.as_str())
+        .collect::<Vec<_>>();
+    filter_scored(&names, query, matcher, FILTER_CAP)
+        .into_iter()
+        .map(|(index, positions)| Scored {
+            item: agents[index].clone(),
             positions,
         })
         .collect()

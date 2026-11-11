@@ -950,7 +950,7 @@ impl Raku {
             if !session.status.is_busy() {
                 return;
             }
-            let side_chat = session.is_side_chat();
+            let side_chat = session.is_child();
             session.status = SessionStatus::Idle;
             let interrupted_turn_count = session
                 .turns
@@ -1055,7 +1055,7 @@ impl Raku {
             .sessions
             .iter()
             .find(|session| session.id == session_id)
-            .filter(|session| !session.is_side_chat())
+            .filter(|session| !session.is_child())
             .map(|session| session.project_id);
         let result = self
             .state
@@ -1504,8 +1504,9 @@ impl Raku {
             .iter()
             .find(|session| session.id == session_id)
             // Side chats cannot change the workspace, so there is nothing to
-            // checkpoint or rewind.
-            .filter(|session| !session.is_side_chat())
+            // checkpoint or rewind. A subagent's edits belong to the turn of
+            // the task that delegated to it, whose checkpoint covers them.
+            .filter(|session| !session.is_child())
             .and_then(|session| {
                 session
                     .turns
@@ -2600,7 +2601,12 @@ impl Raku {
                 context_window,
                 agent_preset: session.agent_preset.clone(),
                 provider_cursor: session.provider_cursor.clone(),
-                read_only: session.is_side_chat(),
+                read_only: session.is_side_chat()
+                    || session
+                        .subagent
+                        .as_ref()
+                        .is_some_and(|origin| origin.read_only),
+                subagent: self.subagent_launch_for(session),
             },
             event_wake: self.event_wake_tx.clone(),
             daemon: self.daemon.clone(),
@@ -2918,7 +2924,7 @@ impl Raku {
     }
 
     /// Resolve only provider-native skill syntax for a live steering message.
-    fn resolve_skill_submission(&self, provider: ProviderKind, prompt: &str) -> String {
+    pub(super) fn resolve_skill_submission(&self, provider: ProviderKind, prompt: &str) -> String {
         crate::composer_complete::resolved_skill_submission(
             provider,
             prompt,
@@ -3246,7 +3252,7 @@ impl Raku {
         };
         let next_turn_count = session.turns.len();
         let workspace = session.workspace.clone();
-        let side_chat = session.is_side_chat();
+        let side_chat = session.is_child();
         let driver_start = (!self.runtimes.contains_key(&session_id)).then(|| {
             let provisional_cwd = self
                 .workspace_path_for_session(session)
@@ -3286,6 +3292,9 @@ impl Raku {
                 .await;
             let _ = raku.update(cx, move |raku, cx| {
                 raku.finish_submission_preparation(session_id, submission, prepared, cx);
+                // A subagent whose start failed has settled without a single
+                // driver event to say so.
+                raku.reconcile_subagents(cx);
             });
         })
         .detach();
@@ -3629,6 +3638,13 @@ impl Raku {
                     self.drain_queued_message(session_id, cx);
                 }
             }
+            changed = true;
+        }
+
+        // Every runtime is back in place, so a delegation can reach both its
+        // parent's driver and its child's.
+        if self.subagents.has_work() {
+            self.reconcile_subagents(cx);
             changed = true;
         }
 

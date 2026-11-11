@@ -40,6 +40,8 @@ export const sessions = sqliteTable(
     activeCompaction: text("active_compaction"),
     /** Side-chat origin JSON (parent task, quoted anchor); null for tasks. Needed before hydration. */
     sideChat: text("side_chat"),
+    /** Subagent origin JSON (parent task, tool call, agent); null for tasks. Needed before hydration. */
+    subagent: text("subagent"),
     /** Session creation time, unix seconds. */
     createdAt: integer("created_at").notNull(),
     /** Any mutation, unix seconds — including title edits and truncation. */

@@ -13,7 +13,7 @@ impl Raku {
             .find(|session| session.id == session_id)?;
         // Side chats answer quick questions in a visible panel; they never
         // announce themselves as finished tasks.
-        if session.is_side_chat() {
+        if session.is_child() {
             return None;
         }
         let other_project = self.state.selected_project != Some(session.project_id);
@@ -500,6 +500,11 @@ impl Raku {
                     }
                 }
             }
+            DriverEvent::SubagentRequested(request) => {
+                // Starting a child needs every runtime in place; the drain
+                // loop acts on this once it has put them back.
+                self.subagents.queue_request(session_id, request);
+            }
             DriverEvent::PlanProposed { request_id } => {
                 if self.accepts_turn_output(session_id) {
                     let blocking = request_id.is_some();
@@ -923,15 +928,18 @@ pub(super) fn push_transcript_activity(
 ) {
     let after_message = session.messages.len();
     let turn_id = session.active_turn_id();
+    // Ordinary work shares a block, and so do subagent calls the model made
+    // together: they run in parallel and read as one group. Other standalone
+    // content keeps a block of its own.
+    let shares_block = |activity: &ActivityItem| {
+        (!activity.is_standalone() && !item.is_standalone())
+            || (activity.is_subagent() && item.is_subagent())
+    };
     if continuing_work
-        && !item.is_standalone()
         && let Some(block) = session.transcript_blocks.last_mut()
         && block.after_message == after_message
         && block.turn_id == turn_id
-        && block
-            .activities
-            .iter()
-            .all(|activity| !activity.is_standalone())
+        && block.activities.iter().all(shares_block)
     {
         block.activities.push(item);
     } else {

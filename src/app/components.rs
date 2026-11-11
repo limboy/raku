@@ -1444,18 +1444,24 @@ pub(super) fn activity_summary(activities: &[ActivityItem]) -> String {
 }
 
 fn summarize_activities<'a>(activities: impl Iterator<Item = &'a ActivityItem> + Clone) -> String {
-    let mut counts: Vec<(crate::model::ActivityKind, usize)> = Vec::new();
+    // Subagent calls are tool calls, but are counted as what they are.
+    let mut counts: Vec<((crate::model::ActivityKind, bool), usize)> = Vec::new();
     for activity in activities.clone() {
-        if let Some(entry) = counts.iter_mut().find(|(kind, _)| *kind == activity.kind) {
+        let key = (activity.kind, activity.is_subagent());
+        if let Some(entry) = counts.iter_mut().find(|(candidate, _)| *candidate == key) {
             entry.1 += 1;
         } else {
-            counts.push((activity.kind, 1));
+            counts.push((key, 1));
         }
     }
     let parts = counts
         .into_iter()
-        .map(|(kind, count)| {
-            let (singular, plural) = activity_noun(kind);
+        .map(|((kind, subagent), count)| {
+            let (singular, plural) = if subagent {
+                (tr!("activity.subagent"), tr!("activity.subagents"))
+            } else {
+                activity_noun(kind)
+            };
             tr!(
                 "activity.count",
                 count = count,
@@ -1501,6 +1507,19 @@ pub(super) fn live_activity_label(session: &AgentSession) -> Option<String> {
         ActivityKind::FileSearch => tr!("transcript.live_file_search"),
         ActivityKind::FileList => tr!("transcript.live_file_list"),
         ActivityKind::Search => tr!("transcript.live_search"),
+        // Subagents run in parallel, so the row says when it is several.
+        ActivityKind::Tool if activity.is_subagent() => {
+            let running = block
+                .activities
+                .iter()
+                .filter(|activity| activity.is_subagent() && !activity.complete)
+                .count();
+            if running > 1 {
+                tr!("transcript.live_subagents")
+            } else {
+                tr!("transcript.live_subagent")
+            }
+        }
         ActivityKind::Tool => tr!("transcript.live_tool"),
         ActivityKind::ImageGeneration => tr!("activity.generating_image"),
         ActivityKind::Compaction => tr!("activity.compacting_context"),
@@ -1618,9 +1637,32 @@ fn humanize_tool_name(name: &str) -> String {
         .unwrap_or_else(|| tr!("activity.tool"))
 }
 
+/// A `subagent` call as the row names it: the agent, then the label its
+/// model gave the delegated work.
+fn subagent_activity_label(activity: &ActivityItem) -> String {
+    let part = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    match (
+        part(&activity.display_target),
+        part(&activity.display_description),
+    ) {
+        (Some(agent), Some(description)) => format!("{agent} · {description}"),
+        (Some(label), None) | (None, Some(label)) => label,
+        (None, None) => tr!("subagent.title"),
+    }
+}
+
 fn activity_tool_display_name(activity: &ActivityItem) -> String {
     if is_ask_user_question(activity) {
         return tr!("activity.ask_questions");
+    }
+    if activity.is_subagent() {
+        return subagent_activity_label(activity);
     }
     if let Some(target) = activity
         .display_target
@@ -1810,6 +1852,7 @@ pub(super) fn activity_action_label(activity: &ActivityItem) -> String {
         ActivityKind::ImageGeneration => tr!("activity.generating_image"),
         ActivityKind::Notice => activity.title.clone(),
         ActivityKind::Tool if is_ask_user_question(activity) => tr!("activity.ask_questions"),
+        ActivityKind::Tool if activity.is_subagent() => tr!("subagent.badge"),
         ActivityKind::Tool | ActivityKind::Compaction => tr!("activity.tool"),
     }
 }
@@ -1858,6 +1901,7 @@ pub(super) fn activity_row_detail(activity: &ActivityItem, reasoning_live: bool)
         ActivityKind::ImageGeneration => String::new(),
         ActivityKind::Notice => activity.detail.clone().unwrap_or_default(),
         ActivityKind::Tool if is_ask_user_question(activity) => String::new(),
+        ActivityKind::Tool if activity.is_subagent() => subagent_activity_label(activity),
         ActivityKind::Tool | ActivityKind::Compaction => {
             let has_name = activity
                 .display_target
@@ -2084,6 +2128,24 @@ pub(super) fn activity_disclosure_sections(
     activity: &ActivityItem,
 ) -> Vec<ActivityDisclosureSection> {
     let mut sections = Vec::new();
+    // A subagent's row discloses its report: the envelope, the tool name and
+    // the raw arguments are plumbing, and the whole run is one click away.
+    if activity.is_subagent() {
+        if let Some(output) = activity
+            .output
+            .as_deref()
+            .map(str::trim)
+            .filter(|output| !output.is_empty())
+        {
+            let report =
+                crate::model::parse_subagent_result(output).map_or(output, |result| result.body);
+            sections.push(ActivityDisclosureSection {
+                kind: ActivityDisclosureSectionKind::Output,
+                content: report.to_owned(),
+            });
+        }
+        return sections;
+    }
     // A read that returned a picture is the picture: the path is already in
     // the row, and the arguments and payload would only bury it.
     if activity.kind == ActivityKind::FileRead

@@ -2044,6 +2044,7 @@ fn settings_navigation_contains_only_supported_pages() {
         SettingsPage::Appearance,
         SettingsPage::Providers,
         SettingsPage::SideChat,
+        SettingsPage::Subagents,
         SettingsPage::TextGeneration,
         SettingsPage::Skills,
         SettingsPage::Backups,
@@ -2288,6 +2289,43 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
         Some(ProviderKind::Claude),
         ProviderKind::Claude
     ));
+}
+
+#[test]
+fn parallel_subagent_calls_share_one_block_apart_from_other_work() {
+    let mut session = AgentSession::new(uuid::Uuid::new_v4(), ProviderKind::Pi);
+    session.begin_turn("Audit the project");
+    let subagent = |id: &str| {
+        ActivityItem::new(Some(id.into()), ActivityKind::Tool, "Subagent", None, false)
+            .with_tool_name(Some("subagent"))
+    };
+    push_transcript_activity(&mut session, subagent("call-1"), false);
+    push_transcript_activity(&mut session, subagent("call-2"), true);
+    assert_eq!(session.transcript_blocks.len(), 1);
+    assert_eq!(session.transcript_blocks[0].activities.len(), 2);
+    assert_eq!(
+        super::components::activity_summary(&session.transcript_blocks[0].activities),
+        "Running 2 subagents"
+    );
+    assert_eq!(
+        super::components::live_activity_label(&session).as_deref(),
+        Some("Running subagents")
+    );
+
+    // Other work after them starts its own block; the subagents keep theirs
+    // so it stays visible when ordinary work folds.
+    push_transcript_activity(
+        &mut session,
+        ActivityItem::new(
+            Some("read".into()),
+            ActivityKind::FileRead,
+            "Read",
+            None,
+            true,
+        ),
+        true,
+    );
+    assert_eq!(session.transcript_blocks.len(), 2);
 }
 
 #[test]
