@@ -3131,6 +3131,7 @@ mod tests {
                         description: "Answers questions about the project.".into(),
                     }],
                     child: false,
+                    delegates: true,
                 },
             },
             events,

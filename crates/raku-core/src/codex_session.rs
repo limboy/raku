@@ -272,6 +272,8 @@ fn codex_user_text(item: &Value) -> Option<String> {
         .iter()
         .filter(|content| content.get("type").and_then(Value::as_str) == Some("text"))
         .filter_map(|content| content.get("text").and_then(Value::as_str))
+        // Raku's hidden agents note rides as its own input item.
+        .filter(|text| !crate::model::is_subagent_agents_note(text))
         .collect::<Vec<_>>()
         .join("\n\n");
     (!text.trim().is_empty()).then_some(text)
@@ -448,6 +450,16 @@ pub fn provider_session_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hidden_agents_note_is_not_part_of_the_users_message() {
+        let note = crate::model::subagent_agents_note(&[]);
+        let item = serde_json::json!({"type": "userMessage", "content": [
+            {"type": "text", "text": "Find the parser"},
+            {"type": "text", "text": note},
+        ]});
+        assert_eq!(codex_user_text(&item).as_deref(), Some("Find the parser"));
+    }
 
     #[test]
     fn image_generation_history_keeps_order_and_reanchors_after_trimming() {

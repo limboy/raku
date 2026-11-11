@@ -383,11 +383,21 @@ Two things to handle:
   a dynamic tool named `wait` was never offered to the model. `subagent` does
   not collide, but the name is checked against the live tool list in the live
   test.
-- **The tool list is fixed at `thread/start`.** A thread started before any
-  agent was enabled never gains the tool, and later agent edits do not reach
-  an existing thread's description. Raku still validates the agent name on
-  every call and answers an unknown one with the current list, so a stale
-  description degrades to one rejected call.
+- **The tool list is fixed at `thread/start`.** `thread/resume` ignores
+  `dynamicTools`, and its `developerInstructions` do not replace the
+  originals (both probed: a resumed model still named the agent it started
+  with), and `thread/settings/update` changes neither. So:
+  - Every task's thread declares the tool, even while no agent is enabled
+    (`SubagentLaunch::delegates`), so enabling one later never leaves a
+    thread without it. Only threads started before this change lack it.
+  - A runtime that resumes a thread sends the current agents with its first
+    prompt, as a hidden input item marked `[[raku-subagents]]`
+    (`subagent_agents_note`). It is dropped from imported history. Verified
+    live: a thread started with no agents, resumed with `beta` enabled, and
+    asked to delegate without naming an agent, chose `beta`.
+  - The tool's description says its list may be out of date, that an agent
+    named with `@name` exists even if unlisted, and that a later note
+    replaces the list. Raku checks every call against the current settings.
 - **Code mode polls.** While a long call is pending, the model in code mode
   polls it with its built-in `wait`, writing a line each time. The tool
   description asks it to wait quietly.
@@ -400,4 +410,9 @@ Two things to handle:
   background.
 - A subagent never gets the tool (depth 1), and neither does a side chat or a
   read-only launch.
+- Every provider learns its agents when its runtime starts. Saving an agent
+  edit releases every idle task runtime (the idle sweep's rule: no turn, no
+  live background work, no subagents running for it), so the next prompt
+  starts one with the current list. A busy task keeps its runtime until it is
+  next released.
 

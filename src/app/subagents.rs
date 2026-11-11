@@ -259,6 +259,40 @@ impl Raku {
             .collect()
     }
 
+    /// A runtime learns its agents when it starts — Pi's extension and Claude
+    /// Code's tool list at launch, a resumed Codex thread from its first
+    /// prompt's note. After an agent edit, release every idle task runtime,
+    /// by the same rule the idle sweep uses, so the next prompt starts one
+    /// with the current list. Busy tasks keep theirs until they are idle.
+    pub(super) fn release_runtimes_for_agent_change(&mut self) {
+        let stale = self
+            .runtimes
+            .keys()
+            .copied()
+            .filter(|session_id| {
+                let session = self
+                    .state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == *session_id);
+                session.is_some_and(|session| !session.is_child())
+                    && !self.submission_preparations.contains(session_id)
+                    && !self.goal_runtime_starts.contains(session_id)
+                    && self.live_subagent_count(*session_id) == 0
+                    && session_is_reapable(
+                        session,
+                        Duration::MAX,
+                        self.session_has_live_background_work(*session_id),
+                    )
+            })
+            .collect::<Vec<_>>();
+        for session_id in stale {
+            if let Some(runtime) = self.runtimes.remove(&session_id) {
+                runtime.driver.close();
+            }
+        }
+    }
+
     /// Whether `child` is still working for its task. One map lookup, safe
     /// on a frame.
     pub(super) fn subagent_is_working(&self, child: Uuid) -> bool {
@@ -315,6 +349,7 @@ impl Raku {
             return SubagentLaunch {
                 agents: Vec::new(),
                 child: true,
+                delegates: false,
             };
         }
         if session.is_side_chat() {
@@ -323,6 +358,7 @@ impl Raku {
         SubagentLaunch {
             agents: self.subagent_tool_agents(session.provider),
             child: false,
+            delegates: true,
         }
     }
 

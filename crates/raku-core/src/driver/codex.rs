@@ -160,8 +160,10 @@ impl CodexDriver {
             subagent,
         } = options;
         // A subagent cannot delegate further, and a read-only launch has no
-        // tools beyond reading.
-        let delegates = !read_only && !subagent.child && !subagent.agents.is_empty();
+        // tools beyond reading. Codex fixes a thread's tools at
+        // `thread/start`, so a task's thread declares the tool even before
+        // any agent is enabled.
+        let delegates = !read_only && !subagent.child && subagent.delegates;
         let provider_session_id = match provider_cursor {
             Some(ProviderResumeCursor::Codex { thread_id }) => Some(thread_id),
             Some(cursor) => {
@@ -279,6 +281,11 @@ impl CodexDriver {
                 // turn — or on a resumed thread, which may have been left in
                 // plan mode — the next default turn must say so explicitly.
                 let mut collaboration_mode_dirty = provider_session_id.is_some();
+                // A resumed thread's tool description is the agent list of
+                // the runtime that started it. The first prompt here carries
+                // the current list as a hidden input item.
+                let mut agents_note = (delegates && provider_session_id.is_some())
+                    .then(|| crate::model::subagent_agents_note(&subagent.agents));
                 let open_thread = if let Some(thread_id) = provider_session_id {
                     let mut params = json!({
                         "threadId": thread_id,
@@ -385,6 +392,11 @@ impl CodexDriver {
                                 approvals_reviewer,
                                 sandbox,
                             );
+                            if let Some(note) = agents_note.take()
+                                && let Some(input) = params["input"].as_array_mut()
+                            {
+                                input.push(json!({"type": "text", "text": note}));
+                            }
                             if let Some(model) = model.as_deref() {
                                 params["model"] = json!(model);
                             }
@@ -3659,6 +3671,105 @@ mod tests {
         );
     }
 
+    /// A thread started before any agent was enabled still gets the tool, and
+    /// a later runtime that resumes it tells the model the current agents:
+    /// asked to delegate without naming one, it picks the agent it was told
+    /// about on resume.
+    #[test]
+    #[ignore = "requires an installed, authenticated codex"]
+    fn codex_resumed_thread_learns_agents_enabled_later() {
+        let binary = crate::command_env::find_executable("codex").expect("codex is not installed");
+        let cwd = std::env::temp_dir().join(format!("raku-codex-live-agents-{}", Uuid::new_v4()));
+        fs::create_dir_all(&cwd).unwrap();
+        let start = |cursor, agents: Vec<crate::model::SubagentToolAgent>| {
+            let (events, received) = crate::driver::test_event_channel();
+            let driver = CodexDriver::start(
+                DriverStartOptions {
+                    binary: binary.clone(),
+                    cwd: cwd.clone(),
+                    mode: RuntimeMode::Ask,
+                    plan_mode: false,
+                    model: None,
+                    reasoning_effort: Some("low".to_owned()),
+                    service_tier: None,
+                    context_window: None,
+                    agent_preset: None,
+                    provider_cursor: cursor,
+                    read_only: false,
+                    subagent: crate::model::SubagentLaunch {
+                        agents,
+                        child: false,
+                        delegates: true,
+                    },
+                },
+                events,
+            )
+            .unwrap();
+            (driver, received)
+        };
+        // Runs one turn, answering any subagent call, and returns the cursor
+        // and the agents the model asked for.
+        let turn = |driver: &CodexDriver,
+                    events: &crossbeam_channel::Receiver<DriverEvent>,
+                    prompt: &str| {
+            driver.prompt(prompt.to_owned());
+            let deadline = Instant::now() + Duration::from_secs(180);
+            let mut cursor = None;
+            let mut asked = Vec::new();
+            loop {
+                match events
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .expect("Codex never settled the turn")
+                {
+                    DriverEvent::Connected { provider_cursor } => cursor = provider_cursor,
+                    DriverEvent::SubagentRequested(request) => {
+                        asked.push(request.agent.clone());
+                        driver.respond_subagent(
+                            request.request_id,
+                            crate::model::subagent_result(
+                                None,
+                                crate::model::SubagentOutcome::Completed,
+                                "The project's codename is BLUEHERON.",
+                            ),
+                        );
+                    }
+                    DriverEvent::TurnFinished { success, summary } => {
+                        assert!(success, "Codex failed: {summary:?}");
+                        return (cursor, asked);
+                    }
+                    DriverEvent::Error(error) => panic!("Codex reported: {error}"),
+                    DriverEvent::ProcessExited => panic!("Codex exited mid-turn"),
+                    _ => {}
+                }
+            }
+        };
+
+        let (first, first_events) = start(None, Vec::new());
+        let (cursor, asked) = turn(&first, &first_events, "Reply with only: ready");
+        assert!(asked.is_empty());
+        let cursor = cursor.expect("the first runtime reports its thread");
+        drop(first);
+
+        let (second, second_events) = start(
+            Some(cursor),
+            vec![crate::model::SubagentToolAgent {
+                name: "beta".into(),
+                description: "Knows the project's codename.".into(),
+            }],
+        );
+        let (_, asked) = turn(
+            &second,
+            &second_events,
+            "Find the project's codename by delegating once with your subagent tool to the \
+             agent that knows it. Then reply with only the codename.",
+        );
+        assert_eq!(
+            asked,
+            ["beta"],
+            "the resumed thread learned the current agents"
+        );
+    }
+
     /// One real delegation through the `subagent` dynamic tool: the model
     /// calls it, the driver surfaces the call with its id, the answer reaches
     /// the model, and the transcript item carries the tool's name.
@@ -3688,6 +3799,7 @@ mod tests {
                         description: "Answers questions about the project.".into(),
                     }],
                     child: false,
+                    delegates: true,
                 },
             },
             events,

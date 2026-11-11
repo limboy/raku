@@ -115,6 +115,7 @@ impl Raku {
     pub(in crate::app) fn commit_subagent_settings(&mut self, cx: &mut Context<Self>) {
         self.sync_subagent_editor(cx);
         if std::mem::take(&mut self.subagents.settings.dirty) {
+            self.release_runtimes_for_agent_change();
             self.save();
         }
     }
@@ -237,6 +238,7 @@ impl Raku {
     /// `@` list on its next refresh.
     fn subagent_settings_changed(&mut self, cx: &mut Context<Self>) {
         self.subagents.settings.dirty = false;
+        self.release_runtimes_for_agent_change();
         self.invalidate_agent_completions();
         self.composer_sources_stale = true;
         self.save();

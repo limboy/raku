@@ -1009,12 +1009,46 @@ pub struct SubagentLaunch {
     /// than to the user, and cannot delegate further.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub child: bool,
+    /// A task's own agent, which may delegate even while no agent is
+    /// enabled. Codex fixes a thread's tools when the thread starts, so it
+    /// declares the tool whenever this holds; agents enabled later reach the
+    /// thread through [`subagent_agents_note`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delegates: bool,
 }
 
 impl SubagentLaunch {
     pub fn is_default(&self) -> bool {
-        self.agents.is_empty() && !self.child
+        self.agents.is_empty() && !self.child && !self.delegates
     }
+}
+
+/// Marks the hidden note that tells a resumed thread which agents exist now.
+pub const SUBAGENT_NOTE_START: &str = "[[raku-subagents]]";
+const SUBAGENT_NOTE_END: &str = "[[/raku-subagents]]";
+
+/// A note sent with the first prompt of a runtime that resumes a thread whose
+/// tool description may predate the current agents (Codex). It travels as
+/// its own input item and is dropped from imported history.
+pub fn subagent_agents_note(agents: &[SubagentToolAgent]) -> String {
+    let mut note = format!(
+        "{SUBAGENT_NOTE_START}\nA note from Raku, not a request from the user: if you have the \
+         subagent tool, the agents it can run are now these. They replace any earlier list."
+    );
+    if agents.is_empty() {
+        note.push_str("\n(None are enabled right now.)");
+    }
+    for agent in agents {
+        note.push_str(&format!("\n- {}: {}", agent.name, agent.description));
+    }
+    note.push('\n');
+    note.push_str(SUBAGENT_NOTE_END);
+    note
+}
+
+/// Whether an input text is a [`subagent_agents_note`].
+pub fn is_subagent_agents_note(text: &str) -> bool {
+    text.trim_start().starts_with(SUBAGENT_NOTE_START)
 }
 
 /// A delegation the provider's model asked for and is blocked on.
@@ -1130,7 +1164,9 @@ pub fn subagent_tool_description(agents: &[SubagentToolAgent]) -> String {
         "Delegate a task to one of the agents configured in Raku. They are not your built-in \
          agent or subagent tools: each runs as its own session, possibly on another provider and \
          model, and returns only its final report. When the user writes @name for one of the \
-         agents listed below, call this tool with that agent, never a built-in agent tool.\n\
+         agents listed below, call this tool with that agent, never a built-in agent tool. The \
+         list may be out of date: an agent the user names with @name exists even if it is not \
+         listed, and a later note from Raku replaces the list.\n\
          Use it for work whose intermediate steps you do not need to see: broad searches, reading \
          many files to answer one question, or a self-contained piece of a larger change.\n\
          The subagent starts with no knowledge of this conversation, so the prompt must be \
