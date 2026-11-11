@@ -2861,9 +2861,6 @@ impl Raku {
             // status line names it, and reads as prose rather than as a path
             // pasted from a shell.
             let read_row = activity.kind == ActivityKind::FileRead;
-            // Reads and edits name a file, so they read as a sentence — verb,
-            // file, what it covered — with the disclosure right behind it.
-            let packed_row = read_row || activity.kind == ActivityKind::FileChange;
             let read_range = read_row
                 .then_some(activity.read_range)
                 .flatten()
@@ -2945,7 +2942,7 @@ impl Raku {
                     .child(
                         div()
                             .flex_none()
-                            .when(!packed_row, |label| label.min_w(sp(44.0)))
+                            .min_w(sp(44.0))
                             .text_color(theme.text_secondary)
                             .child(SharedString::from(action_label)),
                     )
@@ -2956,8 +2953,7 @@ impl Raku {
                                 .min_w_0()
                                 .truncate()
                                 .text_color(theme.text)
-                                .when(packed_row, |detail| detail.flex_grow_0().flex_shrink_1())
-                                .when(!packed_row, |detail| detail.flex_1())
+                                .flex_1()
                                 .when(monospace_detail, |detail| {
                                     detail.font_family(md::render::MONO_FAMILY)
                                 })
@@ -2991,14 +2987,6 @@ impl Raku {
                                     .child(SharedString::from(format!("-{deletions}"))),
                             )
                         })
-                    })
-                    .when(has_detail && packed_row, |row| {
-                        row.child(activity_chevron(item_expanded, theme))
-                    })
-                    // Packed rows keep their text at the start, so a spacer
-                    // keeps any trailing status at the end of the row.
-                    .when(packed_row && has_row_detail, |row| {
-                        row.child(div().flex_1())
                     })
                     .when_some(reasoning_duration, |row, duration| {
                         row.child(
@@ -3041,7 +3029,7 @@ impl Raku {
                     .children(background_badge)
                     .children(open_file_button)
                     .children(open_subagent_button)
-                    .when(has_detail && !packed_row, |element| {
+                    .when(has_detail, |element| {
                         element.child(activity_chevron(item_expanded, theme))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -3065,7 +3053,9 @@ impl Raku {
             // fades stay inside GPUI's rectangular clipping.
             let mut detail = div()
                 .min_w_0()
-                .ml(px(28.0))
+                // Start at the row's detail text: row padding (8) + label
+                // min width (44) + gap (8).
+                .ml(px(60.0))
                 .mr(px(8.0))
                 .mt(px(2.0))
                 .mb(px(4.0))
