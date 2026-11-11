@@ -450,98 +450,15 @@ fn first_line_summary(body: &str) -> String {
 /// share — plus Pi's `$@`, in a command template. A template that consumes
 /// nothing gets the arguments appended instead, so plain prompt files still
 /// take input.
-pub fn expand_command_template(template: &str, args: &str) -> String {
-    let positional = args.split_whitespace().collect::<Vec<_>>();
-    let mut expanded = String::with_capacity(template.len() + args.len());
-    let mut consumed_args = false;
-    let mut rest = template;
-    while let Some(index) = rest.find('$') {
-        expanded.push_str(&rest[..index]);
-        let after = &rest[index + 1..];
-        if let Some(tail) = after.strip_prefix("ARGUMENTS") {
-            expanded.push_str(args);
-            consumed_args = true;
-            rest = tail;
-        } else if let Some(tail) = after.strip_prefix('@') {
-            expanded.push_str(args);
-            consumed_args = true;
-            rest = tail;
-        } else if let Some(digit) = after
-            .chars()
-            .next()
-            .and_then(|character| character.to_digit(10))
-            .filter(|digit| (1..=9).contains(digit))
-        {
-            if let Some(argument) = positional.get(digit as usize - 1) {
-                expanded.push_str(argument);
-            }
-            consumed_args = true;
-            rest = &after[1..];
-        } else {
-            expanded.push('$');
-            rest = after;
-        }
-    }
-    expanded.push_str(rest);
-    if !consumed_args && !args.is_empty() {
-        expanded.push_str("\n\n");
-        expanded.push_str(args);
-    }
-    expanded
-}
+pub use raku_protocol::composer::expand_command_template;
 
-/// The prompt to hand the driver for what the user typed.
-///
-/// `Some` only when transport text differs from the transcript: known
-/// templates expand, and skills adopt the provider's native invocation.
-/// Other passthrough commands and unknown `/words` stay untouched.
+/// Legacy text-only entry point; all clients share the protocol serializer.
 pub fn resolved_submission(
     provider: ProviderKind,
     prompt: &str,
     commands: &[SlashCommand],
 ) -> Option<String> {
-    if let Some(skill) = resolved_skill_submission(provider, prompt, commands) {
-        return Some(skill);
-    }
-    let invocation = prompt.strip_prefix('/')?;
-    let (name, args) = match invocation.split_once(char::is_whitespace) {
-        Some((name, args)) => (name, args.trim()),
-        None => (invocation, ""),
-    };
-    let command = commands.iter().find(|command| command.name == name)?;
-    let template = command.template.as_deref()?;
-    Some(expand_command_template(template, args))
-}
-
-/// Resolve only provider-native skill syntax, without expanding templates.
-///
-/// Mirrors the client: a leading `$skill` (or the older `/skill`) becomes
-/// Claude's `/skill`, Pi's `/skill:skill`, and Codex's own `$skill`.
-pub fn resolved_skill_submission(
-    provider: ProviderKind,
-    prompt: &str,
-    commands: &[SlashCommand],
-) -> Option<String> {
-    let (sigil, invocation) = match prompt.strip_prefix('$') {
-        Some(invocation) => ('$', invocation),
-        None => ('/', prompt.strip_prefix('/')?),
-    };
-    let name = match invocation.split_once(char::is_whitespace) {
-        Some((name, _)) => name,
-        None => invocation,
-    };
-    if !commands
-        .iter()
-        .any(|command| command.name == name && command.scope == CommandScope::Skill)
-    {
-        return None;
-    }
-    match (provider, sigil) {
-        (ProviderKind::Codex, '/') => Some(format!("${invocation}")),
-        (ProviderKind::Claude, '$') => Some(format!("/{invocation}")),
-        (ProviderKind::Pi, _) => Some(format!("/skill:{invocation}")),
-        _ => None,
-    }
+    raku_protocol::composer::resolved_submission(provider, prompt, &[], commands)
 }
 
 // ── Workspace file index ───────────────────────────────────────────────────
@@ -728,17 +645,28 @@ pub fn filter_commands(
     query: &str,
     matcher: &mut Matcher,
 ) -> Vec<Scored<SlashCommand>> {
-    let names = commands
-        .iter()
-        .map(|command| command.name.as_str())
-        .collect::<Vec<_>>();
-    filter_scored(&names, query, matcher, FILTER_CAP)
-        .into_iter()
-        .map(|(index, positions)| Scored {
-            item: commands[index].clone(),
-            positions,
-        })
-        .collect()
+    let mut rows = Vec::new();
+    // Bound each section separately so a large command catalog cannot hide
+    // every skill or prompt from the unfiltered list.
+    for group in 0..3 {
+        let entries = commands
+            .iter()
+            .filter(|command| !command.is_app_action() && command.composer_group() == group)
+            .collect::<Vec<_>>();
+        let names = entries
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>();
+        rows.extend(
+            filter_scored(&names, query, matcher, FILTER_CAP / 3)
+                .into_iter()
+                .map(|(index, positions)| Scored {
+                    item: entries[index].clone(),
+                    positions,
+                }),
+        );
+    }
+    rows
 }
 
 pub fn filter_files(
@@ -790,7 +718,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slash_triggers_only_as_the_first_token_of_a_line() {
+    fn slash_triggers_only_as_the_first_token_of_the_prompt() {
         let trigger = detect_trigger("/com", 4).expect("slash at start triggers");
         assert_eq!(trigger.kind, TriggerKind::Command);
         assert_eq!(trigger.query, "com");
@@ -800,9 +728,12 @@ mod tests {
         assert!(detect_trigger("/compact the log", 16).is_none());
         // Mid-token cursor completes the typed half only.
         assert_eq!(detect_trigger("/compact", 4).unwrap().query, "com");
-        // A slash on a later line is still a command position.
-        let trigger = detect_trigger("first\n/rev", 10).expect("line start triggers");
-        assert_eq!(trigger.range, 6..10);
+        // Later lines are prose; references can still appear in arguments.
+        assert!(detect_trigger("first\n/rev", 10).is_none());
+        assert_eq!(
+            detect_trigger("/review @src", 12).unwrap().kind,
+            TriggerKind::File
+        );
     }
 
     #[test]

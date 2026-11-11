@@ -82,6 +82,7 @@ impl Raku {
     fn current_composer_draft(&self, cx: &App) -> crate::persistence::ComposerDraft {
         crate::persistence::ComposerDraft {
             text: self.composer.read(cx).content(cx).to_owned(),
+            tokens: self.composer.read(cx).atoms(cx).to_vec(),
             attachments: self
                 .composer_attachments
                 .iter()
@@ -197,8 +198,9 @@ impl Raku {
             .into_iter()
             .map(ComposerAttachment::from)
             .collect();
-        self.composer
-            .update(cx, |input, cx| input.set_content(draft.text, cx));
+        self.composer.update(cx, |input, cx| {
+            input.set_content_with_atoms(draft.text, draft.tokens, cx)
+        });
         cx.notify();
     }
 

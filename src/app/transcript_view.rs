@@ -1591,7 +1591,11 @@ impl Raku {
                             } else {
                                 message.visible_content()
                             };
-                            view.set_text(text, message.streaming);
+                            if message.role == MessageRole::User {
+                                view.set_prompt(text, &message.tokens);
+                            } else {
+                                view.set_text(text, message.streaming);
+                            }
                             &*view
                         });
                     let rendered = render_message(
@@ -3991,6 +3995,7 @@ fn read_line_flat_text(
         runs,
         links: Vec::new(),
         code_ranges: Vec::new(),
+        token_ranges: Vec::new(),
         math: None,
         active_link: None,
     }

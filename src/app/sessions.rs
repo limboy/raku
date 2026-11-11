@@ -1258,23 +1258,30 @@ impl Raku {
         else {
             return false;
         };
+        let provider = self
+            .selected_session()
+            .map(|session| session.provider)
+            .unwrap_or_default();
+        let feedback = self.resolve_skill_submission(
+            provider,
+            &submission.prompt,
+            &submission.transport_tokens(),
+        );
         let Some(runtime) = self.runtimes.get_mut(&session_id) else {
             return false;
         };
         self.pending_plans.remove(&session_id);
-        runtime.driver.respond_plan(
-            request_id,
-            PlanDecision::Revise {
-                feedback: submission.prompt.clone(),
-            },
-        );
+        runtime
+            .driver
+            .respond_plan(request_id, PlanDecision::Revise { feedback });
         runtime.last_active_at = Instant::now();
         if let Some(session) = self.state.session_mut(session_id) {
             // The feedback joins the running turn, like a steer.
-            session.push_user_message_with_presentation(
+            session.push_user_message_with_tokens(
                 submission.prompt.clone(),
                 submission.display_content.clone(),
                 submission.attachments.clone(),
+                submission.tokens.clone(),
             );
             session.status = SessionStatus::Working;
             session.updated_at = unix_time();

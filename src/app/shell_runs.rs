@@ -209,6 +209,7 @@ impl Raku {
                     prompt: report,
                     display_content: Some(tr!("code_run.queued_output")),
                     attachments: Vec::new(),
+                    tokens: Vec::new(),
                 },
                 cx,
             );

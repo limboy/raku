@@ -77,6 +77,8 @@ export const messages = sqliteTable(
     displayContent: text("display_content"),
     /** JSON-serialized MessageAttachment array. */
     attachments: text("attachments").notNull().default("[]"),
+    /** JSON PromptToken array: accepted composer completions in the visible text. */
+    tokens: text("tokens").notNull().default("[]"),
     createdAt: integer("created_at").notNull(),
     streaming: integer("streaming", { mode: "boolean" }).notNull(),
     /** JSON MessageError when the reply reports a failed turn; null otherwise. */

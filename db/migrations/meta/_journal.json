@@ -71,6 +71,13 @@
       "when": 1794378536280,
       "tag": "0009_subagent",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1794407123419,
+      "tag": "0010_message_tokens",
+      "breakpoints": true
     }
   ]
 }

@@ -31,7 +31,7 @@ pub(super) struct SideChatState {
     pub(super) selection: TranscriptSelection,
     /// The side chat whose draft the composer currently holds.
     composer_target: Option<Uuid>,
-    drafts: HashMap<Uuid, String>,
+    drafts: HashMap<Uuid, crate::persistence::ComposerDraft>,
     lists: RefCell<HashMap<Uuid, SideChatList>>,
     scrollbar: Rc<ScrollbarState>,
     /// Parent and anchor lookups, rebuilt only when side chats change.
@@ -596,9 +596,14 @@ impl Raku {
         if self.side_chat.composer_target == target {
             return;
         }
-        let current = self.side_chat.composer.read(cx).content(cx).to_owned();
+        let input = self.side_chat.composer.read(cx);
+        let current = crate::persistence::ComposerDraft {
+            text: input.content(cx).to_owned(),
+            tokens: input.atoms(cx).to_vec(),
+            ..Default::default()
+        };
         if let Some(previous) = self.side_chat.composer_target {
-            if current.trim().is_empty() {
+            if current.text.trim().is_empty() {
                 self.side_chat.drafts.remove(&previous);
             } else {
                 self.side_chat.drafts.insert(previous, current);
@@ -620,12 +625,23 @@ impl Raku {
                 },
                 cx,
             );
-            composer.set_content(next, cx);
+            composer.set_content_with_atoms(next.text, next.tokens, cx);
         });
     }
 
     /// Send the side-chat composer's prompt to its side chat.
-    pub(super) fn submit_side_chat(&mut self, prompt: String, cx: &mut Context<Self>) {
+    pub(super) fn submit_side_chat(
+        &mut self,
+        prompt: String,
+        tokens: Vec<crate::composer_complete::PromptToken>,
+        cx: &mut Context<Self>,
+    ) {
+        let leading = prompt.len() - prompt.trim_start().len();
+        let tokens = crate::composer_complete::PromptToken::rebased(
+            &tokens,
+            prompt.trim(),
+            -(leading as isize),
+        );
         let prompt = prompt.trim().to_owned();
         let Some(id) = self.side_chat.composer_target else {
             return;
@@ -643,19 +659,27 @@ impl Raku {
             // only after its report went back to the task, and nobody would
             // read the answer.
             let steer = (session.is_subagent() && self.session_can_steer(session))
-                .then(|| self.resolve_skill_submission(session.provider, &prompt));
+                .then(|| self.resolve_skill_submission(session.provider, &prompt, &tokens));
             self.side_chat.drafts.remove(&id);
             if let Some(provider_prompt) = steer
                 && let Some(runtime) = self.runtimes.get_mut(&id)
             {
                 runtime.driver.steer(provider_prompt);
-                runtime
-                    .pending_steers
-                    .push_back(ComposerSubmission::plain(prompt));
+                runtime.pending_steers.push_back(ComposerSubmission {
+                    tokens: tokens.clone(),
+                    ..ComposerSubmission::plain(prompt)
+                });
                 cx.notify();
                 return;
             }
-            self.enqueue_follow_up_submission(id, ComposerSubmission::plain(prompt), cx);
+            self.enqueue_follow_up_submission(
+                id,
+                ComposerSubmission {
+                    tokens: tokens.clone(),
+                    ..ComposerSubmission::plain(prompt)
+                },
+                cx,
+            );
             return;
         }
         let submission = if first {
@@ -678,9 +702,13 @@ impl Raku {
                 prompt: format!("{preamble}{prompt}"),
                 display_content: Some(prompt),
                 attachments: Vec::new(),
+                tokens,
             }
         } else {
-            ComposerSubmission::plain(prompt)
+            ComposerSubmission {
+                tokens: tokens.clone(),
+                ..ComposerSubmission::plain(prompt)
+            }
         };
         self.side_chat.drafts.remove(&id);
         self.submit_submission_for_session(id, submission, cx);
@@ -698,10 +726,11 @@ impl Raku {
         {
             return;
         }
+        let tokens = self.side_chat.composer.read(cx).atoms(cx).to_vec();
         self.side_chat
             .composer
             .update(cx, |composer, cx| composer.clear(cx));
-        self.submit_side_chat(prompt, cx);
+        self.submit_side_chat(prompt, tokens, cx);
     }
 
     /// Disclose or hide a failed reply's provider detail, in the transcript
@@ -1290,7 +1319,11 @@ impl Raku {
                 } else {
                     let mut markdown = self.message_markdown.borrow_mut();
                     let view = markdown.entry(message.id).or_default();
-                    view.set_text(message.visible_content(), message.streaming);
+                    if message.role == MessageRole::User {
+                        view.set_prompt(message.visible_content(), &message.tokens);
+                    } else {
+                        view.set_text(message.visible_content(), message.streaming);
+                    }
                     md::render::markdown(view, &ctx).unwrap_or_else(|| {
                         md::render::plain_text(
                             message.visible_content().to_owned(),

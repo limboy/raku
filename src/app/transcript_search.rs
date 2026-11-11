@@ -199,8 +199,9 @@ impl Raku {
                     let remaining = MAX_TRANSCRIPT_SEARCH_MATCHES.saturating_sub(matches.len());
                     let (message_matches, message_limited) =
                         if matches!(message.role, MessageRole::User | MessageRole::Assistant) {
-                            md::render::markdown_search_matches(
+                            md::render::markdown_prompt_search_matches(
                                 message.visible_content(),
+                                &message.tokens,
                                 &regex,
                                 remaining,
                             )

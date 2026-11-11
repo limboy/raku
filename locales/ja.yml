@@ -1124,3 +1124,13 @@ subagent.command_hint: "<タスク>"
 subagent.too_many: "このタスクではすでに %{count} 個のサブエージェントが実行中です。"
 subagent.status_running: "実行中"
 subagent.status_failed: "失敗"
+
+composer.commands: コマンド
+composer.prompts: プロンプト
+composer.skills: スキル
+composer.agents: エージェント
+composer.files: ファイル
+composer.command: コマンド
+composer.prompt: プロンプト
+composer.skill: スキル
+composer.runs_now: すぐに実行

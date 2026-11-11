@@ -464,6 +464,7 @@ impl Raku {
                 prompt: subagent_prompt(&agent.instructions, &prompt),
                 display_content: Some(prompt),
                 attachments: Vec::new(),
+                tokens: Vec::new(),
             },
             cx,
         );
@@ -809,6 +810,7 @@ impl Raku {
             prompt: subagent_result(Some(child), outcome, report),
             display_content: Some(label),
             attachments: Vec::new(),
+            tokens: Vec::new(),
         };
         let Some(session) = self
             .state

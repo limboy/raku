@@ -298,6 +298,7 @@ struct ComposerSubmission {
     prompt: String,
     display_content: Option<String>,
     attachments: Vec<MessageAttachment>,
+    tokens: Vec<crate::composer_complete::PromptToken>,
 }
 
 impl ComposerSubmission {
@@ -306,11 +307,13 @@ impl ComposerSubmission {
             prompt,
             display_content: None,
             attachments: Vec::new(),
+            tokens: Vec::new(),
         }
     }
 
     fn into_queued_message(self) -> QueuedMessage {
         QueuedMessage::with_presentation(self.prompt, self.display_content, self.attachments)
+            .with_tokens(self.tokens)
     }
 
     fn from_queued_message(message: QueuedMessage) -> Self {
@@ -318,7 +321,22 @@ impl ComposerSubmission {
             prompt: message.content,
             display_content: message.display_content,
             attachments: message.attachments,
+            tokens: message.tokens,
         }
+    }
+
+    /// Visible tokens are relative to the composer, even when a side chat
+    /// prepends context before that text on the wire.
+    fn transport_tokens(&self) -> Vec<crate::composer_complete::PromptToken> {
+        let offset = match self.display_content.as_deref() {
+            Some(visible) if self.prompt.starts_with(visible) => 0,
+            Some(visible) => match self.prompt.rfind(visible) {
+                Some(offset) => offset,
+                None => return Vec::new(),
+            },
+            None => 0,
+        };
+        crate::composer_complete::PromptToken::rebased(&self.tokens, &self.prompt, offset as isize)
     }
 
     /// Human-facing task text for titles and generated worktree names. An
@@ -2185,9 +2203,12 @@ impl Raku {
         let crate::persistence::ComposerDraft {
             text: initial_composer_text,
             attachments: initial_composer_attachments,
+            tokens: initial_composer_tokens,
         } = initial_composer_draft;
         if !initial_composer_text.is_empty() {
-            composer.update(cx, |input, cx| input.set_content(initial_composer_text, cx));
+            composer.update(cx, |input, cx| {
+                input.set_content_with_atoms(initial_composer_text, initial_composer_tokens, cx)
+            });
         }
         let composer_attachments = initial_composer_attachments
             .into_iter()
@@ -2378,28 +2399,38 @@ impl Raku {
             cx.subscribe(
                 &composer,
                 |this: &mut Self, _, event: &ComposerEvent, cx| match event {
-                    ComposerEvent::Submit(prompt) => {
+                    ComposerEvent::Submit(prompt, tokens) => {
                         if let Some(session_id) = this.selected_session().and_then(|session| {
                             this.response_fork_preparations
                                 .contains_key(&session.id)
                                 .then_some(session.id)
                         }) {
-                            this.defer_restore_composer_after_fork(session_id, prompt.clone(), cx);
+                            this.defer_restore_composer_after_fork(
+                                session_id,
+                                prompt.clone(),
+                                tokens.clone(),
+                                cx,
+                            );
                         } else if let Some(submission) =
-                            this.submission_with_attachments(prompt, cx)
+                            this.submission_with_attachments(prompt, tokens, cx)
                         {
                             this.submit_composer_submission(submission, cx);
                         }
                     }
-                    ComposerEvent::SubmitSteer(prompt) => {
+                    ComposerEvent::SubmitSteer(prompt, tokens) => {
                         if let Some(session_id) = this.selected_session().and_then(|session| {
                             this.response_fork_preparations
                                 .contains_key(&session.id)
                                 .then_some(session.id)
                         }) {
-                            this.defer_restore_composer_after_fork(session_id, prompt.clone(), cx);
+                            this.defer_restore_composer_after_fork(
+                                session_id,
+                                prompt.clone(),
+                                tokens.clone(),
+                                cx,
+                            );
                         } else if let Some(submission) =
-                            this.submission_with_attachments(prompt, cx)
+                            this.submission_with_attachments(prompt, tokens, cx)
                         {
                             this.steer_composer_submission(submission, cx);
                         }
@@ -2433,8 +2464,9 @@ impl Raku {
             cx.subscribe(
                 &side_chat_composer,
                 |this: &mut Self, _, event: &ComposerEvent, cx| match event {
-                    ComposerEvent::Submit(prompt) | ComposerEvent::SubmitSteer(prompt) => {
-                        this.submit_side_chat(prompt.clone(), cx);
+                    ComposerEvent::Submit(prompt, tokens)
+                    | ComposerEvent::SubmitSteer(prompt, tokens) => {
+                        this.submit_side_chat(prompt.clone(), tokens.clone(), cx);
                     }
                     ComposerEvent::Edited => {
                         this.right_panel_pane.update(cx, |_, cx| cx.notify());

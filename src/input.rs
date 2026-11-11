@@ -2,6 +2,7 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crate::composer_complete::PromptToken;
 use crate::md::highlight::{self, Lang, TokenClass};
 use crate::ui::menu::{ContextMenuHandle, MenuItem, context_menu};
 use crate::ui::scrollbar::{self, ScrollbarState};
@@ -317,7 +318,15 @@ struct EditRecord {
     /// An IME composition still underway, amended in place as the marked
     /// text changes so the whole entry undoes as one step.
     composing: bool,
+    /// The field's atomic tokens before the step and after its newest edit,
+    /// restored by undo and redo. Atoms are not text, so the splice alone
+    /// cannot bring them back.
+    atoms_before: Vec<PromptToken>,
+    atoms_after: Vec<PromptToken>,
 }
+
+/// What undo or redo restores: content, selection, its direction, and atoms.
+type HistoryStep = (String, Range<usize>, bool, Vec<PromptToken>);
 
 #[derive(Default)]
 struct EditHistory {
@@ -331,6 +340,7 @@ impl EditHistory {
     /// step where the pair reads as one gesture: an insertion continuing at
     /// the end of an insertion, or a deletion extending a deletion run in
     /// either direction.
+    #[allow(clippy::too_many_arguments)]
     fn record(
         &mut self,
         content: &str,
@@ -338,6 +348,7 @@ impl EditHistory {
         new_text: &str,
         selection: Range<usize>,
         selection_reversed: bool,
+        atoms: &[PromptToken],
         now: Instant,
     ) {
         // A whole-content replace (Replace All) arrives as one huge splice;
@@ -384,11 +395,14 @@ impl EditHistory {
             edited_at: now,
             sealed: false,
             composing: false,
+            atoms_before: atoms.to_vec(),
+            atoms_after: atoms.to_vec(),
         });
     }
 
     /// Record an IME splice. The whole composition — every marked-text
     /// revision and the final commit — stays one step, amended in place.
+    #[allow(clippy::too_many_arguments)]
     fn record_composition(
         &mut self,
         content: &str,
@@ -396,6 +410,7 @@ impl EditHistory {
         new_text: &str,
         selection: Range<usize>,
         selection_reversed: bool,
+        atoms: &[PromptToken],
         now: Instant,
     ) {
         self.redo.clear();
@@ -423,6 +438,8 @@ impl EditHistory {
             edited_at: now,
             sealed: false,
             composing: true,
+            atoms_before: atoms.to_vec(),
+            atoms_after: atoms.to_vec(),
         });
     }
 
@@ -448,6 +465,29 @@ impl EditHistory {
         }
     }
 
+    fn record_metadata(
+        &mut self,
+        caret: usize,
+        selection: Range<usize>,
+        selection_reversed: bool,
+        before: Vec<PromptToken>,
+        after: Vec<PromptToken>,
+    ) {
+        self.redo.clear();
+        self.push(EditRecord {
+            start: caret,
+            old: String::new(),
+            new: String::new(),
+            selection_before: selection,
+            selection_reversed_before: selection_reversed,
+            edited_at: Instant::now(),
+            sealed: true,
+            composing: false,
+            atoms_before: before,
+            atoms_after: after,
+        });
+    }
+
     fn push(&mut self, record: EditRecord) {
         self.undo.push(record);
         if self.undo.len() > UNDO_HISTORY_CAP {
@@ -460,7 +500,7 @@ impl EditHistory {
     /// content and the selection to show. The step must still verifiably
     /// describe `content`; on any mismatch the history is corrupt and is
     /// dropped whole rather than applied wrong.
-    fn undo(&mut self, content: &str) -> Option<(String, Range<usize>, bool)> {
+    fn undo(&mut self, content: &str) -> Option<HistoryStep> {
         let record = self.undo.pop()?;
         let span = record.start..record.start + record.new.len();
         if content.get(span.clone()) != Some(record.new.as_str()) {
@@ -472,13 +512,14 @@ impl EditHistory {
         let selection = record.selection_before.start.min(restored.len())
             ..record.selection_before.end.min(restored.len());
         let selection_reversed = record.selection_reversed_before;
+        let atoms = record.atoms_before.clone();
         self.redo.push(record);
-        Some((restored, selection, selection_reversed))
+        Some((restored, selection, selection_reversed, atoms))
     }
 
     /// Reapply the newest undone step, with the caret after the re-applied
     /// text — where the original edit left it.
-    fn redo(&mut self, content: &str) -> Option<(String, Range<usize>, bool)> {
+    fn redo(&mut self, content: &str) -> Option<HistoryStep> {
         let record = self.redo.pop()?;
         let span = record.start..record.start + record.old.len();
         if content.get(span.clone()) != Some(record.old.as_str()) {
@@ -488,8 +529,9 @@ impl EditHistory {
         }
         let applied = [&content[..span.start], &record.new, &content[span.end..]].concat();
         let caret = record.start + record.new.len();
+        let atoms = record.atoms_after.clone();
         self.undo.push(record);
-        Some((applied, caret..caret, false))
+        Some((applied, caret..caret, false, atoms))
     }
 }
 
@@ -705,6 +747,12 @@ pub struct TextInput {
     /// Index into `search_matches` of the match navigation is on, painted
     /// stronger than its siblings.
     active_search_match: Option<usize>,
+    /// Atomic tokens — accepted completions — sorted and non-overlapping, as
+    /// byte ranges into `content`. The caret steps over each as one
+    /// character, deletion takes it whole, and an edit that cuts into one
+    /// demotes it to plain text.
+    atoms: Vec<PromptToken>,
+    accepts_atoms: bool,
     content: SharedString,
     placeholder: SharedString,
     selected_range: Range<usize>,
@@ -793,6 +841,8 @@ impl TextInput {
             highlight: Vec::new(),
             search_matches: Vec::new(),
             active_search_match: None,
+            atoms: Vec::new(),
+            accepts_atoms: false,
             content: "".into(),
             placeholder: "".into(),
             selected_range: 0..0,
@@ -1021,6 +1071,56 @@ impl TextInput {
     /// autocompletion insert: unlike [`EntityInputHandler::replace_text_in_range`]
     /// it takes byte offsets and no window, so an action handler can call it.
     pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        self.splice_text(range, text, None, cx);
+    }
+
+    /// Splice `text` over `range` like [`replace_range`](Self::replace_range),
+    /// making its first `token.end - token.start` bytes an atomic token, as
+    /// an accepted completion does. `token` is relative to `range.start`.
+    pub fn insert_atom(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        token: PromptToken,
+        cx: &mut Context<Self>,
+    ) {
+        self.accepts_atoms = true;
+        self.splice_text(range, text, Some(token), cx);
+    }
+
+    /// The field's atomic tokens, sorted by position.
+    pub fn atoms(&self) -> &[PromptToken] {
+        &self.atoms
+    }
+
+    /// Replace the content as [`set_content`](Self::set_content) does and
+    /// restore its atomic tokens — a draft or a recalled prompt coming back.
+    /// Tokens that no longer fit the text are dropped.
+    pub fn set_content_with_atoms(
+        &mut self,
+        content: impl Into<SharedString>,
+        atoms: Vec<PromptToken>,
+        cx: &mut Context<Self>,
+    ) {
+        let content = content.into();
+        let emits_edit = self.content != content || !self.atoms.is_empty();
+        self.set_content(content, cx);
+        self.accepts_atoms = true;
+        self.atoms = PromptToken::normalized(atoms, &self.content);
+        if !emits_edit && !self.atoms.is_empty() {
+            self.history = EditHistory::default();
+            cx.emit(InputEvent::Edited);
+        }
+        cx.notify();
+    }
+
+    fn splice_text(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        atom: Option<PromptToken>,
+        cx: &mut Context<Self>,
+    ) {
         if self.read_only {
             return;
         }
@@ -1034,9 +1134,38 @@ impl TextInput {
         // A discrete undo step: picking a completion or replacing a match
         // must not coalesce with the typing around it.
         self.history.seal();
+        let unchanged_text = self.content.get(range.clone()) == Some(text);
+        let atoms_before = unchanged_text.then(|| self.atoms.clone());
         self.record_edit_history(&range, text, false);
         self.content =
             (self.content[..range.start].to_owned() + text + &self.content[range.end..]).into();
+        self.splice_atoms(&range, text.len());
+        if let Some(atom) = atom.filter(|atom| atom.fits(text)) {
+            let atom = PromptToken {
+                start: range.start + atom.start,
+                end: range.start + atom.end,
+                ..atom
+            };
+            if atom.fits(&self.content) {
+                let index = self
+                    .atoms
+                    .partition_point(|existing| existing.start < atom.start);
+                self.atoms.insert(index, atom);
+            }
+        }
+        if let Some(before) = atoms_before {
+            if before != self.atoms {
+                self.history.record_metadata(
+                    range.start + text.len(),
+                    self.selected_range.clone(),
+                    self.selection_reversed,
+                    before,
+                    self.atoms.clone(),
+                );
+            }
+        } else {
+            self.sync_history_atoms();
+        }
         let offset = range.start + text.len();
         self.selected_range = offset..offset;
         self.selection_reversed = false;
@@ -1112,7 +1241,7 @@ impl TextInput {
         {
             return;
         }
-        self.selected_range = range;
+        self.selected_range = self.snap_selection(range);
         self.selection_reversed = false;
         self.vertical_navigation = None;
         self.pause_blink_cursor(cx);
@@ -1158,6 +1287,7 @@ impl TextInput {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         let changed = !self.content.is_empty();
         self.content = "".into();
+        self.atoms.clear();
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
@@ -1177,8 +1307,9 @@ impl TextInput {
 
     pub fn set_content(&mut self, content: impl Into<SharedString>, cx: &mut Context<Self>) {
         let content = content.into();
-        let changed = self.content != content;
+        let changed = self.content != content || !self.atoms.is_empty();
         self.content = content;
+        self.atoms.clear();
         let offset = self.content.len();
         self.selected_range = offset..offset;
         self.selection_reversed = false;
@@ -1287,6 +1418,7 @@ impl TextInput {
             .last_layout
             .as_ref()
             .filter(|layout| layout.len() == self.content.len())
+            .cloned()
         else {
             // The field normally has a current layout whenever it can receive
             // a key. If an edit and this action race the next paint, let an
@@ -1296,7 +1428,7 @@ impl TextInput {
             cx.propagate();
             return;
         };
-        let row_count = visual_row_count(layout);
+        let row_count = visual_row_count(&layout);
         if row_count == 0 {
             cx.propagate();
             return;
@@ -1342,7 +1474,7 @@ impl TextInput {
             return;
         }
 
-        let Some((offset, cursor_x)) = visual_row_offset_for_x(layout, target_row, goal_x) else {
+        let Some((offset, cursor_x)) = visual_row_offset_for_x(&layout, target_row, goal_x) else {
             self.vertical_navigation = None;
             cx.propagate();
             return;
@@ -1353,9 +1485,25 @@ impl TextInput {
         if extend {
             self.extend_selection_to(offset);
         } else {
+            let offset = self.snap_caret(offset, self.cursor_offset());
             self.selected_range = offset..offset;
             self.selection_reversed = false;
         }
+        // Snapping can move to another edge (or wrapped row) of a token.
+        // Paint and subsequent vertical movement must use that actual caret.
+        let (target_row, cursor_x) = if self.cursor_offset() != offset {
+            layout
+                .position_for_index(self.cursor_offset())
+                .map(|position| {
+                    (
+                        ((position.y - bounds.top()) / layout.line_height()) as usize,
+                        position.x - bounds.left(),
+                    )
+                })
+                .unwrap_or((target_row, cursor_x))
+        } else {
+            (target_row, cursor_x)
+        };
         self.vertical_navigation = Some(VerticalNavigation {
             goal_x,
             visual_row: target_row,
@@ -1812,6 +1960,9 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let Some(clipboard) = cx.read_from_clipboard() else {
             return;
         };
@@ -1834,11 +1985,52 @@ impl TextInput {
             cx.emit(TextSnippetPaste(text));
             return;
         }
+        let pasted_atoms = if self.accepts_atoms {
+            clipboard
+                .metadata()
+                .and_then(|metadata| serde_json::from_str::<AtomClipboard>(metadata).ok())
+                .map(|metadata| PromptToken::normalized(metadata.raku_prompt_tokens, &text))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let text = pasted_text_for_mode(self.mode, &text);
+        let unchanged_text = self.content.get(self.selected_range.clone()) == Some(text.as_str());
+        let atoms_before = unchanged_text.then(|| self.atoms.clone());
+        let selection_before = self.selected_range.clone();
+        let reversed_before = self.selection_reversed;
         // A paste is its own undo step, never part of the typing around it —
         // the native NSTextView boundary, stricter than Zed's time grouping.
         self.history.seal();
         self.replace_text_in_range(None, &text, window, cx);
+        if !pasted_atoms.is_empty() {
+            let start = self.cursor_offset() - text.len();
+            let end = start + text.len();
+            self.atoms
+                .retain(|atom| atom.end <= start || atom.start >= end);
+            self.atoms.extend(PromptToken::rebased(
+                &pasted_atoms,
+                &self.content,
+                start as isize,
+            ));
+            self.atoms = PromptToken::normalized(std::mem::take(&mut self.atoms), &self.content);
+            if !unchanged_text {
+                self.sync_history_atoms();
+            }
+        }
+        if let Some(before) = atoms_before
+            && before != self.atoms
+        {
+            self.history.record_metadata(
+                self.cursor_offset(),
+                selection_before,
+                reversed_before,
+                before,
+                self.atoms.clone(),
+            );
+            cx.emit(InputEvent::Edited);
+            cx.notify();
+        }
         self.history.seal();
     }
 
@@ -1850,20 +2042,32 @@ impl TextInput {
             cx.propagate();
             return;
         }
-        cx.write_to_clipboard(ClipboardItem::new_string(
-            self.content[self.selected_range.clone()].to_string(),
-        ));
+        cx.write_to_clipboard(self.selected_clipboard());
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
+            cx.write_to_clipboard(self.selected_clipboard());
             // Like paste, a cut never coalesces with surrounding deletions.
             self.history.seal();
             self.replace_text_in_range(None, "", window, cx);
             self.history.seal();
+        }
+    }
+
+    fn selected_clipboard(&self) -> ClipboardItem {
+        let text = self.content[self.selected_range.clone()].to_owned();
+        let tokens =
+            PromptToken::rebased(&self.atoms, &text, -(self.selected_range.start as isize));
+        if tokens.is_empty() {
+            ClipboardItem::new_string(text)
+        } else {
+            ClipboardItem::new_string_with_json_metadata(
+                text,
+                AtomClipboard {
+                    raku_prompt_tokens: tokens,
+                },
+            )
         }
     }
 
@@ -1878,6 +2082,7 @@ impl TextInput {
                 new_text,
                 self.selected_range.clone(),
                 self.selection_reversed,
+                &self.atoms,
                 Instant::now(),
             );
         } else {
@@ -1887,6 +2092,7 @@ impl TextInput {
                 new_text,
                 self.selected_range.clone(),
                 self.selection_reversed,
+                &self.atoms,
                 Instant::now(),
             );
         }
@@ -1898,32 +2104,27 @@ impl TextInput {
         if self.read_only || self.marked_range.is_some() {
             return;
         }
-        let Some((content, selection, selection_reversed)) = self.history.undo(&self.content)
-        else {
+        let Some(step) = self.history.undo(&self.content) else {
             return;
         };
-        self.apply_history_step(content, selection, selection_reversed, cx);
+        self.apply_history_step(step, cx);
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
         if self.read_only || self.marked_range.is_some() {
             return;
         }
-        let Some((content, selection, selection_reversed)) = self.history.redo(&self.content)
-        else {
+        let Some(step) = self.history.redo(&self.content) else {
             return;
         };
-        self.apply_history_step(content, selection, selection_reversed, cx);
+        self.apply_history_step(step, cx);
     }
 
-    fn apply_history_step(
-        &mut self,
-        content: String,
-        selection: Range<usize>,
-        selection_reversed: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn apply_history_step(&mut self, step: HistoryStep, cx: &mut Context<Self>) {
+        let (content, selection, selection_reversed, atoms) = step;
         self.content = content.into();
+        self.atoms = atoms;
+        self.atoms.retain(|atom| atom.fits(&self.content));
         self.selected_range = selection;
         self.selection_reversed = selection_reversed;
         self.marked_range = None;
@@ -1963,7 +2164,7 @@ impl TextInput {
         }
 
         if event.click_count == 2 {
-            let range = word_range_at(&self.content, offset);
+            let range = self.snap_selection(word_range_at(&self.content, offset));
             self.selected_range = range.clone();
             self.selection_reversed = false;
             self.selected_word_range = (!range.is_empty()).then_some(range);
@@ -1975,6 +2176,7 @@ impl TextInput {
         if event.modifiers.shift {
             self.select_to(offset, cx);
         } else {
+            let offset = self.snap_caret(offset, offset);
             self.move_to(offset, cx);
         }
     }
@@ -2009,6 +2211,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = self.snap_caret(offset, self.cursor_offset());
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         self.vertical_navigation = None;
@@ -2047,6 +2250,7 @@ impl TextInput {
     /// Move the selection's live end to `offset`, keeping the soft-wrap
     /// affinity for callers that track a row themselves.
     fn extend_selection_to(&mut self, offset: usize) {
+        let offset = self.snap_caret(offset, self.cursor_offset());
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {
@@ -2060,6 +2264,71 @@ impl TextInput {
             self.selected_range.start = self.selected_range.start.min(word_range.start);
             self.selected_range.end = self.selected_range.end.max(word_range.end);
         }
+        self.selected_range = self.snap_selection(self.selected_range.clone());
+    }
+
+    /// Shift atoms after a splice of `inserted` bytes over `range`. An atom
+    /// the splice cuts into, or covers, stops being one; an insertion at
+    /// either edge leaves it whole.
+    fn splice_atoms(&mut self, range: &Range<usize>, inserted: usize) {
+        if self.atoms.is_empty() {
+            return;
+        }
+        self.atoms.retain_mut(|atom| {
+            if atom.end <= range.start {
+                return true;
+            }
+            if atom.start >= range.end {
+                atom.start = atom.start - range.len() + inserted;
+                atom.end = atom.end - range.len() + inserted;
+                return true;
+            }
+            false
+        });
+    }
+
+    /// Record the atoms an edit left as its undo step's "after" state. The
+    /// newest step is always the one that edit recorded or extended.
+    fn sync_history_atoms(&mut self) {
+        if let Some(last) = self.history.undo.last_mut() {
+            last.atoms_after.clone_from(&self.atoms);
+        }
+    }
+
+    fn atom_containing(&self, offset: usize) -> Option<&PromptToken> {
+        self.atoms
+            .iter()
+            .find(|atom| atom.start < offset && offset < atom.end)
+    }
+
+    /// Keep a caret off an atom's interior: past it in the direction of
+    /// travel from `from`, or to the nearer edge without one.
+    fn snap_caret(&self, offset: usize, from: usize) -> usize {
+        let Some(atom) = self.atom_containing(offset) else {
+            return offset;
+        };
+        if offset < from {
+            atom.start
+        } else if offset > from || atom.end - offset < offset - atom.start {
+            atom.end
+        } else {
+            atom.start
+        }
+    }
+
+    /// Grow a selection so it takes any atom it touches whole.
+    fn snap_selection(&self, range: Range<usize>) -> Range<usize> {
+        if range.is_empty() {
+            let caret = self.snap_caret(range.start, range.start);
+            return caret..caret;
+        }
+        let start = self
+            .atom_containing(range.start)
+            .map_or(range.start, |atom| atom.start);
+        let end = self
+            .atom_containing(range.end)
+            .map_or(range.end, |atom| atom.end);
+        start..end.max(start)
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
@@ -2106,6 +2375,13 @@ impl TextInput {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
+        if let Some(atom) = self
+            .atoms
+            .iter()
+            .find(|atom| atom.start < offset && offset <= atom.end)
+        {
+            return atom.start;
+        }
         self.content
             .grapheme_indices(true)
             .rev()
@@ -2114,11 +2390,24 @@ impl TextInput {
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
+        if let Some(atom) = self
+            .atoms
+            .iter()
+            .find(|atom| atom.start <= offset && offset < atom.end)
+        {
+            return atom.end;
+        }
         self.content
             .grapheme_indices(true)
             .find_map(|(index, _)| (index > offset).then_some(index))
             .unwrap_or(self.content.len())
     }
+}
+
+/// Atoms that fit `content`, sorted, with any overlap dropped.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AtomClipboard {
+    raku_prompt_tokens: Vec<PromptToken>,
 }
 
 fn previous_word_boundary(content: &str, offset: usize) -> usize {
@@ -2205,15 +2494,28 @@ impl EntityInputHandler for TextInput {
         // composition (e.g. the Accessibility Keyboard's completions).
         let composing = self.marked_range.is_some();
         let range = self.marked_range.clone().unwrap_or_else(|| {
-            range_utf16
-                .as_ref()
-                .map(|range| self.range_from_utf16(range))
-                .unwrap_or(self.selected_range.clone())
+            self.snap_selection({
+                range_utf16
+                    .as_ref()
+                    .map(|range| self.range_from_utf16(range))
+                    .unwrap_or(self.selected_range.clone())
+            })
         });
+        if !composing && self.content.get(range.clone()) == Some(new_text) {
+            let offset = range.start + new_text.len();
+            self.selected_range = offset..offset;
+            self.selection_reversed = false;
+            self.vertical_navigation = None;
+            self.pause_blink_cursor(cx);
+            cx.notify();
+            return;
+        }
         self.record_edit_history(&range, new_text, composing);
         let previous = self.content.clone();
         self.content =
             (self.content[..range.start].to_owned() + new_text + &self.content[range.end..]).into();
+        self.splice_atoms(&range, new_text.len());
+        self.sync_history_atoms();
         let offset = range.start + new_text.len();
         self.selected_range = offset..offset;
         self.marked_range = None;
@@ -2253,10 +2555,17 @@ impl EntityInputHandler for TextInput {
             (None, Some(marked)) => marked.clone(),
             (None, None) => self.selected_range.clone(),
         };
+        let range = if self.marked_range.is_none() {
+            self.snap_selection(range)
+        } else {
+            range
+        };
         self.record_edit_history(&range, new_text, true);
         let previous = self.content.clone();
         self.content =
             (self.content[..range.start].to_owned() + new_text + &self.content[range.end..]).into();
+        self.splice_atoms(&range, new_text.len());
+        self.sync_history_atoms();
         self.marked_range =
             (!new_text.is_empty()).then_some(range.start..range.start + new_text.len());
         // Empty composition text is a cancel; close its undo step so a
@@ -2539,6 +2848,9 @@ struct InputLayoutState {
 
 struct PrepaintState {
     cursor: Option<PaintQuad>,
+    /// Rounded backgrounds behind atomic tokens, one per visual row an atom
+    /// spans.
+    pills: Vec<PaintQuad>,
 }
 
 /// Find-match washes layered into [`input_text_runs`]: every match gets
@@ -2546,6 +2858,10 @@ struct PrepaintState {
 /// wins over the selection wash so the current match keeps its identity while
 /// selected — the way a find widget conventionally paints it.
 struct SearchPaint<'a> {
+    /// Atomic tokens, drawn in `atom_color` over their pill (painted
+    /// separately, since a run background cannot be rounded).
+    atoms: &'a [PromptToken],
+    atom_color: Hsla,
     matches: &'a [Range<usize>],
     active: Option<&'a Range<usize>>,
     match_color: Hsla,
@@ -2555,6 +2871,8 @@ struct SearchPaint<'a> {
 impl SearchPaint<'static> {
     fn none() -> Self {
         Self {
+            atoms: &[],
+            atom_color: gpui::transparent_black(),
             matches: &[],
             active: None,
             match_color: gpui::transparent_black(),
@@ -2587,6 +2905,10 @@ fn input_text_runs(
         boundaries.push(range.start.min(display_len));
         boundaries.push(range.end.min(display_len));
     }
+    for atom in search.atoms {
+        boundaries.push(atom.start.min(display_len));
+        boundaries.push(atom.end.min(display_len));
+    }
     boundaries.sort_unstable();
     boundaries.dedup();
 
@@ -2608,10 +2930,19 @@ fn input_text_runs(
             let start = boundary[0];
             let end = boundary[1];
             let token_index = highlight.partition_point(|(range, _)| range.end <= start);
-            let color = highlight
-                .get(token_index)
-                .filter(|(range, _)| range.start <= start && range.end >= end)
-                .map_or(base_run.color, |(_, class)| token_color(*class));
+            let atom_index = search.atoms.partition_point(|atom| atom.end <= start);
+            let in_atom = search
+                .atoms
+                .get(atom_index)
+                .is_some_and(|atom| atom.start <= start && atom.end >= end);
+            let color = if in_atom {
+                search.atom_color
+            } else {
+                highlight
+                    .get(token_index)
+                    .filter(|(range, _)| range.start <= start && range.end >= end)
+                    .map_or(base_run.color, |(_, class)| token_color(*class))
+            };
             let background_color = if search
                 .active
                 .is_some_and(|range| range.start <= start && range.end >= end)
@@ -2638,6 +2969,17 @@ fn input_text_runs(
                 ..base_run.clone()
             })
         })
+        .collect()
+}
+
+/// One rounded quad per visual row each atom covers. A soft wrap inside an
+/// atom splits it at the row edge, like any inline chip.
+fn atom_pills(atoms: &[PromptToken], layout: &TextLayout, color: Hsla) -> Vec<PaintQuad> {
+    atoms
+        .iter()
+        .filter(|atom| atom.end <= layout.len())
+        .flat_map(|atom| crate::md::render::range_rects(layout, &atom.range(), 2.5, 1.5))
+        .map(|bounds| fill(bounds, color).corner_radii(px(4.0)))
         .collect()
 }
 
@@ -2705,6 +3047,8 @@ impl Element for InputElement {
             SearchPaint::none()
         } else {
             SearchPaint {
+                atoms: &input.atoms,
+                atom_color: theme.accent,
                 matches: &input.search_matches,
                 active: input
                     .active_search_match
@@ -2812,7 +3156,11 @@ impl Element for InputElement {
             self.input
                 .update(cx, |input, _| input.caret_reconciled = Some(follow_state));
         }
-        PrepaintState { cursor }
+        let pills = {
+            let input = self.input.read(cx);
+            atom_pills(&input.atoms, &layout, theme.accent.opacity(0.13))
+        };
+        PrepaintState { cursor, pills }
     }
 
     fn paint(
@@ -2847,6 +3195,9 @@ impl Element for InputElement {
                 }
             }
         });
+        for pill in prepaint.pills.drain(..) {
+            window.paint_quad(pill);
+        }
         layout_state.text.paint(
             None,
             None,
@@ -3040,10 +3391,10 @@ impl Focusable for TextInput {
 #[derive(Clone)]
 pub enum ComposerEvent {
     /// Enter: send the prompt, or queue it behind the running turn.
-    Submit(String),
+    Submit(String, Vec<PromptToken>),
     /// Primary modifier + Enter: deliver the prompt into the running turn
     /// instead of queueing it behind the turn.
-    SubmitSteer(String),
+    SubmitSteer(String, Vec<PromptToken>),
     /// Primary modifier + Enter in an empty composer: activate the oldest
     /// queued follow-up's Steer control.
     SteerQueued,
@@ -3091,6 +3442,7 @@ impl ComposerInput {
                 .media_paste()
                 .placeholder(tr!("input.do_anything"))
         });
+        input.update(cx, |input, _| input.accepts_atoms = true);
         let focus_handle = input.read(cx).focus();
         let _subscriptions = vec![
             cx.subscribe(&input, |composer, _, event: &InputEvent, cx| match event {
@@ -3099,8 +3451,11 @@ impl ComposerInput {
                     // alone is nothing to send.
                     let value = raw.trim().to_owned();
                     if !value.is_empty() {
+                        let leading = raw.len() - raw.trim_start().len();
+                        let tokens =
+                            PromptToken::rebased(composer.atoms(cx), &value, -(leading as isize));
                         composer.input.update(cx, |input, cx| input.clear(cx));
-                        cx.emit(ComposerEvent::Submit(value));
+                        cx.emit(ComposerEvent::Submit(value, tokens));
                     }
                 }
                 InputEvent::Focus => cx.emit(ComposerEvent::Focus),
@@ -3194,6 +3549,34 @@ impl ComposerInput {
             .update(cx, |input, cx| input.replace_range(range, text, cx));
     }
 
+    /// Splice `text` over `range` with an atomic token at its start, as the
+    /// autocomplete accepts a row. `token` is relative to `range.start`.
+    pub fn insert_atom(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        token: PromptToken,
+        cx: &mut Context<Self>,
+    ) {
+        self.input
+            .update(cx, |input, cx| input.insert_atom(range, text, token, cx));
+    }
+
+    pub fn atoms<'a>(&self, cx: &'a App) -> &'a [PromptToken] {
+        self.input.read(cx).atoms()
+    }
+
+    pub fn set_content_with_atoms(
+        &mut self,
+        content: impl Into<SharedString>,
+        atoms: Vec<PromptToken>,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            input.set_content_with_atoms(content, atoms, cx)
+        });
+    }
+
     pub fn preserve_visual_focus_for_context_menu(
         &mut self,
         window: &Window,
@@ -3245,8 +3628,10 @@ impl Render for ComposerInput {
                     cx.emit(ComposerEvent::SteerQueued);
                     return;
                 }
+                let leading = composer.content(cx).len() - composer.content(cx).trim_start().len();
+                let tokens = PromptToken::rebased(composer.atoms(cx), &value, -(leading as isize));
                 composer.input.update(cx, |input, cx| input.clear(cx));
-                cx.emit(ComposerEvent::SubmitSteer(value));
+                cx.emit(ComposerEvent::SubmitSteer(value, tokens));
             }))
             .child(self.input.clone())
     }
@@ -3382,13 +3767,186 @@ mod tests {
         composer.update(cx, |composer, cx| composer.set_content("hold on", cx));
         events.borrow_mut().clear();
         cx.simulate_keystrokes("secondary-enter");
-        assert!(
-            events.borrow().iter().any(
-                |event| matches!(event, ComposerEvent::SubmitSteer(text) if text == "hold on")
-            )
-        );
+        assert!(events.borrow().iter().any(
+            |event| matches!(event, ComposerEvent::SubmitSteer(text, _) if text == "hold on")
+        ));
         cx.read_entity(&composer, |composer, cx| {
             assert_eq!(composer.content(cx), "")
+        });
+    }
+
+    fn skill_atom(start: usize) -> super::PromptToken {
+        super::PromptToken {
+            start,
+            end: start + "@deploy".len(),
+            kind: crate::composer_complete::PromptTokenKind::Skill,
+            name: "deploy".into(),
+        }
+    }
+
+    #[gpui::test]
+    fn atomic_tokens_move_select_delete_and_undo_as_one(cx: &mut TestAppContext) {
+        let (input, cx) = setup_input(cx, "看 @deploy now", px(300.));
+        input.update(cx, |input, cx| {
+            input.set_content_with_atoms("看 @deploy now", vec![skill_atom(4)], cx);
+            input.select_range(11..11, cx);
+        });
+        cx.simulate_keystrokes("left");
+        cx.read_entity(&input, |input, _| assert_eq!(input.cursor(), 4));
+        cx.simulate_keystrokes("right");
+        cx.read_entity(&input, |input, _| assert_eq!(input.cursor(), 11));
+        input.update(cx, |input, cx| input.select_range(6..7, cx));
+        cx.read_entity(&input, |input, _| assert_eq!(input.selected_range(), 4..11));
+        cx.simulate_keystrokes("backspace");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.content(), "看  now");
+            assert!(input.atoms().is_empty());
+        });
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.content(), "看 @deploy now");
+            assert_eq!(input.atoms(), [skill_atom(4)]);
+        });
+        input.update(cx, |input, cx| input.replace_range(0..0, "🙂 ", cx));
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.atoms(), [skill_atom(9)])
+        });
+    }
+
+    #[gpui::test]
+    fn vertical_navigation_paints_at_the_snapped_token_edge(cx: &mut TestAppContext) {
+        let (input, cx) = setup_input(cx, "MMMM\n@deploy rest", px(300.));
+        input.update(cx, |input, cx| {
+            input.set_content_with_atoms("MMMM\n@deploy rest", vec![skill_atom(5)], cx);
+            input.select_range(3..3, cx);
+        });
+        cx.simulate_keystrokes("down");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.cursor(), 12);
+            let layout = input.last_layout.as_ref().unwrap();
+            let navigation = input.vertical_navigation.unwrap();
+            let expected =
+                layout.position_for_index(input.cursor()).unwrap().x - layout.bounds().left();
+            assert!((navigation.cursor_x - expected).abs() < px(0.1));
+        });
+    }
+
+    #[gpui::test]
+    fn copying_pasting_cutting_and_redo_keep_token_identity(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        composer.update(cx, |composer, cx| {
+            composer.set_content_with_atoms("@deploy", vec![skill_atom(0)], cx)
+        });
+        cx.simulate_keystrokes("secondary-a secondary-c");
+        composer.update(cx, |composer, cx| composer.set_content("go ", cx));
+        cx.simulate_keystrokes("secondary-v");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), "go @deploy");
+            assert_eq!(composer.atoms(cx), [skill_atom(3)]);
+        });
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), "go ");
+            assert!(composer.atoms(cx).is_empty());
+        });
+        cx.simulate_keystrokes("secondary-shift-z secondary-a secondary-x");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.content(cx), "")
+        });
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.atoms(cx), [skill_atom(3)])
+        });
+    }
+
+    #[gpui::test]
+    fn replacing_identical_text_can_change_only_its_token_identity(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        composer.update(cx, |composer, cx| {
+            composer.set_content_with_atoms("@deploy", vec![skill_atom(0)], cx)
+        });
+        cx.simulate_keystrokes("secondary-a secondary-c");
+        let mut file = skill_atom(0);
+        file.kind = crate::composer_complete::PromptTokenKind::File;
+        composer.update(cx, |composer, cx| {
+            composer.set_content_with_atoms("@deploy", vec![file.clone()], cx)
+        });
+        cx.simulate_keystrokes("secondary-a secondary-v");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.atoms(cx), [skill_atom(0)])
+        });
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.atoms(cx), [file.clone()])
+        });
+        cx.simulate_keystrokes("secondary-shift-z");
+        cx.read_entity(&composer, |composer, cx| {
+            assert_eq!(composer.atoms(cx), [skill_atom(0)])
+        });
+    }
+
+    #[gpui::test]
+    fn accepting_an_exact_completion_is_still_an_undoable_token_edit(cx: &mut TestAppContext) {
+        let (input, cx) = setup_input(cx, "@deploy", px(300.));
+        input.update(cx, |input, cx| {
+            input.insert_atom(0..7, "@deploy", skill_atom(0), cx)
+        });
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.atoms(), [skill_atom(0)])
+        });
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.content(), "@deploy");
+            assert!(input.atoms().is_empty());
+        });
+        cx.simulate_keystrokes("secondary-shift-z");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.atoms(), [skill_atom(0)])
+        });
+    }
+
+    #[gpui::test]
+    fn composer_send_captures_rebased_tokens_before_clearing(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        let events: Rc<RefCell<Vec<ComposerEvent>>> = Rc::default();
+        let sink = events.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&composer, move |_, event: &ComposerEvent, _| {
+                sink.borrow_mut().push(event.clone())
+            })
+            .detach();
+            composer.update(cx, |composer, cx| {
+                composer.set_content_with_atoms(" \n@deploy  ", vec![skill_atom(2)], cx)
+            });
+        });
+        cx.simulate_keystrokes("enter");
+        assert!(events.borrow().iter().any(|event| matches!(event, ComposerEvent::Submit(text, tokens) if text == "@deploy" && *tokens == [skill_atom(0)])));
+        cx.read_entity(&composer, |composer, cx| {
+            assert!(composer.content(cx).is_empty());
+            assert!(composer.atoms(cx).is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn ime_replacement_never_leaves_half_a_token(cx: &mut TestAppContext) {
+        let (input, cx) = setup_input(cx, "@deploy tail", px(300.));
+        input.update(cx, |input, cx| {
+            input.set_content_with_atoms("@deploy tail", vec![skill_atom(0)], cx)
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(Some(2..3), "漢", Some(1..1), window, cx);
+                input.replace_text_in_range(None, "漢字", window, cx);
+            })
+        });
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.content(), "漢字 tail");
+            assert!(input.atoms().is_empty());
+        });
+        cx.simulate_keystrokes("secondary-z");
+        cx.read_entity(&input, |input, _| {
+            assert_eq!(input.content(), "@deploy tail");
+            assert_eq!(input.atoms(), [skill_atom(0)]);
         });
     }
 
@@ -3770,6 +4328,7 @@ mod tests {
                 key,
                 at..at,
                 false,
+                &[],
                 start + gap * index as u32,
             );
             content.insert_str(at, key);
@@ -3793,7 +4352,7 @@ mod tests {
         );
         assert_eq!(content, "fn abcmain() {}");
 
-        let (restored, selection, _) = history.undo(&content).unwrap();
+        let (restored, selection, _, _) = history.undo(&content).unwrap();
         assert_eq!(restored, "fn main() {}");
         assert_eq!(selection, 3..3, "caret returns to where typing began");
         assert!(
@@ -3801,7 +4360,7 @@ mod tests {
             "the whole run is one step"
         );
 
-        let (redone, selection, _) = history.redo(&restored).unwrap();
+        let (redone, selection, _, _) = history.redo(&restored).unwrap();
         assert_eq!(redone, "fn abcmain() {}");
         assert_eq!(selection, 6..6, "caret lands after the reapplied text");
     }
@@ -3829,7 +4388,7 @@ mod tests {
         let mut content = String::from("hello");
         let start = Instant::now();
         // Backspace twice: each records the extended selection it deletes.
-        history.record(&content, &(4..5), "", 4..5, false, start);
+        history.record(&content, &(4..5), "", 4..5, false, &[], start);
         content.replace_range(4..5, "");
         history.record(
             &content,
@@ -3837,12 +4396,13 @@ mod tests {
             "",
             3..4,
             false,
+            &[],
             start + Duration::from_millis(50),
         );
         content.replace_range(3..4, "");
         assert_eq!(content, "hel");
 
-        let (restored, selection, _) = history.undo(&content).unwrap();
+        let (restored, selection, _, _) = history.undo(&content).unwrap();
         assert_eq!(restored, "hello");
         assert_eq!(selection, 4..5, "the first deletion's selection returns");
         assert!(history.undo(&restored).is_none());
@@ -3854,7 +4414,7 @@ mod tests {
         let mut content = String::from("abcdef");
         let start = Instant::now();
         // Type "x" over the selected "cde", then keep typing.
-        history.record(&content, &(2..5), "x", 2..5, false, start);
+        history.record(&content, &(2..5), "x", 2..5, false, &[], start);
         content.replace_range(2..5, "x");
         type_at(
             &mut history,
@@ -3866,7 +4426,7 @@ mod tests {
         );
         assert_eq!(content, "abxyf");
 
-        let (restored, selection, _) = history.undo(&content).unwrap();
+        let (restored, selection, _, _) = history.undo(&content).unwrap();
         assert_eq!(restored, "abcdef");
         assert_eq!(selection, 2..5, "the replaced selection comes back");
         assert!(history.undo(&restored).is_none());
@@ -3924,6 +4484,7 @@ mod tests {
             replaced,
             0..content.len(),
             false,
+            &[],
             Instant::now(),
         );
         let record = history.undo.last().unwrap();
@@ -3960,17 +4521,17 @@ mod tests {
         let mut history = EditHistory::default();
         let start = Instant::now();
         let mut content = String::from("ab");
-        history.record_composition(&content, &(1..1), "k", 1..1, false, start);
+        history.record_composition(&content, &(1..1), "k", 1..1, false, &[], start);
         content.replace_range(1..1, "k");
-        history.record_composition(&content, &(1..2), "か", 1..2, false, start);
+        history.record_composition(&content, &(1..2), "か", 1..2, false, &[], start);
         content.replace_range(1..2, "か");
-        history.record_composition(&content, &(1..4), "漢字", 1..4, false, start);
+        history.record_composition(&content, &(1..4), "漢字", 1..4, false, &[], start);
         content.replace_range(1..4, "漢字");
         history.finalize_composition();
         assert_eq!(content, "a漢字b");
         assert_eq!(history.undo.len(), 1);
 
-        let (restored, selection, _) = history.undo(&content).unwrap();
+        let (restored, selection, _, _) = history.undo(&content).unwrap();
         assert_eq!(restored, "ab");
         assert_eq!(selection, 1..1);
 
@@ -3983,9 +4544,9 @@ mod tests {
         let mut history = EditHistory::default();
         let start = Instant::now();
         let mut content = String::from("ab");
-        history.record_composition(&content, &(1..1), "k", 1..1, false, start);
+        history.record_composition(&content, &(1..1), "k", 1..1, false, &[], start);
         content.replace_range(1..1, "k");
-        history.record_composition(&content, &(1..2), "", 1..2, false, start);
+        history.record_composition(&content, &(1..2), "", 1..2, false, &[], start);
         content.replace_range(1..2, "");
         history.finalize_composition();
         assert_eq!(content, "ab");
@@ -4224,6 +4785,8 @@ mod tests {
             &[],
             |_| plain,
             SearchPaint {
+                atoms: &[],
+                atom_color: plain,
                 matches: &matches,
                 active: Some(&active),
                 match_color,

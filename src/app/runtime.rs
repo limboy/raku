@@ -1818,6 +1818,7 @@ impl Raku {
         &self,
         session_id: Uuid,
         prompt: String,
+        tokens: Vec<crate::composer_complete::PromptToken>,
         cx: &mut Context<Self>,
     ) {
         let composer = self.composer.clone();
@@ -1829,7 +1830,7 @@ impl Raku {
                 if raku.state.selected_session == Some(session_id) {
                     composer.update(cx, |input, cx| {
                         if input.content(cx).is_empty() {
-                            input.set_content(prompt, cx);
+                            input.set_content_with_atoms(prompt, tokens, cx);
                         }
                     });
                 }
@@ -1850,7 +1851,7 @@ impl Raku {
             turn_count,
             workspace,
         } = action;
-        let Some((message_index, initial_message, attachments)) = self
+        let Some((message_index, initial_message, attachments, tokens)) = self
             .state
             .sessions
             .iter()
@@ -1877,6 +1878,7 @@ impl Raku {
                                     index,
                                     message.visible_content().to_owned(),
                                     message.attachments.clone(),
+                                    message.tokens.clone(),
                                 )
                             })
                     })
@@ -1893,17 +1895,19 @@ impl Raku {
             input.set_text_size(text_size, cx);
             input
         });
-        input.update(cx, |input, cx| input.set_content(initial_message, cx));
+        input.update(cx, |input, cx| {
+            input.set_content_with_atoms(initial_message, tokens, cx)
+        });
         cx.subscribe(
             &input,
             |this: &mut Self, _, event: &ComposerEvent, cx| match event {
-                ComposerEvent::Submit(prompt) => {
-                    this.submit_message_edit_prompt(prompt.clone(), cx)
+                ComposerEvent::Submit(prompt, tokens) => {
+                    this.submit_message_edit_prompt(prompt.clone(), tokens.clone(), cx)
                 }
                 // An edited past message resubmits from that point; there is
                 // no running turn for it to steer.
-                ComposerEvent::SubmitSteer(prompt) => {
-                    this.submit_message_edit_prompt(prompt.clone(), cx)
+                ComposerEvent::SubmitSteer(prompt, tokens) => {
+                    this.submit_message_edit_prompt(prompt.clone(), tokens.clone(), cx)
                 }
                 ComposerEvent::SteerQueued => {}
                 ComposerEvent::Edited => cx.notify(),
@@ -1958,10 +1962,20 @@ impl Raku {
             .as_ref()
             .map(|edit| edit.input.read(cx).content(cx).to_owned())
             .unwrap_or_default();
-        self.submit_message_edit_prompt(prompt, cx);
+        let tokens = self
+            .message_edit
+            .as_ref()
+            .map(|edit| edit.input.read(cx).atoms(cx).to_vec())
+            .unwrap_or_default();
+        self.submit_message_edit_prompt(prompt, tokens, cx);
     }
 
-    fn submit_message_edit_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
+    fn submit_message_edit_prompt(
+        &mut self,
+        prompt: String,
+        tokens: Vec<crate::composer_complete::PromptToken>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(edit) = self.message_edit.clone() else {
             return;
         };
@@ -1971,6 +1985,13 @@ impl Raku {
         // Keyboard submission clears ComposerInput after emitting its event.
         // Use the event's captured value rather than rereading the field; the
         // button path enters here with its own pre-clear content as well.
+        let leading = prompt.len() - prompt.trim_start().len();
+        let tokens = crate::composer_complete::PromptToken::rebased(
+            &tokens,
+            prompt.trim(),
+            -(leading as isize),
+        );
+        let tokens = self.composer_prompt_tokens(prompt.trim(), &tokens);
         let prompt = prompt.trim().to_owned();
         if prompt.is_empty() && edit.attachments.is_empty() {
             self.show_toast(tr!("session.edited_message_empty"));
@@ -1992,6 +2013,15 @@ impl Raku {
             workspace: edit.workspace,
         };
         let attachments = edit.attachments.clone();
+        // Keyboard Send consumed the field before the owner received it.
+        // Keep the hidden editor intact if rewinding fails and restores it.
+        let visible_prompt = display_content
+            .as_deref()
+            .unwrap_or(&provider_prompt)
+            .to_owned();
+        edit.input.update(cx, |input, cx| {
+            input.set_content_with_atoms(visible_prompt, tokens.clone(), cx)
+        });
         self.start_message_rewind(
             target,
             Some(edit),
@@ -1999,6 +2029,7 @@ impl Raku {
                 prompt: provider_prompt,
                 display_content,
                 attachments,
+                tokens,
             },
             cx,
         );
@@ -2030,6 +2061,7 @@ impl Raku {
                 prompt: message.content.clone(),
                 display_content: message.display_content.clone(),
                 attachments: message.attachments.clone(),
+                tokens: message.tokens.clone(),
             });
         let Some(submission) = submission else {
             self.show_toast(tr!("session.message_unavailable"));
@@ -2197,6 +2229,7 @@ impl Raku {
             message.content = submission.prompt.clone();
             message.display_content = submission.display_content.clone();
             message.attachments = submission.attachments.clone();
+            message.tokens = submission.tokens.clone();
             session.status = SessionStatus::Connecting;
             session.updated_at = unix_time();
             Some(original)
@@ -2842,6 +2875,9 @@ impl Raku {
             return;
         }
         if session.provider.capabilities().compaction.manual
+            && !submission.tokens.iter().any(|token| {
+                token.start == 0 && token.kind == crate::composer_complete::PromptTokenKind::Skill
+            })
             && let Some(focus) = compaction::compact_invocation(&submission.prompt)
         {
             let id = session.id;
@@ -2905,7 +2941,11 @@ impl Raku {
             self.enqueue_follow_up_submission(session.id, submission, cx);
             return;
         }
-        let provider_prompt = self.resolve_skill_submission(session.provider, &submission.prompt);
+        let provider_prompt = self.resolve_skill_submission(
+            session.provider,
+            &submission.prompt,
+            &submission.transport_tokens(),
+        );
         if let Some(runtime) = self.runtimes.get_mut(&session.id) {
             runtime.driver.steer(provider_prompt);
             runtime.pending_steers.push_back(submission);
@@ -2925,16 +2965,32 @@ impl Raku {
 
     /// Resolve presentation-preserving composer syntax immediately before a
     /// prompt crosses into a provider transport.
-    fn resolve_provider_submission(&self, provider: ProviderKind, prompt: &str) -> String {
-        crate::composer_complete::resolved_submission(provider, prompt, &self.slash_command_index)
-            .unwrap_or_else(|| prompt.to_owned())
+    fn resolve_provider_submission(
+        &self,
+        provider: ProviderKind,
+        prompt: &str,
+        tokens: &[crate::composer_complete::PromptToken],
+    ) -> String {
+        crate::composer_complete::resolved_submission(
+            provider,
+            prompt,
+            tokens,
+            &self.slash_command_index,
+        )
+        .unwrap_or_else(|| prompt.to_owned())
     }
 
     /// Resolve only provider-native skill syntax for a live steering message.
-    pub(super) fn resolve_skill_submission(&self, provider: ProviderKind, prompt: &str) -> String {
+    pub(super) fn resolve_skill_submission(
+        &self,
+        provider: ProviderKind,
+        prompt: &str,
+        tokens: &[crate::composer_complete::PromptToken],
+    ) -> String {
         crate::composer_complete::resolved_skill_submission(
             provider,
             prompt,
+            tokens,
             &self.slash_command_index,
         )
         .unwrap_or_else(|| prompt.to_owned())
@@ -2946,6 +3002,12 @@ impl Raku {
         mut submission: ComposerSubmission,
         cx: &mut Context<Self>,
     ) {
+        let leading = submission.prompt.len() - submission.prompt.trim_start().len();
+        submission.tokens = crate::composer_complete::PromptToken::rebased(
+            &submission.tokens,
+            submission.prompt.trim(),
+            -(leading as isize),
+        );
         submission.prompt = submission.prompt.trim().to_owned();
         if submission.prompt.is_empty() {
             return;
@@ -3109,6 +3171,9 @@ impl Raku {
             .iter()
             .find(|session| session.id == session_id)?;
         if session.provider.capabilities().compaction.manual
+            && !submission.tokens.iter().any(|token| {
+                token.start == 0 && token.kind == crate::composer_complete::PromptTokenKind::Skill
+            })
             && let Some(focus) = compaction::compact_invocation(&submission.prompt)
         {
             self.request_session_compaction(session_id, focus.map(str::to_owned), cx);
@@ -3184,10 +3249,11 @@ impl Raku {
         };
         let transcript_anchor = if let Some(session) = self.state.session_mut(session_id) {
             session.set_title_from_prompt(&human_prompt);
-            let turn_id = session.begin_turn_with_presentation(
+            let turn_id = session.begin_turn_with_tokens(
                 &prompt,
                 submission.display_content.clone(),
                 submission.attachments.clone(),
+                submission.tokens.clone(),
             );
             if let Some(turn) = session.turns.last_mut() {
                 turn.model = turn_model;
@@ -3437,8 +3503,11 @@ impl Raku {
         // and the transport. The user message keeps the typed slash form,
         // while templates expand and skills adopt provider-native syntax.
         // Claude's commands pass through untouched; its CLI owns expansion.
-        let prompt = submission.prompt;
-        let driver_prompt = self.resolve_provider_submission(provider, &prompt);
+        let driver_prompt = self.resolve_provider_submission(
+            provider,
+            &submission.prompt,
+            &submission.transport_tokens(),
+        );
         let mut failed_to_start = false;
         match driver {
             Ok(driver) => driver.prompt(driver_prompt),

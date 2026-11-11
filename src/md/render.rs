@@ -33,6 +33,7 @@ use gpui::{
     StyledText, TextLayout, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*,
     px, quad, relative, size,
 };
+use raku_protocol::composer::PromptToken;
 use regex::Regex;
 
 use super::file_links::FileLinks;
@@ -321,6 +322,7 @@ pub struct FlatText {
     pub runs: Vec<TextRun>,
     pub links: Vec<(Range<usize>, String)>,
     pub code_ranges: Vec<Range<usize>>,
+    pub token_ranges: Vec<Range<usize>>,
     pub math: Option<Rc<math_text::MathData>>,
     pub(crate) active_link: Option<Rc<Cell<Option<usize>>>>,
 }
@@ -371,6 +373,7 @@ pub fn flatten(
     let mut out: Vec<TextRun> = Vec::with_capacity(runs.len());
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
     let mut code_ranges: Vec<Range<usize>> = Vec::new();
+    let mut token_ranges = Vec::new();
     let mut math = Vec::new();
 
     for run in runs {
@@ -380,6 +383,9 @@ pub fn flatten(
         let start = text.len();
         text.push_str(&run.text);
         let end = text.len();
+        if run.style.prompt_token.is_some() {
+            token_ranges.push(start..end);
+        }
         if run.style.math {
             math.push(math_text::MathSpan {
                 range: start..end,
@@ -392,17 +398,19 @@ pub fn flatten(
         // is a link: the mono face, the code colour and the wash would put the
         // link underline inside the chip, so clickable code takes the
         // paragraph's link styling instead.
-        let file_target = (run.style.code && run.style.link.is_none())
-            .then(|| {
-                file_links.and_then(|index| {
-                    index.resolve(&run.text).or_else(|| {
-                        run.text
-                            .strip_prefix('@')
-                            .and_then(|path| index.resolve(path))
-                    })
+        let file_target = ((run.style.code
+            || run.style.prompt_token == Some(raku_protocol::composer::PromptTokenKind::File))
+            && run.style.link.is_none())
+        .then(|| {
+            file_links.and_then(|index| {
+                index.resolve(&run.text).or_else(|| {
+                    run.text
+                        .strip_prefix('@')
+                        .and_then(|path| index.resolve(path))
                 })
             })
-            .flatten();
+        })
+        .flatten();
         let link = run.style.link.as_ref().or(file_target.as_ref());
         let as_code = run.style.code && link.is_none();
 
@@ -449,7 +457,11 @@ pub fn flatten(
             font: run_font,
             // Inline code keeps the prose color; the mono face and the wash
             // already set it apart, so a hue would only add noise.
-            color: base_color,
+            color: if run.style.prompt_token.is_some() {
+                palette.accent
+            } else {
+                base_color
+            },
             // Inline code's wash is painted as *rounded* quads by the canvas
             // underlay; a run background could only ever be a square box.
             background_color: None,
@@ -466,6 +478,7 @@ pub fn flatten(
         if link.is_none()
             && !run.style.code
             && !run.style.math
+            && run.style.prompt_token.is_none()
             && let Some(index) = file_links
         {
             let mut cursor = 0;
@@ -505,6 +518,7 @@ pub fn flatten(
         runs: out,
         links,
         code_ranges,
+        token_ranges,
         math: (!math.is_empty()).then(|| Rc::new(math_text::MathData::new(math))),
         active_link,
     }
@@ -537,6 +551,7 @@ pub fn flatten_plain(
         runs,
         links: Vec::new(),
         code_ranges: Vec::new(),
+        token_ranges: Vec::new(),
         math: None,
         active_link: None,
     }
@@ -551,6 +566,7 @@ pub fn flatten_plain(
 /// elements and reuses every settled one.
 pub struct MarkdownView {
     parser: IncrementalParser,
+    prompt_tokens: Vec<PromptToken>,
     /// Mended replacement for the final block while streaming.
     tail: Vec<TopBlock>,
     flats: RefCell<HashMap<usize, Rc<FlatText>>>,
@@ -585,6 +601,7 @@ impl MarkdownView {
     pub fn new() -> Self {
         Self {
             parser: IncrementalParser::new(),
+            prompt_tokens: Vec::new(),
             tail: Vec::new(),
             flats: RefCell::new(HashMap::new()),
             volatile_from: Cell::new(0),
@@ -654,6 +671,25 @@ impl MarkdownView {
                     .retain(|ordinal, _| *ordinal < boundary);
             }
         }
+    }
+
+    /// Cache a settled prompt's token-aware parse once, keeping work off frames.
+    pub fn set_prompt(&mut self, text: &str, tokens: &[PromptToken]) {
+        if self.parser.text() == text && self.prompt_tokens == tokens {
+            return;
+        }
+        // Cache the received metadata, including invalid spans, so malformed
+        // persisted data cannot force a reparse on every frame. The parser
+        // validates spans before using them.
+        self.prompt_tokens = tokens.to_vec();
+        if self.prompt_tokens.is_empty() {
+            self.parser.reset(text);
+        } else {
+            self.parser.reset_prompt(text, &self.prompt_tokens);
+        }
+        self.tail.clear();
+        self.flats.borrow_mut().clear();
+        self.streaming.set(false);
     }
 
     pub fn is_fading(&self) -> bool {
@@ -947,6 +983,7 @@ fn text_element_with_selection(
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
     code_wash: Hsla,
+    token_wash: Hsla,
     selection_wash: Hsla,
     search_match_wash: Hsla,
     active_search_match_wash: Hsla,
@@ -984,21 +1021,24 @@ fn text_element_with_selection(
     let underlay = canvas(|_, _, _| (), {
         let text = flat.text.clone();
         let code_ranges = flat.code_ranges.clone();
+        let token_ranges = flat.token_ranges.clone();
         let layout = layout.clone();
         let key = key.clone();
         let links = flat.links.clone();
         let active_link = flat.active_link.clone();
         move |_, _, window, _| {
-            for range in &code_ranges {
-                for rect in range_rects(&layout, range, CODE_WASH_PAD_X, CODE_WASH_INSET_Y) {
-                    window.paint_quad(quad(
-                        rect,
-                        px(CODE_WASH_RADIUS),
-                        code_wash,
-                        px(0.0),
-                        gpui::transparent_black(),
-                        BorderStyle::default(),
-                    ));
+            for (ranges, wash) in [(&code_ranges, code_wash), (&token_ranges, token_wash)] {
+                for range in ranges {
+                    for rect in range_rects(&layout, range, CODE_WASH_PAD_X, CODE_WASH_INSET_Y) {
+                        window.paint_quad(quad(
+                            rect,
+                            px(CODE_WASH_RADIUS),
+                            wash,
+                            px(0.0),
+                            gpui::transparent_black(),
+                            BorderStyle::default(),
+                        ));
+                    }
                 }
             }
             if let Some(search) = &search {
@@ -1141,6 +1181,7 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
             runs: flat.runs.clone(),
             links,
             code_ranges: flat.code_ranges.clone(),
+            token_ranges: flat.token_ranges.clone(),
             math: flat.math.clone(),
             active_link: Some(flat.active_link.clone().unwrap_or_default()),
         }
@@ -1157,6 +1198,7 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
         ctx.search.clone(),
         ctx.link_handler.clone(),
         ctx.palette.code_wash,
+        ctx.palette.accent.opacity(0.13),
         ctx.palette.selection,
         ctx.palette.search_match,
         ctx.palette.active_search_match,
@@ -1206,6 +1248,7 @@ pub fn selectable_flat_text(
         None,
         None,
         code_wash,
+        code_wash,
         selection_wash,
         gpui::transparent_black(),
         gpui::transparent_black(),
@@ -1248,6 +1291,7 @@ pub fn flatten_tinted(
         text,
         links: Vec::new(),
         code_ranges: Vec::new(),
+        token_ranges: Vec::new(),
         math: None,
         active_link: None,
     }
@@ -1289,7 +1333,7 @@ pub fn frame_reset(selection: TranscriptSelection) -> impl IntoElement {
 /// window coordinates, from the laid-out text's own geometry. `pad_x` overhangs
 /// horizontally (inline code) and `inset_y` shrinks vertically; a selection
 /// wash passes zero for both so its boxes tile seamlessly across wrapped rows.
-fn range_rects(
+pub(crate) fn range_rects(
     layout: &TextLayout,
     range: &Range<usize>,
     pad_x: f32,
@@ -1528,12 +1572,22 @@ fn block_ordinal_base(block_ix: usize) -> usize {
 /// shapes and advances the same element ordinals as [`render_block`], keeping
 /// off-screen search results aligned with the exact glyph ranges that appear
 /// once their virtualized transcript row mounts.
+#[cfg(test)]
 pub fn markdown_search_matches(
     source: &str,
     regex: &Regex,
     cap: usize,
 ) -> (Vec<TextSearchMatch>, bool) {
-    let tree = super::parser::parse(source);
+    markdown_prompt_search_matches(source, &[], regex, cap)
+}
+
+pub fn markdown_prompt_search_matches(
+    source: &str,
+    tokens: &[PromptToken],
+    regex: &Regex,
+    cap: usize,
+) -> (Vec<TextSearchMatch>, bool) {
+    let tree = super::parser::parse_with_tokens(source, tokens);
     let mut matches = Vec::new();
     for (block_ix, top) in tree.blocks.iter().enumerate() {
         let mut ordinal = block_ordinal_base(block_ix);
@@ -2141,6 +2195,7 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
             runs: code_runs(code, lang, &code_font, ctx.palette.secondary, ctx.palette),
             links: Vec::new(),
             code_ranges: Vec::new(),
+            token_ranges: Vec::new(),
             math: None,
             active_link: None,
         }
@@ -2597,6 +2652,59 @@ mod tests {
 
     fn palette() -> Palette {
         Palette::from_theme(&Theme::dark())
+    }
+
+    #[test]
+    fn prompt_pills_keep_their_kind_when_a_file_has_the_same_name() {
+        use raku_protocol::composer::{PromptToken, PromptTokenKind};
+        let source = "@deploy";
+        let files = FileLinks::new(std::path::Path::new("/workspace"), ["deploy"]);
+        for kind in [PromptTokenKind::Skill, PromptTokenKind::File] {
+            let tree = parser::parse_with_tokens(
+                source,
+                &[PromptToken {
+                    start: 0,
+                    end: 7,
+                    kind,
+                    name: "deploy".into(),
+                }],
+            );
+            let Block::Paragraph { runs } = &tree.blocks[0].block else {
+                panic!("paragraph");
+            };
+            let flat = flatten(
+                runs,
+                &palette(),
+                FontWeight::NORMAL,
+                palette().text,
+                Some(&files),
+            );
+            assert_eq!(flat.text.as_ref(), source);
+            assert_eq!(flat.token_ranges.len(), 1);
+            assert_eq!(flat.token_ranges[0], 0..7);
+            assert_eq!(flat.links.is_empty(), kind == PromptTokenKind::Skill);
+        }
+    }
+
+    #[test]
+    fn invalid_prompt_metadata_is_cached_without_reparsing_each_frame() {
+        use raku_protocol::composer::{PromptToken, PromptTokenKind};
+        let tokens = [PromptToken {
+            start: 1,
+            end: 1000,
+            kind: PromptTokenKind::Skill,
+            name: "deploy".into(),
+        }];
+        let mut view = MarkdownView::new();
+        view.set_prompt("@deploy", &tokens);
+        let original = view.flat(0, || {
+            flatten_plain("@deploy", SANS_FAMILY, FontWeight::NORMAL, palette().text)
+        });
+        view.set_prompt("@deploy", &tokens);
+        let cached = view.flat(0, || {
+            panic!("unchanged metadata must keep the flattened cache")
+        });
+        assert!(Rc::ptr_eq(&original, &cached));
     }
 
     #[test]

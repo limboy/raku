@@ -5,7 +5,8 @@ use std::ops::Range;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
 pub use raku_protocol::composer::{
-    CommandScope, FileEntry, SlashCommand, Trigger, TriggerKind, detect_trigger,
+    CommandScope, FileEntry, PromptToken, PromptTokenKind, SlashCommand, Trigger, TriggerKind,
+    detect_trigger, resolved_skill_submission,
 };
 use raku_protocol::model::{ProviderKind, ProviderModelOption, ReportedCommand, SubagentToolAgent};
 
@@ -40,15 +41,56 @@ pub fn merge_reported_commands(
     merged
 }
 
-/// The composer spelling of an autocomplete entry: `$name` for a skill,
-/// `/name` for every other command.
-pub fn command_composer_text(command: &SlashCommand) -> String {
-    let sigil = if command.scope == CommandScope::Skill {
-        '$'
-    } else {
-        '/'
-    };
+/// The composer spelling of an autocomplete entry accepted under `sigil`:
+/// `/name` from the `/` list, or `@name` for a referenced skill.
+pub fn command_composer_text(command: &SlashCommand, sigil: char) -> String {
     format!("{sigil}{}", command.name)
+}
+
+/// What kind of token accepting `command` inserts.
+pub fn command_token_kind(command: &SlashCommand) -> PromptTokenKind {
+    if command.scope == CommandScope::Skill {
+        PromptTokenKind::Skill
+    } else {
+        PromptTokenKind::Command
+    }
+}
+
+/// Exact typed references become tokens at submission too. Files take
+/// precedence over inferred skills; a selected token always keeps its kind.
+pub fn reference_tokens(
+    prompt: &str,
+    tokens: &[PromptToken],
+    commands: &[SlashCommand],
+    files: &[FileEntry],
+    agents: &[SubagentToolAgent],
+) -> Vec<PromptToken> {
+    let mut tokens = PromptToken::normalized(tokens.to_vec(), prompt);
+    for range in raku_protocol::composer::typed_prompt_ranges(prompt) {
+        let Some(name) = prompt[range.clone()].strip_prefix('@') else {
+            continue;
+        };
+        if tokens
+            .iter()
+            .any(|token| token.start < range.end && range.start < token.end)
+        {
+            continue;
+        }
+        let kind = if files.iter().any(|file| file.path == name) {
+            PromptTokenKind::File
+        } else if agents.iter().any(|agent| agent.name == name) {
+            PromptTokenKind::Agent
+        } else {
+            continue;
+        };
+        tokens.push(PromptToken {
+            start: range.start,
+            end: range.end,
+            kind,
+            name: name.to_owned(),
+        });
+    }
+    prompt_tokens(prompt, &tokens, commands)
 }
 
 /// Whether the composer submitted Raku's global terminal-session picker.
@@ -145,100 +187,7 @@ pub fn parse_goal_submission(
     })
 }
 
-pub fn expand_command_template(template: &str, args: &str) -> String {
-    let positional = args.split_whitespace().collect::<Vec<_>>();
-    let mut expanded = String::with_capacity(template.len() + args.len());
-    let mut consumed_args = false;
-    let mut rest = template;
-    while let Some(index) = rest.find('$') {
-        expanded.push_str(&rest[..index]);
-        let after = &rest[index + 1..];
-        if let Some(tail) = after.strip_prefix("ARGUMENTS") {
-            expanded.push_str(args);
-            consumed_args = true;
-            rest = tail;
-        } else if let Some(tail) = after.strip_prefix('@') {
-            expanded.push_str(args);
-            consumed_args = true;
-            rest = tail;
-        } else if let Some(digit) = after
-            .chars()
-            .next()
-            .and_then(|character| character.to_digit(10))
-            .filter(|digit| (1..=9).contains(digit))
-        {
-            if let Some(argument) = positional.get(digit as usize - 1) {
-                expanded.push_str(argument);
-            }
-            consumed_args = true;
-            rest = &after[1..];
-        } else {
-            expanded.push('$');
-            rest = after;
-        }
-    }
-    expanded.push_str(rest);
-    if !consumed_args && !args.is_empty() {
-        expanded.push_str("\n\n");
-        expanded.push_str(args);
-    }
-    expanded
-}
-
-/// Resolve composer text into the exact prompt expected by the provider.
-///
-/// Template commands expand to their body. Skills keep `$name` in the
-/// composer and transcript, then resolve to each provider's native syntax at
-/// the transport boundary.
-pub fn resolved_submission(
-    provider: ProviderKind,
-    prompt: &str,
-    commands: &[SlashCommand],
-) -> Option<String> {
-    if let Some(skill) = resolved_skill_submission(provider, prompt, commands) {
-        return Some(skill);
-    }
-    let invocation = prompt.strip_prefix('/')?;
-    let (name, args) = invocation
-        .split_once(char::is_whitespace)
-        .map_or((invocation, ""), |(name, args)| (name, args.trim()));
-    let command = commands.iter().find(|command| command.name == name)?;
-    let template = command.template.as_deref()?;
-    Some(expand_command_template(template, args))
-}
-
-/// Resolve only provider-native skill syntax, without expanding templates.
-///
-/// A prompt that opens with `$skill` becomes Claude's `/skill`, Pi's
-/// `/skill:skill`, and stays as-is for Codex, whose own syntax it is. A
-/// leading `/skill`, typed from habit or restored from older history, still
-/// resolves the same way. `None` means the text is already what the
-/// provider expects.
-pub fn resolved_skill_submission(
-    provider: ProviderKind,
-    prompt: &str,
-    commands: &[SlashCommand],
-) -> Option<String> {
-    let (sigil, invocation) = match prompt.strip_prefix('$') {
-        Some(invocation) => ('$', invocation),
-        None => ('/', prompt.strip_prefix('/')?),
-    };
-    let name = invocation
-        .split_once(char::is_whitespace)
-        .map_or(invocation, |(name, _)| name);
-    if !commands
-        .iter()
-        .any(|command| command.name == name && command.scope == CommandScope::Skill)
-    {
-        return None;
-    }
-    match (provider, sigil) {
-        (ProviderKind::Codex, '/') => Some(format!("${invocation}")),
-        (ProviderKind::Claude, '$') => Some(format!("/{invocation}")),
-        (ProviderKind::Pi, _) => Some(format!("/skill:{invocation}")),
-        _ => None,
-    }
-}
+pub use raku_protocol::composer::{expand_command_template, prompt_tokens, resolved_submission};
 
 pub fn matcher() -> Matcher {
     Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths())
@@ -287,34 +236,42 @@ fn filter_scored(
         .collect()
 }
 
-/// The `/` list: every command except skills, which `$` lists instead.
+/// The `/` list: every command, prompt template and skill, in that order
+/// with no query — the catalogue is sorted by scope — and by fuzzy score
+/// with one. Each row's badge names its kind, so one list stays legible.
 pub fn filter_commands(
     commands: &[SlashCommand],
     query: &str,
     matcher: &mut Matcher,
 ) -> Vec<Scored<SlashCommand>> {
-    let commands = commands
-        .iter()
-        .filter(|command| command.scope != CommandScope::Skill)
-        .collect::<Vec<_>>();
-    let names = commands
-        .iter()
-        .map(|command| command.name.as_str())
-        .collect::<Vec<_>>();
-    filter_scored(&names, query, matcher, FILTER_CAP)
-        .into_iter()
-        .map(|(index, positions)| Scored {
-            item: commands[index].clone(),
-            positions,
-        })
-        .collect()
+    let mut rows = Vec::new();
+    // Bound each section separately so a large command catalog cannot hide
+    // every skill or prompt from the unfiltered list.
+    for group in 0..3 {
+        let entries = commands
+            .iter()
+            .filter(|command| !command.is_app_action() && command.composer_group() == group)
+            .collect::<Vec<_>>();
+        let names = entries
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>();
+        rows.extend(
+            filter_scored(&names, query, matcher, FILTER_CAP / 3)
+                .into_iter()
+                .map(|(index, positions)| Scored {
+                    item: entries[index].clone(),
+                    positions,
+                }),
+        );
+    }
+    rows
 }
 
-/// The `$` list: skills whose name contains `query`, case-insensitively.
+/// The skills `@` offers: names containing `query`, case-insensitively.
 ///
-/// Substring rather than fuzzy matching, because `$` also appears in prose:
-/// `$HOME` must not pop up a skill that merely contains the letters h-o-m-e,
-/// where `enter` would then swap it in.
+/// Substring rather than fuzzy matching keeps skills from crowding out the
+/// files a path query is after.
 pub fn filter_skills(commands: &[SlashCommand], query: &str) -> Vec<Scored<SlashCommand>> {
     let needle = query.to_lowercase();
     let mut matches = commands
@@ -490,20 +447,27 @@ mod tests {
     }
 
     #[test]
-    fn skills_complete_with_a_dollar_and_commands_with_a_slash() {
+    fn accepted_entries_keep_the_sigil_they_were_picked_under() {
         let skill = command("mattpocock-skills:to-spec", CommandScope::Skill);
-        assert_eq!(command_composer_text(&skill), "$mattpocock-skills:to-spec");
         assert_eq!(
-            command_composer_text(&command("fast", CommandScope::Builtin)),
-            "/fast"
+            command_composer_text(&skill, '/'),
+            "/mattpocock-skills:to-spec"
         );
+        assert_eq!(
+            command_composer_text(&skill, '@'),
+            "@mattpocock-skills:to-spec"
+        );
+        assert_eq!(command_token_kind(&skill), PromptTokenKind::Skill);
+        let fast = command("fast", CommandScope::Builtin);
+        assert_eq!(command_composer_text(&fast, '/'), "/fast");
+        assert_eq!(command_token_kind(&fast), PromptTokenKind::Command);
     }
 
     #[test]
-    fn slash_lists_commands_and_dollar_lists_skills() {
+    fn slash_lists_everything_and_skill_lists_match_by_substring() {
         let commands = [
-            command("deploy", CommandScope::Skill),
             command("review", CommandScope::Builtin),
+            command("deploy", CommandScope::Skill),
             command("redeploy-docs", CommandScope::Skill),
         ];
         let mut matcher = matcher();
@@ -514,7 +478,7 @@ mod tests {
         };
         assert_eq!(
             names(filter_commands(&commands, "", &mut matcher)),
-            ["review"]
+            ["review", "deploy", "redeploy-docs"]
         );
         assert_eq!(
             names(filter_skills(&commands, "")),
@@ -527,30 +491,77 @@ mod tests {
         );
         let docs = filter_skills(&commands, "docs");
         assert_eq!(docs[0].positions, [9, 10, 11, 12]);
-        // Scattered letters are not a match: `$HOME` is prose, not a skill.
+        // Scattered letters are not a match for a file-oriented query.
         assert!(filter_skills(&commands, "dpy").is_empty());
     }
 
     #[test]
-    fn skill_submissions_use_each_providers_native_invocation() {
+    fn typed_references_disambiguate_files_and_selected_skills() {
+        let commands = [command("deploy", CommandScope::Skill)];
+        let files = [FileEntry {
+            path: "deploy".into(),
+            is_dir: false,
+        }];
+        let text = "use @deploy";
+        let inferred = reference_tokens(text, &[], &commands, &files, &[]);
+        assert_eq!(inferred[0].kind, PromptTokenKind::File);
+        assert!(reference_tokens("```sh\n@deploy\n```", &[], &commands, &files, &[]).is_empty());
+        let selected = PromptToken {
+            start: 4,
+            end: text.len(),
+            kind: PromptTokenKind::Skill,
+            name: "deploy".into(),
+        };
+        assert_eq!(
+            reference_tokens(
+                text,
+                std::slice::from_ref(&selected),
+                &commands,
+                &files,
+                &[]
+            ),
+            [selected]
+        );
+    }
+
+    #[test]
+    fn slash_groups_prompts_and_skills_and_leaves_app_actions_in_the_palette() {
+        let mut prompt = command("fix", CommandScope::Project);
+        prompt.template = Some("Fix this".into());
+        let commands = [
+            command("deploy", CommandScope::Skill),
+            command("model", CommandScope::Builtin),
+            command("compact", CommandScope::Builtin),
+            prompt,
+            command("settings", CommandScope::Skill),
+        ];
+        let names = filter_commands(&commands, "", &mut matcher())
+            .into_iter()
+            .map(|row| row.item.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["compact", "fix", "deploy", "settings"]);
+    }
+
+    #[test]
+    fn submissions_resolve_skills_before_templates() {
         let skill = command("mattpocock-skills:to-spec", CommandScope::Skill);
-        let skills = std::slice::from_ref(&skill);
-        let resolve = |provider, prompt| resolved_submission(provider, prompt, skills);
-        let typed = "$mattpocock-skills:to-spec carefully";
-        assert_eq!(resolve(ProviderKind::Codex, typed), None);
+        let mut template = command("fix", CommandScope::Project);
+        template.template = Some("Fix: $ARGUMENTS".into());
+        let commands = [skill, template];
+        let resolve = |provider, prompt| resolved_submission(provider, prompt, &[], &commands);
+        let typed = "@mattpocock-skills:to-spec carefully";
+        assert_eq!(
+            resolve(ProviderKind::Codex, typed).as_deref(),
+            Some("$mattpocock-skills:to-spec carefully")
+        );
         assert_eq!(
             resolve(ProviderKind::Claude, typed).as_deref(),
             Some("/mattpocock-skills:to-spec carefully")
         );
         assert_eq!(
-            resolve(ProviderKind::Pi, typed).as_deref(),
-            Some("/skill:mattpocock-skills:to-spec carefully")
+            resolve(ProviderKind::Claude, "/fix the tests").as_deref(),
+            Some("Fix: the tests")
         );
-        // The older slash spelling still reaches the same skill.
-        let legacy = "/mattpocock-skills:to-spec carefully";
-        assert_eq!(resolve(ProviderKind::Codex, legacy).as_deref(), Some(typed));
-        assert_eq!(resolve(ProviderKind::Claude, legacy), None);
-        // An unknown `$word` is prose and passes through untouched.
         for provider in ProviderKind::ALL {
             assert_eq!(resolve(provider, "$HOME is unset"), None);
         }

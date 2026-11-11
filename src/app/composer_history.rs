@@ -36,12 +36,13 @@ pub(super) struct ComposerHistoryRecall {
     total: usize,
     /// What was placed in the field; any divergence means the user edited it.
     text: String,
+    tokens: Vec<crate::composer_complete::PromptToken>,
 }
 
 /// The session's prompts, newest first, with consecutive repeats collapsed
 /// the way a shell history does.
-fn history_entries(session: &AgentSession) -> Vec<&str> {
-    let mut entries: Vec<&str> = Vec::new();
+fn history_entries(session: &AgentSession) -> Vec<&Message> {
+    let mut entries: Vec<&Message> = Vec::new();
     for message in session.messages.iter().rev() {
         if message.role != MessageRole::User {
             continue;
@@ -51,10 +52,14 @@ fn history_entries(session: &AgentSession) -> Vec<&str> {
             .as_deref()
             .unwrap_or(&message.content)
             .trim();
-        if text.is_empty() || entries.last() == Some(&text) {
+        if text.is_empty()
+            || entries.last().is_some_and(|previous| {
+                previous.visible_content().trim() == text && previous.tokens == message.tokens
+            })
+        {
             continue;
         }
-        entries.push(text);
+        entries.push(message);
     }
     entries
 }
@@ -64,7 +69,8 @@ impl Raku {
     pub(super) fn composer_history_position(&self, cx: &App) -> Option<(usize, usize)> {
         let recall = self.composer_history.as_ref()?;
         (self.state.selected_session == Some(recall.session_id)
-            && self.composer.read(cx).content(cx) == recall.text)
+            && self.composer.read(cx).content(cx) == recall.text
+            && self.composer.read(cx).atoms(cx) == recall.tokens)
             .then_some((recall.index, recall.total))
     }
 
@@ -105,15 +111,24 @@ impl Raku {
             self.composer_history = None;
             self.composer.update(cx, |input, cx| input.clear(cx));
         } else {
-            let text = entries[next - 1].to_owned();
+            let message = entries[next - 1];
+            let raw = message.visible_content();
+            let text = raw.trim().to_owned();
+            let tokens = crate::composer_complete::PromptToken::rebased(
+                &message.tokens,
+                &text,
+                -((raw.len() - raw.trim_start().len()) as isize),
+            );
             self.composer_history = Some(ComposerHistoryRecall {
                 session_id,
                 index: next,
                 total: entries.len(),
                 text: text.clone(),
+                tokens: tokens.clone(),
             });
-            self.composer
-                .update(cx, |input, cx| input.set_content(text, cx));
+            self.composer.update(cx, |input, cx| {
+                input.set_content_with_atoms(text, tokens, cx)
+            });
         }
         cx.notify();
     }
@@ -122,6 +137,27 @@ impl Raku {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identical_text_with_different_reference_identities_is_not_collapsed() {
+        use crate::composer_complete::{PromptToken, PromptTokenKind};
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
+        for kind in [PromptTokenKind::File, PromptTokenKind::Skill] {
+            session
+                .messages
+                .push(
+                    Message::new(MessageRole::User, "@deploy").with_tokens(vec![PromptToken {
+                        start: 0,
+                        end: 7,
+                        kind,
+                        name: "deploy".into(),
+                    }]),
+                );
+        }
+        let entries = history_entries(&session);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].tokens[0].kind, PromptTokenKind::Skill);
+    }
 
     #[test]
     fn entries_are_newest_first_without_repeats_or_replies() {
@@ -139,6 +175,12 @@ mod tests {
         shown.display_content = Some("third".into());
         session.messages.push(shown);
 
-        assert_eq!(history_entries(&session), ["third", "second", "first"]);
+        assert_eq!(
+            history_entries(&session)
+                .iter()
+                .map(|message| message.visible_content().trim())
+                .collect::<Vec<_>>(),
+            ["third", "second", "first"]
+        );
     }
 }

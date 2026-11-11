@@ -2203,3 +2203,22 @@ subagent.status_running:
   en: "Running"
 subagent.status_failed:
   en: "Failed"
+
+composer.commands:
+  en: Commands
+composer.prompts:
+  en: Prompts
+composer.skills:
+  en: Skills
+composer.agents:
+  en: Agents
+composer.files:
+  en: Files
+composer.command:
+  en: Command
+composer.prompt:
+  en: Prompt
+composer.skill:
+  en: Skill
+composer.runs_now:
+  en: Runs now

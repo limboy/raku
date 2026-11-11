@@ -1076,3 +1076,13 @@ subagent.command_hint: "<任务>"
 subagent.too_many: "此任务已有 %{count} 个子智能体在运行。"
 subagent.status_running: "运行中"
 subagent.status_failed: "失败"
+
+composer.commands: 命令
+composer.prompts: 提示词
+composer.skills: 技能
+composer.agents: 智能体
+composer.files: 文件
+composer.command: 命令
+composer.prompt: 提示词
+composer.skill: 技能
+composer.runs_now: 立即执行

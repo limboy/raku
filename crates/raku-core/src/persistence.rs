@@ -1297,7 +1297,7 @@ impl StateStore {
         let mut statement = connection
             .prepare(
                 "SELECT id, turn_id, role, content, display_content, attachments,
-                        created_at, streaming, error
+                        created_at, streaming, error, tokens
                  FROM messages WHERE session_id = ?1 ORDER BY position",
             )
             .map_err(to_io_error)?;
@@ -1313,6 +1313,7 @@ impl StateStore {
                     row.get::<_, i64>(6)?,
                     row.get::<_, i64>(7)?,
                     row.get::<_, Option<String>>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             })
             .map_err(to_io_error)?
@@ -1636,11 +1637,22 @@ type MessageColumns = (
     i64,
     i64,
     Option<String>,
+    String,
 );
 
 fn message_from_row(row: MessageColumns) -> Option<Message> {
-    let (id, turn_id, role, content, display_content, attachments, created_at, streaming, error) =
-        row;
+    let (
+        id,
+        turn_id,
+        role,
+        content,
+        display_content,
+        attachments,
+        created_at,
+        streaming,
+        error,
+        tokens,
+    ) = row;
     Some(Message {
         id: Uuid::parse_str(&id).ok()?,
         turn_id: turn_id.as_deref().and_then(|id| Uuid::parse_str(id).ok()),
@@ -1649,6 +1661,7 @@ fn message_from_row(row: MessageColumns) -> Option<Message> {
         display_content,
         attachments: serde_json::from_str::<Vec<MessageAttachment>>(&attachments)
             .unwrap_or_default(),
+        tokens: serde_json::from_str(&tokens).unwrap_or_default(),
         created_at: created_at as u64,
         streaming: streaming != 0,
         error: error.and_then(|error| serde_json::from_str(&error).ok()),
@@ -1753,8 +1766,8 @@ fn read_transcript_blocks(
 
 const UPSERT_MESSAGE: &str = "INSERT INTO messages(
          id, session_id, turn_id, position, role, content, display_content,
-         attachments, created_at, streaming, error
-     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         attachments, created_at, streaming, error, tokens
+     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
      ON CONFLICT(id) DO UPDATE SET
          session_id = excluded.session_id,
          turn_id    = excluded.turn_id,
@@ -1765,7 +1778,8 @@ const UPSERT_MESSAGE: &str = "INSERT INTO messages(
          attachments = excluded.attachments,
          created_at = excluded.created_at,
          streaming  = excluded.streaming,
-         error      = excluded.error";
+         error      = excluded.error,
+         tokens     = excluded.tokens";
 
 /// Replaces a session's messages with the given list.
 ///
@@ -1837,6 +1851,7 @@ fn write_messages(
                         .as_ref()
                         .and_then(|error| serde_json::to_string(error).ok())
                         .map_or(Value::Null, Value::Text),
+                    Value::Text(serde_json::to_string(&message.tokens).map_err(to_io_error)?),
                 ]),
             )
             .map_err(to_io_error)?;
@@ -1909,6 +1924,13 @@ fn message_fingerprint(message: &Message, position: usize) -> u64 {
         fold(fingerprint(display_content));
     } else {
         fold(0);
+    }
+    fold(message.tokens.len() as u64);
+    for token in &message.tokens {
+        fold(token.start as u64);
+        fold(token.end as u64);
+        fold(token.kind as u64);
+        fold(fingerprint(&token.name));
     }
     fold(message.attachments.len() as u64);
     for attachment in &message.attachments {
@@ -2446,7 +2468,13 @@ mod tests {
         let store = ComposerDraftStore::for_state_path(&directory.join("app.db"));
         let project_id = Uuid::new_v4();
         let draft = ComposerDraft {
-            text: "compare these".to_owned(),
+            tokens: vec![raku_protocol::composer::PromptToken {
+                start: 8,
+                end: 15,
+                kind: raku_protocol::composer::PromptTokenKind::Skill,
+                name: "deploy".into(),
+            }],
+            text: "compare @deploy".to_owned(),
             attachments: vec![ComposerDraftAttachment {
                 path: PathBuf::from("/tmp/reference image.png"),
                 mention: "/tmp/reference image.png".to_owned(),
@@ -2951,6 +2979,7 @@ mod tests {
         drafts.set(
             ComposerDraftKey::NewSession(project_id),
             ComposerDraft {
+                tokens: Vec::new(),
                 text: String::new(),
                 attachments: vec![ComposerDraftAttachment {
                     path: path.clone(),
@@ -3844,6 +3873,43 @@ mod tests {
         }
 
         fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn token_metadata_survives_storage_queueing_and_metadata_only_edits() {
+        use raku_protocol::composer::{PromptToken, PromptTokenKind};
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let tokens = vec![PromptToken {
+            start: 4,
+            end: 11,
+            kind: PromptTokenKind::Skill,
+            name: "deploy".into(),
+        }];
+        let session = &mut state.sessions[0];
+        session.begin_turn_with_tokens(
+            "use @deploy @attachment",
+            Some("use @deploy".into()),
+            Vec::new(),
+            tokens.clone(),
+        );
+        session
+            .queued_messages
+            .push(crate::model::QueuedMessage::new("use @deploy").with_tokens(tokens.clone()));
+        store.save(&mut state).unwrap();
+        let restored = load_hydrated(&store_in(&directory));
+        assert_eq!(restored.sessions[0].messages[0].tokens, tokens);
+        assert_eq!(restored.sessions[0].queued_messages[0].tokens, tokens);
+        let session_id = state.sessions[0].id;
+        state.session_mut(session_id).unwrap().messages[0].tokens[0].kind = PromptTokenKind::File;
+        store.save(&mut state).unwrap();
+        let restored = load_hydrated(&store_in(&directory));
+        assert_eq!(
+            restored.sessions[0].messages[0].tokens[0].kind,
+            PromptTokenKind::File
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

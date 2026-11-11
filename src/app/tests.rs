@@ -336,6 +336,35 @@ fn submissions_append_attachment_mentions_after_the_prompt() {
 }
 
 #[test]
+fn submission_tokens_follow_visible_text_through_queueing_and_hidden_context() {
+    use crate::composer_complete::{PromptToken, PromptTokenKind};
+    let tokens = vec![PromptToken {
+        start: 0,
+        end: 7,
+        kind: PromptTokenKind::Skill,
+        name: "deploy".into(),
+    }];
+    let submission = super::ComposerSubmission {
+        prompt: "@deploy @deploy".into(),
+        display_content: Some("@deploy".into()),
+        attachments: Vec::new(),
+        tokens: tokens.clone(),
+    };
+    assert_eq!(
+        submission.transport_tokens(),
+        tokens,
+        "attachment mentions cannot capture a visible token"
+    );
+    let restored = super::ComposerSubmission::from_queued_message(submission.into_queued_message());
+    assert_eq!(restored.tokens, tokens);
+    let contextual = super::ComposerSubmission {
+        prompt: "context\n@deploy".into(),
+        ..restored
+    };
+    assert_eq!(contextual.transport_tokens()[0].range(), 8..15);
+}
+
+#[test]
 fn branch_picker_pins_selection_and_filters_by_name() {
     let branches = vec![
         BranchEntry {

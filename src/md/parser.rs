@@ -11,6 +11,7 @@
 //! Soundness guard: link reference definitions (`[label]: url`) resolve
 //! non-locally, so a source containing one drops back to full reparses.
 
+use raku_protocol::composer::{PromptToken, PromptTokenKind};
 use std::ops::Range;
 use std::sync::LazyLock;
 
@@ -29,6 +30,7 @@ static BARE_WEB_URL: LazyLock<Regex> = LazyLock::new(|| {
 /// Inline styling threaded through nested emphasis and links.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct InlineStyle {
+    pub prompt_token: Option<PromptTokenKind>,
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
@@ -163,12 +165,47 @@ fn options() -> Options {
 
 /// Parse a whole source into a [`BlockTree`].
 pub fn parse(source: &str) -> BlockTree {
-    let events = Parser::new_ext(source, options())
+    parse_with_tokens(source, &[])
+}
+
+/// Protect accepted tokens from Markdown syntax (including paired `$` math)
+/// while retaining the original source and selectable labels.
+pub fn parse_with_tokens(source: &str, tokens: &[PromptToken]) -> BlockTree {
+    let tokens = PromptToken::normalized(tokens.to_vec(), source);
+    let mut prefix = if tokens.is_empty() {
+        String::new()
+    } else {
+        String::from("RakuPromptToken")
+    };
+    while !tokens.is_empty() && source.contains(&prefix) {
+        prefix.push('X');
+    }
+    let mut protected = String::new();
+    let mut replacements = Vec::new();
+    let mut positions = Vec::new();
+    let mut cursor = 0;
+    for (index, token) in tokens.iter().enumerate() {
+        protected.push_str(&source[cursor..token.start]);
+        let marker = format!("{prefix}{index}End");
+        let start = protected.len();
+        protected.push_str(&marker);
+        positions.push((start..protected.len(), token.range()));
+        replacements.push((marker, source[token.range()].to_owned(), token.kind));
+        cursor = token.end;
+    }
+    let parsed_source = if tokens.is_empty() {
+        source
+    } else {
+        protected.push_str(&source[cursor..]);
+        &protected
+    };
+    let events = Parser::new_ext(parsed_source, options())
         .into_offset_iter()
         .collect::<Vec<_>>();
     let mut cursor = Cursor {
         events: &events,
         index: 0,
+        replacements: &replacements,
     };
     let mut blocks = Vec::new();
     while let Some((event, range)) = cursor.peek() {
@@ -194,15 +231,87 @@ pub fn parse(source: &str) -> BlockTree {
             _ => cursor.bump(),
         }
     }
+    // The public block ranges always refer to the original visible source.
+    let original_offset = |offset: usize| {
+        let mut delta = 0isize;
+        for (masked, original) in &positions {
+            if offset < masked.start {
+                break;
+            }
+            if offset < masked.end {
+                return original.start;
+            }
+            delta += original.len() as isize - masked.len() as isize;
+        }
+        offset.checked_add_signed(delta).unwrap_or(0)
+    };
+    for top in &mut blocks {
+        top.range = original_offset(top.range.start)..original_offset(top.range.end);
+    }
     BlockTree { blocks }
 }
 
 struct Cursor<'a, 'e> {
     events: &'a [(Event<'e>, Range<usize>)],
     index: usize,
+    replacements: &'a [(String, String, PromptTokenKind)],
 }
 
 impl<'e> Cursor<'_, 'e> {
+    fn restore(&self, text: &str) -> String {
+        let mut text = text.to_owned();
+        for (marker, label, _) in self.replacements {
+            if text.contains(marker) {
+                text = text.replace(marker, label);
+            }
+        }
+        text
+    }
+
+    fn text_runs(&self, text: &str, style: &InlineStyle) -> Vec<InlineRun> {
+        if self.replacements.is_empty() {
+            return vec![InlineRun {
+                text: text.to_owned(),
+                style: style.clone(),
+            }];
+        }
+        let mut runs = Vec::new();
+        let mut remaining = text;
+        while !remaining.is_empty() {
+            let next = self
+                .replacements
+                .iter()
+                .filter_map(|(marker, label, kind)| {
+                    remaining
+                        .find(marker)
+                        .map(|start| (start, marker, label, kind))
+                })
+                .min_by_key(|(start, ..)| *start);
+            let Some((start, marker, label, kind)) = next else {
+                runs.push(InlineRun {
+                    text: remaining.to_owned(),
+                    style: style.clone(),
+                });
+                break;
+            };
+            if start > 0 {
+                runs.push(InlineRun {
+                    text: remaining[..start].to_owned(),
+                    style: style.clone(),
+                });
+            }
+            runs.push(InlineRun {
+                text: label.clone(),
+                style: InlineStyle {
+                    prompt_token: Some(*kind),
+                    ..Default::default()
+                },
+            });
+            remaining = &remaining[start + marker.len()..];
+        }
+        runs
+    }
+
     fn peek(&self) -> Option<&(Event<'e>, Range<usize>)> {
         self.events.get(self.index)
     }
@@ -279,7 +388,13 @@ fn parse_started_block(cursor: &mut Cursor) -> Vec<Block> {
             let mut code = String::new();
             loop {
                 match cursor.next_event() {
-                    Some(Event::Text(text)) => code.push_str(&text),
+                    Some(Event::Text(text)) => {
+                        if cursor.replacements.is_empty() {
+                            code.push_str(&text);
+                        } else {
+                            code.push_str(&cursor.restore(&text));
+                        }
+                    }
                     Some(Event::End(_)) | None => break,
                     Some(_) => {}
                 }
@@ -345,7 +460,7 @@ fn parse_started_block(cursor: &mut Cursor) -> Vec<Block> {
                 Vec::new()
             } else {
                 vec![Block::Paragraph {
-                    runs: vec![InlineRun::plain(text)],
+                    runs: cursor.text_runs(&text, &InlineStyle::default()),
                 }]
             }
         }
@@ -524,15 +639,23 @@ fn parse_inline_event(cursor: &mut Cursor, pieces: &mut Vec<InlinePiece>, style:
     };
     let mut push_run = |run: InlineRun| pieces.push(InlinePiece::Run(run));
     match event {
-        Event::Text(text) => push_run(InlineRun {
-            text: text.to_string(),
-            style: style.clone(),
-        }),
+        Event::Text(text) => {
+            if cursor.replacements.is_empty() {
+                push_run(InlineRun {
+                    text: text.to_string(),
+                    style: style.clone(),
+                });
+            } else {
+                for run in cursor.text_runs(&text, style) {
+                    push_run(run);
+                }
+            }
+        }
         Event::Code(text) => {
             let mut style = style.clone();
             style.code = true;
             push_run(InlineRun {
-                text: text.to_string(),
+                text: cursor.restore(&text),
                 style,
             });
         }
@@ -540,11 +663,11 @@ fn parse_inline_event(cursor: &mut Cursor, pieces: &mut Vec<InlinePiece>, style:
             let mut style = style.clone();
             style.math = true;
             push_run(InlineRun {
-                text: text.into_string(),
+                text: cursor.restore(&text),
                 style,
             });
         }
-        Event::DisplayMath(text) => pieces.push(InlinePiece::DisplayMath(text.into_string())),
+        Event::DisplayMath(text) => pieces.push(InlinePiece::DisplayMath(cursor.restore(&text))),
         // A hard or soft break inside a paragraph is a line break in the
         // rendered run: shaped text splits on '\n' on its own.
         Event::SoftBreak | Event::HardBreak => push_run(InlineRun {
@@ -568,12 +691,12 @@ fn parse_inline_event(cursor: &mut Cursor, pieces: &mut Vec<InlinePiece>, style:
                 .map(|run| run.text)
                 .collect::<String>();
             let alt = if alt.trim().is_empty() {
-                title.to_string()
+                cursor.restore(&title)
             } else {
                 alt
             };
             pieces.push(InlinePiece::Image {
-                url: dest_url.to_string(),
+                url: cursor.restore(&dest_url),
                 alt,
             });
         }
@@ -583,7 +706,7 @@ fn parse_inline_event(cursor: &mut Cursor, pieces: &mut Vec<InlinePiece>, style:
                 Tag::Emphasis => nested.italic = true,
                 Tag::Strong => nested.bold = true,
                 Tag::Strikethrough => nested.strikethrough = true,
-                Tag::Link { dest_url, .. } => nested.link = Some(dest_url.to_string()),
+                Tag::Link { dest_url, .. } => nested.link = Some(cursor.restore(dest_url)),
                 _ => {}
             }
             while let Some(event) = cursor.peek_event() {
@@ -601,7 +724,7 @@ fn parse_inline_event(cursor: &mut Cursor, pieces: &mut Vec<InlinePiece>, style:
             text: if is_br_tag(&text) {
                 "\n".to_owned()
             } else {
-                text.to_string()
+                cursor.restore(&text)
             },
             style: style.clone(),
         }),
@@ -680,7 +803,11 @@ fn merge_pieces(pieces: Vec<InlinePiece>) -> Vec<InlinePiece> {
         match piece {
             InlinePiece::Run(run) if run.text.is_empty() => {}
             InlinePiece::Run(run) => match merged.last_mut() {
-                Some(InlinePiece::Run(last)) if !run.style.math && last.style == run.style => {
+                Some(InlinePiece::Run(last))
+                    if !run.style.math
+                        && run.style.prompt_token.is_none()
+                        && last.style == run.style =>
+                {
                     last.text.push_str(&run.text)
                 }
                 _ => merged.push(InlinePiece::Run(run)),
@@ -699,7 +826,10 @@ fn linkify_bare_urls(pieces: Vec<InlinePiece>) -> Vec<InlinePiece> {
     for piece in pieces {
         match piece {
             InlinePiece::Run(run)
-                if !run.style.code && !run.style.math && run.style.link.is_none() =>
+                if !run.style.code
+                    && !run.style.math
+                    && run.style.prompt_token.is_none()
+                    && run.style.link.is_none() =>
             {
                 push_linkified_run(run, &mut linked);
             }
@@ -750,7 +880,11 @@ fn merge_runs(runs: Vec<InlineRun>) -> Vec<InlineRun> {
             continue;
         }
         match merged.last_mut() {
-            Some(last) if !run.style.math && last.style == run.style => {
+            Some(last)
+                if !run.style.math
+                    && run.style.prompt_token.is_none()
+                    && last.style == run.style =>
+            {
                 last.text.push_str(&run.text)
             }
             _ => merged.push(run),
@@ -821,6 +955,14 @@ impl IncrementalParser {
         self.tree = parse(&self.text);
         self.full_reparse_only = has_link_definition(&self.text);
         self.stable_prefix = self.settled_prefix();
+    }
+
+    /// A settled user prompt; token protection never participates in streaming.
+    pub fn reset_prompt(&mut self, text: &str, tokens: &[PromptToken]) {
+        self.text = text.to_owned();
+        self.tree = parse_with_tokens(text, tokens);
+        self.stable_prefix = 0;
+        self.full_reparse_only = true;
     }
 
     /// Append `delta`, reparsing only from the last stable block boundary.
@@ -958,6 +1100,70 @@ fn has_link_definition(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn prompt_tokens_preserve_markdown_without_becoming_math_or_markup() {
+        use raku_protocol::composer::{PromptToken, PromptTokenKind};
+        let source = "**Ship** with $deploy and $docs then @src/a_b[1].rs\n\nMore";
+        let tokens = [
+            ("$deploy", PromptTokenKind::Skill),
+            ("$docs", PromptTokenKind::Skill),
+            ("@src/a_b[1].rs", PromptTokenKind::File),
+        ]
+        .into_iter()
+        .map(|(label, kind)| {
+            let start = source.find(label).unwrap();
+            PromptToken {
+                start,
+                end: start + label.len(),
+                kind,
+                name: label[1..].into(),
+            }
+        })
+        .collect::<Vec<_>>();
+        let parsed = super::parse_with_tokens(source, &tokens);
+        let super::Block::Paragraph { runs } = &parsed.blocks[0].block else {
+            panic!("paragraph");
+        };
+        assert_eq!(
+            runs.iter().map(|run| run.text.as_str()).collect::<String>(),
+            "Ship with $deploy and $docs then @src/a_b[1].rs"
+        );
+        assert!(runs[0].style.bold);
+        assert_eq!(
+            runs.iter()
+                .filter(|run| run.style.prompt_token.is_some())
+                .count(),
+            3
+        );
+        assert!(runs.iter().all(|run| !run.style.math));
+        assert_eq!(parsed.blocks[1].range.start, source.find("More").unwrap());
+    }
+
+    #[test]
+    fn protected_labels_never_escape_into_code_or_literal_html() {
+        use raku_protocol::composer::{PromptToken, PromptTokenKind};
+        for source in [
+            "```sh\n@deploy\n```",
+            "<span>@deploy</span>",
+            "<div>\n@deploy\n</div>",
+            "`@deploy`",
+            "RakuPromptToken and @deploy",
+        ] {
+            let start = source.find("@deploy").unwrap();
+            let tokens = [PromptToken {
+                start,
+                end: start + 7,
+                kind: PromptTokenKind::Skill,
+                name: "deploy".into(),
+            }];
+            let parsed = super::parse_with_tokens(source, &tokens);
+            let printed = format!("{parsed:?}");
+            assert!(!printed.contains("0End"), "{printed}");
+            assert!(printed.contains("@deploy"), "{printed}");
+        }
+    }
+
     use super::*;
 
     #[test]

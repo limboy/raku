@@ -551,10 +551,11 @@ impl Raku {
                 // it to the same turn so the transcript mirrors the provider
                 // conversation (no new turn boundary).
                 if let Some(session) = self.state.session_mut(session_id) {
-                    session.push_user_message_with_presentation(
-                        message,
+                    session.push_user_message_with_tokens(
+                        submission.prompt,
                         submission.display_content,
                         submission.attachments,
+                        submission.tokens,
                     );
                     session.updated_at = unix_time();
                 }

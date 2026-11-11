@@ -1870,21 +1870,21 @@ impl Raku {
     pub(super) fn submission_with_attachments(
         &mut self,
         prompt: &str,
+        tokens: &[crate::composer_complete::PromptToken],
         cx: &mut Context<Self>,
     ) -> Option<ComposerSubmission> {
         if self.session_link_import_pending() {
             // Enter consumes the field before emitting Submit. Keep the draft
             // intact while its conversation snapshot is being materialized.
-            if self.composer.read(cx).content(cx).is_empty() {
-                self.composer.update(cx, |composer, cx| {
-                    composer.set_content(prompt.to_owned(), cx);
-                });
-            }
+            self.restore_unsent_composer_prompt(prompt, tokens, cx);
             self.show_toast(tr!("session.attaching"));
             cx.notify();
             return None;
         }
-        if self.execute_local_composer_command(prompt, cx) {
+        if !tokens.iter().any(|token| {
+            token.start == 0 && token.kind == crate::composer_complete::PromptTokenKind::Skill
+        }) && self.execute_local_composer_command(prompt, cx)
+        {
             return None;
         }
         // Nothing installed or switched on can run this. Refuse before the
@@ -1892,6 +1892,7 @@ impl Raku {
         // provider is available — every send route lands here, so `enter`,
         // the button, and steering are all covered by this one check.
         if self.model_picker_has_no_providers() {
+            self.restore_unsent_composer_prompt(prompt, tokens, cx);
             return None;
         }
         if let Some(error) = self.selected_session().and_then(|session| {
@@ -1900,6 +1901,7 @@ impl Raku {
                 .validate_access_mode(session.runtime_mode)
                 .err()
         }) {
+            self.restore_unsent_composer_prompt(prompt, tokens, cx);
             self.show_toast(error.to_string());
             return None;
         }
@@ -1924,6 +1926,13 @@ impl Raku {
             .map(|attachment| attachment.mention.clone())
             .collect::<Vec<_>>();
         let submission = merged_submission(prompt, &mentions)?;
+        let leading = prompt.len() - prompt.trim_start().len();
+        let tokens = crate::composer_complete::PromptToken::rebased(
+            tokens,
+            prompt.trim(),
+            -(leading as isize),
+        );
+        let tokens = self.composer_prompt_tokens(prompt.trim(), &tokens);
         let display_content = (!attachments.is_empty()).then(|| prompt.trim().to_owned());
         self.composer_attachments.clear();
         self.discard_current_composer_draft(cx);
@@ -1931,7 +1940,21 @@ impl Raku {
             prompt: submission,
             display_content,
             attachments,
+            tokens,
         })
+    }
+
+    fn restore_unsent_composer_prompt(
+        &mut self,
+        prompt: &str,
+        tokens: &[crate::composer_complete::PromptToken],
+        cx: &mut Context<Self>,
+    ) {
+        if self.composer.read(cx).content(cx).is_empty() {
+            self.composer.update(cx, |composer, cx| {
+                composer.set_content_with_atoms(prompt.to_owned(), tokens.to_vec(), cx)
+            });
+        }
     }
 
     pub(super) fn execute_local_composer_command(
@@ -2088,8 +2111,9 @@ impl Raku {
             .map(ComposerAttachment::from)
             .collect();
         let content = submission.display_content.unwrap_or(submission.prompt);
-        self.composer
-            .update(cx, |input, cx| input.set_content(content, cx));
+        self.composer.update(cx, |input, cx| {
+            input.set_content_with_atoms(content, submission.tokens, cx)
+        });
         self.schedule_composer_draft_save(cx);
         cx.notify();
     }
@@ -2852,8 +2876,12 @@ impl Raku {
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 let prompt =
                                                     this.composer.read(cx).content(cx).to_owned();
-                                                if let Some(submission) =
-                                                    this.submission_with_attachments(&prompt, cx)
+                                                let tokens =
+                                                    this.composer.read(cx).atoms(cx).to_vec();
+                                                if let Some(submission) = this
+                                                    .submission_with_attachments(
+                                                        &prompt, &tokens, cx,
+                                                    )
                                                 {
                                                     this.composer
                                                         .update(cx, |input, cx| input.clear(cx));
@@ -2897,8 +2925,9 @@ impl Raku {
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     let prompt = this.composer.read(cx).content(cx).to_owned();
+                                    let tokens = this.composer.read(cx).atoms(cx).to_vec();
                                     if let Some(submission) =
-                                        this.submission_with_attachments(&prompt, cx)
+                                        this.submission_with_attachments(&prompt, &tokens, cx)
                                     {
                                         this.composer.update(cx, |input, cx| input.clear(cx));
                                         this.submit_composer_submission(submission, cx);

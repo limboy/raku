@@ -490,6 +490,9 @@ pub struct QueuedMessage {
     pub display_content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MessageAttachment>,
+    /// Accepted completions in the visible text; see [`Message::tokens`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tokens: Vec<crate::composer::PromptToken>,
     pub created_at: u64,
 }
 
@@ -500,8 +503,14 @@ impl QueuedMessage {
             content: content.into(),
             display_content: None,
             attachments: Vec::new(),
+            tokens: Vec::new(),
             created_at: unix_time(),
         }
+    }
+
+    pub fn with_tokens(mut self, tokens: Vec<crate::composer::PromptToken>) -> Self {
+        self.tokens = tokens;
+        self
     }
 
     pub fn with_presentation(
@@ -1668,6 +1677,16 @@ impl AgentSession {
         display_content: Option<String>,
         attachments: Vec<MessageAttachment>,
     ) -> Uuid {
+        self.begin_turn_with_tokens(prompt, display_content, attachments, Vec::new())
+    }
+
+    pub fn begin_turn_with_tokens(
+        &mut self,
+        prompt: impl Into<String>,
+        display_content: Option<String>,
+        attachments: Vec<MessageAttachment>,
+        tokens: Vec<crate::composer::PromptToken>,
+    ) -> Uuid {
         let id = Uuid::new_v4();
         let now = unix_time();
         self.turns.push(AgentTurn {
@@ -1684,7 +1703,8 @@ impl AgentSession {
         });
         self.messages.push(
             Message::new_for_turn(MessageRole::User, prompt, id)
-                .with_presentation(display_content, attachments),
+                .with_presentation(display_content, attachments)
+                .with_tokens(tokens),
         );
         self.last_reply_at = Some(now);
         id
@@ -1858,11 +1878,22 @@ impl AgentSession {
         display_content: Option<String>,
         attachments: Vec<MessageAttachment>,
     ) -> Uuid {
+        self.push_user_message_with_tokens(content, display_content, attachments, Vec::new())
+    }
+
+    pub fn push_user_message_with_tokens(
+        &mut self,
+        content: impl Into<String>,
+        display_content: Option<String>,
+        attachments: Vec<MessageAttachment>,
+        tokens: Vec<crate::composer::PromptToken>,
+    ) -> Uuid {
         let message = match self.active_turn_id() {
             Some(turn_id) => Message::new_for_turn(MessageRole::User, content, turn_id),
             None => Message::new(MessageRole::User, content),
         }
-        .with_presentation(display_content, attachments);
+        .with_presentation(display_content, attachments)
+        .with_tokens(tokens);
         let id = message.id;
         self.messages.push(message);
         id
@@ -2019,6 +2050,11 @@ pub struct Message {
     pub display_content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MessageAttachment>,
+    /// A user message's accepted completions — commands, skills, files and
+    /// agents — as atomic spans of the visible text. They render as pills
+    /// and tell the transport which skills to invoke without parsing text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tokens: Vec<crate::composer::PromptToken>,
     pub created_at: u64,
     pub streaming: bool,
     /// Set when this reply reports a failed turn rather than model output.
@@ -2045,6 +2081,7 @@ impl Message {
             content: content.into(),
             display_content: None,
             attachments: Vec::new(),
+            tokens: Vec::new(),
             created_at: unix_time(),
             streaming: false,
             error: None,
@@ -2065,6 +2102,11 @@ impl Message {
     ) -> Self {
         self.display_content = display_content;
         self.attachments = attachments;
+        self
+    }
+
+    pub fn with_tokens(mut self, tokens: Vec<crate::composer::PromptToken>) -> Self {
+        self.tokens = crate::composer::PromptToken::normalized(tokens, self.visible_content());
         self
     }
 

@@ -1,5 +1,5 @@
-//! The composer's autocompletion popup: `/` commands, `$` skills and `@` file
-//! mentions.
+//! The composer's autocompletion popup: `/` commands, prompts, and skills,
+//! and `@` references.
 //!
 //! The popup is a pure view over prefetched data. Command and file indexes are
 //! discovered on the background executor into `QueryCache`s and mirrored into
@@ -23,8 +23,8 @@ use gpui::{
 use nucleo_matcher::Matcher;
 
 use crate::composer_complete::{
-    self, FILE_INDEX_CAP, FileEntry, Scored, SlashCommand, Trigger, TriggerKind,
-    highlight_byte_ranges,
+    self, FILE_INDEX_CAP, FileEntry, PromptToken, PromptTokenKind, Scored, SlashCommand, Trigger,
+    TriggerKind, highlight_byte_ranges,
 };
 use crate::ui::menu::{ConfirmEntry, DismissMenu, SelectNextEntry, SelectPreviousEntry};
 
@@ -34,6 +34,18 @@ use super::*;
 /// Key context the composer card declares while the popup is open.
 const AUTOCOMPLETE_CONTEXT: &str = "ComposerAutocomplete > TextInput";
 const AUTOCOMPLETE_LOADING_CONTEXT: &str = "ComposerAutocompleteLoading > TextInput";
+
+/// Skills an `@` query may add ahead of the file list, so a path query still
+/// sees its files.
+const MENTION_SKILL_CAP: usize = 5;
+
+/// The character that opened `kind`'s popup, which an accepted row keeps.
+fn trigger_sigil(kind: TriggerKind) -> char {
+    match kind {
+        TriggerKind::Command => '/',
+        TriggerKind::File => '@',
+    }
+}
 
 pub(super) struct FileIndex {
     entries: Arc<Vec<FileEntry>>,
@@ -64,6 +76,39 @@ pub(super) enum AutocompleteRow {
     Agent(Scored<crate::model::SubagentToolAgent>),
     Command(Scored<SlashCommand>),
     File(Scored<FileEntry>),
+}
+
+impl AutocompleteRow {
+    fn group(&self) -> u8 {
+        match self {
+            Self::Command(scored) => scored.item.composer_group(),
+            Self::Agent(_) => 3,
+            Self::File(_) => 4,
+        }
+    }
+
+    fn group_label(&self) -> String {
+        match self {
+            Self::Command(scored) => scored.item.composer_group_label(),
+            Self::Agent(_) => tr!("composer.agents"),
+            Self::File(_) => tr!("composer.files"),
+        }
+    }
+}
+
+fn autocomplete_scroll_index(rows: &[AutocompleteRow], index: usize) -> usize {
+    let mut previous = None;
+    let headers = rows
+        .iter()
+        .take(index + 1)
+        .filter(|row| {
+            let group = row.group();
+            let starts = previous != Some(group);
+            previous = Some(group);
+            starts
+        })
+        .count();
+    index + headers
 }
 
 /// Filter results for one (kind, query, source index) — the popup's rows are
@@ -302,8 +347,14 @@ impl Raku {
         let input = self.composer.read(cx);
         let trigger = if input.focus().is_focused(window) {
             let text = input.content(cx);
-            composer_complete::detect_trigger(text, input.cursor(cx))
-                .filter(|trigger| self.skill_trigger_allowed(trigger, text))
+            // An accepted token is finished: a caret resting against one
+            // must not reopen the popup over it.
+            composer_complete::detect_trigger(text, input.cursor(cx)).filter(|trigger| {
+                !input
+                    .atoms(cx)
+                    .iter()
+                    .any(|atom| atom.start < trigger.range.end && trigger.range.start < atom.end)
+            })
         } else {
             None
         };
@@ -322,17 +373,6 @@ impl Raku {
         trigger
     }
 
-    /// Codex resolves `$skill` anywhere in a prompt. Claude and Pi only invoke
-    /// a skill that opens the message, so there `$` mid-prompt is prose.
-    fn skill_trigger_allowed(&self, trigger: &Trigger, text: &str) -> bool {
-        trigger.kind != TriggerKind::Skill
-            || self
-                .slash_command_index_key
-                .as_ref()
-                .is_some_and(|(provider, ..)| *provider == ProviderKind::Codex)
-            || text[..trigger.range.start].trim().is_empty()
-    }
-
     /// The filtered rows for `trigger`, shared by the popup body, the keyboard
     /// cursor and `enter` so an index always means the same row everywhere.
     /// Whether `@` offers agents: the selected task's own agent has the
@@ -342,6 +382,25 @@ impl Raku {
             .is_some_and(|session| !session.is_child())
     }
 
+    pub(super) fn composer_prompt_tokens(
+        &self,
+        prompt: &str,
+        tokens: &[PromptToken],
+    ) -> Vec<PromptToken> {
+        let agents = self
+            .selected_session()
+            .filter(|_| self.composer_offers_subagents())
+            .map(|session| self.subagent_tool_agents(session.provider))
+            .unwrap_or_default();
+        composer_complete::reference_tokens(
+            prompt,
+            tokens,
+            &self.slash_command_index,
+            &self.mention_file_index,
+            &agents,
+        )
+    }
+
     /// Drop memoized rows after the agent list changed.
     pub(super) fn invalidate_agent_completions(&self) {
         self.composer_autocomplete.results.borrow_mut().take();
@@ -349,9 +408,7 @@ impl Raku {
 
     fn autocomplete_rows(&self, trigger: &Trigger) -> Rc<Vec<AutocompleteRow>> {
         let source = match trigger.kind {
-            TriggerKind::Command | TriggerKind::Skill => {
-                Rc::as_ptr(&self.slash_command_index) as usize
-            }
+            TriggerKind::Command => Rc::as_ptr(&self.slash_command_index) as usize,
             // Whether the task can delegate rides in the pointer's free low
             // bit, so switching to a task that cannot drops the agent rows.
             // Agent edits clear the memo; see `invalidate_agent_completions`.
@@ -378,12 +435,6 @@ impl Raku {
             .into_iter()
             .map(AutocompleteRow::Command)
             .collect::<Vec<_>>(),
-            TriggerKind::Skill => {
-                composer_complete::filter_skills(&self.slash_command_index, &trigger.query)
-                    .into_iter()
-                    .map(AutocompleteRow::Command)
-                    .collect()
-            }
             TriggerKind::File => {
                 // Reached on a keystroke, not a frame: the rows are memoized.
                 let agents = self
@@ -391,9 +442,17 @@ impl Raku {
                     .filter(|_| self.composer_offers_subagents())
                     .map(|session| self.subagent_tool_agents(session.provider))
                     .unwrap_or_default();
+                let skills =
+                    composer_complete::filter_skills(&self.slash_command_index, &trigger.query);
                 composer_complete::filter_subagents(&agents, &trigger.query, &mut matcher)
                     .into_iter()
                     .map(AutocompleteRow::Agent)
+                    .chain(
+                        skills
+                            .into_iter()
+                            .take(MENTION_SKILL_CAP)
+                            .map(AutocompleteRow::Command),
+                    )
                     .chain(
                         composer_complete::filter_files(
                             &self.mention_file_index,
@@ -432,7 +491,8 @@ impl Raku {
             return;
         };
         ui.highlight.set(next);
-        ui.scroll.scroll_to_item(next);
+        ui.scroll
+            .scroll_to_item(autocomplete_scroll_index(&rows, next));
         cx.notify();
     }
 
@@ -472,23 +532,41 @@ impl Raku {
             }
             return;
         }
-        let insert = match row {
-            AutocompleteRow::Command(scored) => {
-                let composer_text = composer_complete::command_composer_text(&scored.item);
-                format!("{composer_text} ")
-            }
-            AutocompleteRow::File(scored) => format!("@{} ", scored.item.path),
-            AutocompleteRow::Agent(scored) => format!("@{} ", scored.item.name),
+        // The row goes in as an atomic token that remembers what was picked,
+        // spelled with the sigil it was picked under.
+        let (text, kind, name) = match row {
+            AutocompleteRow::Command(scored) => (
+                composer_complete::command_composer_text(&scored.item, trigger_sigil(trigger.kind)),
+                composer_complete::command_token_kind(&scored.item),
+                scored.item.name.clone(),
+            ),
+            AutocompleteRow::File(scored) => (
+                format!("@{}", scored.item.path),
+                PromptTokenKind::File,
+                scored.item.path.clone(),
+            ),
+            AutocompleteRow::Agent(scored) => (
+                format!("@{}", scored.item.name),
+                PromptTokenKind::Agent,
+                scored.item.name.clone(),
+            ),
         };
-        if matches!(row, AutocompleteRow::Command(_)) {
+        let insert = format!("{text} ");
+        if kind == PromptTokenKind::Command {
             let mut submission = self.composer.read(cx).content(cx).to_owned();
             submission.replace_range(trigger.range.clone(), &insert);
             if self.execute_local_composer_command(&submission, cx) {
                 return;
             }
         }
+        let token = PromptToken {
+            start: 0,
+            end: text.len(),
+            kind,
+            name,
+        };
         self.composer.update(cx, |input, cx| {
-            input.replace_range(trigger.range.clone(), &insert, cx);
+            input.insert_atom(trigger.range.clone(), &insert, token, cx);
         });
         cx.notify();
     }
@@ -511,9 +589,6 @@ impl Raku {
         let loading = match trigger.kind {
             TriggerKind::Command => self.slash_command_index_loading,
             TriggerKind::File => self.mention_file_index_loading,
-            // `$` is also prose (`$HOME`); it opens only once a skill matches,
-            // never as a loading placeholder.
-            TriggerKind::Skill => false,
         };
         if rows.is_empty() && !loading {
             return None;
@@ -553,9 +628,25 @@ impl Raku {
                     .child(tr!("composer.loading_suggestions")),
             );
         } else {
+            let sigil = trigger_sigil(trigger.kind);
+            let mut previous_group = None;
             for (index, row) in rows.iter().enumerate() {
-                list = list
-                    .child(self.render_autocomplete_row(index, row, highlight, &theme, window, cx));
+                let group = row.group();
+                if previous_group != Some(group) {
+                    list = list.child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(5.0))
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_tertiary)
+                            .child(row.group_label()),
+                    );
+                }
+                previous_group = Some(group);
+                list = list.child(
+                    self.render_autocomplete_row(index, row, sigil, highlight, &theme, window, cx),
+                );
             }
         }
 
@@ -590,10 +681,12 @@ impl Raku {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_autocomplete_row(
         &self,
         index: usize,
         row: &AutocompleteRow,
+        sigil: char,
         highlight: usize,
         theme: &Theme,
         window: &Window,
@@ -618,7 +711,7 @@ impl Raku {
         match row {
             AutocompleteRow::Command(scored) => {
                 let command = &scored.item;
-                let composer_text = composer_complete::command_composer_text(command);
+                let composer_text = composer_complete::command_composer_text(command, sigil);
                 let icon_path = if command.scope == composer_complete::CommandScope::Skill {
                     "icons/sparkle.svg"
                 } else {
@@ -671,27 +764,21 @@ impl Raku {
                             .text_color(theme.text_tertiary)
                             .child(SharedString::from(command.description.clone())),
                     )
-                    // The `$` list holds only skills; its sigil already says
-                    // what every row is.
-                    .when(
-                        command.scope != composer_complete::CommandScope::Skill,
-                        |row| {
-                            row.child(
-                                div()
-                                    .h(px(18.0))
-                                    .px(px(5.0))
-                                    .flex_none()
-                                    .rounded(px(4.0))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .flex()
-                                    .items_center()
-                                    .text_size(sp(SMALL_UI_FONT_SIZE))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.text_tertiary)
-                                    .child(command.scope.label()),
-                            )
-                        },
+                    // Both lists mix kinds, so every row names its kind.
+                    .child(
+                        div()
+                            .h(px(18.0))
+                            .px(px(5.0))
+                            .flex_none()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text_tertiary)
+                            .child(command.composer_badge()),
                     )
                     .into_any_element()
             }
@@ -848,6 +935,46 @@ pub(super) fn composer_card_bounds_probe(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[test]
+    fn keyboard_reveal_accounts_for_group_headers() {
+        let commands = [
+            SlashCommand {
+                name: "compact".into(),
+                description: String::new(),
+                scope: composer_complete::CommandScope::Builtin,
+                argument_hint: None,
+                template: None,
+            },
+            SlashCommand {
+                name: "deploy".into(),
+                description: String::new(),
+                scope: composer_complete::CommandScope::Skill,
+                argument_hint: None,
+                template: None,
+            },
+        ];
+        let rows = commands
+            .into_iter()
+            .map(|item| {
+                AutocompleteRow::Command(Scored {
+                    item,
+                    positions: Vec::new(),
+                })
+            })
+            .chain(std::iter::once(AutocompleteRow::File(Scored {
+                item: FileEntry {
+                    path: "src/lib.rs".into(),
+                    is_dir: false,
+                },
+                positions: Vec::new(),
+            })))
+            .collect::<Vec<_>>();
+        assert_eq!(autocomplete_scroll_index(&rows, 0), 1);
+        assert_eq!(autocomplete_scroll_index(&rows, 1), 3);
+        assert_eq!(autocomplete_scroll_index(&rows, 2), 5);
+    }
+
     /// The popup renders on every keystroke frame; discovery walks the
     /// filesystem and forks subprocesses. The two must never meet: everything
     /// the render path shows comes from the prefetched indexes.

@@ -1,0 +1,1 @@
+ALTER TABLE `messages` ADD `tokens` text DEFAULT '[]' NOT NULL;

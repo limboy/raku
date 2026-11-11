@@ -71,6 +71,7 @@ enum PaletteSection {
     Tasks,
     Sessions,
     Providers,
+    Commands,
 }
 
 impl PaletteSection {
@@ -79,11 +80,12 @@ impl PaletteSection {
             Self::Tasks => "command_palette.tasks",
             Self::Sessions => "command_palette.sessions",
             Self::Providers => "command_palette.providers",
+            Self::Commands => "command_palette.commands",
         })
     }
 
     fn shows_header(self) -> bool {
-        self == Self::Sessions
+        matches!(self, Self::Sessions | Self::Commands)
     }
 }
 
@@ -94,6 +96,9 @@ enum PaletteAction {
     SelectResumeProvider(ProviderKind),
     ResumeProviderSession(ProviderSessionSummary),
     SelectTask(Uuid),
+    OpenSettings,
+    ChooseModel,
+    OpenResume,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -894,6 +899,43 @@ impl Raku {
             &self.state.projects,
             &self.command_palette.message_matches,
         );
+        for (key, search, action) in [
+            (
+                "command_palette.settings",
+                "settings preferences config theme",
+                PaletteAction::OpenSettings,
+            ),
+            (
+                "command_palette.choose_model",
+                "model models provider",
+                PaletteAction::ChooseModel,
+            ),
+            (
+                "command_palette.resume",
+                "resume continue terminal session",
+                PaletteAction::OpenResume,
+            ),
+        ] {
+            if action == PaletteAction::ChooseModel
+                && !self
+                    .selected_session()
+                    .is_some_and(|session| session.can_choose_model(session.provider))
+            {
+                continue;
+            }
+            let label = tr!(key);
+            candidates.push(CommandPaletteItem {
+                section: PaletteSection::Commands,
+                search_text: format!("{label} {search}"),
+                label,
+                detail: None,
+                provider: None,
+                action,
+                content_match: None,
+                order: candidates.len(),
+                recency: 0,
+            });
+        }
         if let Some(session) = self.selected_session()
             && session.provider.capabilities().compaction.manual
             && session.provider_cursor.is_some()
@@ -1226,6 +1268,15 @@ impl Raku {
         };
 
         match action {
+            PaletteAction::OpenSettings => {
+                self.close_command_palette(window, cx);
+                self.open_settings_action(&OpenSettings, window, cx);
+            }
+            PaletteAction::ChooseModel => {
+                self.close_command_palette(window, cx);
+                self.toggle_model_picker_action(&ToggleModelPicker, window, cx);
+            }
+            PaletteAction::OpenResume => self.open_command_palette_resume_view(None, cx),
             PaletteAction::CompactContext(session_id) => {
                 self.close_command_palette(window, cx);
                 self.request_session_compaction(session_id, None, cx);
