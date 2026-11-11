@@ -231,6 +231,12 @@ addition; Settings is the only source for now.
   an icon plus text. Status reads the child session's in-memory state rather
   than the tool call, so a backgrounded child keeps showing as running after
   its call has returned.
+- **Result.** Once the child settles, the row gains a disclosure that expands
+  the child's final report in place, rendered as Markdown and collapsed by
+  default. It is the same text the parent's model received. Space toggles it;
+  a failed or interrupted child shows its error there instead. The notice left
+  by a `/agent` launch or a background completion is this same row, so every
+  result is readable in the parent's transcript wherever it came from.
 - **Right panel.** Click or Enter on the row opens a
   `RightPanelSurface::Subagent` tab that reuses the side chat's virtualized
   transcript. The header shows status, elapsed time, agent, provider and
