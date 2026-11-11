@@ -2941,13 +2941,6 @@ impl Raku {
                             .hover(|element| element.bg(activity_hover_surface))
                             .active(|element| element.bg(activity_active_surface))
                     })
-                    .when(!packed_row, |row| {
-                        row.child(icon(
-                            activity_icon(activity.kind),
-                            12.0,
-                            theme.text_tertiary,
-                        ))
-                    })
                     .child(
                         div()
                             .flex_none()
