@@ -3991,6 +3991,7 @@ fn read_line_flat_text(
         links: Vec::new(),
         code_ranges: Vec::new(),
         token_ranges: Vec::new(),
+        prompt_spacing: None,
         math: None,
         active_link: None,
     }

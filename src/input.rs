@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use crate::composer_complete::PromptToken;
 use crate::md::highlight::{self, Lang, TokenClass};
 use crate::ui::menu::{ContextMenuHandle, MenuItem, context_menu};
+use crate::ui::prompt_pill::PromptPillStyle;
 use crate::ui::scrollbar::{self, ScrollbarState};
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle, DispatchPhase, Element,
@@ -2955,18 +2956,24 @@ fn input_text_runs(
             } else {
                 None
             };
-            (start < end).then(|| TextRun {
-                len: end - start,
-                color,
-                background_color,
-                underline: marked_range
-                    .filter(|range| range.start < end && range.end > start)
-                    .map(|_| UnderlineStyle {
-                        color: Some(base_run.color),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                ..base_run.clone()
+            (start < end).then(|| {
+                let mut run = TextRun {
+                    len: end - start,
+                    color,
+                    background_color,
+                    underline: marked_range
+                        .filter(|range| range.start < end && range.end > start)
+                        .map(|_| UnderlineStyle {
+                            color: Some(base_run.color),
+                            thickness: px(1.0),
+                            wavy: false,
+                        }),
+                    ..base_run.clone()
+                };
+                if in_atom && run.font.weight < gpui::FontWeight::MEDIUM {
+                    run.font.weight = gpui::FontWeight::MEDIUM;
+                }
+                run
             })
         })
         .collect()
@@ -2974,12 +2981,16 @@ fn input_text_runs(
 
 /// One rounded quad per visual row each atom covers. A soft wrap inside an
 /// atom splits it at the row edge, like any inline chip.
-fn atom_pills(atoms: &[PromptToken], layout: &TextLayout, color: Hsla) -> Vec<PaintQuad> {
+fn atom_pills(
+    atoms: &[PromptToken],
+    layout: &TextLayout,
+    style: PromptPillStyle,
+) -> Vec<PaintQuad> {
     atoms
         .iter()
         .filter(|atom| atom.end <= layout.len())
-        .flat_map(|atom| crate::md::render::range_rects(layout, &atom.range(), 2.5, 1.5))
-        .map(|bounds| fill(bounds, color).corner_radii(px(4.0)))
+        .flat_map(|atom| crate::md::render::range_rects(layout, &atom.range(), 0.0, 0.0))
+        .map(|bounds| style.quad(bounds))
         .collect()
 }
 
@@ -3048,7 +3059,7 @@ impl Element for InputElement {
         } else {
             SearchPaint {
                 atoms: &input.atoms,
-                atom_color: theme.accent,
+                atom_color: palette.prompt_pill.foreground,
                 matches: &input.search_matches,
                 active: input
                     .active_search_match
@@ -3158,7 +3169,11 @@ impl Element for InputElement {
         }
         let pills = {
             let input = self.input.read(cx);
-            atom_pills(&input.atoms, &layout, theme.accent.opacity(0.13))
+            atom_pills(
+                &input.atoms,
+                &layout,
+                PromptPillStyle::new(theme.accent, theme.is_dark),
+            )
         };
         PrepaintState { cursor, pills }
     }

@@ -46,21 +46,26 @@ use super::selection::{
 use super::veil::{RowVeil, apply_veil};
 use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::menu::{ContextMenuHandle, context_menu};
+use crate::ui::prompt_pill::PromptPillStyle;
 use crate::ui::tooltip::Tooltip;
 
 mod math_text;
+mod prompt_spacing;
+
+use prompt_spacing::PromptSpacing;
 
 /// Selection geometry: the laid-out text handle for one painted element.
 #[derive(Clone)]
 pub enum TextGeometry {
     Text(TextLayout),
+    SpacedText(TextLayout, Rc<PromptSpacing>),
     Math(math_text::Geometry),
 }
 
 impl TextGeometry {
     fn bounds(&self) -> Bounds<Pixels> {
         match self {
-            Self::Text(layout) => layout.bounds(),
+            Self::Text(layout) | Self::SpacedText(layout, _) => layout.bounds(),
             Self::Math(layout) => layout.bounds(),
         }
     }
@@ -68,14 +73,28 @@ impl TextGeometry {
     fn index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
         match self {
             Self::Text(layout) => layout.index_for_position(position),
+            Self::SpacedText(layout, spacing) => layout
+                .index_for_position(position)
+                .map(|index| spacing.source_index(index))
+                .map_err(|index| spacing.source_index(index)),
             Self::Math(layout) => layout.index_for_position(position),
         }
     }
 
     fn is_missing(&self) -> bool {
         match self {
-            Self::Text(layout) => layout_missing(layout),
+            Self::Text(layout) | Self::SpacedText(layout, _) => layout_missing(layout),
             Self::Math(layout) => layout.is_missing(),
+        }
+    }
+
+    fn range_rects(&self, range: &Range<usize>, pad_x: f32, inset_y: f32) -> Vec<Bounds<Pixels>> {
+        match self {
+            Self::Text(layout) => range_rects(layout, range, pad_x, inset_y),
+            Self::SpacedText(layout, spacing) => {
+                range_rects(layout, &spacing.display_range(range), pad_x, inset_y)
+            }
+            Self::Math(layout) => layout.range_rects(range),
         }
     }
 }
@@ -246,6 +265,7 @@ pub struct Palette {
     pub search_match: Hsla,
     pub active_search_match: Hsla,
     pub accent: Hsla,
+    pub(crate) prompt_pill: PromptPillStyle,
     pub added: Hsla,
     pub removed: Hsla,
     is_dark: bool,
@@ -282,6 +302,7 @@ impl Palette {
                 0.70
             }),
             accent: theme.accent,
+            prompt_pill: PromptPillStyle::new(theme.accent, theme.is_dark),
             added: theme.success,
             removed: theme.danger,
             is_dark: theme.is_dark,
@@ -323,6 +344,7 @@ pub struct FlatText {
     pub links: Vec<(Range<usize>, String)>,
     pub code_ranges: Vec<Range<usize>>,
     pub token_ranges: Vec<Range<usize>>,
+    pub(crate) prompt_spacing: Option<Rc<PromptSpacing>>,
     pub math: Option<Rc<math_text::MathData>>,
     pub(crate) active_link: Option<Rc<Cell<Option<usize>>>>,
 }
@@ -423,6 +445,8 @@ pub fn flatten(
             // Inline code is never bold. It is already the denser face, and the
             // small cut only ships regular and italic.
             FontWeight::NORMAL
+        } else if run.style.prompt_token.is_some() && base_weight < FontWeight::MEDIUM {
+            FontWeight::MEDIUM
         } else if run.style.bold && base_weight < FontWeight::SEMIBOLD {
             FontWeight::SEMIBOLD
         } else {
@@ -458,7 +482,7 @@ pub fn flatten(
             // Inline code keeps the prose color; the mono face and the wash
             // already set it apart, so a hue would only add noise.
             color: if run.style.prompt_token.is_some() {
-                palette.accent
+                palette.prompt_pill.foreground
             } else {
                 base_color
             },
@@ -513,11 +537,13 @@ pub fn flatten(
     }
 
     let active_link = (!links.is_empty()).then(|| Rc::new(Cell::new(None)));
+    let prompt_spacing = PromptSpacing::new(&text, &token_ranges);
     FlatText {
         text: text.into(),
         runs: out,
         links,
         code_ranges,
+        prompt_spacing,
         token_ranges,
         math: (!math.is_empty()).then(|| Rc::new(math_text::MathData::new(math))),
         active_link,
@@ -552,6 +578,7 @@ pub fn flatten_plain(
         links: Vec::new(),
         code_ranges: Vec::new(),
         token_ranges: Vec::new(),
+        prompt_spacing: None,
         math: None,
         active_link: None,
     }
@@ -983,7 +1010,7 @@ fn text_element_with_selection(
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
     code_wash: Hsla,
-    token_wash: Hsla,
+    prompt_pill: PromptPillStyle,
     selection_wash: Hsla,
     search_match_wash: Hsla,
     active_search_match_wash: Hsla,
@@ -992,13 +1019,31 @@ fn text_element_with_selection(
     dashed: Vec<Range<usize>>,
     dashed_color: Hsla,
 ) -> AnyElement {
-    let styled = StyledText::new(flat.text.clone()).with_runs(runs);
+    let (text, runs) = match &flat.prompt_spacing {
+        Some(spacing) => (spacing.text.clone(), spacing.runs(runs)),
+        None => (flat.text.clone(), runs),
+    };
+    let styled = StyledText::new(text).with_runs(runs);
     let layout = styled.layout().clone();
+    let geometry = match &flat.prompt_spacing {
+        Some(spacing) => TextGeometry::SpacedText(layout, spacing.clone()),
+        None => TextGeometry::Text(layout),
+    };
 
     let body: AnyElement = if flat.links.is_empty() {
         styled.into_any_element()
     } else {
-        let (ranges, urls): (Vec<_>, Vec<_>) = flat.links.iter().cloned().unzip();
+        let (ranges, urls): (Vec<_>, Vec<_>) = flat
+            .links
+            .iter()
+            .map(|(range, url)| {
+                let range = flat
+                    .prompt_spacing
+                    .as_ref()
+                    .map_or_else(|| range.clone(), |spacing| spacing.display_range(range));
+                (range, url.clone())
+            })
+            .unzip();
         let id = SharedString::from(format!("{}-t{}", key.row, key.index));
         let handler = link_handler.clone();
         let selection = selection.clone();
@@ -1022,23 +1067,26 @@ fn text_element_with_selection(
         let text = flat.text.clone();
         let code_ranges = flat.code_ranges.clone();
         let token_ranges = flat.token_ranges.clone();
-        let layout = layout.clone();
+        let geometry = geometry.clone();
         let key = key.clone();
         let links = flat.links.clone();
         let active_link = flat.active_link.clone();
         move |_, _, window, _| {
-            for (ranges, wash) in [(&code_ranges, code_wash), (&token_ranges, token_wash)] {
-                for range in ranges {
-                    for rect in range_rects(&layout, range, CODE_WASH_PAD_X, CODE_WASH_INSET_Y) {
-                        window.paint_quad(quad(
-                            rect,
-                            px(CODE_WASH_RADIUS),
-                            wash,
-                            px(0.0),
-                            gpui::transparent_black(),
-                            BorderStyle::default(),
-                        ));
-                    }
+            for range in &code_ranges {
+                for rect in geometry.range_rects(range, CODE_WASH_PAD_X, CODE_WASH_INSET_Y) {
+                    window.paint_quad(quad(
+                        rect,
+                        px(CODE_WASH_RADIUS),
+                        code_wash,
+                        px(0.0),
+                        gpui::transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+            }
+            for range in &token_ranges {
+                for rect in geometry.range_rects(range, 0.0, 0.0) {
+                    window.paint_quad(prompt_pill.quad(rect));
                 }
             }
             if let Some(search) = &search {
@@ -1054,7 +1102,7 @@ fn text_element_with_selection(
                     } else {
                         search_match_wash
                     };
-                    for rect in range_rects(&layout, &found.range, 1.0, 1.0) {
+                    for rect in geometry.range_rects(&found.range, 1.0, 1.0) {
                         window.paint_quad(quad(
                             rect,
                             px(2.0),
@@ -1067,12 +1115,12 @@ fn text_element_with_selection(
                 }
             }
             for range in &dashed {
-                for rect in range_rects(&layout, range, 0.0, 0.0) {
+                for rect in geometry.range_rects(range, 0.0, 0.0) {
                     paint_dashed_underline(window, rect, dashed_color);
                 }
             }
             if let Some(range) = selection.selection.borrow().wash_range(&key) {
-                for rect in range_rects(&layout, &range, 0.0, 0.0) {
+                for rect in geometry.range_rects(&range, 0.0, 0.0) {
                     window.paint_quad(quad(
                         rect,
                         px(0.0),
@@ -1086,7 +1134,7 @@ fn text_element_with_selection(
             if let Some(index) = active_link.as_ref().and_then(|active| active.get())
                 && let Some((range, _)) = links.get(index)
             {
-                for rect in range_rects(&layout, range, 1.0, 0.0) {
+                for rect in geometry.range_rects(range, 1.0, 0.0) {
                     window.paint_quad(quad(
                         rect,
                         px(2.0),
@@ -1103,7 +1151,7 @@ fn text_element_with_selection(
                 key: key.clone(),
                 text: Rc::from(text.as_ref()),
                 block_break,
-                geometry: TextGeometry::Text(layout.clone()),
+                geometry: geometry.clone(),
             });
         }
     })
@@ -1182,6 +1230,7 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
             links,
             code_ranges: flat.code_ranges.clone(),
             token_ranges: flat.token_ranges.clone(),
+            prompt_spacing: flat.prompt_spacing.clone(),
             math: flat.math.clone(),
             active_link: Some(flat.active_link.clone().unwrap_or_default()),
         }
@@ -1198,7 +1247,7 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
         ctx.search.clone(),
         ctx.link_handler.clone(),
         ctx.palette.code_wash,
-        ctx.palette.accent.opacity(0.13),
+        ctx.palette.prompt_pill,
         ctx.palette.selection,
         ctx.palette.search_match,
         ctx.palette.active_search_match,
@@ -1248,7 +1297,7 @@ pub fn selectable_flat_text(
         None,
         None,
         code_wash,
-        code_wash,
+        PromptPillStyle::new(code_wash, false),
         selection_wash,
         gpui::transparent_black(),
         gpui::transparent_black(),
@@ -1292,6 +1341,7 @@ pub fn flatten_tinted(
         links: Vec::new(),
         code_ranges: Vec::new(),
         token_ranges: Vec::new(),
+        prompt_spacing: None,
         math: None,
         active_link: None,
     }
@@ -1407,10 +1457,7 @@ pub(crate) fn range_rects(
 /// Find-in-page uses this after a virtualized row mounts to reveal the exact
 /// wrapped line rather than stopping at the top of a long message.
 pub fn text_range_bounds(layout: &TextGeometry, range: &Range<usize>) -> Vec<Bounds<Pixels>> {
-    match layout {
-        TextGeometry::Text(layout) => range_rects(layout, range, 0.0, 0.0),
-        TextGeometry::Math(layout) => layout.range_rects(range),
-    }
+    layout.range_rects(range, 0.0, 0.0)
 }
 
 /// `TextLayout::bounds` panics before prepaint has run. A row that was spliced
@@ -2196,6 +2243,7 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
             links: Vec::new(),
             code_ranges: Vec::new(),
             token_ranges: Vec::new(),
+            prompt_spacing: None,
             math: None,
             active_link: None,
         }
@@ -2684,6 +2732,71 @@ mod tests {
             assert_eq!(flat.token_ranges[0], 0..7);
             assert_eq!(flat.links.is_empty(), kind == PromptTokenKind::Skill);
         }
+    }
+
+    #[gpui::test]
+    fn inline_prompt_pills_have_a_gap_and_keep_source_selection(cx: &mut TestAppContext) {
+        use raku_protocol::composer::{PromptToken, PromptTokenKind};
+
+        struct TestWindow {
+            markdown: MarkdownView,
+            selection: TranscriptSelection,
+        }
+        impl gpui::Render for TestWindow {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let palette = palette();
+                let ctx = Ctx::new(
+                    "prompt-gap",
+                    &palette,
+                    Metrics::BODY,
+                    self.selection.clone(),
+                );
+                div()
+                    .w(px(400.0))
+                    .child(frame_reset(self.selection.clone()))
+                    .children(markdown(&self.markdown, &ctx))
+            }
+        }
+
+        let source = "subagent @explore ?";
+        let mut view = MarkdownView::new();
+        view.set_prompt(
+            source,
+            &[PromptToken {
+                start: 9,
+                end: 17,
+                kind: PromptTokenKind::Agent,
+                name: "explore".into(),
+            }],
+        );
+        let selection = TranscriptSelection::default();
+        let (_view, cx) = cx.add_window_view(|_, _| TestWindow {
+            markdown: view,
+            selection: selection.clone(),
+        });
+        cx.run_until_parked();
+        let registry = selection.registry.borrow();
+        let entry = &registry.entries()[0];
+        let word = text_range_bounds(&entry.geometry, &(0..8))[0];
+        let label = text_range_bounds(&entry.geometry, &(9..17))[0];
+        let pill = palette().prompt_pill.quad(label);
+        assert!(pill.bounds.left() - word.right() >= px(2.0));
+        assert_eq!(entry.text.as_ref(), source);
+        assert_eq!(
+            entry
+                .geometry
+                .index_for_position(point(label.left(), label.center().y)),
+            Ok(9)
+        );
+        selection.selection.borrow_mut().begin_with_span(
+            entry.key.clone(),
+            entry.text.clone(),
+            0..source.len(),
+        );
+        assert_eq!(
+            selection.selection.borrow().selected_text().as_deref(),
+            Some(source)
+        );
     }
 
     #[test]

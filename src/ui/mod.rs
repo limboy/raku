@@ -8,6 +8,7 @@ use gpui::{
 pub mod image;
 pub mod menu;
 pub mod motion;
+pub(crate) mod prompt_pill;
 pub mod scrollbar;
 pub mod text_field;
 pub mod tooltip;

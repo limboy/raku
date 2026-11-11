@@ -1195,7 +1195,7 @@ pub(super) fn render_message(
                             .border_1()
                             .border_color(theme.raised)
                             .bg(theme.raised)
-                            .px(px(11.0))
+                            .px(px(3.0))
                             .py(px(7.0))
                             .text_size(sp(14.0))
                             .line_height(sp(20.0))
@@ -1212,6 +1212,10 @@ pub(super) fn render_message(
                                             )))
                                             .min_w_0()
                                             .max_h(px(USER_MESSAGE_VIEWPORT_MAX_HEIGHT))
+                                            // Keep 8px of the bubble's 11px inset inside
+                                            // both clipping ancestors. Inline pills can
+                                            // then overhang the text at either row edge.
+                                            .px(px(8.0))
                                             .when_some(user_message_viewport, |body, viewport| {
                                                 let wheel_scroll = viewport.scroll_handle.clone();
                                                 body.overflow_y_scroll()
