@@ -664,7 +664,7 @@ impl Raku {
                             .rounded(px(11.0))
                             .border_1()
                             .border_color(theme.border_strong)
-                            .bg(theme.raised)
+                            .bg(theme.menu)
                             .shadow_lg()
                             .flex()
                             .flex_col()
@@ -741,8 +741,7 @@ impl Raku {
                             )),
                     )
                     // Provider-reported hints can be a whole usage line; cap
-                    // and truncate so the description and scope badge stay
-                    // on the row.
+                    // and truncate so the description stays on the row.
                     .when_some(command.argument_hint.clone(), |element, hint| {
                         element.child(
                             div()
@@ -763,22 +762,6 @@ impl Raku {
                             .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_tertiary)
                             .child(SharedString::from(command.description.clone())),
-                    )
-                    // Both lists mix kinds, so every row names its kind.
-                    .child(
-                        div()
-                            .h(px(18.0))
-                            .px(px(5.0))
-                            .flex_none()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(theme.border)
-                            .flex()
-                            .items_center()
-                            .text_size(sp(SMALL_UI_FONT_SIZE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text_tertiary)
-                            .child(command.composer_badge()),
                     )
                     .into_any_element()
             }
@@ -809,22 +792,6 @@ impl Raku {
                             .text_size(sp(SMALL_UI_FONT_SIZE))
                             .text_color(theme.text_tertiary)
                             .child(SharedString::from(single_line_label(&agent.description))),
-                    )
-                    // The icon alone would not say what the row is.
-                    .child(
-                        div()
-                            .h(px(18.0))
-                            .px(px(5.0))
-                            .flex_none()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(theme.border)
-                            .flex()
-                            .items_center()
-                            .text_size(sp(SMALL_UI_FONT_SIZE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text_tertiary)
-                            .child(tr!("subagent.badge")),
                     )
                     .into_any_element()
             }
