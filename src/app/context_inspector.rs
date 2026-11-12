@@ -1398,6 +1398,7 @@ fn context_tool_list(
         list_state.reset_with_uniform_height(rows.len(), px(TOOL_ROW_HEIGHT));
     }
     let keyboard_list = list_state.clone();
+    let wheel_list = list_state.clone();
     let list_theme = *theme;
     div()
         .id(id)
@@ -1410,6 +1411,13 @@ fn context_tool_list(
         .rounded(px(8.0))
         .relative()
         .focus_visible(|style| style.border_color(theme.accent))
+        // The list processes the gesture first. Keep it from also scrolling
+        // the inspector, including at either edge of a scrollable catalog.
+        .on_scroll_wheel(move |_, _, cx| {
+            if wheel_list.max_offset_for_scrollbar().y > px(0.5) {
+                cx.stop_propagation();
+            }
+        })
         .on_key_down(move |event: &KeyDownEvent, _, cx| {
             if event.keystroke.modifiers.modified() {
                 return;
