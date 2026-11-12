@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.8] - 2026-11-12
+
+- Show status icons for all active background tasks, including subagents
+
 ## [2.5.7] - 2026-11-12
 
 - Add a Context inspector showing recorded context snapshots, tool catalogs, and subagent definitions
