@@ -170,6 +170,11 @@ fn handle_subagent_mcp_message(
             // MCP tools otherwise wait behind tool search, where the model
             // reaches for its built-in Agent tool first.
             "_meta": {"anthropic/alwaysLoad": true},
+            // Claude Code runs an MCP tool alongside its siblings only when it
+            // is read-only; otherwise two `subagent` calls in one message run
+            // one after the other. The call itself touches nothing: each
+            // child enforces its own access mode, never wider than the task's.
+            "annotations": {"readOnlyHint": true},
         }]})),
         Some("tools/call")
             if message.pointer("/params/name").and_then(Value::as_str)
@@ -3066,6 +3071,7 @@ mod tests {
         assert_eq!(reply["response"]["request_id"], "list-1");
         assert_eq!(tool["name"], "subagent");
         assert_eq!(tool["_meta"]["anthropic/alwaysLoad"], true);
+        assert_eq!(tool["annotations"]["readOnlyHint"], true);
         assert!(
             tool["description"]
                 .as_str()
@@ -3186,6 +3192,85 @@ mod tests {
         assert!(
             reply.contains("BLUEHERON"),
             "the reply used the result: {reply}"
+        );
+    }
+
+    /// Two `subagent` calls in one message must both reach Raku before either
+    /// is answered; Claude Code serializes MCP tools that are not read-only.
+    #[test]
+    #[ignore = "requires an installed, authenticated claude"]
+    fn claude_runs_parallel_subagent_calls_at_once() {
+        let binary =
+            crate::command_env::find_executable("claude").expect("claude is not installed");
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let driver = ClaudeDriver::start(
+            DriverStartOptions {
+                binary,
+                cwd: std::env::temp_dir(),
+                mode: RuntimeMode::Ask,
+                plan_mode: false,
+                model: Some("claude-haiku-4-5-20251001".into()),
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                provider_cursor: None,
+                read_only: false,
+                subagent: crate::model::SubagentLaunch {
+                    agents: vec![
+                        crate::model::SubagentToolAgent {
+                            name: "alpha".into(),
+                            description: "Knows the first codename.".into(),
+                        },
+                        crate::model::SubagentToolAgent {
+                            name: "beta".into(),
+                            description: "Knows the second codename.".into(),
+                        },
+                    ],
+                    child: false,
+                    delegates: true,
+                },
+            },
+            events,
+        )
+        .expect("the streaming session should start");
+        driver.prompt(
+            "Ask @alpha and @beta for their codename. Make both subagent calls in the same \
+             message, in parallel, then reply with both codenames."
+                .into(),
+        );
+        // Answering only once both calls are in would hang a serialized run.
+        let mut held = Vec::new();
+        let mut finished = false;
+        while let Ok(event) = event_rx.recv_timeout(std::time::Duration::from_secs(120)) {
+            match event {
+                DriverEvent::SubagentRequested(request) => {
+                    held.push(request);
+                    if held.len() == 2 {
+                        for request in &held {
+                            driver.respond_subagent(
+                                request.request_id.clone(),
+                                crate::model::subagent_result(
+                                    None,
+                                    crate::model::SubagentOutcome::Completed,
+                                    &format!("{}'s codename is HERON.", request.agent),
+                                ),
+                            );
+                        }
+                    }
+                }
+                DriverEvent::TurnFinished { .. } => {
+                    finished = true;
+                    break;
+                }
+                DriverEvent::Error(error) => panic!("Claude reported: {error}"),
+                _ => {}
+            }
+        }
+        assert!(
+            finished && held.len() == 2,
+            "the second call never arrived while the first was held: {} seen",
+            held.len()
         );
     }
 

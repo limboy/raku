@@ -360,6 +360,14 @@ it ran its own Explore subagent. The tool is listed with
 are Raku's, not a built-in agent tool, and that `@name` means this tool. With
 both, `@explore …` reached Raku's tool in Supervised mode without a prompt.
 
+Claude Code runs an MCP tool alongside the other calls in the same message
+only when the tool is concurrency-safe, which for an external server means
+`annotations.readOnlyHint`. Without it, two `subagent` calls in one message
+ran one after the other: the second child started only once the first had
+reported back. The tool is listed as read-only. The call itself writes
+nothing. Each child enforces its own access mode, which is never wider than
+the task's.
+
 ### Codex: a dynamic tool
 
 `codex app-server` takes client-implemented tools (experimental API):
