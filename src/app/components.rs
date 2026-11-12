@@ -1,6 +1,7 @@
 use super::*;
 
 use chrono::{Datelike, Days};
+use gpui::{HighlightStyle, StyledText};
 use std::path::Path;
 
 const USER_MESSAGE_MAX_HEIGHT: f32 = 400.0;
@@ -22,50 +23,49 @@ pub(super) fn pulse_dot(size: f32, color: Hsla) -> AnyElement {
     .into_any_element()
 }
 
-/// Four dots in a 2×2 square chasing a brightness wave, the transcript's
-/// "still working" signal. Each dot rides the shared pulse clock with a phase
-/// offset, so the bright spot circles the square clockwise. Under
-/// reduce-motion the clock holds the cycle's first frame — the lead dot
-/// bright, the rest dimming behind it — which reads as a static glyph.
-pub(super) fn working_wave_dots(color: Hsla) -> AnyElement {
-    const DOT_PHASE_STEP: f32 = 0.25;
-    const DOT_SIZE: f32 = 4.0;
-    const DOT_GAP: f32 = 2.5;
-    motion::pulse(Duration::from_millis(1400), move |phase| {
-        // Clockwise order: top-left, top-right, bottom-right, bottom-left.
-        let dot = |index: usize| {
-            let dot_phase = (phase + 1.0 - index as f32 * DOT_PHASE_STEP) % 1.0;
-            let wave = ((dot_phase * std::f32::consts::TAU).sin() + 1.0) / 2.0;
-            div()
-                .size(px(DOT_SIZE))
-                .flex_none()
-                .rounded_full()
-                .bg(color)
-                .opacity(0.25 + 0.75 * wave)
-        };
-        let row = |left: usize, right: usize| {
-            div()
-                .flex()
-                .gap(px(DOT_GAP))
-                .child(dot(left))
-                .child(dot(right))
-        };
+/// The live turn's status label ("Working", "Running a command", …) with a
+/// soft highlight sweeping across it, the transcript's "still working" signal.
+/// Each character is tinted toward `highlight` by its distance from a band
+/// centre that rides the shared pulse clock. The sweep starts off the left
+/// edge and rests off the right edge, so under reduce-motion — where the clock
+/// holds phase 0 — the label renders as plain `base` text.
+pub(super) fn shimmer_text(text: SharedString, base: Hsla, highlight: Hsla) -> AnyElement {
+    /// Half-width of the highlight band, in characters.
+    const BAND: f32 = 3.0;
+    /// Share of the cycle spent sweeping; the rest is a pause between passes.
+    const SWEEP: f32 = 0.42;
+    motion::pulse(Duration::from_millis(2100), move |phase| {
+        let chars = text.chars().count() as f32;
+        let progress = (phase / SWEEP).min(1.0);
+        let centre = -BAND + progress * (chars + 2.0 * BAND);
+        let highlights = text
+            .char_indices()
+            .enumerate()
+            .filter_map(|(index, (start, ch))| {
+                let distance = (index as f32 + 0.5 - centre).abs();
+                if distance >= BAND {
+                    return None;
+                }
+                let weight = 0.5 * (1.0 + (std::f32::consts::PI * distance / BAND).cos());
+                let color = base.blend(highlight.opacity(weight));
+                Some((
+                    start..start + ch.len_utf8(),
+                    HighlightStyle {
+                        color: Some(color),
+                        ..Default::default()
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
         div()
-            // Align with the visible text rather than the center of its line box.
-            .relative()
-            .top(px(1.5))
-            .flex()
-            .flex_col()
-            .flex_none()
-            .gap(px(DOT_GAP))
-            .child(row(0, 1))
-            .child(row(3, 2))
+            .text_color(base)
+            .child(StyledText::new(text).with_highlights(highlights))
             .into_any_element()
     })
     // Mounted for the whole turn: this is what sets the transcript pane's
-    // tick floor, and every tick rebuilds each visible row. The 1400 ms wave
-    // reads identically at half cadence.
-    .every(2)
+    // tick floor, and every tick rebuilds each visible row. A brisk sweep
+    // steps visibly at 15 Hz, so this one rides the ~30 Hz pulse cadence.
+    .every(1)
     .into_any_element()
 }
 

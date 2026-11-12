@@ -2157,8 +2157,8 @@ impl Raku {
             .into_any_element()
     }
 
-    /// The live turn's closing row: pulsing dots, what the agent is doing
-    /// right now ("Running a command"), and the elapsed time. It is on screen
+    /// The live turn's closing row: what the agent is doing right now
+    /// ("Running a command"), under a sweeping shimmer, and the elapsed time. It is on screen
     /// from the moment the prompt lands — before the provider has produced a
     /// single chunk — and stays below whatever streams in until the turn
     /// settles into its "Worked for N" fold. While a live activity group sits
@@ -2199,16 +2199,21 @@ impl Raku {
             .gap(px(8.0))
             .text_size(px(metrics.text_size))
             .line_height(px(metrics.line_height))
-            .child(working_wave_dots(theme.text_tertiary))
-            .child(
-                div()
-                    .text_color(theme.text_tertiary)
-                    .child(SharedString::from(label)),
-            )
+            .child(shimmer_text(
+                SharedString::from(label),
+                theme.text_tertiary,
+                theme.text,
+            ))
             .when(!parked, |row| {
                 row.child(
                     div()
                         .text_color(theme.text_tertiary)
+                        // Tabular figures keep each digit the same width, so
+                        // the ticking seconds do not jitter the row.
+                        .font_features(gpui::FontFeatures(std::sync::Arc::new(vec![(
+                            "tnum".into(),
+                            1,
+                        )])))
                         .child(SharedString::from(format_working_elapsed(elapsed))),
                 )
             });
@@ -2761,9 +2766,9 @@ impl Raku {
         let activity_active_surface = theme.surface.blend(theme.overlay_strong.opacity(0.72));
         let mut items = div()
             .min_w_0()
-            // Match the settled disclosure's 6 px inset from its label.
-            // The live label follows a 10.5 px dot grid and an 8 px gap.
-            .ml(px(if live_group { 10.5 + 8.0 + 6.0 } else { 6.0 }))
+            // Live and settled labels both start on the body text's left
+            // edge, so the rail sits the same 6 px in from either.
+            .ml(px(6.0))
             .when(live_group, |items| items.mt(px(4.0)))
             .pl(px(12.0))
             .pb(px(2.0))

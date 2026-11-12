@@ -465,7 +465,7 @@ pub(super) enum TranscriptRowKind {
     /// checkpoints. Responses with a footer render this inside that row; the
     /// standalone row remains for tool-only turns with nothing to copy.
     ChangedFiles(Uuid),
-    /// The live turn's footer — pulsing dots plus "Working for Ns". Present
+    /// The live turn's footer — a shimmering "Working" plus the elapsed time. Present
     /// from the moment the prompt lands until the turn settles, so a provider
     /// that has not produced a chunk yet still shows visible progress, and a
     /// streaming one shows it below whatever content has arrived.
@@ -1401,7 +1401,7 @@ pub(super) fn format_worked_duration(seconds: u64) -> String {
 
 /// The live indicator's elapsed label: "9s", "1m 5s", "1h 2m". Compact where
 /// [`format_worked_duration`] is prose — the settled fold reads as a sentence,
-/// while this one ticks every second beside the pulsing dots.
+/// while this one ticks every second beside the shimmering label.
 pub(super) fn format_working_elapsed(seconds: u64) -> String {
     match seconds {
         0..=59 => tr!("duration.seconds_short", count = seconds),

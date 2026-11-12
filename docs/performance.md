@@ -93,8 +93,9 @@ display frame. A view's whole subtree rebuilds per tick, so cadence is priced
 per *view*, not per animation: spinners use the full 60 Hz rate, while
 `spin_slow` uses every second tick (≈ 30 Hz). Non-spinning pulses and
 `pulse_lease` retain ≈ 30 Hz; `pulse_lease_slow` and `Pulse::every(2)` use
-≈ 15 Hz for loaders mounted on expensive surfaces — the working dots set the
-transcript pane's tick floor for the entire turn. Strides re-establish on
+≈ 15 Hz for loaders mounted on expensive surfaces. The working shimmer sets the
+transcript pane's tick floor for the entire turn at ≈ 30 Hz — a fast sweep
+visibly steps at 15 Hz. Strides re-establish on
 every tick (a lease's stride resets after it fires); an earlier version kept
 the minimum stride forever, so one full-rate lease permanently dragged its
 pane back to 30 Hz.
