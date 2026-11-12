@@ -1905,6 +1905,32 @@ impl Raku {
             self.show_toast(error.to_string());
             return None;
         }
+        // `/plan <prompt>` is Raku's plan-mode switch followed by an ordinary
+        // prompt; only the prompt reaches the provider, whose CLI does not
+        // implement `/plan` itself. A skill named `plan` keeps precedence.
+        let plan_prompt_start = self
+            .selected_session()
+            .is_some_and(|session| session.provider.capabilities().plan_mode)
+            .then(|| crate::composer_complete::plan_mode_prompt_start(prompt))
+            .flatten()
+            .filter(|_| {
+                !tokens.iter().any(|token| {
+                    token.start == 0
+                        && token.kind == crate::composer_complete::PromptTokenKind::Skill
+                })
+            });
+        let plan_tokens;
+        let (prompt, tokens) = match plan_prompt_start {
+            Some(start) => {
+                plan_tokens = crate::composer_complete::PromptToken::rebased(
+                    tokens,
+                    &prompt[start..],
+                    -(start as isize),
+                );
+                (&prompt[start..], plan_tokens.as_slice())
+            }
+            None => (prompt, tokens),
+        };
         for attachment in &self.composer_attachments {
             if let (Some(reference), Some(image)) = (
                 attachment.blob_reference.as_ref(),
@@ -1926,6 +1952,9 @@ impl Raku {
             .map(|attachment| attachment.mention.clone())
             .collect::<Vec<_>>();
         let submission = merged_submission(prompt, &mentions)?;
+        if plan_prompt_start.is_some() {
+            self.enter_plan_mode_for_submission(cx);
+        }
         let leading = prompt.len() - prompt.trim_start().len();
         let tokens = crate::composer_complete::PromptToken::rebased(
             tokens,

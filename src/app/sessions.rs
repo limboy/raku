@@ -1134,6 +1134,21 @@ impl Raku {
         cx.notify();
     }
 
+    /// `/plan <prompt>`: enter plan mode for the turn that prompt starts. The
+    /// switch is applied at once and again while that turn is prepared, so
+    /// it reaches a live provider before the prompt does.
+    pub(super) fn enter_plan_mode_for_submission(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self
+            .selected_session()
+            .filter(|session| session.provider.capabilities().plan_mode)
+            .map(|session| session.id)
+        else {
+            return;
+        };
+        self.set_plan_mode(true, cx);
+        self.plan_mode_syncs.insert(session_id);
+    }
+
     pub(super) fn toggle_plan_mode_action(
         &mut self,
         _: &TogglePlanMode,

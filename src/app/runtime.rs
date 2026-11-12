@@ -3315,6 +3315,7 @@ impl Raku {
         submission: ComposerSubmission,
         cx: &mut Context<Self>,
     ) {
+        let sync_options = self.plan_mode_syncs.remove(&session_id);
         let Some(session) = self
             .state
             .sessions
@@ -3323,6 +3324,13 @@ impl Raku {
         else {
             return;
         };
+        // A live runtime received `/plan <prompt>`'s switch on a detached
+        // task; re-apply it ahead of preparation so it precedes the prompt.
+        // A runtime still to start launches with these options instead.
+        let options_sync = sync_options
+            .then(|| self.runtimes.get(&session_id))
+            .flatten()
+            .map(|runtime| (runtime.driver.clone(), self.session_options(session)));
         let next_turn_count = session.turns.len();
         let workspace = session.workspace.clone();
         let side_chat = session.is_child();
@@ -3351,6 +3359,11 @@ impl Raku {
             let prepared = cx
                 .background_executor()
                 .spawn(async move {
+                    // A refusal resets the runtime through the detached
+                    // apply that `set_plan_mode` already started.
+                    if let Some((driver, options)) = options_sync {
+                        driver.apply_options(options);
+                    }
                     prepare_submission(
                         workspace_client,
                         project,

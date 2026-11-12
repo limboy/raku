@@ -100,6 +100,19 @@ pub fn is_resume_submission(prompt: &str) -> bool {
     prompt.trim() == "/resume"
 }
 
+/// Where the prompt of a `/plan <prompt>` submission starts, as a byte offset
+/// into `prompt`. A bare `/plan` only toggles plan mode, so it has no prompt
+/// and returns `None`, as does any text that merely begins with `/plan`.
+pub fn plan_mode_prompt_start(prompt: &str) -> Option<usize> {
+    let leading = prompt.len() - prompt.trim_start().len();
+    let after = prompt[leading..].strip_prefix("/plan")?;
+    if !after.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = after.trim_start();
+    (!rest.trim_end().is_empty()).then(|| prompt.len() - rest.len())
+}
+
 /// Whether the submitted text resolves to Codex's native fast-mode command,
 /// which Raku bridges to the provider's service-tier control. Checking the
 /// resolved entry preserves project/user command precedence when one of them
@@ -430,6 +443,18 @@ mod tests {
         assert!(is_resume_submission("  /resume  "));
         assert!(!is_resume_submission("/resume latest"));
         assert!(!is_resume_submission("please /resume"));
+    }
+
+    #[test]
+    fn plan_prefix_yields_the_prompt_that_follows_it() {
+        let prompt = "  /plan  add a context breakdown\n";
+        let start = plan_mode_prompt_start(prompt).unwrap();
+        assert_eq!(&prompt[start..], "add a context breakdown\n");
+        assert_eq!(plan_mode_prompt_start("/plan\nfix it"), Some(6));
+        assert_eq!(plan_mode_prompt_start("/plan"), None);
+        assert_eq!(plan_mode_prompt_start("/plan   "), None);
+        assert_eq!(plan_mode_prompt_start("/planner do it"), None);
+        assert_eq!(plan_mode_prompt_start("please /plan it"), None);
     }
 
     #[test]
