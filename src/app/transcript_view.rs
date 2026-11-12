@@ -3058,9 +3058,8 @@ impl Raku {
             // fades stay inside GPUI's rectangular clipping.
             let mut detail = div()
                 .min_w_0()
-                // Start at the row's detail text: row padding (8) + label
-                // min width (44) + gap (8).
-                .ml(px(60.0))
+                // Start at the row's label ("Think", "Search"): row padding.
+                .ml(px(8.0))
                 .mr(px(8.0))
                 .mt(px(2.0))
                 .mb(px(4.0))
