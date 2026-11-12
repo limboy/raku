@@ -544,6 +544,9 @@ impl Raku {
         // Expandable rows need focus handles before the body borrows state.
         let mut toggle_keys = Vec::new();
         if let Some(inspection) = inspection {
+            if !inspection.tool_rows.is_empty() {
+                toggle_keys.push(SharedString::new_static(AVAILABLE_TOOLS_KEY));
+            }
             if let Some(breakdown) = &inspection.recorded.breakdown {
                 for section in &breakdown.sections {
                     if section.rows.len() > SECTION_PREVIEW_ROWS {
@@ -658,6 +661,7 @@ impl Raku {
                     inspection.tool_rows.clone(),
                     state,
                     &theme,
+                    cx,
                 ));
             }
             body = body.children(raku_additions_view(inspection, state, &theme, cx));
@@ -744,6 +748,7 @@ impl Raku {
 
 const INSTRUCTIONS_KEY: &str = "raku:instructions";
 const TOOL_DEFINITIONS_KEY: &str = "raku:tool-definitions";
+const AVAILABLE_TOOLS_KEY: &str = "raku:available-tools";
 
 fn section_key(section: &ContextSection) -> SharedString {
     SharedString::from(format!("section:{}", section.title))
@@ -1366,24 +1371,33 @@ fn tool_catalog_view(
     rows: Rc<Vec<ToolCatalogRow>>,
     state: &ContextInspectorState,
     theme: &Theme,
+    cx: &mut Context<Raku>,
 ) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.0))
-        .child(section_heading(
-            theme,
+    let key = SharedString::new_static(AVAILABLE_TOOLS_KEY);
+    let expanded = state.expanded.contains(&key);
+    let mut view = div().flex().flex_col().gap(px(6.0));
+    if let Some(focus) = state.toggle_focus.get(&key) {
+        view = view.child(toggle_row(
+            "context-inspector-tools-toggle",
+            focus,
             tr!("context_inspector.available_tools"),
-            None,
-        ))
-        .child(context_tool_list(
+            expanded,
+            key,
+            theme,
+            cx,
+        ));
+    }
+    if expanded {
+        view = view.child(context_tool_list(
             "context-inspector-tools",
             rows,
             &state.tools_focus,
             &state.tools_list,
             &state.tools_scrollbar,
             theme,
-        ))
+        ));
+    }
+    view
 }
 
 fn context_tool_list(
