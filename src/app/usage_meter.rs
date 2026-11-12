@@ -243,7 +243,7 @@ impl Raku {
         let session = self.selected_session()?;
         let provider = session.provider;
         let waiting_for_context = session.context_usage_pending;
-        let context = session.context_usage.filter(|_| !waiting_for_context);
+        let context = self.last_known_context_usage(session);
         let theme = Theme::current(cx);
         let key = self.plan_usage_key_for_session(session);
         let usage_url = plan_usage_settings_url(provider, self.model_for_session(session));

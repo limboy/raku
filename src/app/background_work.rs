@@ -991,17 +991,16 @@ impl Raku {
             .selected_session()
             .filter(|session| session.id == session_id)
             .map(|session| {
-                let usage = session
-                    .context_usage
-                    .filter(|_| !session.context_usage_pending)
-                    .map(|usage| match usage.window.filter(|window| *window > 0) {
+                let usage = self.last_known_context_usage(session).map(|usage| {
+                    match usage.window.filter(|window| *window > 0) {
                         Some(window) => format!(
                             "{} / {}",
                             crate::usage::format_tokens(usage.tokens.min(window)),
                             crate::usage::format_tokens(window)
                         ),
                         None => crate::usage::format_tokens(usage.tokens),
-                    });
+                    }
+                });
                 ContextSummary {
                     usage,
                     focus: self.transcript_control_focus("context-summary-row", cx),
@@ -1034,6 +1033,9 @@ impl Raku {
             if open {
                 let _ = refresh_weak.update(cx, |this, cx| {
                     this.refresh_selected_branch_snapshot(cx);
+                    if let Some(session_id) = this.state.selected_session {
+                        this.ensure_context_snapshot_loaded(session_id, cx);
+                    }
                 });
             }
         });

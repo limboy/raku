@@ -238,6 +238,31 @@ fn retain_recorded_tools(current: &mut ContextBreakdown, previous: &ContextBreak
     }
 }
 
+/// A window-size-only provider event creates a zero-valued session counter.
+/// Use the saved measurement until an actual live count arrives. A compaction
+/// awaiting measurement must not revive the context from before compaction.
+fn known_context_usage(
+    current: Option<ContextUsage>,
+    pending: bool,
+    measured: Option<&ContextBreakdown>,
+) -> Option<ContextUsage> {
+    if pending {
+        return None;
+    }
+    if let Some(current) = current.filter(|usage| usage.tokens > 0) {
+        return Some(current);
+    }
+    let measured = measured?;
+    Some(ContextUsage {
+        tokens: measured.total_tokens?,
+        window: measured.window.filter(|window| *window > 0).or_else(|| {
+            current
+                .and_then(|usage| usage.window)
+                .filter(|window| *window > 0)
+        }),
+    })
+}
+
 /// View state of the right panel's Context tab. The data itself lives in
 /// `Raku::context_inspections`; this only remembers how the tab is presented.
 pub(super) struct ContextInspectorState {
@@ -300,6 +325,17 @@ fn write_context_snapshot(path: &Path, snapshot: &ContextSnapshot) -> std::io::R
 }
 
 impl Raku {
+    /// Shared by the popup and usage meter; rendering reads memory only.
+    pub(super) fn last_known_context_usage(&self, session: &AgentSession) -> Option<ContextUsage> {
+        known_context_usage(
+            session.context_usage,
+            session.context_usage_pending,
+            self.context_inspections
+                .get(&session.id)
+                .and_then(|inspection| inspection.recorded.breakdown.as_ref()),
+        )
+    }
+
     /// Open the selected task's Context tab in the right panel and measure.
     pub(super) fn open_context_panel(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
         if self.state.selected_session != Some(session_id) {
@@ -410,7 +446,11 @@ impl Raku {
     }
 
     /// Read a task's saved snapshot once per app run, off the UI thread.
-    fn ensure_context_snapshot_loaded(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+    pub(super) fn ensure_context_snapshot_loaded(
+        &mut self,
+        session_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
         if !self.context_snapshot_loads.insert(session_id) {
             return;
         }
@@ -533,7 +573,7 @@ impl Raku {
         let provider = session.provider;
         // What the usage meter saved with the task: the headline when no
         // breakdown has been recorded.
-        let saved_usage = session.context_usage;
+        let saved_usage = self.last_known_context_usage(session);
         let running = self.runtimes.contains_key(&session_id);
         let theme = Theme::current(cx);
         // A tab restored with its task has not asked for the saved snapshot
@@ -1769,6 +1809,72 @@ mod tests {
             token_split: Default::default(),
             tools: None,
         }
+    }
+
+    #[test]
+    fn window_only_session_usage_uses_the_recorded_context_count() {
+        let current = Some(ContextUsage {
+            tokens: 0,
+            window: Some(1_000_000),
+        });
+        let measured = breakdown(37_300);
+        assert_eq!(
+            known_context_usage(current, false, Some(&measured)),
+            Some(ContextUsage {
+                tokens: 37_300,
+                window: Some(1_000_000),
+            })
+        );
+        assert_eq!(
+            known_context_usage(None, false, Some(&measured))
+                .unwrap()
+                .tokens,
+            37_300
+        );
+    }
+
+    #[test]
+    fn a_live_context_count_wins_over_the_saved_measurement() {
+        let current = Some(ContextUsage {
+            tokens: 42_000,
+            window: Some(1_000_000),
+        });
+        assert_eq!(
+            known_context_usage(current, false, Some(&breakdown(37_300))),
+            current
+        );
+    }
+
+    #[test]
+    fn pending_compaction_does_not_restore_an_old_context_count() {
+        let current = Some(ContextUsage {
+            tokens: 42_000,
+            window: Some(1_000_000),
+        });
+        assert_eq!(
+            known_context_usage(current, true, Some(&breakdown(37_300))),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_context_is_not_displayed_as_zero() {
+        let current = Some(ContextUsage {
+            tokens: 0,
+            window: Some(1_000_000),
+        });
+        assert_eq!(known_context_usage(current, false, None), None);
+        let mut unavailable = breakdown(37_300);
+        unavailable.total_tokens = None;
+        assert_eq!(
+            known_context_usage(current, false, Some(&unavailable)),
+            None
+        );
+        // A real measurement of zero remains distinguishable from no data.
+        assert_eq!(
+            known_context_usage(current, false, Some(&breakdown(0))),
+            current
+        );
     }
 
     #[test]
