@@ -1281,6 +1281,9 @@ pub(super) fn update_session_activity(
             }
             activity.kind = item.kind;
             activity.title = item.title;
+            if item.complete && !activity.complete && activity.finished_at_ms == 0 {
+                activity.finished_at_ms = item.finished_at_ms;
+            }
             activity.complete = item.complete;
             activity.failed = item.failed;
             if item.tool_name.is_some() {

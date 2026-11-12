@@ -1936,6 +1936,22 @@ fn reasoning_duration(reasoning: &ReasoningBlock, live: bool) -> Option<String> 
     })
 }
 
+/// How long a finished command ran, shown in the row's tail like reasoning's.
+pub(super) fn command_row_duration(activity: &ActivityItem) -> Option<String> {
+    (activity.kind == crate::model::ActivityKind::Command
+        && activity.complete
+        && !activity.failed
+        && activity.started_at_ms != 0
+        && activity.finished_at_ms > activity.started_at_ms)
+        .then(|| {
+            format_worked_duration(
+                (activity.finished_at_ms - activity.started_at_ms)
+                    .div_ceil(1000)
+                    .max(1),
+            )
+        })
+}
+
 /// The duration a reasoning row shows after its headline, when the headline
 /// took the detail slot that otherwise holds the duration.
 pub(super) fn reasoning_row_duration(activity: &ActivityItem, live: bool) -> Option<String> {

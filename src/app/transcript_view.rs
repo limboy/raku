@@ -2781,7 +2781,10 @@ impl Raku {
                 .and_then(|(session_id, source_id)| {
                     self.background_work_for_activity(session_id, source_id)
                         .map(|item| (session_id, item.key.clone(), item.status))
-                });
+                })
+                // A finished run needs no badge; its duration says enough.
+                .filter(|(_, _, status)| *status != BackgroundWorkStatus::Completed);
+            let has_background_badge = background_work.is_some();
             let background_badge = background_work.map(|(session_id, key, status)| {
                 let click_key = key.clone();
                 let focus = self.transcript_control_focus(format!("activity-background-{id}"), cx);
@@ -2841,7 +2844,8 @@ impl Raku {
             };
             let action_label = activity_action_label(activity);
             let mut row_detail = activity_row_detail(activity, reasoning_live);
-            let reasoning_duration = reasoning_row_duration(activity, reasoning_live);
+            let reasoning_duration = reasoning_row_duration(activity, reasoning_live)
+                .or_else(|| command_row_duration(activity));
             if row_detail.trim().is_empty() {
                 row_detail = preview;
             }
@@ -3010,6 +3014,7 @@ impl Raku {
                     })
                     .when(
                         !activity.failed
+                            && !has_background_badge
                             && (subagent_working
                                 || reasoning_live
                                 || (reasoning.is_none() && !activity.complete)),

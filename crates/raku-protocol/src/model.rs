@@ -2944,6 +2944,22 @@ pub struct ActivityItem {
     /// event arrives so the pinned task list never reparses tool input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plan_steps: Vec<PlanStep>,
+    /// Wall-clock start and finish (Unix ms) so a finished row can show how
+    /// long it ran. Zero means unknown (sessions stored before this existed).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub started_at_ms: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub finished_at_ms: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+fn activity_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 impl ActivityItem {
@@ -3017,6 +3033,8 @@ impl ActivityItem {
             reasoning: None,
             compaction: None,
             plan_steps: Vec::new(),
+            started_at_ms: activity_now_ms(),
+            finished_at_ms: if complete { activity_now_ms() } else { 0 },
         }
     }
 
