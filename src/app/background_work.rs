@@ -69,10 +69,12 @@ enum BackgroundSummaryRow {
 impl BackgroundSummaryRow {
     fn key(&self) -> String {
         match self {
-            Self::Environment(environment) => if environment.git_available == Some(true) {
-                "environment-actions"
-            } else {
-                "environment-status"
+            Self::Environment(environment) => {
+                if environment.git == GitAvailability::Repository {
+                    "environment-actions"
+                } else {
+                    "environment-status"
+                }
             }
             .into(),
             Self::Context(_) => "context".into(),
@@ -84,7 +86,7 @@ impl BackgroundSummaryRow {
     fn height(&self) -> f32 {
         match self {
             Self::Environment(environment) => {
-                if environment.git_available == Some(true) {
+                if environment.git == GitAvailability::Repository {
                     94.0
                 } else {
                     62.0
@@ -108,7 +110,7 @@ impl BackgroundSummaryRow {
     fn focus_targets(&self, row: usize, targets: &mut Vec<(usize, FocusHandle)>) {
         match self {
             Self::Environment(environment) => {
-                if environment.git_available == Some(true) {
+                if environment.git == GitAvailability::Repository {
                     if environment.commit_status.is_none() {
                         targets.push((row, environment.commit_focus.clone()));
                     }
@@ -204,9 +206,20 @@ struct ContextSummary {
     focus: FocusHandle,
 }
 
+/// What the cached branch query knows about the workspace folder. A folder
+/// whose Git state is still unknown or not a repository has no environment
+/// summary at all, so the section never flashes into view and then out again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GitAvailability {
+    /// The folder belongs to a repository; show its Git actions.
+    Repository,
+    /// Inspection failed; the folder may still be a repository.
+    Unavailable,
+}
+
 #[derive(Clone)]
 struct EnvironmentSummary {
-    git_available: Option<bool>,
+    git: GitAvailability,
     /// Branch review line counts from the cached snapshot; `None` until known.
     review_counts: Option<(u64, u64)>,
     commit_status: Option<String>,
@@ -949,29 +962,37 @@ impl Raku {
             })
             .map(std::path::Path::to_path_buf);
         let mut review_counts = None;
-        let git_available = workspace_path.map_or(Some(false), |path| {
+        let environment = workspace_path.and_then(|path| {
             let snapshot = self.branch_snapshot_for_workspace(&path, cx).or_else(|| {
                 self.visible_branch_snapshot
                     .as_ref()
                     .filter(|(snapshot_path, _)| snapshot_path == &path)
                     .map(|(_, snapshot)| snapshot.clone())
             });
-            if let Some(snapshot) = snapshot {
+            let git = if let Some(snapshot) = snapshot {
                 review_counts = Some((snapshot.branch_additions, snapshot.branch_deletions));
-                Some(true)
+                GitAvailability::Repository
             } else {
                 match self.branch_snapshots.read(&path) {
-                    Query::Ready(_) => Some(false),
-                    Query::Pending | Query::Missing(_) => None,
+                    Query::Ready(result) => match result.as_ref() {
+                        // Not inside a repository: the summary omits Git
+                        // entirely rather than reporting it as unavailable.
+                        Ok(None) => return None,
+                        Ok(Some(_)) => GitAvailability::Repository,
+                        Err(_) => GitAvailability::Unavailable,
+                    },
+                    // Unknown yet: omit the section instead of rendering a
+                    // status row that may vanish as soon as inspection ends.
+                    Query::Pending | Query::Missing(_) => return None,
                 }
-            }
-        });
-        let environment = Some(EnvironmentSummary {
-            git_available,
-            review_counts,
-            commit_status: self.commit_operation_status_label(),
-            commit_focus: self.transcript_control_focus("environment-summary-commit", cx),
-            compare_focus: self.transcript_control_focus("environment-summary-compare", cx),
+            };
+            Some(EnvironmentSummary {
+                git,
+                review_counts,
+                commit_status: self.commit_operation_status_label(),
+                commit_focus: self.transcript_control_focus("environment-summary-commit", cx),
+                compare_focus: self.transcript_control_focus("environment-summary-compare", cx),
+            })
         });
         let context = self
             .selected_session()
@@ -1736,21 +1757,20 @@ fn render_environment_summary_section(
             .text_color(theme.text_tertiary)
             .child(tr!("environment.title")),
     );
-    if environment.git_available != Some(true) {
-        return section.child(
-            div()
-                .h(px(32.0))
-                .px(px(8.0))
-                .flex()
-                .items_center()
-                .text_size(sp(13.0))
-                .text_color(theme.text_secondary)
-                .child(if environment.git_available.is_none() {
-                    tr!("environment.checking_git")
-                } else {
-                    tr!("environment.git_unavailable")
-                }),
-        );
+    match environment.git {
+        GitAvailability::Repository => {}
+        GitAvailability::Unavailable => {
+            return section.child(
+                div()
+                    .h(px(32.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .text_size(sp(13.0))
+                    .text_color(theme.text_secondary)
+                    .child(tr!("environment.git_unavailable")),
+            );
+        }
     }
 
     let commit_handle = handle.clone();

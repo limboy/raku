@@ -710,7 +710,6 @@ right_panel.add_tab: 添加面板标签页
 right_panel.hide: 隐藏右侧面板
 right_panel.close_tab: 关闭%{title}
 environment.title: Git
-environment.checking_git: 正在检查 Git 状态…
 environment.git_unavailable: 此项目无法使用 Git。
 environment.changes: 更改
 environment.commit_or_push: 提交或推送

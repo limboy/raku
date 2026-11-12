@@ -1454,8 +1454,6 @@ right_panel.close_tab:
 
 environment.title:
   en: Git
-environment.checking_git:
-  en: Checking Git status…
 environment.git_unavailable:
   en: Git is unavailable for this project.
 environment.changes:

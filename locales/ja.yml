@@ -745,7 +745,6 @@ right_panel.hide: 右パネルを隠す
 right_panel.close_tab: "%{title} を閉じる"
 
 environment.title: Git
-environment.checking_git: Git の状態を確認中…
 environment.git_unavailable: このプロジェクトでは Git を利用できません。
 environment.changes: 変更
 environment.commit_or_push: コミットまたはプッシュ
