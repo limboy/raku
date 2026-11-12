@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.4] - 2026-11-12
+
+- Show how long finished commands ran in the activity row
+- Remove the duplicate Running indicator and the Completed badge on background commands
+- Align expanded activity details with the row label
+
 ## [2.5.3] - 2026-11-12
 
 - Open an agent's settings from its prompt pill
