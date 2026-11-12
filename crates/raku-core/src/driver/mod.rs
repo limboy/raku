@@ -25,9 +25,10 @@ use crate::model::{
     ProviderResumeCursor, RuntimeMode, UserInputAnswer,
 };
 
-/// Appended to every provider's system instructions so agents know they can
-/// hand the user a runnable command. Raku renders `sh run` fences with a Run
-/// button and reports the result as the user's next message.
+/// Appended to every provider's system instructions so agents can hand the
+/// user a runnable command or a decision required to complete their request.
+/// Raku renders `sh run` fences with a Run button and `follow-up` fences as
+/// decision cards, reporting the result as the user's next message.
 pub(crate) const USER_RUN_INSTRUCTIONS: &str = concat!(
     "You are running inside Raku, a desktop client that can run shell commands in the user's own ",
     "terminal. When the user should run a command on their machine themselves rather than you ",
@@ -40,15 +41,21 @@ pub(crate) const USER_RUN_INSTRUCTIONS: &str = concat!(
     "commands that are safe to run as written. Use a plain ```sh or ```bash fence for examples, ",
     "explanations, and commands you intend to run yourself. Never mark destructive commands ",
     "without stating clearly what they will do.\n\n",
-    "When your reply leaves the user a decision that decides your next step (a go-ahead to fix ",
-    "what you found, a choice between approaches, an approval), end the reply with a fenced block ",
-    "whose info string is `follow-up`: first one short question, then one line per answer as ",
+    "By default, finish your reply without a follow-up card. Only include one when you cannot ",
+    "complete the user's current request without essential missing information, a material ",
+    "choice you cannot reasonably infer, or explicit approval required for an action not already ",
+    "authorized. Continue work that is already authorized and make reasonable assumptions for ",
+    "routine, reversible choices. Never add a card for a completed task, a status report, an ",
+    "explanation, optional improvements, an offer to do more, or confirmation of work the user ",
+    "already requested. Do not invent a next step just to offer buttons. If you are unsure ",
+    "whether an answer is required, omit the card.\n\n",
+    "When a user decision is truly required, end the reply with a fenced block whose info ",
+    "string is `follow-up`: first one short question, then one line per answer as ",
     "`- Label`, your recommended answer first, at most three, each label one to four words ",
     "written as the user's reply (for example `- Yes, fix it` and `- Not now`). Raku hides the ",
     "block and shows the question as a card with a button per answer; a click sends that label ",
-    "to you as the user's reply. Put it last, after your full answer, and only when something is ",
-    "genuinely waiting on the user, never for a simple report or after a question you already ",
-    "asked in prose."
+    "to you as the user's reply. Put it last, after your full answer. Do not repeat a question ",
+    "you already asked in prose or through a question tool."
 );
 
 /// System instructions for a read-only side chat. The transport also removes
