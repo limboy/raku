@@ -16,6 +16,15 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.3] - 2026-11-12
+
+- Open an agent's settings from its prompt pill
+- Polish agent pills and fix spacing around inline pills in prompts
+- Make the subagent model picker scrollable
+- Center the subagent Steer input text vertically
+- Fix working dots alignment and activity indicator shifts
+- Align activity rows and expanded details to a shared text column
+
 ## [2.5.2] - 2026-11-12
 
 - Add configurable subagents for Pi, Claude Code, and Codex, with provider and model choices in Settings
