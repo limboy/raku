@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.6] - 2026-11-12
+
+- Run parallel subagent calls at the same time on Claude instead of one after another
+
 ## [2.5.5] - 2026-11-12
 
 - Show prompt mentions as accent-coloured text instead of pills in the composer and transcript
