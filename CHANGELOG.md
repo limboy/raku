@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.5] - 2026-11-12
+
+- Show prompt mentions as accent-coloured text instead of pills in the composer and transcript
+- Shimmer the live status label instead of showing wave dots while the agent works
+
 ## [2.5.4] - 2026-11-12
 
 - Show how long finished commands ran in the activity row
