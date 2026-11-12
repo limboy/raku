@@ -16,6 +16,13 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.10] - 2026-11-13
+
+- Add a configurable fallback font for characters the chosen font lacks, with Auto following the interface language
+- Fix font discovery to list the installed families and show the effective font when a saved family is unavailable
+- Render interface, Markdown, code, and terminal text at a consistent Regular weight
+- Render dark text with native AppKit-style smoothing
+
 ## [2.5.9] - 2026-11-12
 
 - Hide the Git section for folders that are not inside a repository
