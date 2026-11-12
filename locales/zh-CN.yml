@@ -114,6 +114,9 @@ settings.interface_font_description: 菜单、设置和应用控件使用的字�
 settings.transcript_font: 对话字体
 settings.transcript_font_description: 消息和输入框使用的字体
 settings.font_system: 系统
+settings.font_auto: 自动
+settings.fallback_font: 回退字体
+settings.fallback_font_description: 界面与对话字体缺少的字形使用该字体，自动跟随界面语言
 settings.transcript_font_size: 对话字号
 settings.transcript_font_size_description: 对话中消息的文字大小
 settings.font_size_small: 小

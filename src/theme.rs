@@ -1,10 +1,11 @@
 use gpui::{
-    App, Font, FontWeight, Global, Hsla, PlatformTextSystem, Rems, SharedString, Window,
-    WindowAppearance, hsla, rems, rgb,
+    App, Font, FontFallbacks, FontWeight, Global, Hsla, PlatformTextSystem, Rems, SharedString,
+    Window, WindowAppearance, hsla, rems, rgb,
 };
 
 use std::sync::Arc;
 
+use raku_client::i18n::AppLanguage;
 pub use raku_client::theme::ThemePreference;
 
 /// Standard size for compact interface controls, descriptions, and metadata.
@@ -33,29 +34,65 @@ impl Global for FontSource {}
 pub struct Fonts {
     pub interface: SharedString,
     pub transcript: SharedString,
+    /// Family that supplies glyphs the chosen families lack. Resolved here so
+    /// every render path shares one answer.
+    pub fallback_family: SharedString,
+    fallbacks: Option<FontFallbacks>,
 }
 
 impl Global for Fonts {}
 
 impl Fonts {
     /// Called at startup and on explicit font changes, never while rendering.
-    pub fn new(interface: Option<&str>, transcript: Option<&str>, cx: &App) -> Self {
+    pub fn new(
+        interface: Option<&str>,
+        transcript: Option<&str>,
+        fallback_family: Option<&str>,
+        language: AppLanguage,
+        cx: &App,
+    ) -> Self {
         let source = cx.try_global::<FontSource>();
-        let family = |name: Option<&str>| {
-            resolve_font_family(name, |name| {
-                source.is_none_or(|source| source.0.font_id(&default_font(name.to_owned())).is_ok())
-            })
+        let available = |name: &str| {
+            source.is_none_or(|source| source.0.font_id(&default_font(name.to_owned())).is_ok())
         };
+        let family = |name: Option<&str>| resolve_font_family(name, &available);
+        let fallback_family = resolve_fallback_family(fallback_family, language, &available);
         Self {
             interface: family(interface),
             transcript: family(transcript),
+            fallbacks: Some(FontFallbacks::from_fonts(vec![fallback_family.to_string()])),
+            fallback_family,
         }
     }
 
     pub fn current(cx: &App) -> Self {
         cx.try_global::<Self>()
             .cloned()
-            .unwrap_or_else(|| Self::new(None, None, cx))
+            .unwrap_or_else(|| Self::new(None, None, None, AppLanguage::System, cx))
+    }
+
+    /// Interface chrome text: the selected family with the fallback chain
+    /// attached.
+    pub fn interface_font(&self) -> Font {
+        self.font(&self.interface)
+    }
+
+    /// Transcript prose and the composer.
+    pub fn transcript_font(&self) -> Font {
+        self.font(&self.transcript)
+    }
+
+    /// Fallback chain for text shaped outside the element tree, where the
+    /// ambient text style never reaches.
+    pub fn fallbacks(&self) -> Option<FontFallbacks> {
+        self.fallbacks.clone()
+    }
+
+    fn font(&self, family: &SharedString) -> Font {
+        Font {
+            fallbacks: self.fallbacks.clone(),
+            ..default_font(family.clone())
+        }
     }
 }
 
@@ -69,6 +106,26 @@ fn resolve_font_family(
         // Resolve the system family directly so GPUI keeps the requested weight
         // and style; its emergency fallback stack contains only regular fonts.
         .unwrap_or_else(|| ".SystemUIFont".into())
+}
+
+/// The family missing glyphs fall back to. An explicit choice wins when that
+/// family is installed; otherwise the interface language decides. macOS's
+/// default for Chinese is the relatively light Hiragino Sans GB, so Chinese
+/// text opts into PingFang SC, the face macOS uses for its own controls.
+fn resolve_fallback_family(
+    setting: Option<&str>,
+    language: AppLanguage,
+    is_available: impl FnOnce(&str) -> bool,
+) -> SharedString {
+    if let Some(name) = setting.map(str::trim).filter(|name| !name.is_empty())
+        && is_available(name)
+    {
+        return SharedString::from(name.to_owned());
+    }
+    match language.resolved() {
+        AppLanguage::Japanese => "Hiragino Sans".into(),
+        _ => "PingFang SC".into(),
+    }
 }
 
 /// Scaled pixels: a dimension authored at the fixed 14px chrome size,
@@ -313,5 +370,27 @@ mod tests {
             let family = resolve_font_family(name, |_| panic!("no font to look up"));
             assert_eq!(family.as_ref(), ".SystemUIFont");
         }
+    }
+
+    #[test]
+    fn fallback_family_follows_the_interface_language() {
+        let japanese = resolve_fallback_family(None, AppLanguage::Japanese, |_| false);
+        assert_eq!(japanese.as_ref(), "Hiragino Sans");
+        for language in [AppLanguage::English, AppLanguage::SimplifiedChinese] {
+            let chinese = resolve_fallback_family(None, language, |_| false);
+            assert_eq!(chinese.as_ref(), "PingFang SC");
+        }
+    }
+
+    #[test]
+    fn fallback_family_prefers_an_installed_explicit_family() {
+        let chosen = resolve_fallback_family(
+            Some(" Hiragino Mincho ProN "),
+            AppLanguage::English,
+            |name| name == "Hiragino Mincho ProN",
+        );
+        assert_eq!(chosen.as_ref(), "Hiragino Mincho ProN");
+        let stale = resolve_fallback_family(Some("Missing Font"), AppLanguage::English, |_| false);
+        assert_eq!(stale.as_ref(), "PingFang SC");
     }
 }

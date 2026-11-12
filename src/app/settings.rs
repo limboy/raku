@@ -17,6 +17,7 @@ const SETTINGS_CONTEXT: &str = "Settings";
 enum FontTarget {
     Interface,
     Transcript,
+    Fallback,
 }
 
 /// The remaining settings sections, in navigation order.
@@ -431,6 +432,7 @@ impl Raku {
         let selected_language = self.state.language;
         let interface_font_selector = self.render_font_selector(FontTarget::Interface, cx);
         let transcript_font_selector = self.render_font_selector(FontTarget::Transcript, cx);
+        let fallback_font_selector = self.render_font_selector(FontTarget::Fallback, cx);
         let weak = cx.entity().downgrade();
         let theme_handle = self.menu_handle("theme-selector", cx);
         let theme_selector = dropdown_menu(
@@ -631,6 +633,13 @@ impl Raku {
                 theme,
             ))
             .child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
+            .child(self.render_font_setting_row(
+                tr!("settings.fallback_font"),
+                tr!("settings.fallback_font_description"),
+                fallback_font_selector,
+                theme,
+            ))
+            .child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
             .child(
                 div()
                     .w_full()
@@ -736,23 +745,53 @@ impl Raku {
     }
 
     fn render_font_selector(&self, target: FontTarget, cx: &mut Context<Self>) -> AnyElement {
-        let (id, selected, list_index) = match target {
-            FontTarget::Interface => ("interface-font-selector", &self.fonts.interface, 0),
-            FontTarget::Transcript => ("transcript-font-selector", &self.fonts.transcript, 1),
+        let (id, list_index) = match target {
+            FontTarget::Interface => ("interface-font-selector", 0),
+            FontTarget::Transcript => ("transcript-font-selector", 1),
+            FontTarget::Fallback => ("fallback-font-selector", 2),
         };
-        let handle = self.menu_handle(id, cx);
-        let weak = cx.entity().downgrade();
-        let selected = (selected.as_ref() != ".SystemUIFont").then_some(selected);
-        let selected_index = selected.map_or(Some(0), |family| {
-            self.font_family_indexes.get(family).copied()
-        });
-        crate::ui::menu::font_dropdown_menu(
-            MenuChip::new(id)
-                .label(
+        let (special_label, selected_index, label) = match target {
+            FontTarget::Interface | FontTarget::Transcript => {
+                let selected = match target {
+                    FontTarget::Interface => &self.fonts.interface,
+                    _ => &self.fonts.transcript,
+                };
+                let selected = (selected.as_ref() != ".SystemUIFont").then_some(selected);
+                (
+                    tr!("settings.font_system"),
+                    selected.map_or(Some(0), |family| {
+                        self.font_family_indexes.get(family).copied()
+                    }),
                     selected
                         .cloned()
                         .unwrap_or_else(|| tr!("settings.font_system").into()),
                 )
+            }
+            FontTarget::Fallback => {
+                let selected = self.state.fallback_font.as_ref();
+                (
+                    tr!("settings.font_auto"),
+                    selected.map_or(Some(0), |family| {
+                        self.font_family_indexes.get(family.as_str()).copied()
+                    }),
+                    selected
+                        .map(|family| SharedString::from(family.clone()))
+                        .unwrap_or_else(|| {
+                            format!(
+                                "{} · {}",
+                                tr!("settings.font_auto"),
+                                self.fonts.fallback_family
+                            )
+                            .into()
+                        }),
+                )
+            }
+        };
+        let handle = self.menu_handle(id, cx);
+        let weak = cx.entity().downgrade();
+        crate::ui::menu::font_dropdown_menu(
+            MenuChip::new(id)
+                .label(label)
                 .outlined()
                 .selected(handle.is_open())
                 .w(px(200.0))
@@ -760,6 +799,7 @@ impl Raku {
                 .justify_between(),
             &handle,
             self.font_families.clone(),
+            special_label.into(),
             selected_index,
             self.font_menu_lists[list_index].clone(),
             move |family, _, cx| {
@@ -808,6 +848,7 @@ impl Raku {
         let preference = match target {
             FontTarget::Interface => &mut self.state.interface_font,
             FontTarget::Transcript => &mut self.state.transcript_font,
+            FontTarget::Fallback => &mut self.state.fallback_font,
         };
         if *preference == family {
             return;
@@ -816,6 +857,8 @@ impl Raku {
         self.fonts = crate::theme::Fonts::new(
             self.state.interface_font.as_deref(),
             self.state.transcript_font.as_deref(),
+            self.state.fallback_font.as_deref(),
+            self.state.language,
             cx,
         );
         cx.set_global(self.fonts.clone());
@@ -1354,6 +1397,16 @@ impl Raku {
 
         self.state.language = language;
         crate::i18n::set_language(language);
+        // The automatic fallback follows the interface language.
+        self.fonts = crate::theme::Fonts::new(
+            self.state.interface_font.as_deref(),
+            self.state.transcript_font.as_deref(),
+            self.state.fallback_font.as_deref(),
+            self.state.language,
+            cx,
+        );
+        cx.set_global(self.fonts.clone());
+        self.remeasure_font_sized_surfaces();
 
         self.composer.update(cx, |input, cx| {
             input.set_placeholder(tr!("input.do_anything"), cx)

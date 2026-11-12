@@ -1301,6 +1301,7 @@ impl Raku {
                     self.side_chat.selection.clone(),
                 )
                 .with_font_family(self.fonts.transcript.clone())
+                .with_font_fallbacks(self.fonts.fallbacks())
                 .with_math_enabled(self.state.render_math)
                 .with_link_handler(self.markdown_link_handler.clone())
                 .with_file_links(self.markdown_file_links.clone())

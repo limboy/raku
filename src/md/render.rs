@@ -27,11 +27,11 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, BorderStyle, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Font, FontStyle,
-    FontWeight, Hsla, InteractiveText, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, SharedString, StrikethroughStyle,
-    StyledText, TextLayout, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*,
-    px, quad, relative, size,
+    AnyElement, BorderStyle, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Font,
+    FontFallbacks, FontStyle, FontWeight, Hsla, InteractiveText, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
+    SharedString, StrikethroughStyle, StyledText, TextLayout, TextRun, UnderlineStyle, Window,
+    canvas, div, font, point, prelude::*, px, quad, relative, size,
 };
 use raku_protocol::composer::PromptToken;
 use regex::Regex;
@@ -600,7 +600,7 @@ pub struct MarkdownView {
     /// Style the cached flats were built for. Colors live inside `TextRun`s, so
     /// a theme or font switch has to drop them or the transcript keeps the old
     /// colors or glyph geometry.
-    style: RefCell<Option<(Palette, Metrics, SharedString)>>,
+    style: RefCell<Option<(Palette, Metrics, SharedString, Option<FontFallbacks>)>>,
     /// Index changes refresh settled links once. A weak reference preserves
     /// identity without off-screen rows keeping obsolete file indexes alive.
     file_links: RefCell<Option<Weak<FileLinks>>>,
@@ -720,8 +720,19 @@ impl MarkdownView {
     }
 
     /// Drop cached flats if the style they were built for no longer applies.
-    fn sync_style(&self, palette: &Palette, metrics: &Metrics, font_family: &SharedString) {
-        let current = (*palette, *metrics, font_family.clone());
+    fn sync_style(
+        &self,
+        palette: &Palette,
+        metrics: &Metrics,
+        font_family: &SharedString,
+        font_fallbacks: Option<&FontFallbacks>,
+    ) {
+        let current = (
+            *palette,
+            *metrics,
+            font_family.clone(),
+            font_fallbacks.cloned(),
+        );
         let mut style = self.style.borrow_mut();
         if style.as_ref() != Some(&current) {
             *style = Some(current);
@@ -779,6 +790,7 @@ pub struct Ctx<'a> {
     palette: &'a Palette,
     metrics: Metrics,
     font_family: SharedString,
+    font_fallbacks: Option<FontFallbacks>,
     selection: TranscriptSelection,
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
@@ -810,6 +822,7 @@ impl<'a> Ctx<'a> {
             palette,
             metrics,
             font_family: SANS_FAMILY.into(),
+            font_fallbacks: None,
             selection,
             search: None,
             link_handler: None,
@@ -834,6 +847,13 @@ impl<'a> Ctx<'a> {
 
     pub fn with_font_family(mut self, family: SharedString) -> Self {
         self.font_family = family;
+        self
+    }
+
+    /// Fallbacks for text this context shapes itself. These runs never reach
+    /// the element tree's text style, so the fallback must travel with them.
+    pub fn with_font_fallbacks(mut self, fallbacks: Option<FontFallbacks>) -> Self {
+        self.font_fallbacks = fallbacks;
         self
     }
 
@@ -900,6 +920,7 @@ impl<'a> Ctx<'a> {
             palette: self.palette,
             metrics: self.metrics,
             font_family: self.font_family.clone(),
+            font_fallbacks: self.font_fallbacks.clone(),
             selection: self.selection.clone(),
             search: self.search.clone(),
             link_handler: self.link_handler.clone(),
@@ -939,6 +960,7 @@ impl<'a> Ctx<'a> {
                 if run.font.family == SANS_FAMILY {
                     run.font.family = self.font_family.clone();
                 }
+                run.font.fallbacks = self.font_fallbacks.clone();
             }
             flat
         };
@@ -1724,7 +1746,12 @@ fn markdown_capped<'a>(
         return None;
     };
 
-    view.sync_style(ctx.palette, &ctx.metrics, &ctx.font_family);
+    view.sync_style(
+        ctx.palette,
+        &ctx.metrics,
+        &ctx.font_family,
+        ctx.font_fallbacks.as_ref(),
+    );
     view.sync_file_links(ctx.file_links.as_ref());
     let ctx = ctx.with_cache(view);
     if ctx.animate_streaming && view.streaming.get() {
@@ -3461,12 +3488,12 @@ mod tests {
         let dark = Palette::from_theme(&Theme::dark());
         let light = Palette::from_theme(&Theme::light());
 
-        view.sync_style(&dark, &Metrics::BODY, &SANS_FAMILY.into());
+        view.sync_style(&dark, &Metrics::BODY, &SANS_FAMILY.into(), None);
         let cached = view.flat(0, || {
             flatten_plain("a", SANS_FAMILY, FontWeight::NORMAL, dark.text)
         });
 
-        view.sync_style(&dark, &Metrics::BODY, &SANS_FAMILY.into());
+        view.sync_style(&dark, &Metrics::BODY, &SANS_FAMILY.into(), None);
         assert!(
             Rc::ptr_eq(
                 &cached,
@@ -3475,7 +3502,7 @@ mod tests {
             "re-syncing the same style must not invalidate"
         );
 
-        view.sync_style(&light, &Metrics::BODY, &SANS_FAMILY.into());
+        view.sync_style(&light, &Metrics::BODY, &SANS_FAMILY.into(), None);
         let relit = view.flat(0, || {
             flatten_plain("a", SANS_FAMILY, FontWeight::NORMAL, light.text)
         });
@@ -3508,7 +3535,7 @@ mod tests {
             TranscriptSelection::default(),
         )
         .with_font_family("Georgia".into());
-        view.sync_style(&palette, &Metrics::BODY, &first.font_family);
+        view.sync_style(&palette, &Metrics::BODY, &first.font_family, None);
         let first = first.with_cache(&view).flat(0, build);
         assert_eq!(first.runs[0].font.family.as_ref(), "Georgia");
         assert_eq!(first.runs[1].font.family.as_ref(), INLINE_MONO_FAMILY);
@@ -3520,7 +3547,7 @@ mod tests {
             TranscriptSelection::default(),
         )
         .with_font_family("Avenir Next".into());
-        view.sync_style(&palette, &Metrics::BODY, &next.font_family);
+        view.sync_style(&palette, &Metrics::BODY, &next.font_family, None);
         let next = next.with_cache(&view).flat(0, build);
         assert!(!Rc::ptr_eq(&first, &next));
         assert_eq!(next.runs[0].font.family.as_ref(), "Avenir Next");

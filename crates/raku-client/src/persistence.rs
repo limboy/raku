@@ -290,6 +290,9 @@ pub struct AppSettings {
     /// An unset family follows the platform's system font.
     pub interface_font: Option<String>,
     pub transcript_font: Option<String>,
+    /// Family that supplies glyphs the interface and transcript fonts lack.
+    /// Unset follows the interface language.
+    pub fallback_font: Option<String>,
     /// Text size for transcript prose. Chrome stays at the fixed
     /// [`DEFAULT_UI_FONT_SIZE`] it is authored against.
     #[serde(deserialize_with = "lenient_transcript_font_size")]
@@ -349,6 +352,7 @@ impl Default for AppSettings {
             language: AppLanguage::default(),
             interface_font: None,
             transcript_font: None,
+            fallback_font: None,
             transcript_font_size: TranscriptFontSize::default(),
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
@@ -524,6 +528,8 @@ pub struct PersistedState {
     pub interface_font: Option<String>,
     #[serde(default)]
     pub transcript_font: Option<String>,
+    #[serde(default)]
+    pub fallback_font: Option<String>,
     #[serde(default, deserialize_with = "lenient_transcript_font_size")]
     pub transcript_font_size: TranscriptFontSize,
     #[serde(default = "default_code_font_size")]
@@ -615,6 +621,7 @@ impl PersistedState {
             language: AppLanguage::default(),
             interface_font: None,
             transcript_font: None,
+            fallback_font: None,
             transcript_font_size: TranscriptFontSize::default(),
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             render_math: true,
@@ -846,6 +853,7 @@ impl PersistedState {
             language: self.language,
             interface_font: self.interface_font.clone(),
             transcript_font: self.transcript_font.clone(),
+            fallback_font: self.fallback_font.clone(),
             transcript_font_size: self.transcript_font_size,
             code_font_size: self.code_font_size,
             render_math: self.render_math,
@@ -898,6 +906,7 @@ impl PersistedState {
         self.language = settings.language;
         self.interface_font = settings.interface_font;
         self.transcript_font = settings.transcript_font;
+        self.fallback_font = settings.fallback_font;
         self.transcript_font_size = settings.transcript_font_size;
         self.code_font_size = sanitized_code_font_size(settings.code_font_size);
         self.render_math = settings.render_math;
@@ -1984,21 +1993,25 @@ mod tests {
         let defaults: AppSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(defaults.interface_font, None);
         assert_eq!(defaults.transcript_font, None);
+        assert_eq!(defaults.fallback_font, None);
 
         let mut state = PersistedState::empty();
         state.interface_font = Some("Avenir Next".into());
         state.transcript_font = Some("Georgia".into());
+        state.fallback_font = Some("Hiragino Sans".into());
         let settings = serde_json::to_string(&state.app_settings()).unwrap();
         let mut restored = PersistedState::empty();
         restored.apply_app_settings(serde_json::from_str(&settings).unwrap());
         assert_eq!(restored.interface_font, state.interface_font);
         assert_eq!(restored.transcript_font, state.transcript_font);
+        assert_eq!(restored.fallback_font, state.fallback_font);
 
         restored.transcript_font = None;
         let settings = serde_json::to_string(&restored.app_settings()).unwrap();
         restored.apply_app_settings(serde_json::from_str(&settings).unwrap());
         assert_eq!(restored.interface_font, state.interface_font);
         assert_eq!(restored.transcript_font, None);
+        assert_eq!(restored.fallback_font, state.fallback_font);
     }
 
     #[test]

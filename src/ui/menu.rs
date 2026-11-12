@@ -862,6 +862,7 @@ pub fn font_dropdown_menu<E>(
     trigger: E,
     handle: &ContextMenuHandle,
     families: Rc<Vec<SharedString>>,
+    special_label: SharedString,
     selected: Option<usize>,
     list_state: ListState,
     on_select: impl Fn(Option<String>, &mut Window, &mut App) + 'static,
@@ -884,6 +885,7 @@ where
             FontMenuCard {
                 handle: handle.clone(),
                 families: families.clone(),
+                special_label: special_label.clone(),
                 selected,
                 list_state: list_state.clone(),
                 on_select: on_select.clone(),
@@ -897,6 +899,8 @@ where
 struct FontMenuCard {
     handle: ContextMenuHandle,
     families: Rc<Vec<SharedString>>,
+    /// Label for the fixed first row: System, or Auto for the CJK fallback.
+    special_label: SharedString,
     selected: Option<usize>,
     list_state: ListState,
     #[allow(clippy::type_complexity)]
@@ -924,9 +928,7 @@ impl RenderOnce for FontMenuCard {
                 .checked_sub(1)
                 .and_then(|i| row_families.get(i))
                 .cloned();
-            let label = family
-                .clone()
-                .unwrap_or_else(|| tr!("settings.font_system").into());
+            let label = family.clone().unwrap_or_else(|| self.special_label.clone());
             let on_select = row_select.clone();
             let entry = row(
                 index,

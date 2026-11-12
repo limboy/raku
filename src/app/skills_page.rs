@@ -1103,6 +1103,7 @@ impl Raku {
                 self.skills_selection.clone(),
             )
             .with_font_family(self.fonts.interface.clone())
+            .with_font_fallbacks(self.fonts.fallbacks())
             .with_math_enabled(self.state.render_math)
             .with_math_context_menu(self.menu_handle("skill-detail-math", cx));
             div()

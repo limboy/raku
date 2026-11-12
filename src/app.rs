@@ -1142,7 +1142,7 @@ pub struct Raku {
     /// Enumerated once on a worker; font menus only read this snapshot.
     font_families: Rc<Vec<SharedString>>,
     font_family_indexes: HashMap<SharedString, usize>,
-    font_menu_lists: [ListState; 2],
+    font_menu_lists: [ListState; 3],
     store: StateStore,
     /// Cached before rendering so path labels can abbreviate the home prefix
     /// without consulting the environment or account database in a frame.
@@ -1998,6 +1998,8 @@ impl Raku {
         let fonts = crate::theme::Fonts::new(
             state.interface_font.as_deref(),
             state.transcript_font.as_deref(),
+            state.fallback_font.as_deref(),
+            state.language,
             cx,
         );
         cx.set_global(fonts.clone());

@@ -233,6 +233,12 @@ settings.transcript_font_description:
   en: Font used for messages and the composer
 settings.font_system:
   en: System
+settings.font_auto:
+  en: Auto
+settings.fallback_font:
+  en: Fallback font
+settings.fallback_font_description:
+  en: Font for glyphs the interface and transcript fonts lack, with Auto following the interface language
 settings.transcript_font_size:
   en: Transcript font size
 settings.transcript_font_size_description:

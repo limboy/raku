@@ -337,7 +337,7 @@ impl Raku {
         });
         let transcript_focus = self.transcript_focus.clone();
         div()
-            .font_family(self.fonts.transcript.clone())
+            .font(self.fonts.transcript_font())
             .flex_1()
             .min_h_0()
             .w_full()
@@ -1349,6 +1349,7 @@ impl Raku {
     ) -> MarkdownCtx<'a> {
         MarkdownCtx::new(row, palette, metrics, self.transcript_selection.clone())
             .with_font_family(self.fonts.transcript.clone())
+            .with_font_fallbacks(self.fonts.fallbacks())
             .with_math_enabled(self.state.render_math)
             .with_link_handler(self.markdown_link_handler.clone())
             .with_image_renderer(self.markdown_image_renderer.clone())
