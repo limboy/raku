@@ -181,8 +181,15 @@ impl BackgroundSummaryStatus {
         work_status_color(self.0, theme)
     }
 
-    fn render_icon(self, kind: BackgroundWorkKind) -> bool {
-        background_summary_process_status_icon(kind, self.0).is_some()
+    fn render_icon(self) -> bool {
+        matches!(
+            self.0,
+            BackgroundWorkStatus::Starting
+                | BackgroundWorkStatus::Running
+                | BackgroundWorkStatus::Monitoring
+                | BackgroundWorkStatus::Completed
+                | BackgroundWorkStatus::Failed
+        )
     }
 
     fn icon(self, theme: Theme) -> AnyElement {
@@ -566,27 +573,6 @@ fn work_status_icon(status: BackgroundWorkStatus) -> &'static str {
         BackgroundWorkStatus::Completed => "icons/check.svg",
         BackgroundWorkStatus::Failed => "icons/x.svg",
         BackgroundWorkStatus::Lost => "icons/alert.svg",
-    }
-}
-
-fn background_summary_process_status_icon(
-    kind: BackgroundWorkKind,
-    status: BackgroundWorkStatus,
-) -> Option<&'static str> {
-    if !matches!(
-        kind,
-        BackgroundWorkKind::Process | BackgroundWorkKind::Monitor
-    ) {
-        return None;
-    }
-
-    match status {
-        BackgroundWorkStatus::Starting
-        | BackgroundWorkStatus::Running
-        | BackgroundWorkStatus::Monitoring
-        | BackgroundWorkStatus::Completed
-        | BackgroundWorkStatus::Failed => Some(work_status_icon(status)),
-        _ => None,
     }
 }
 
@@ -1969,7 +1955,7 @@ fn render_background_summary_row(
 ) -> Stateful<Div> {
     let id = entry.target.control_id();
     let group_name = SharedString::from(format!("background-summary-group-{id}"));
-    let status = entry.status.render_icon(entry.kind).then(|| {
+    let status = entry.status.render_icon().then(|| {
         div()
             .absolute()
             .inset_0()
@@ -2070,7 +2056,7 @@ fn render_background_summary_row(
                 })
                 .child(single_line_label(&entry.title)),
         )
-        .when(!is_process, |row| {
+        .when(!is_process && !entry.status.render_icon(), |row| {
             row.child(
                 div()
                     .flex_none()
