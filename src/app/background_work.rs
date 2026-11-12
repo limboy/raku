@@ -60,6 +60,7 @@ struct BackgroundSummaryListState {
 
 enum BackgroundSummaryRow {
     Environment(EnvironmentSummary),
+    Context(ContextSummary),
     Separator(&'static str),
     Heading(&'static str, String),
     Work(BackgroundSummaryEntry),
@@ -74,6 +75,7 @@ impl BackgroundSummaryRow {
                 "environment-status"
             }
             .into(),
+            Self::Context(_) => "context".into(),
             Self::Separator(key) | Self::Heading(key, _) => (*key).into(),
             Self::Work(entry) => entry.target.control_id(),
         }
@@ -90,13 +92,14 @@ impl BackgroundSummaryRow {
             }
             Self::Separator(_) => 17.0,
             Self::Heading(_, _) => 26.0,
-            Self::Work(_) => 34.0,
+            Self::Context(_) | Self::Work(_) => 34.0,
         }
     }
 
     fn list_focus(&self, environment_focus: &FocusHandle) -> Option<FocusHandle> {
         match self {
             Self::Environment(_) => Some(environment_focus.clone()),
+            Self::Context(context) => Some(context.focus.clone()),
             Self::Work(entry) => Some(entry.row_focus.clone()),
             Self::Separator(_) | Self::Heading(_, _) => None,
         }
@@ -112,6 +115,7 @@ impl BackgroundSummaryRow {
                     targets.push((row, environment.compare_focus.clone()));
                 }
             }
+            Self::Context(context) => targets.push((row, context.focus.clone())),
             Self::Work(entry) => {
                 targets.push((row, entry.row_focus.clone()));
                 if entry.can_stop && entry.status.is_stoppable() {
@@ -185,6 +189,14 @@ impl BackgroundSummaryStatus {
         rendered_work_status_icon(self.0, 12.0, self.color(theme))
     }
 }
+/// The menu's way into the right panel's Context tab.
+#[derive(Clone)]
+struct ContextSummary {
+    /// Occupancy as the usage meter last saw it; `None` until reported.
+    usage: Option<String>,
+    focus: FocusHandle,
+}
+
 #[derive(Clone)]
 struct EnvironmentSummary {
     git_available: Option<bool>,
@@ -975,10 +987,31 @@ impl Raku {
             commit_focus: self.transcript_control_focus("environment-summary-commit", cx),
             compare_focus: self.transcript_control_focus("environment-summary-compare", cx),
         });
+        let context = self
+            .selected_session()
+            .filter(|session| session.id == session_id)
+            .map(|session| {
+                let usage = session
+                    .context_usage
+                    .filter(|_| !session.context_usage_pending)
+                    .map(|usage| match usage.window.filter(|window| *window > 0) {
+                        Some(window) => format!(
+                            "{} / {}",
+                            crate::usage::format_tokens(usage.tokens.min(window)),
+                            crate::usage::format_tokens(window)
+                        ),
+                        None => crate::usage::format_tokens(usage.tokens),
+                    });
+                ContextSummary {
+                    usage,
+                    focus: self.transcript_control_focus("context-summary-row", cx),
+                }
+            });
         render_background_summary_card(
             handle,
             session_id,
             environment,
+            context,
             entries,
             cx.entity().downgrade(),
             window,
@@ -1439,10 +1472,12 @@ fn background_summary_navigation_index(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_background_summary_card(
     handle: &ContextMenuHandle,
     session_id: Uuid,
     environment: Option<EnvironmentSummary>,
+    context: Option<ContextSummary>,
     entries: Vec<BackgroundSummaryEntry>,
     weak: WeakEntity<Raku>,
     window: &mut Window,
@@ -1455,6 +1490,16 @@ fn render_background_summary_card(
     let mut rows = Vec::new();
     if let Some(environment) = environment {
         rows.push(BackgroundSummaryRow::Environment(environment));
+    }
+    if let Some(context) = context {
+        if !rows.is_empty() {
+            rows.push(BackgroundSummaryRow::Separator("context-separator"));
+        }
+        rows.push(BackgroundSummaryRow::Heading(
+            "session",
+            tr!("context_inspector.menu_heading"),
+        ));
+        rows.push(BackgroundSummaryRow::Context(context));
     }
     if !rows.is_empty() && (!processes.is_empty() || !agents.is_empty()) {
         rows.push(BackgroundSummaryRow::Separator("environment-separator"));
@@ -1556,6 +1601,14 @@ fn render_background_summary_card(
                         )
                         .into_any_element()
                     }
+                    BackgroundSummaryRow::Context(context) => render_context_summary_row(
+                        context.clone(),
+                        session_id,
+                        row_handle.clone(),
+                        weak.clone(),
+                        &theme,
+                    )
+                    .into_any_element(),
                     BackgroundSummaryRow::Separator(_) => div()
                         .pt(px(8.0))
                         .child(div().mx(px(8.0)).h(px(1.0)).bg(theme.border))
@@ -1758,6 +1811,63 @@ fn render_environment_summary_section(
     );
 
     section.child(commit).child(compare)
+}
+
+fn render_context_summary_row(
+    context: ContextSummary,
+    session_id: Uuid,
+    handle: ContextMenuHandle,
+    weak: WeakEntity<Raku>,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let open = Rc::new(move |window: &mut Window, cx: &mut App| {
+        handle.close(window, cx);
+        window.refresh();
+        let _ = weak.update(cx, |raku, cx| raku.open_context_panel(session_id, cx));
+    });
+    let key_open = open.clone();
+    div()
+        .id("context-summary-row")
+        .track_focus(&context.focus)
+        .tab_index(0)
+        .h(px(32.0))
+        .w_full()
+        .px(px(8.0))
+        .rounded(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .cursor_default()
+        .focus_visible(|style| style.border_1().border_color(theme.accent))
+        .hover(|style| style.bg(theme.overlay_strong))
+        .child(icon("icons/eye.svg", 14.0, theme.text_secondary))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_size(sp(13.5))
+                .text_color(theme.text)
+                .child(tr!("context_inspector.menu_row")),
+        )
+        .when_some(context.usage, |row, usage| {
+            row.child(
+                div()
+                    .flex_none()
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
+                    .text_color(theme.text_tertiary)
+                    .child(usage),
+            )
+        })
+        .on_click(move |_, window, cx| open(window, cx))
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if !event.keystroke.modifiers.modified()
+                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+            {
+                key_open(window, cx);
+                cx.stop_propagation();
+            }
+        })
 }
 
 fn render_environment_action_row(

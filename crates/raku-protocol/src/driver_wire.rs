@@ -124,6 +124,18 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
         ),
         DriverEvent::PlanUsageUpdated(usage) => ("planUsageUpdated", serde_json::to_value(usage)?),
         DriverEvent::GoalUpdated(goal) => ("goalUpdated", serde_json::to_value(goal)?),
+        DriverEvent::LaunchManifest(manifest) => {
+            ("launchManifest", serde_json::to_value(manifest)?)
+        }
+        DriverEvent::PromptInjected(injection) => {
+            ("promptInjected", serde_json::to_value(injection)?)
+        }
+        DriverEvent::ContextBreakdownUpdated(breakdown) => {
+            ("contextBreakdownUpdated", serde_json::to_value(breakdown)?)
+        }
+        DriverEvent::ContextBreakdownFailed(error) => {
+            ("contextBreakdownFailed", Value::String(error))
+        }
         DriverEvent::TurnFinished { success, summary } => (
             "turnFinished",
             json!({ "success": success, "summary": summary }),
@@ -228,6 +240,14 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         }
         "planUsageUpdated" => DriverEvent::PlanUsageUpdated(serde_json::from_value(payload)?),
         "goalUpdated" => DriverEvent::GoalUpdated(serde_json::from_value(payload)?),
+        "launchManifest" => DriverEvent::LaunchManifest(serde_json::from_value(payload)?),
+        "promptInjected" => DriverEvent::PromptInjected(serde_json::from_value(payload)?),
+        "contextBreakdownUpdated" => {
+            DriverEvent::ContextBreakdownUpdated(serde_json::from_value(payload)?)
+        }
+        "contextBreakdownFailed" => {
+            DriverEvent::ContextBreakdownFailed(serde_json::from_value(payload)?)
+        }
         "turnFinished" => {
             let finished: TurnFinishedWire = serde_json::from_value(payload)?;
             DriverEvent::TurnFinished {

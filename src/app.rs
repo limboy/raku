@@ -528,6 +528,8 @@ enum RightPanelSurface {
     },
     Files,
     Diff,
+    /// What occupies the selected task's context window.
+    Context,
     File(String),
     AttachmentFile(right_panel::AttachmentFile),
     /// A pasted text attachment, shown from the in-memory text its chip
@@ -1257,6 +1259,13 @@ pub struct Raku {
     /// off-thread; frames only read this in-memory value.
     commit_dialog: Option<commit_dialog::CommitDialogState>,
     goal_dialog: Option<goal_dialog::GoalDialogState>,
+    /// View state of the right panel's Context tab.
+    context_panel: context_inspector::ContextInspectorState,
+    /// What the Context tab has recorded per task. Outlives the provider
+    /// process, and is mirrored to disk so a stopped task still shows it.
+    context_inspections: HashMap<Uuid, context_inspector::ContextInspection>,
+    /// Tasks whose saved snapshot has been requested from disk.
+    context_snapshot_loads: HashSet<Uuid>,
     goal_dialog_request: Option<goal_dialog::GoalDialogRequest>,
     /// Goal operations accepted before the session's runtime exists. Goals
     /// attach to the provider thread, not to any turn, so `/goal` on a fresh
@@ -1713,6 +1722,7 @@ mod compaction;
 mod components;
 mod composer;
 mod composer_history;
+mod context_inspector;
 mod drafts;
 mod file_search;
 mod follow_up;
@@ -2885,6 +2895,9 @@ impl Raku {
                 branch_operation_pending: false,
                 commit_dialog: None,
                 goal_dialog: None,
+                context_panel: context_inspector::ContextInspectorState::new(cx),
+                context_inspections: HashMap::new(),
+                context_snapshot_loads: HashSet::new(),
                 goal_dialog_request: None,
                 pending_goal_operations: HashMap::new(),
                 pending_compactions: HashMap::new(),

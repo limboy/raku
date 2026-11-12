@@ -4,6 +4,7 @@ mod activity;
 mod claude;
 mod codex;
 mod compaction;
+mod context_inspection;
 mod pi;
 mod support;
 mod title_language;
@@ -16,6 +17,8 @@ use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 use raku_protocol::capabilities::RuntimeCapabilities;
+
+use raku_protocol::context_inspection::ContextDetail;
 
 use crate::model::{
     BackgroundWorkKey, DriverEvent, GoalOperation, PlanDecision, ProviderKind,
@@ -151,6 +154,8 @@ pub(crate) fn test_event_channel() -> (DriverEventSender, Receiver<DriverEvent>)
 pub struct DriverHandle {
     inner: Arc<dyn DriverControl>,
     title_language: Arc<title_language::TitleLanguageContext>,
+    /// Reports text this handle appends to prompts to the Context inspector.
+    events: Option<DriverEventSender>,
 }
 
 impl DriverHandle {
@@ -158,6 +163,7 @@ impl DriverHandle {
         Self {
             inner: control,
             title_language: Arc::default(),
+            events: None,
         }
     }
 
@@ -170,7 +176,20 @@ impl DriverHandle {
     }
 
     pub fn prompt(&self, prompt: String) {
-        self.inner.prompt(self.title_language.prepare(prompt));
+        let typed = prompt.len();
+        let prepared = self.title_language.prepare(prompt);
+        if let Some(events) = &self.events
+            && prepared.len() > typed
+            && let Some(suffix) = title_language::appended_context(&prepared)
+        {
+            let _ = events.send(DriverEvent::PromptInjected(
+                raku_protocol::context_inspection::PromptInjection {
+                    label: tr!("context_inspector.injection_title_language"),
+                    text: suffix.trim().to_owned(),
+                },
+            ));
+        }
+        self.inner.prompt(prepared);
     }
 
     /// Support reported by this live transport, without I/O or locking.
@@ -216,6 +235,12 @@ impl DriverHandle {
         self.inner.goal(operation);
     }
 
+    /// Ask what occupies the context window. The answer arrives as
+    /// `DriverEvent::ContextBreakdownUpdated` or `ContextBreakdownFailed`.
+    pub fn context_breakdown(&self, detail: ContextDetail) {
+        self.inner.context_breakdown(detail);
+    }
+
     pub fn apply_options(&self, options: SessionOptions) -> bool {
         self.inner.apply_options(options)
     }
@@ -252,6 +277,9 @@ pub trait DriverControl: Send + Sync {
     /// Providers without persisted goals ignore the request; the UI only
     /// offers goal controls where the provider reports one.
     fn goal(&self, _operation: GoalOperation) {}
+    /// Answer with `DriverEvent::ContextBreakdownUpdated` or
+    /// `ContextBreakdownFailed`; never blocks the caller on the provider.
+    fn context_breakdown(&self, detail: ContextDetail);
     /// Applies changed turn options to the live session, returning whether the
     /// transport could do it without being restarted. A `false` answer is the
     /// driver asking to be torn down and recreated with the new options.
@@ -304,6 +332,7 @@ pub(crate) fn start_local(
 ) -> anyhow::Result<DriverHandle> {
     provider.validate_access_mode(options.mode)?;
     let title_language = Arc::new(title_language::TitleLanguageContext::new(provider));
+    let handle_events = events.clone();
     let inner: Arc<dyn DriverControl> = match provider {
         ProviderKind::Codex => Arc::new(codex::CodexDriver::start(options, events)?),
         ProviderKind::Pi => Arc::new(pi::PiDriver::start(options, events)?),
@@ -315,6 +344,7 @@ pub(crate) fn start_local(
     Ok(DriverHandle {
         inner,
         title_language,
+        events: Some(handle_events),
     })
 }
 

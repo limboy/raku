@@ -2,6 +2,7 @@
 
 use super::compaction::CompactionTracker;
 use raku_protocol::capabilities::RuntimeCapabilities;
+use raku_protocol::context_inspection::ContextDetail;
 use raku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
@@ -108,6 +109,8 @@ impl PiFlavor {
 enum CommandMessage {
     Compact(CompactionRequest),
     RefreshContextUsage,
+    /// Answer the Context inspector from fresh session stats.
+    ContextBreakdown,
     Prompt(String),
     Steer(String),
     Cancel,
@@ -379,6 +382,16 @@ impl PiDriver {
                 );
             }
         }
+        let manifest = super::context_inspection::launch_manifest(
+            &command,
+            instructions,
+            if !subagent.child && !read_only && !subagent.agents.is_empty() {
+                vec![crate::model::SUBAGENT_TOOL.to_owned()]
+            } else {
+                Vec::new()
+            },
+            Vec::new(),
+        );
         let command = command
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -386,6 +399,7 @@ impl PiDriver {
             .stderr(Stdio::piped());
         let mut child = crate::command_env::spawn(command)
             .with_context(|| format!("failed to start `{} --mode rpc`", binary.display()))?;
+        let _ = events.send(DriverEvent::LaunchManifest(Box::new(manifest)));
         let stdin = child
             .stdin
             .take()
@@ -404,6 +418,10 @@ impl PiDriver {
         let reader_pending = pending.clone();
         let reader_commands = commands.clone();
         let reader_events = events.clone();
+        // The newest assistant message's usage: session stats are cumulative,
+        // so this is what splits the window the inspector shows.
+        let last_usage = Arc::new(Mutex::new(None::<Value>));
+        let reader_last_usage = last_usage.clone();
         let reader_thread =
             thread::Builder::new()
                 .name("raku-pi-reader".into())
@@ -413,14 +431,25 @@ impl PiDriver {
                         match line {
                             Ok(line) if !line.trim().is_empty() => {
                                 match serde_json::from_str::<Value>(&line) {
-                                    Ok(value) => handle_pi_message(
-                                        flavor,
-                                        value,
-                                        &reader_pending,
-                                        &reader_commands,
-                                        &reader_events,
-                                        &mut stream_state,
-                                    ),
+                                    Ok(value) => {
+                                        if value.get("type").and_then(Value::as_str)
+                                            == Some("message_end")
+                                            && value.pointer("/message/role").and_then(Value::as_str)
+                                                == Some("assistant")
+                                            && let Some(usage) = value.pointer("/message/usage")
+                                        {
+                                            *reader_last_usage.lock() =
+                                                Some(json!({"usage": usage}));
+                                        }
+                                        handle_pi_message(
+                                            flavor,
+                                            value,
+                                            &reader_pending,
+                                            &reader_commands,
+                                            &reader_events,
+                                            &mut stream_state,
+                                        )
+                                    }
                                     Err(error) => {
                                         let _ = reader_events.send(DriverEvent::Error(tr!(
                                             "errors.provider_invalid_json",
@@ -616,6 +645,23 @@ impl PiDriver {
                                     context_window,
                                 });
                             }
+                        }
+                        CommandMessage::ContextBreakdown => {
+                            let event = match send_request(
+                                &mut stdin,
+                                &writer_pending,
+                                &mut next_request_id,
+                                json!({"type": "get_session_stats"}),
+                            ) {
+                                Ok(stats) => DriverEvent::ContextBreakdownUpdated(Box::new(
+                                    super::context_inspection::pi_breakdown(
+                                        &stats,
+                                        last_usage.lock().as_ref(),
+                                    ),
+                                )),
+                                Err(error) => DriverEvent::ContextBreakdownFailed(error),
+                            };
+                            let _ = writer_events.send(event);
                         }
                         CommandMessage::Compact(request) => {
                             next_request_id += 1;
@@ -875,6 +921,10 @@ impl DriverControl for PiDriver {
 
     fn prompt(&self, prompt: String) {
         let _ = self.commands.send(CommandMessage::Prompt(prompt));
+    }
+
+    fn context_breakdown(&self, _detail: ContextDetail) {
+        let _ = self.commands.send(CommandMessage::ContextBreakdown);
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {

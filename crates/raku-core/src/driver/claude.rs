@@ -18,6 +18,7 @@ use raku_protocol::capabilities::RuntimeCapabilities;
 use raku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
+use raku_protocol::context_inspection::ContextDetail;
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::fs::File;
@@ -263,6 +264,36 @@ pub struct ClaudeDriver {
     /// JSON-RPC id of the `tools/call` it carried.
     subagent_calls: Arc<Mutex<HashMap<String, Value>>>,
     mode: RuntimeMode,
+    /// Numbers `get_context_usage` requests; the id carries the detail
+    /// level back, so the reader needs no shared map.
+    next_context_request: std::sync::atomic::AtomicU64,
+}
+
+const CONTEXT_REQUEST_PREFIX: &str = "raku-context-";
+
+fn context_usage_request(id: u64, detail: ContextDetail) -> Value {
+    let level = match detail {
+        ContextDetail::Full => "full",
+        ContextDetail::Summary => "summary",
+    };
+    json!({
+        "type": "control_request",
+        "request_id": format!("{CONTEXT_REQUEST_PREFIX}{level}-{id}"),
+        "request": { "subtype": "get_context_usage", "detail": level },
+    })
+}
+
+/// The detail level a `get_context_usage` response answers, or `None` for a
+/// response to some other request.
+fn context_request_detail(request_id: &str) -> Option<ContextDetail> {
+    let rest = request_id.strip_prefix(CONTEXT_REQUEST_PREFIX)?;
+    if rest.starts_with("full-") {
+        Some(ContextDetail::Full)
+    } else if rest.starts_with("summary-") {
+        Some(ContextDetail::Summary)
+    } else {
+        None
+    }
 }
 
 const TODO_TOOLS_ENV: &str = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
@@ -550,6 +581,16 @@ fn start_claude_title_refresh(
 /// does not deny them.
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob,WebSearch,WebFetch";
 
+/// The exact `--append-system-prompt` text a launch passes: a read-only side
+/// chat gets the bare instructions, a full session also the task-list rules.
+fn claude_appended_instructions(read_only: bool, instructions: &str) -> String {
+    if read_only {
+        instructions.to_owned()
+    } else {
+        format!("{instructions}\n\n{TASK_LIST_INSTRUCTIONS}")
+    }
+}
+
 fn configure_read_only_command(command: &mut Command, instructions: &str) {
     command.args([
         "-p",
@@ -609,7 +650,7 @@ fn configure_stream_command(
     ]);
     command.args([
         "--append-system-prompt".to_owned(),
-        format!("{instructions}\n\n{TASK_LIST_INSTRUCTIONS}"),
+        claude_appended_instructions(false, instructions),
     ]);
     // Print mode leaves the task-list tools out for current models unless
     // asked (verified on the CLI, 2.1.316); they feed the pinned task list.
@@ -700,12 +741,23 @@ impl ClaudeDriver {
                 .arg(subagent_tool_permission());
         }
 
+        let manifest = super::context_inspection::launch_manifest(
+            &command,
+            &claude_appended_instructions(read_only, instructions),
+            if delegates {
+                vec![crate::model::SUBAGENT_TOOL.to_owned()]
+            } else {
+                Vec::new()
+            },
+            Vec::new(),
+        );
         let command = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = crate::command_env::spawn(command)
             .context("failed to start `claude` in streaming-input mode")?;
+        let _ = events.send(DriverEvent::LaunchManifest(Box::new(manifest)));
         let stdin = child
             .stdin
             .take()
@@ -1099,6 +1151,7 @@ impl ClaudeDriver {
             pending_plans,
             subagent_calls,
             mode,
+            next_context_request: Default::default(),
         })
     }
 }
@@ -1126,6 +1179,15 @@ impl DriverControl for ClaudeDriver {
 
     fn cancel(&self) {
         let _ = self.commands.send(CommandMessage::Cancel);
+    }
+
+    fn context_breakdown(&self, detail: ContextDetail) {
+        let id = self
+            .next_context_request
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let _ = self
+            .commands
+            .send(CommandMessage::Raw(context_usage_request(id, detail)));
     }
 
     fn stop_background_work(&self, key: BackgroundWorkKey, control_id: String) {
@@ -2082,6 +2144,26 @@ fn handle_message(
             else {
                 return;
             };
+            if let Some(detail) = context_request_detail(request_id) {
+                let event = if value.pointer("/response/subtype").and_then(Value::as_str)
+                    == Some("success")
+                    && let Some(payload) = value.pointer("/response/response")
+                {
+                    DriverEvent::ContextBreakdownUpdated(Box::new(
+                        super::context_inspection::claude_breakdown(payload, detail),
+                    ))
+                } else {
+                    DriverEvent::ContextBreakdownFailed(
+                        value
+                            .pointer("/response/error")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| tr!("context_inspector.fetch_failed")),
+                    )
+                };
+                let _ = events.send(event);
+                return;
+            }
             if request_id == TITLE_REQUEST_ID {
                 if value.pointer("/response/subtype").and_then(Value::as_str) == Some("success")
                     && let Some(title) = value
@@ -3436,6 +3518,7 @@ mod tests {
             pending_plans: Default::default(),
             subagent_calls: Default::default(),
             mode: RuntimeMode::FullAccess,
+            next_context_request: Default::default(),
         };
 
         assert!(driver.capabilities().steer);

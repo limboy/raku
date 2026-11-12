@@ -19,7 +19,7 @@ use crate::skills::SkillsCatalog;
 use crate::usage::PlanUsage;
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "RAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "RAKU_DAEMON_ADDRESS";
@@ -125,6 +125,12 @@ pub enum Command {
     /// event, or an `error` event when the provider refuses.
     Goal {
         operation: GoalOperation,
+    },
+    /// Ask the live runtime what occupies its context window.
+    /// Fire-and-forget: the answer arrives as a `contextBreakdownUpdated` or
+    /// `contextBreakdownFailed` driver event.
+    FetchContextBreakdown {
+        detail: crate::context_inspection::ContextDetail,
     },
     ApplyOptions {
         options: WireSessionOptions,

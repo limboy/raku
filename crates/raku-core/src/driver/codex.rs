@@ -2,6 +2,7 @@
 
 use super::compaction::CompactionTracker;
 use raku_protocol::capabilities::RuntimeCapabilities;
+use raku_protocol::context_inspection::{ContextDetail, PromptInjection};
 use raku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
@@ -58,6 +59,8 @@ enum CommandMessage {
     },
     Options(SessionOptions),
     Goal(GoalOperation),
+    /// Answer from the newest `thread/tokenUsage/updated` report.
+    ContextBreakdown,
     RefreshBackgroundWork,
     StopBackgroundWork {
         key: BackgroundWorkKey,
@@ -180,6 +183,16 @@ impl CodexDriver {
         // Codex leaves `update_plan` out unless config turns it on, and that
         // tool is what feeds the pinned task list.
         command.args(["app-server", "--stdio", "-c", UPDATE_PLAN_CONFIG]);
+        let manifest = super::context_inspection::launch_manifest(
+            &command,
+            super::system_instructions(read_only, &subagent),
+            if delegates {
+                vec![crate::model::SUBAGENT_TOOL.to_owned()]
+            } else {
+                Vec::new()
+            },
+            Vec::new(),
+        );
         let command = command
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -187,6 +200,7 @@ impl CodexDriver {
             .stderr(Stdio::piped());
         let mut child =
             crate::command_env::spawn(command).context("failed to start `codex app-server`")?;
+        let _ = events.send(DriverEvent::LaunchManifest(Box::new(manifest)));
 
         let stdin = child
             .stdin
@@ -202,6 +216,8 @@ impl CodexDriver {
             .ok_or_else(|| anyhow!("Codex stderr unavailable"))?;
         let (commands, command_rx) = unbounded();
         let thread_id = Arc::new(Mutex::new(None::<String>));
+        // The newest `tokenUsage` report, kept for the Context inspector.
+        let token_usage = Arc::new(Mutex::new(None::<Value>));
         let turn_id = Arc::new(Mutex::new(None::<String>));
         let turn_ids = Arc::new(Mutex::new(Vec::<String>::new()));
         let pending_rollbacks = Arc::new(Mutex::new(HashMap::<
@@ -218,6 +234,7 @@ impl CodexDriver {
         }));
 
         let writer_thread_id = thread_id.clone();
+        let writer_token_usage = token_usage.clone();
         let writer_turn_id = turn_id.clone();
         let writer_turn_ids = turn_ids.clone();
         let writer_pending_rollbacks = pending_rollbacks.clone();
@@ -396,6 +413,12 @@ impl CodexDriver {
                                 && let Some(input) = params["input"].as_array_mut()
                             {
                                 input.push(json!({"type": "text", "text": note}));
+                                let _ = writer_events.send(DriverEvent::PromptInjected(
+                                    PromptInjection {
+                                        label: tr!("context_inspector.injection_agents_note"),
+                                        text: note,
+                                    },
+                                ));
                             }
                             if let Some(model) = model.as_deref() {
                                 params["model"] = json!(model);
@@ -647,6 +670,13 @@ impl CodexDriver {
                             writer_goal_rpcs.lock().pending.insert(request_id, pending);
                             message
                         }
+                        CommandMessage::ContextBreakdown => {
+                            let usage = writer_token_usage.lock().clone();
+                            let _ = writer_events.send(DriverEvent::ContextBreakdownUpdated(
+                                Box::new(super::context_inspection::codex_breakdown(usage.as_ref())),
+                            ));
+                            continue;
+                        }
                         CommandMessage::RefreshBackgroundWork => {
                             if writer_background_rpcs.lock().unsupported {
                                 continue;
@@ -729,6 +759,7 @@ impl CodexDriver {
         let reader_title_generation = title_generation;
         let reader_commands = commands.clone();
         let reader_events = events.clone();
+        let reader_token_usage = token_usage;
         let reader_thread = thread::Builder::new()
             .name("raku-codex-reader".into())
             .spawn(move || {
@@ -738,6 +769,12 @@ impl CodexDriver {
                         Ok(line) if !line.trim().is_empty() => {
                             match serde_json::from_str::<Value>(&line) {
                                 Ok(value) => {
+                                    if value.get("method").and_then(Value::as_str)
+                                        == Some("thread/tokenUsage/updated")
+                                        && let Some(usage) = value.pointer("/params/tokenUsage")
+                                    {
+                                        *reader_token_usage.lock() = Some(usage.clone());
+                                    }
                                     let main_turn_started = is_codex_turn_started(
                                         &value,
                                         reader_thread_id.lock().as_deref(),
@@ -1012,6 +1049,10 @@ impl DriverControl for CodexDriver {
 
     fn refresh_background_work(&self) {
         let _ = self.commands.send(CommandMessage::RefreshBackgroundWork);
+    }
+
+    fn context_breakdown(&self, _detail: ContextDetail) {
+        let _ = self.commands.send(CommandMessage::ContextBreakdown);
     }
 
     fn stop_background_work(&self, key: BackgroundWorkKey, control_id: String) {
@@ -3213,6 +3254,10 @@ mod tests {
         .unwrap();
         assert!(matches!(
             received.recv_timeout(Duration::from_secs(5)).unwrap(),
+            DriverEvent::LaunchManifest(_)
+        ));
+        assert!(matches!(
+            received.recv_timeout(Duration::from_secs(5)).unwrap(),
             DriverEvent::Connected { .. }
         ));
         driver.compact(CompactionRequest {
@@ -3278,6 +3323,10 @@ mod tests {
                 events,
             )
             .unwrap();
+            assert!(matches!(
+                received.recv_timeout(Duration::from_secs(5)).unwrap(),
+                DriverEvent::LaunchManifest(_)
+            ));
             assert!(matches!(
                 received.recv_timeout(Duration::from_secs(5)).unwrap(),
                 DriverEvent::Connected { .. }

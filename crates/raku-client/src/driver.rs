@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 use raku_protocol::capabilities::RuntimeCapabilities;
+use raku_protocol::context_inspection::ContextDetail;
 use raku_protocol::model::{
     BackgroundWorkKey, DriverEvent, GoalOperation, PlanDecision, ProviderResumeCursor, RuntimeMode,
     UserInputAnswer,
@@ -91,6 +92,12 @@ impl DriverHandle {
         self.inner.goal(operation);
     }
 
+    /// Ask what occupies the context window. The answer arrives as a
+    /// `ContextBreakdownUpdated` or `ContextBreakdownFailed` driver event.
+    pub fn context_breakdown(&self, detail: ContextDetail) {
+        self.inner.context_breakdown(detail);
+    }
+
     pub fn apply_options(&self, options: SessionOptions) -> bool {
         self.inner.apply_options(options)
     }
@@ -121,6 +128,7 @@ pub trait DriverControl: Send + Sync {
     fn respond_plan(&self, _request_id: String, _decision: PlanDecision) {}
     fn respond_subagent(&self, _request_id: String, _result: String) {}
     fn goal(&self, _operation: GoalOperation) {}
+    fn context_breakdown(&self, _detail: ContextDetail) {}
     fn apply_options(&self, _options: SessionOptions) -> bool {
         false
     }

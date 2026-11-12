@@ -2222,3 +2222,143 @@ composer.skill:
   en: Skill
 composer.runs_now:
   en: Runs now
+context_inspector.title:
+  en: "Context"
+context_inspector.copy_json:
+  en: "Copy as JSON"
+context_inspector.measuring:
+  en: "Measuring…"
+context_inspector.fetch_error:
+  en: "Couldn't measure the context: %{error}"
+context_inspector.fetch_failed:
+  en: "The provider didn't return a breakdown."
+context_inspector.fetch_timed_out:
+  en: "The provider didn't answer in time."
+context_inspector.headline_window:
+  en: "%{used} / %{window} tokens (%{percent})"
+context_inspector.headline:
+  en: "%{used} tokens"
+context_inspector.headline_unknown:
+  en: "? / %{window} tokens"
+context_inspector.headline_none:
+  en: "Nothing measured yet"
+context_inspector.measured_now:
+  en: "Measured just now"
+context_inspector.measured_seconds:
+  en: "Measured %{seconds}s ago"
+context_inspector.measured_minutes:
+  en: "Measured %{minutes}m ago"
+context_inspector.auto_compact_at:
+  en: "Auto-compacts at %{tokens}"
+context_inspector.other:
+  en: "Other"
+context_inspector.not_in_window:
+  en: "not in window"
+context_inspector.not_loaded:
+  en: "not loaded"
+context_inspector.section_last_call:
+  en: "Latest model call"
+context_inspector.split_input:
+  en: "Input"
+context_inspector.split_cache_read:
+  en: "Cache read"
+context_inspector.split_cache_write:
+  en: "Cache write"
+context_inspector.split_output:
+  en: "Output"
+context_inspector.split_reasoning:
+  en: "Reasoning"
+context_inspector.show_all:
+  en: "Show all %{count}"
+context_inspector.show_fewer:
+  en: "Show fewer"
+context_inspector.show_text:
+  en: "Show text"
+context_inspector.hide_text:
+  en: "Hide text"
+context_inspector.section_raku:
+  en: "Added by Raku"
+context_inspector.appended_instructions:
+  en: "Appended system prompt"
+context_inspector.chars:
+  en: "%{count} chars"
+context_inspector.estimate:
+  en: "≈ %{tokens} (estimate)"
+context_inspector.raku_tools:
+  en: "Tools served by Raku"
+context_inspector.injected:
+  en: "added to a prompt"
+context_inspector.injection_title_language:
+  en: "Session title language"
+context_inspector.injection_agents_note:
+  en: "Subagent list update"
+context_inspector.section_launch:
+  en: "Launch command"
+context_inspector.environment:
+  en: "Environment set by Raku"
+context_inspector.section_memory_files:
+  en: "Memory files"
+context_inspector.section_system_prompt:
+  en: "System prompt"
+context_inspector.section_system_tools:
+  en: "Built-in tools"
+context_inspector.section_deferred_tools:
+  en: "Deferred built-in tools"
+context_inspector.section_mcp_tools:
+  en: "MCP tools"
+context_inspector.section_mcp_instructions:
+  en: "MCP server instructions"
+context_inspector.section_agents:
+  en: "Agents"
+context_inspector.section_skills:
+  en: "Skills (%{included} of %{total} included)"
+context_inspector.section_messages:
+  en: "Messages"
+context_inspector.messages_user:
+  en: "User messages"
+context_inspector.messages_assistant:
+  en: "Assistant messages"
+context_inspector.messages_tool_calls:
+  en: "Tool calls"
+context_inspector.messages_tool_results:
+  en: "Tool results"
+context_inspector.messages_attachments:
+  en: "Attachments"
+context_inspector.messages_redirected:
+  en: "Redirected context"
+context_inspector.messages_unattributed:
+  en: "Unattributed"
+context_inspector.section_tool_use:
+  en: "Tool use by tool"
+context_inspector.tool_call_detail:
+  en: "call %{call} · result %{result}"
+context_inspector.section_attachments:
+  en: "Attachments by type"
+context_inspector.section_thread_totals:
+  en: "Thread totals"
+context_inspector.section_session_counts:
+  en: "Session counts"
+context_inspector.section_session_totals:
+  en: "Session totals"
+context_inspector.pi_user_messages:
+  en: "User messages"
+context_inspector.pi_assistant_messages:
+  en: "Assistant messages"
+context_inspector.pi_tool_calls:
+  en: "Tool calls"
+context_inspector.pi_tool_results:
+  en: "Tool results"
+context_inspector.menu_heading:
+  en: "Session"
+context_inspector.menu_row:
+  en: "Context window"
+context_inspector.not_measured:
+  en: "Not measured yet. Refresh to measure."
+context_inspector.refresh_plain:
+  en: "Refresh"
+context_inspector.stopped_recorded:
+  en: "The provider isn't running. Showing what was last recorded; send a message to measure again."
+context_inspector.stopped_nothing:
+  en: "The provider isn't running and nothing was recorded for this task yet. Send a message to start it, then measure."
+context_inspector.saved_usage:
+  en: "Last reported by the provider; no breakdown recorded"

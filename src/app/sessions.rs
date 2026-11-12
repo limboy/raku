@@ -288,6 +288,7 @@ impl Raku {
             self.remove_side_chat(side_chat_id, cx);
         }
         self.finished_session_ids.remove(&session_id);
+        self.forget_context_snapshot(session_id, cx);
         let Some(index) = self
             .state
             .sessions
@@ -917,6 +918,7 @@ impl Raku {
     }
 
     pub(super) fn reset_session_runtime(&mut self, session_id: Uuid) {
+        self.stop_context_fetch(session_id);
         if let Some(runtime) = self.runtimes.remove(&session_id) {
             runtime.driver.cancel();
             runtime.driver.close();
@@ -1449,6 +1451,7 @@ impl Raku {
                 self.runtimes.insert(session_id, runtime);
             }
         } else if let Some(runtime) = runtime {
+            self.stop_context_fetch(session_id);
             runtime.driver.close();
         }
         self.remeasure_transcript_tail();

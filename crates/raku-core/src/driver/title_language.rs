@@ -198,6 +198,14 @@ impl TitleLanguageContext {
 
 /// A cold import must display the request the user typed, while retaining the
 /// provider's original content for native history and attachment fidelity.
+/// The naming context `prepare` appended to `prompt`, if any.
+pub(super) fn appended_context(prompt: &str) -> Option<&str> {
+    prompt
+        .rfind(CONTEXT_START)
+        .map(|start| &prompt[start..])
+        .filter(|context| context.ends_with(CONTEXT_CLOSE))
+}
+
 pub(crate) fn hide_title_language_context(history: &mut ProviderSessionHistory) {
     for message in &mut history.messages {
         if message.role == MessageRole::User

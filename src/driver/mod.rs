@@ -303,6 +303,10 @@ impl DriverControl for RemoteDriverControl {
         self.notify(raku_client::Command::Goal { operation });
     }
 
+    fn context_breakdown(&self, detail: raku_protocol::context_inspection::ContextDetail) {
+        self.notify(raku_client::Command::FetchContextBreakdown { detail });
+    }
+
     fn apply_options(&self, options: SessionOptions) -> bool {
         let options = (|| {
             Ok::<_, anyhow::Error>(raku_client::WireSessionOptions {

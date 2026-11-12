@@ -1200,6 +1200,7 @@ impl RightPanelSurface {
             }
             Self::Files => tr!("right_panel.files"),
             Self::Diff => tr!("right_panel.diff"),
+            Self::Context => tr!("context_inspector.title"),
             Self::File(path) => path.rsplit('/').next().unwrap_or(path).to_owned(),
             Self::AttachmentFile(attachment) => attachment.name.to_string(),
             Self::PastedText { name, .. } => name.to_string(),
@@ -1214,6 +1215,7 @@ impl RightPanelSurface {
             Self::BackgroundWork { key, .. } => work_kind_icon(key.kind),
             Self::Files => "icons/folder.svg",
             Self::Diff => "icons/file-diff.svg",
+            Self::Context => "icons/eye.svg",
             Self::File(path) => file_icon_for_path(path),
             Self::AttachmentFile(attachment) => file_icon_for_path(&attachment.name),
             Self::PastedText { .. } => "icons/file.svg",
@@ -1267,6 +1269,7 @@ fn reusable_surface_index(
         }),
         RightPanelSurface::Files
         | RightPanelSurface::Diff
+        | RightPanelSurface::Context
         | RightPanelSurface::File(_)
         | RightPanelSurface::AttachmentFile(_) => {
             surfaces.iter().position(|surface| surface == requested)
@@ -2967,6 +2970,7 @@ impl Raku {
             Some(RightPanelSurface::Diff) => self
                 .render_right_panel_diff(width, window, cx)
                 .into_any_element(),
+            Some(RightPanelSurface::Context) => self.render_context_surface(cx),
             Some(RightPanelSurface::Terminal(terminal_id)) => self
                 .right_panel_terminals
                 .get(&terminal_id)

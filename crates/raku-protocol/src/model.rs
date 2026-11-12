@@ -2359,6 +2359,14 @@ pub enum DriverEvent {
     /// or (`None`) cleared. Carries the whole goal so late subscribers need
     /// no earlier event.
     GoalUpdated(Option<ThreadGoal>),
+    /// How Raku launched this runtime's provider. Sent once, at spawn.
+    LaunchManifest(Box<crate::context_inspection::LaunchManifest>),
+    /// Raku appended `text` to a prompt it delivered; `label` names why.
+    PromptInjected(crate::context_inspection::PromptInjection),
+    /// The answer to a `FetchContextBreakdown` command.
+    ContextBreakdownUpdated(Box<crate::context_inspection::ContextBreakdown>),
+    /// A `FetchContextBreakdown` command could not be answered.
+    ContextBreakdownFailed(String),
     TurnFinished {
         success: bool,
         summary: Option<String>,

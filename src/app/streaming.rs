@@ -222,6 +222,18 @@ impl Raku {
                     }
                 }
             }
+            DriverEvent::LaunchManifest(manifest) => {
+                self.record_context_manifest(session_id, *manifest, cx);
+            }
+            DriverEvent::PromptInjected(injection) => {
+                self.record_context_injection(session_id, injection, cx);
+            }
+            DriverEvent::ContextBreakdownUpdated(breakdown) => {
+                self.record_context_breakdown(session_id, *breakdown, cx);
+            }
+            DriverEvent::ContextBreakdownFailed(error) => {
+                self.record_context_error(session_id, error, cx);
+            }
             DriverEvent::AgentPresetSelected(agent_preset) => {
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.agent_preset = agent_preset;
@@ -842,6 +854,7 @@ impl Raku {
                 }
             }
             DriverEvent::ProcessExited => {
+                self.stop_context_fetch(session_id);
                 self.interrupt_session_compactions(session_id);
                 self.mark_background_work_lost(session_id);
                 let previous_kinds = self.snapshot_selected_transcript_rows(session_id);
