@@ -97,6 +97,42 @@ impl TokenSplit {
     }
 }
 
+/// A provider-reported tool. Token accounting and tool discovery are separate:
+/// a tool can be available on demand without its schema occupying the window.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextTool {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextToolServer {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    pub tools: Vec<ContextTool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `None` means the provider did not report a catalog; `Some([])` is a
+/// confirmed empty catalog. Never present missing metadata as zero tools.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextToolCatalog {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<Vec<ContextTool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Vec<ContextToolServer>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextBreakdown {
@@ -118,6 +154,8 @@ pub struct ContextBreakdown {
     pub sections: Vec<ContextSection>,
     #[serde(default, skip_serializing_if = "TokenSplit::is_empty")]
     pub token_split: TokenSplit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<ContextToolCatalog>,
 }
 
 /// Text Raku adds to the conversation beyond what the user typed.
@@ -126,6 +164,27 @@ pub struct ContextBreakdown {
 pub struct PromptInjection {
     pub label: String,
     pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RakuToolContextSource {
+    ToolDefinition,
+    PromptUpdate,
+    ExtensionConfiguration,
+}
+
+/// What Raku supplied to this provider runtime, captured from its outgoing
+/// payload. A resumed prompt updates the roster without replacing the
+/// thread's original tool definition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RakuToolContext {
+    pub source: RakuToolContextSource,
+    pub recorded_at_ms: u64,
+    pub subagents: Vec<crate::model::SubagentToolAgent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definitions: Option<Vec<serde_json::Value>>,
 }
 
 /// Exactly how Raku launched the provider for this runtime, captured from the
@@ -203,13 +262,31 @@ mod tests {
             categories: Vec::new(),
             sections: Vec::new(),
             token_split: TokenSplit::default(),
+            tools: None,
         };
         let value = serde_json::to_value(&breakdown).unwrap();
         assert!(value.get("categories").is_none());
         assert!(value.get("tokenSplit").is_none());
+        assert!(value.get("tools").is_none());
         assert_eq!(
             serde_json::from_value::<ContextBreakdown>(value).unwrap(),
             breakdown
+        );
+    }
+
+    #[test]
+    fn unknown_and_empty_tool_catalogs_remain_distinct() {
+        let catalog = ContextToolCatalog {
+            builtin: None,
+            mcp: Some(Vec::new()),
+            error: None,
+        };
+        let value = serde_json::to_value(&catalog).unwrap();
+        assert!(value.get("builtin").is_none());
+        assert_eq!(value["mcp"], serde_json::json!([]));
+        assert_eq!(
+            serde_json::from_value::<ContextToolCatalog>(value).unwrap(),
+            catalog
         );
     }
 }

@@ -2,10 +2,10 @@
 
 use super::compaction::CompactionTracker;
 use raku_protocol::capabilities::RuntimeCapabilities;
-use raku_protocol::context_inspection::ContextDetail;
 use raku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
+use raku_protocol::context_inspection::{ContextDetail, RakuToolContextSource};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -400,6 +400,14 @@ impl PiDriver {
         let mut child = crate::command_env::spawn(command)
             .with_context(|| format!("failed to start `{} --mode rpc`", binary.display()))?;
         let _ = events.send(DriverEvent::LaunchManifest(Box::new(manifest)));
+        if !subagent.child && !read_only && !subagent.agents.is_empty() {
+            let record = super::context_inspection::raku_tool_context(
+                RakuToolContextSource::ExtensionConfiguration,
+                &subagent.agents,
+                None,
+            );
+            let _ = events.send(DriverEvent::RakuToolsUpdated(Box::new(record)));
+        }
         let stdin = child
             .stdin
             .take()
@@ -434,7 +442,9 @@ impl PiDriver {
                                     Ok(value) => {
                                         if value.get("type").and_then(Value::as_str)
                                             == Some("message_end")
-                                            && value.pointer("/message/role").and_then(Value::as_str)
+                                            && value
+                                                .pointer("/message/role")
+                                                .and_then(Value::as_str)
                                                 == Some("assistant")
                                             && let Some(usage) = value.pointer("/message/usage")
                                         {

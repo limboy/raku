@@ -2,9 +2,12 @@
 
 use super::compaction::CompactionTracker;
 use raku_protocol::capabilities::RuntimeCapabilities;
-use raku_protocol::context_inspection::{ContextDetail, PromptInjection};
 use raku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
+};
+use raku_protocol::context_inspection::{
+    ContextBreakdown, ContextDetail, ContextToolCatalog, ContextToolServer, PromptInjection,
+    RakuToolContextSource,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -61,6 +64,10 @@ enum CommandMessage {
     Goal(GoalOperation),
     /// Answer from the newest `thread/tokenUsage/updated` report.
     ContextBreakdown,
+    ContextToolsPage {
+        request: Box<ContextToolsRequest>,
+        cursor: String,
+    },
     RefreshBackgroundWork,
     StopBackgroundWork {
         key: BackgroundWorkKey,
@@ -94,12 +101,23 @@ struct BackgroundRpcState {
     /// Shared with the writer because a collaboration mode must name a model
     /// even when the session leaves the choice to Codex.
     thread_model: Option<String>,
+    context_tools: HashMap<u64, Box<ContextToolsRequest>>,
+    context_generation: u64,
+}
+
+struct ContextToolsRequest {
+    breakdown: Box<ContextBreakdown>,
+    thread_id: String,
+    servers: Vec<ContextToolServer>,
+    cursors: HashSet<String>,
+    generation: u64,
 }
 
 enum PendingBackgroundRpc {
     Compact(ContextCompaction),
     List,
     Stop(BackgroundWorkKey),
+    ContextTools(Box<ContextToolsRequest>),
 }
 
 /// Raku-originated `thread/goal/*` requests awaiting their responses, plus
@@ -133,10 +151,32 @@ impl BackgroundRpcState {
             Some(PendingBackgroundRpc::Compact(item))
         } else if self.lists.remove(&id) {
             Some(PendingBackgroundRpc::List)
+        } else if let Some(request) = self.context_tools.remove(&id) {
+            Some(PendingBackgroundRpc::ContextTools(request))
         } else {
             self.stops.remove(&id).map(PendingBackgroundRpc::Stop)
         }
     }
+}
+
+fn context_tools_page(
+    id: u64,
+    request: Box<ContextToolsRequest>,
+    cursor: Option<String>,
+    state: &Mutex<BackgroundRpcState>,
+) -> Value {
+    let message = json!({
+        "method": "mcpServerStatus/list",
+        "id": id,
+        "params": {
+            "threadId": request.thread_id,
+            "detail": "toolsAndAuthOnly",
+            "limit": 100,
+            "cursor": cursor,
+        },
+    });
+    state.lock().context_tools.insert(id, request);
+    message
 }
 
 pub struct CodexDriver {
@@ -356,10 +396,22 @@ impl CodexDriver {
                         "params": params
                     })
                 };
-                let _ = write_json_line(&mut stdin, &open_thread);
+                let mut last_raku_tools = None;
+                if write_json_line(&mut stdin, &open_thread).is_ok()
+                    && let Some(definitions) = open_thread.pointer("/params/dynamicTools").and_then(Value::as_array)
+                {
+                    let tools = super::context_inspection::raku_tool_context(
+                        RakuToolContextSource::ToolDefinition,
+                        &subagent.agents,
+                        Some(definitions.clone()),
+                    );
+                    let _ = writer_events.send(DriverEvent::RakuToolsUpdated(Box::new(tools.clone())));
+                    last_raku_tools = Some(tools);
+                }
 
                 let mut next_request_id = 10_u64;
                 while let Ok(command) = command_rx.recv() {
+                    let mut tools_after_write = None;
                     let message = match command {
                         CommandMessage::Compact(request) => {
                             let Some(thread_id) = wait_for_thread_id(&writer_thread_id) else {
@@ -413,6 +465,11 @@ impl CodexDriver {
                                 && let Some(input) = params["input"].as_array_mut()
                             {
                                 input.push(json!({"type": "text", "text": note}));
+                                tools_after_write = Some(super::context_inspection::raku_tool_context(
+                                    RakuToolContextSource::PromptUpdate,
+                                    &subagent.agents,
+                                    None,
+                                ));
                                 let _ = writer_events.send(DriverEvent::PromptInjected(
                                     PromptInjection {
                                         label: tr!("context_inspector.injection_agents_note"),
@@ -671,11 +728,43 @@ impl CodexDriver {
                             message
                         }
                         CommandMessage::ContextBreakdown => {
+                            // Re-publish the runtime's actual record so an
+                            // inspector opened after attachment can recover
+                            // metadata whose one-shot event was missed.
+                            if let Some(tools) = &last_raku_tools {
+                                let _ = writer_events.send(DriverEvent::RakuToolsUpdated(Box::new(tools.clone())));
+                            }
                             let usage = writer_token_usage.lock().clone();
-                            let _ = writer_events.send(DriverEvent::ContextBreakdownUpdated(
-                                Box::new(super::context_inspection::codex_breakdown(usage.as_ref())),
-                            ));
-                            continue;
+                            let breakdown = Box::new(super::context_inspection::codex_breakdown(usage.as_ref()));
+                            let Some(thread_id) = wait_for_thread_id(&writer_thread_id) else {
+                                let _ = writer_events.send(DriverEvent::ContextBreakdownUpdated(breakdown));
+                                continue;
+                            };
+                            let generation = {
+                                let mut state = writer_background_rpcs.lock();
+                                state.context_generation = state.context_generation.wrapping_add(1);
+                                state.context_generation
+                            };
+                            next_request_id += 1;
+                            context_tools_page(
+                                next_request_id,
+                                Box::new(ContextToolsRequest {
+                                    breakdown,
+                                    thread_id,
+                                    servers: Vec::new(),
+                                    cursors: HashSet::new(),
+                                    generation,
+                                }),
+                                None,
+                                &writer_background_rpcs,
+                            )
+                        }
+                        CommandMessage::ContextToolsPage { request, cursor } => {
+                            if request.generation != writer_background_rpcs.lock().context_generation {
+                                continue;
+                            }
+                            next_request_id += 1;
+                            context_tools_page(next_request_id, request, Some(cursor), &writer_background_rpcs)
                         }
                         CommandMessage::RefreshBackgroundWork => {
                             if writer_background_rpcs.lock().unsupported {
@@ -745,6 +834,10 @@ impl CodexDriver {
                             error = error
                         )));
                         break;
+                    }
+                    if let Some(tools) = tools_after_write {
+                        let _ = writer_events.send(DriverEvent::RakuToolsUpdated(Box::new(tools.clone())));
+                        last_raku_tools = Some(tools);
                     }
                 }
             })?;
@@ -1858,6 +1951,43 @@ fn handle_codex_message(
         .and_then(|id| background_rpcs.lock().take(id));
     if let Some(pending) = pending_background {
         match pending {
+            PendingBackgroundRpc::ContextTools(mut request) => {
+                if request.generation != background_rpcs.lock().context_generation {
+                    return;
+                }
+                let error = value.pointer("/error/message").and_then(Value::as_str);
+                let result = value.get("result");
+                let valid = result
+                    .and_then(|result| result.get("data"))
+                    .is_some_and(Value::is_array);
+                let mut error = error
+                    .map(str::to_owned)
+                    .or_else(|| (!valid).then(|| tr!("context_inspector.tools_fetch_failed")));
+                if let Some(result) = result.filter(|_| valid) {
+                    request
+                        .servers
+                        .extend(super::context_inspection::codex_tool_servers(result));
+                    if let Some(cursor) = result.get("nextCursor").and_then(Value::as_str) {
+                        if request.cursors.len() < 32 && request.cursors.insert(cursor.to_owned()) {
+                            let _ = commands.send(CommandMessage::ContextToolsPage {
+                                request,
+                                cursor: cursor.to_owned(),
+                            });
+                            return;
+                        }
+                        error = Some(tr!("context_inspector.tools_incomplete"));
+                    }
+                }
+                request
+                    .servers
+                    .sort_by(|left, right| left.name.cmp(&right.name));
+                request.breakdown.tools = Some(ContextToolCatalog {
+                    builtin: None,
+                    mcp: (valid || !request.servers.is_empty()).then_some(request.servers),
+                    error,
+                });
+                let _ = events.send(DriverEvent::ContextBreakdownUpdated(request.breakdown));
+            }
             PendingBackgroundRpc::Compact(mut item) => {
                 if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
                     {
@@ -3224,6 +3354,115 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn context_records_subagent_definitions_from_the_actual_transport() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for resumed in [false, true] {
+            let directory =
+                std::env::temp_dir().join(format!("raku-context-rpc-{}", Uuid::new_v4()));
+            fs::create_dir_all(&directory).unwrap();
+            let binary = directory.join("codex");
+            fs::write(&binary, include_str!("fixtures/codex_context.sh")).unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+            let (events, received) = crate::driver::test_event_channel();
+            let driver = CodexDriver::start(
+                DriverStartOptions {
+                    binary,
+                    cwd: directory.clone(),
+                    mode: RuntimeMode::Ask,
+                    plan_mode: false,
+                    model: None,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    context_window: None,
+                    agent_preset: None,
+                    provider_cursor: resumed.then(|| ProviderResumeCursor::Codex {
+                        thread_id: "thread-context".into(),
+                    }),
+                    read_only: false,
+                    subagent: crate::model::SubagentLaunch {
+                        agents: vec![crate::model::SubagentToolAgent {
+                            name: "beta".into(),
+                            description: "Find answers".into(),
+                        }],
+                        child: false,
+                        delegates: true,
+                    },
+                },
+                events,
+            )
+            .unwrap();
+            let mut connected = false;
+            let mut recorded = None;
+            while !connected || (!resumed && recorded.is_none()) {
+                match received.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    DriverEvent::Connected { .. } => connected = true,
+                    DriverEvent::RakuToolsUpdated(tools) => recorded = Some(*tools),
+                    DriverEvent::Error(error) => panic!("provider failed: {error}"),
+                    _ => {}
+                }
+            }
+            if resumed {
+                assert!(recorded.is_none());
+                driver.prompt("Check the roster".into());
+                let mut finished = false;
+                while recorded.is_none() || !finished {
+                    match received.recv_timeout(Duration::from_secs(5)).unwrap() {
+                        DriverEvent::RakuToolsUpdated(tools) => recorded = Some(*tools),
+                        DriverEvent::TurnFinished { .. } => finished = true,
+                        DriverEvent::Error(error) => panic!("provider failed: {error}"),
+                        _ => {}
+                    }
+                }
+                let request: Value =
+                    serde_json::from_slice(&fs::read(directory.join("prompt.request")).unwrap())
+                        .unwrap();
+                assert!(
+                    request["params"]["input"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|input| input["text"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("- beta: Find answers")))
+                );
+                assert_eq!(
+                    recorded.as_ref().unwrap().source,
+                    RakuToolContextSource::PromptUpdate
+                );
+                assert!(recorded.as_ref().unwrap().definitions.is_none());
+            } else {
+                let request: Value =
+                    serde_json::from_slice(&fs::read(directory.join("open.request")).unwrap())
+                        .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&recorded.as_ref().unwrap().definitions).unwrap(),
+                    request["params"]["dynamicTools"]
+                );
+                assert_eq!(
+                    recorded.as_ref().unwrap().source,
+                    RakuToolContextSource::ToolDefinition
+                );
+            }
+            let record = recorded.unwrap();
+            assert_eq!(record.subagents[0].name, "beta");
+            driver.context_breakdown(ContextDetail::Full);
+            loop {
+                match received.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    DriverEvent::RakuToolsUpdated(restored) => {
+                        assert_eq!(*restored, record);
+                        break;
+                    }
+                    DriverEvent::Error(error) => panic!("refresh failed: {error}"),
+                    _ => {}
+                }
+            }
+            drop(driver);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn manual_compaction_uses_native_rpc_and_waits_for_the_item_lifecycle() {
         use std::os::unix::fs::PermissionsExt as _;
         let directory = std::env::temp_dir().join(format!("raku-compact-rpc-{}", Uuid::new_v4()));
@@ -3533,6 +3772,111 @@ mod tests {
             "createdAt": 1,
             "updatedAt": 2
         })
+    }
+
+    fn begin_context_tool_test(harness: &GoalHarness, id: u64) {
+        let generation = harness.background.lock().context_generation;
+        let request = context_tools_page(
+            id,
+            Box::new(ContextToolsRequest {
+                breakdown: Box::new(super::super::context_inspection::codex_breakdown(Some(
+                    &json!({
+                        "last": {"totalTokens": 42}
+                    }),
+                ))),
+                thread_id: "thread-1".into(),
+                servers: Vec::new(),
+                cursors: HashSet::new(),
+                generation,
+            }),
+            None,
+            &harness.background,
+        );
+        assert_eq!(request["method"], "mcpServerStatus/list");
+        assert_eq!(request["params"]["threadId"], "thread-1");
+        assert_eq!(request["params"]["detail"], "toolsAndAuthOnly");
+    }
+
+    #[test]
+    fn context_tool_inventory_collects_every_page_without_claiming_builtin_visibility() {
+        let harness = GoalHarness::new();
+        begin_context_tool_test(&harness, 41);
+        harness.handle(json!({"id": 41, "result": {
+            "data": [{"name": "z-last", "tools": {"search": {"name": "search"}}}],
+            "nextCursor": "page-2"
+        }}));
+        assert!(harness.received.is_empty());
+        let CommandMessage::ContextToolsPage { request, cursor } =
+            harness.command_rx.try_recv().unwrap()
+        else {
+            panic!("the inventory must request the next page");
+        };
+        assert_eq!(cursor, "page-2");
+        context_tools_page(42, request, Some(cursor), &harness.background);
+        harness.handle(json!({"id": 42, "result": {
+            "data": [{"name": "a-first", "tools": {"read": {"name": "read"}}}],
+            "nextCursor": null
+        }}));
+        let DriverEvent::ContextBreakdownUpdated(breakdown) = harness.received.try_recv().unwrap()
+        else {
+            panic!("discovery must finish with the complete recorded breakdown");
+        };
+        assert_eq!(breakdown.total_tokens, Some(42));
+        let catalog = breakdown.tools.unwrap();
+        assert!(catalog.builtin.is_none());
+        assert!(catalog.error.is_none());
+        let servers = catalog.mcp.unwrap();
+        assert_eq!(
+            servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a-first", "z-last"]
+        );
+        assert_eq!(servers[0].tools[0].name, "read");
+        assert!(harness.background.lock().context_tools.is_empty());
+    }
+
+    #[test]
+    fn context_tool_discovery_failure_keeps_usage_and_reports_unknown_catalogs() {
+        let harness = GoalHarness::new();
+        begin_context_tool_test(&harness, 41);
+        harness.handle(json!({"id": 41, "error": {"code": -32601, "message": "Method not found"}}));
+        let DriverEvent::ContextBreakdownUpdated(breakdown) = harness.received.try_recv().unwrap()
+        else {
+            panic!("tool discovery must not fail the task or erase usage");
+        };
+        assert_eq!(breakdown.total_tokens, Some(42));
+        let catalog = breakdown.tools.unwrap();
+        assert!(catalog.mcp.is_none());
+        assert!(catalog.builtin.is_none());
+        assert_eq!(catalog.error.as_deref(), Some("Method not found"));
+        assert!(harness.received.is_empty());
+    }
+
+    #[test]
+    fn context_tool_inventory_rejects_repeated_cursors_and_superseded_fetches() {
+        let harness = GoalHarness::new();
+        begin_context_tool_test(&harness, 41);
+        harness.handle(json!({"id": 41, "result": {"data": [], "nextCursor": "loop"}}));
+        let CommandMessage::ContextToolsPage { request, cursor } =
+            harness.command_rx.try_recv().unwrap()
+        else {
+            panic!("a first cursor must be followed");
+        };
+        context_tools_page(42, request, Some(cursor), &harness.background);
+        harness.handle(json!({"id": 42, "result": {"data": [], "nextCursor": "loop"}}));
+        let DriverEvent::ContextBreakdownUpdated(breakdown) = harness.received.try_recv().unwrap()
+        else {
+            panic!("a repeated cursor must finish with an incomplete catalog");
+        };
+        assert!(breakdown.tools.unwrap().error.is_some());
+        assert!(harness.command_rx.is_empty());
+
+        begin_context_tool_test(&harness, 43);
+        harness.background.lock().context_generation += 1;
+        harness.handle(json!({"id": 43, "result": {"data": [], "nextCursor": null}}));
+        assert!(harness.received.is_empty());
     }
 
     #[test]

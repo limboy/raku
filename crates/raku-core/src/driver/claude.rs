@@ -18,7 +18,7 @@ use raku_protocol::capabilities::RuntimeCapabilities;
 use raku_protocol::compaction::{
     CompactionRequest, CompactionStatus, CompactionTrigger, ContextCompaction,
 };
-use raku_protocol::context_inspection::ContextDetail;
+use raku_protocol::context_inspection::{ContextDetail, RakuToolContextSource};
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::fs::File;
@@ -164,7 +164,8 @@ fn handle_subagent_mcp_message(
             "capabilities": {"tools": {}},
             "serverInfo": {"name": crate::model::SUBAGENT_MCP_SERVER, "version": "1"},
         })),
-        Some("tools/list") => reply(json!({"tools": [{
+        Some("tools/list") => {
+            let tools = json!([{
             "name": crate::model::SUBAGENT_TOOL,
             "description": crate::model::subagent_tool_description(&state.subagent_agents),
             "inputSchema": crate::model::subagent_tool_input_schema(&state.subagent_agents),
@@ -176,7 +177,15 @@ fn handle_subagent_mcp_message(
             // one after the other. The call itself touches nothing: each
             // child enforces its own access mode, never wider than the task's.
             "annotations": {"readOnlyHint": true},
-        }]})),
+            }]);
+            reply(json!({"tools": tools}));
+            let record = super::context_inspection::raku_tool_context(
+                RakuToolContextSource::ToolDefinition,
+                &state.subagent_agents,
+                tools.as_array().cloned(),
+            );
+            let _ = events.send(DriverEvent::RakuToolsUpdated(Box::new(record)));
+        }
         Some("tools/call")
             if message.pointer("/params/name").and_then(Value::as_str)
                 == Some(crate::model::SUBAGENT_TOOL)
@@ -3160,6 +3169,11 @@ mod tests {
                 .unwrap()
                 .contains("- explore: Search")
         );
+        let Ok(DriverEvent::RakuToolsUpdated(record)) = received.try_recv() else {
+            panic!("the exact tools/list response must be recorded");
+        };
+        assert_eq!(record.definitions.unwrap()[0], *tool);
+        assert_eq!(record.subagents, state.subagent_agents);
 
         assert!(handle_subagent_mcp_message(
             &mcp(

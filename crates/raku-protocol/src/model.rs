@@ -2363,6 +2363,8 @@ pub enum DriverEvent {
     LaunchManifest(Box<crate::context_inspection::LaunchManifest>),
     /// Raku appended `text` to a prompt it delivered; `label` names why.
     PromptInjected(crate::context_inspection::PromptInjection),
+    /// The actual Raku tool definitions or updated agent roster delivered.
+    RakuToolsUpdated(Box<crate::context_inspection::RakuToolContext>),
     /// The answer to a `FetchContextBreakdown` command.
     ContextBreakdownUpdated(Box<crate::context_inspection::ContextBreakdown>),
     /// A `FetchContextBreakdown` command could not be answered.

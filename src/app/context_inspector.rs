@@ -12,7 +12,8 @@ use std::path::PathBuf;
 
 use raku_protocol::context_inspection::{
     ContextBreakdown, ContextCategory, ContextCategoryKind, ContextDetail, ContextSection,
-    LaunchManifest, PromptInjection, estimate_tokens,
+    ContextTool, LaunchManifest, PromptInjection, RakuToolContext, RakuToolContextSource,
+    estimate_tokens,
 };
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,24 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BAR_SLOTS: usize = 8;
 /// Keyboard scroll step for the arrow keys.
 const SCROLL_STEP: f32 = 48.0;
+const TOOL_ROW_HEIGHT: f32 = 44.0;
+
+enum ToolCatalogSource {
+    Raku,
+    Builtin,
+    Mcp(Option<String>),
+}
+
+enum ToolCatalogRow {
+    Heading {
+        source: ToolCatalogSource,
+        count: usize,
+    },
+    Tool(ContextTool),
+    MissingBuiltin,
+    MissingMcp,
+    Error(String),
+}
 
 /// The recorded part of an inspection: what is saved to disk and copied as
 /// JSON. Field names are the file format.
@@ -43,6 +62,8 @@ struct ContextSnapshot {
     injections: VecDeque<PromptInjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     breakdown: Option<ContextBreakdown>,
+    #[serde(default, rename = "rakuTools", skip_serializing_if = "Option::is_none")]
+    raku_tools: Option<RakuToolContext>,
 }
 
 /// Keep writes for one task in order, including the final write when its
@@ -90,6 +111,10 @@ pub(super) struct ContextInspection {
     snapshot_loading: bool,
     snapshot_dirty: bool,
     snapshot_writer: ContextSnapshotWriter,
+    /// Flatten only when a record changes, never while drawing a row.
+    tool_rows: Rc<Vec<ToolCatalogRow>>,
+    subagent_rows: Rc<Vec<ToolCatalogRow>>,
+    tool_definition_text: Option<SharedString>,
 }
 
 impl ContextInspection {
@@ -99,6 +124,7 @@ impl ContextInspection {
         self.recorded.manifest = Some(manifest);
         self.recorded.injections.clear();
         self.snapshot_dirty = true;
+        self.rebuild_tool_rows();
     }
 
     fn record_injection(&mut self, injection: PromptInjection) {
@@ -110,11 +136,28 @@ impl ContextInspection {
         self.snapshot_dirty = true;
     }
 
-    fn set_breakdown(&mut self, breakdown: ContextBreakdown) {
+    fn set_raku_tools(&mut self, mut tools: RakuToolContext) {
+        if tools.source == RakuToolContextSource::PromptUpdate && tools.definitions.is_none() {
+            tools.definitions = self
+                .recorded
+                .raku_tools
+                .as_ref()
+                .and_then(|old| old.definitions.clone());
+        }
+        self.recorded.raku_tools = Some(tools);
+        self.snapshot_dirty = true;
+        self.rebuild_tool_rows();
+    }
+
+    fn set_breakdown(&mut self, mut breakdown: ContextBreakdown) {
+        if let Some(previous) = &self.recorded.breakdown {
+            retain_recorded_tools(&mut breakdown, previous);
+        }
         self.recorded.breakdown = Some(breakdown);
         self.error = None;
         self.pending = false;
         self.snapshot_dirty = true;
+        self.rebuild_tool_rows();
     }
 
     fn set_error(&mut self, error: String) {
@@ -127,6 +170,36 @@ impl ContextInspection {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    fn rebuild_tool_rows(&mut self) {
+        self.tool_rows = Rc::new(tool_catalog_rows(&self.recorded));
+        self.subagent_rows = Rc::new(
+            self.recorded
+                .raku_tools
+                .as_ref()
+                .map(|tools| {
+                    tools
+                        .subagents
+                        .iter()
+                        .map(|agent| {
+                            ToolCatalogRow::Tool(ContextTool {
+                                name: agent.name.clone(),
+                                description: Some(agent.description.clone()),
+                                deferred: false,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
+        self.tool_definition_text = self
+            .recorded
+            .raku_tools
+            .as_ref()
+            .and_then(|tools| tools.definitions.as_ref())
+            .and_then(|definitions| serde_json::to_string_pretty(definitions).ok())
+            .map(SharedString::from);
+    }
+
     /// Fill in what a saved snapshot knows without overwriting anything this
     /// session has already recorded live.
     fn merge_saved(&mut self, saved: ContextSnapshot) {
@@ -137,9 +210,31 @@ impl ContextInspection {
                 recorded.injections = saved.injections;
             }
         }
-        if recorded.breakdown.is_none() {
+        if let Some(breakdown) = &mut recorded.breakdown {
+            if let Some(saved) = &saved.breakdown {
+                retain_recorded_tools(breakdown, saved);
+            }
+        } else {
             recorded.breakdown = saved.breakdown;
         }
+        if let Some(tools) = &mut recorded.raku_tools {
+            if tools.source == RakuToolContextSource::PromptUpdate && tools.definitions.is_none() {
+                tools.definitions = saved.raku_tools.and_then(|saved| saved.definitions);
+            }
+        } else {
+            recorded.raku_tools = saved.raku_tools;
+        }
+        self.rebuild_tool_rows();
+    }
+}
+
+fn retain_recorded_tools(current: &mut ContextBreakdown, previous: &ContextBreakdown) {
+    match (&mut current.tools, &previous.tools) {
+        (None, Some(previous)) => current.tools = Some(previous.clone()),
+        (Some(current), Some(previous)) if current.error.is_some() && current.mcp.is_none() => {
+            current.mcp = previous.mcp.clone();
+        }
+        _ => {}
     }
 }
 
@@ -154,6 +249,12 @@ pub(super) struct ContextInspectorState {
     expanded: HashSet<SharedString>,
     scroll: ScrollHandle,
     scrollbar: Rc<ScrollbarState>,
+    tools_focus: FocusHandle,
+    tools_list: ListState,
+    tools_scrollbar: Rc<ScrollbarState>,
+    subagents_focus: FocusHandle,
+    subagents_list: ListState,
+    subagents_scrollbar: Rc<ScrollbarState>,
 }
 
 impl ContextInspectorState {
@@ -166,6 +267,12 @@ impl ContextInspectorState {
             expanded: HashSet::new(),
             scroll: ScrollHandle::new(),
             scrollbar: ScrollbarState::new(),
+            tools_focus: cx.focus_handle(),
+            tools_list: ListState::new(0, ListAlignment::Top, px(0.0)),
+            tools_scrollbar: ScrollbarState::new(),
+            subagents_focus: cx.focus_handle(),
+            subagents_list: ListState::new(0, ListAlignment::Top, px(0.0)),
+            subagents_scrollbar: ScrollbarState::new(),
         }
     }
 }
@@ -242,6 +349,21 @@ impl Raku {
             .entry(session_id)
             .or_default()
             .set_breakdown(breakdown);
+        self.save_context_snapshot(session_id, cx);
+        cx.notify();
+    }
+
+    pub(super) fn record_raku_tool_context(
+        &mut self,
+        session_id: Uuid,
+        tools: RakuToolContext,
+        cx: &mut Context<Self>,
+    ) {
+        self.ensure_context_snapshot_loaded(session_id, cx);
+        self.context_inspections
+            .entry(session_id)
+            .or_default()
+            .set_raku_tools(tools);
         self.save_context_snapshot(session_id, cx);
         cx.notify();
     }
@@ -440,6 +562,9 @@ impl Raku {
             for index in 0..inspection.recorded.injections.len() {
                 toggle_keys.push(injection_key(index));
             }
+            if inspection.tool_definition_text.is_some() {
+                toggle_keys.push(SharedString::new_static(TOOL_DEFINITIONS_KEY));
+            }
         }
         for key in toggle_keys {
             self.context_panel
@@ -480,6 +605,7 @@ impl Raku {
             recorded.breakdown.is_some()
                 || recorded.manifest.is_some()
                 || !recorded.injections.is_empty()
+                || recorded.raku_tools.is_some()
         });
         if !running {
             body = body.child(notice(
@@ -527,6 +653,13 @@ impl Raku {
             }
         }
         if let Some(inspection) = inspection {
+            if !inspection.tool_rows.is_empty() {
+                body = body.child(tool_catalog_view(
+                    inspection.tool_rows.clone(),
+                    state,
+                    &theme,
+                ));
+            }
             body = body.children(raku_additions_view(inspection, state, &theme, cx));
             if let Some(manifest) = &inspection.recorded.manifest {
                 body = body.child(launch_view(manifest, &theme));
@@ -610,6 +743,7 @@ impl Raku {
 }
 
 const INSTRUCTIONS_KEY: &str = "raku:instructions";
+const TOOL_DEFINITIONS_KEY: &str = "raku:tool-definitions";
 
 fn section_key(section: &ContextSection) -> SharedString {
     SharedString::from(format!("section:{}", section.title))
@@ -1142,7 +1276,8 @@ fn saved_usage_view(usage: ContextUsage, theme: &Theme) -> Div {
         )
 }
 
-fn mono_block(theme: &Theme, text: String) -> Div {
+fn mono_block(theme: &Theme, text: impl Into<SharedString>) -> Div {
+    let text = text.into();
     div()
         .w_full()
         .px(px(10.0))
@@ -1156,6 +1291,221 @@ fn mono_block(theme: &Theme, text: String) -> Div {
         .child(text)
 }
 
+fn tool_catalog_rows(recorded: &ContextSnapshot) -> Vec<ToolCatalogRow> {
+    if recorded.manifest.is_none() && recorded.breakdown.is_none() && recorded.raku_tools.is_none()
+    {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    let catalog = recorded
+        .breakdown
+        .as_ref()
+        .and_then(|breakdown| breakdown.tools.as_ref());
+    if let Some(error) = catalog.and_then(|catalog| catalog.error.as_ref()) {
+        rows.push(ToolCatalogRow::Error(error.clone()));
+    }
+    if let Some(manifest) = &recorded.manifest
+        && !manifest.raku_tools.is_empty()
+    {
+        rows.push(ToolCatalogRow::Heading {
+            source: ToolCatalogSource::Raku,
+            count: manifest.raku_tools.len(),
+        });
+        rows.extend(manifest.raku_tools.iter().map(|name| {
+            ToolCatalogRow::Tool(ContextTool {
+                name: name.clone(),
+                description: recorded
+                    .raku_tools
+                    .as_ref()
+                    .and_then(|tools| tools.definitions.as_ref())
+                    .and_then(|definitions| {
+                        definitions.iter().find(|tool| {
+                            tool.get("name").and_then(serde_json::Value::as_str)
+                                == Some(name.as_str())
+                        })
+                    })
+                    .and_then(|tool| tool.get("description").and_then(serde_json::Value::as_str))
+                    .map(str::to_owned),
+                deferred: false,
+            })
+        }));
+    }
+    match catalog.and_then(|catalog| catalog.builtin.as_ref()) {
+        Some(tools) => {
+            rows.push(ToolCatalogRow::Heading {
+                source: ToolCatalogSource::Builtin,
+                count: tools.len(),
+            });
+            rows.extend(tools.iter().cloned().map(ToolCatalogRow::Tool));
+        }
+        None => rows.push(ToolCatalogRow::MissingBuiltin),
+    }
+    match catalog.and_then(|catalog| catalog.mcp.as_ref()) {
+        Some(servers) if servers.is_empty() => rows.push(ToolCatalogRow::Heading {
+            source: ToolCatalogSource::Mcp(None),
+            count: 0,
+        }),
+        Some(servers) => {
+            for server in servers {
+                rows.push(ToolCatalogRow::Heading {
+                    source: ToolCatalogSource::Mcp(Some(server.name.clone())),
+                    count: server.tools.len(),
+                });
+                if let Some(error) = &server.error {
+                    rows.push(ToolCatalogRow::Error(error.clone()));
+                }
+                rows.extend(server.tools.iter().cloned().map(ToolCatalogRow::Tool));
+            }
+        }
+        None => rows.push(ToolCatalogRow::MissingMcp),
+    }
+    rows
+}
+
+fn tool_catalog_view(
+    rows: Rc<Vec<ToolCatalogRow>>,
+    state: &ContextInspectorState,
+    theme: &Theme,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(section_heading(
+            theme,
+            tr!("context_inspector.available_tools"),
+            None,
+        ))
+        .child(context_tool_list(
+            "context-inspector-tools",
+            rows,
+            &state.tools_focus,
+            &state.tools_list,
+            &state.tools_scrollbar,
+            theme,
+        ))
+}
+
+fn context_tool_list(
+    id: &'static str,
+    rows: Rc<Vec<ToolCatalogRow>>,
+    focus: &FocusHandle,
+    list_state: &ListState,
+    scrollbar_state: &Rc<ScrollbarState>,
+    theme: &Theme,
+) -> Stateful<Div> {
+    if list_state.item_count() != rows.len() {
+        list_state.reset_with_uniform_height(rows.len(), px(TOOL_ROW_HEIGHT));
+    }
+    let keyboard_list = list_state.clone();
+    let list_theme = *theme;
+    div()
+        .id(id)
+        .track_focus(focus)
+        .tab_index(0)
+        .h(px((rows.len() as f32 * TOOL_ROW_HEIGHT).min(352.0)))
+        .w_full()
+        .border_1()
+        .border_color(theme.border)
+        .rounded(px(8.0))
+        .relative()
+        .focus_visible(|style| style.border_color(theme.accent))
+        .on_key_down(move |event: &KeyDownEvent, _, cx| {
+            if event.keystroke.modifiers.modified() {
+                return;
+            }
+            match event.keystroke.key.as_str() {
+                "up" => keyboard_list.scroll_by(px(-SCROLL_STEP)),
+                "down" => keyboard_list.scroll_by(px(SCROLL_STEP)),
+                "pageup" => keyboard_list.scroll_by(px(-264.0)),
+                "pagedown" => keyboard_list.scroll_by(px(264.0)),
+                "home" => keyboard_list.scroll_to(ListOffset::default()),
+                "end" => keyboard_list.scroll_to_end(),
+                _ => return,
+            }
+            cx.stop_propagation();
+        })
+        .child(
+            list(list_state.clone(), move |index, _, _| {
+                let theme = &list_theme;
+                let row = div()
+                    .h(px(TOOL_ROW_HEIGHT))
+                    .px(px(10.0))
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
+                    .line_height(sp(18.0));
+                match &rows[index] {
+                    ToolCatalogRow::Heading { source, count } => {
+                        let label = match source {
+                            ToolCatalogSource::Raku => tr!("context_inspector.raku_tools"),
+                            ToolCatalogSource::Builtin => {
+                                tr!("context_inspector.section_system_tools")
+                            }
+                            ToolCatalogSource::Mcp(Some(server)) => {
+                                format!("MCP · {server}")
+                            }
+                            ToolCatalogSource::Mcp(None) => {
+                                tr!("context_inspector.section_mcp_tools")
+                            }
+                        };
+                        row.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_color(theme.text_secondary)
+                                .child(label)
+                                .child(count.to_string()),
+                        )
+                    }
+                    ToolCatalogRow::Tool(tool) => {
+                        let row = row.child(
+                            div()
+                                .h(sp(18.0))
+                                .flex_none()
+                                .truncate()
+                                .text_color(theme.text)
+                                .child(tool.name.clone()),
+                        );
+                        let detail = if tool.deferred {
+                            Some(tr!("context_inspector.tools_on_demand"))
+                        } else {
+                            tool.description.clone().filter(|text| !text.is_empty())
+                        };
+                        row.when_some(detail, |row, detail| {
+                            row.child(
+                                div()
+                                    .h(sp(16.0))
+                                    .flex_none()
+                                    .truncate()
+                                    .text_size(sp(11.0))
+                                    .line_height(sp(16.0))
+                                    .text_color(theme.text_tertiary)
+                                    .child(detail),
+                            )
+                        })
+                    }
+                    ToolCatalogRow::MissingBuiltin => row
+                        .text_color(theme.text_secondary)
+                        .child(tr!("context_inspector.tools_builtin_unreported")),
+                    ToolCatalogRow::MissingMcp => row
+                        .text_color(theme.text_secondary)
+                        .child(tr!("context_inspector.tools_mcp_unrecorded")),
+                    ToolCatalogRow::Error(error) => row.text_color(theme.danger).child(
+                        div()
+                            .truncate()
+                            .child(tr!("context_inspector.tools_error", error = error)),
+                    ),
+                }
+                .into_any_element()
+            })
+            .size_full(),
+        )
+        .child(scrollbar::vertical(list_state, scrollbar_state))
+}
+
 /// What Raku itself adds on top of the provider's own context.
 fn raku_additions_view(
     inspection: &ContextInspection,
@@ -1167,10 +1517,14 @@ fn raku_additions_view(
     let instructions = manifest
         .map(|manifest| manifest.appended_instructions.as_str())
         .filter(|text| !text.is_empty());
-    let tools = manifest
-        .map(|manifest| manifest.raku_tools.as_slice())
-        .unwrap_or_default();
-    if instructions.is_none() && tools.is_empty() && inspection.recorded.injections.is_empty() {
+    let tools = inspection.recorded.raku_tools.as_ref();
+    let expects_subagents =
+        manifest.is_some_and(|manifest| manifest.raku_tools.iter().any(|name| name == "subagent"));
+    if instructions.is_none()
+        && inspection.recorded.injections.is_empty()
+        && tools.is_none()
+        && !expects_subagents
+    {
         return None;
     }
     let mut view = div().flex().flex_col().gap(px(4.0)).child(section_heading(
@@ -1178,6 +1532,79 @@ fn raku_additions_view(
         tr!("context_inspector.section_raku"),
         None,
     ));
+    if let Some(tools) = tools {
+        let source = match tools.source {
+            RakuToolContextSource::ToolDefinition => tr!("context_inspector.agents_in_definition"),
+            RakuToolContextSource::PromptUpdate => tr!("context_inspector.agents_in_prompt"),
+            RakuToolContextSource::ExtensionConfiguration => {
+                tr!("context_inspector.agents_in_extension")
+            }
+        };
+        view = view.child(value_row(
+            theme,
+            None,
+            tr!("context_inspector.advertised_subagents"),
+            Some(source),
+            tools.subagents.len().to_string(),
+        ));
+        if tools.subagents.is_empty() {
+            view = view.child(
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(tr!("context_inspector.no_advertised_subagents")),
+            );
+        } else {
+            view = view.child(context_tool_list(
+                "context-inspector-subagents",
+                inspection.subagent_rows.clone(),
+                &state.subagents_focus,
+                &state.subagents_list,
+                &state.subagents_scrollbar,
+                theme,
+            ));
+        }
+        if let Some(definition) = &inspection.tool_definition_text {
+            if tools.source == RakuToolContextSource::PromptUpdate {
+                view = view.child(
+                    div()
+                        .text_color(theme.text_tertiary)
+                        .child(tr!("context_inspector.roster_updates_definition")),
+                );
+            }
+            let key = SharedString::new_static(TOOL_DEFINITIONS_KEY);
+            let expanded = state.expanded.contains(&key);
+            if let Some(focus) = state.toggle_focus.get(&key) {
+                view = view.child(toggle_row(
+                    "context-inspector-tool-definitions-toggle",
+                    focus,
+                    if expanded {
+                        tr!("context_inspector.hide_definition")
+                    } else {
+                        tr!("context_inspector.show_definition")
+                    },
+                    expanded,
+                    key,
+                    theme,
+                    cx,
+                ));
+            }
+            if expanded {
+                view = view.child(mono_block(theme, definition.clone()));
+            }
+        } else if tools.source == RakuToolContextSource::PromptUpdate {
+            view = view.child(
+                div()
+                    .text_color(theme.text_tertiary)
+                    .child(tr!("context_inspector.original_definition_unrecorded")),
+            );
+        }
+    } else if expects_subagents {
+        view = view.child(
+            div()
+                .text_color(theme.text_secondary)
+                .child(tr!("context_inspector.subagents_unrecorded")),
+        );
+    }
     if let Some(instructions) = instructions {
         let key = SharedString::new_static(INSTRUCTIONS_KEY);
         let expanded = state.expanded.contains(&key);
@@ -1212,15 +1639,6 @@ fn raku_additions_view(
         if expanded {
             view = view.child(mono_block(theme, instructions.to_owned()));
         }
-    }
-    if !tools.is_empty() {
-        view = view.child(value_row(
-            theme,
-            None,
-            tr!("context_inspector.raku_tools"),
-            None,
-            tools.join(", "),
-        ));
     }
     for (index, injection) in inspection.recorded.injections.iter().enumerate().rev() {
         let key = injection_key(index);
@@ -1327,6 +1745,7 @@ mod tests {
             categories: Vec::new(),
             sections: Vec::new(),
             token_split: Default::default(),
+            tools: None,
         }
     }
 
@@ -1351,6 +1770,7 @@ mod tests {
             manifest: Some(manifest("saved")),
             injections: VecDeque::new(),
             breakdown: Some(breakdown(1)),
+            ..Default::default()
         });
         assert_eq!(inspection.recorded.breakdown.unwrap().total_tokens, Some(5));
         assert_eq!(inspection.recorded.manifest.unwrap().program, "saved");
@@ -1367,6 +1787,7 @@ mod tests {
                 text: "old text".into(),
             }]),
             breakdown: Some(breakdown(42)),
+            ..Default::default()
         });
         assert_eq!(inspection.recorded.manifest.unwrap().program, "new");
         assert!(inspection.recorded.injections.is_empty());
@@ -1437,20 +1858,151 @@ mod tests {
         let path = std::env::temp_dir()
             .join(format!("raku-context-{}", Uuid::new_v4()))
             .join("snapshot.json");
+        let mut breakdown = breakdown(42);
+        breakdown.tools = Some(raku_protocol::context_inspection::ContextToolCatalog {
+            builtin: None,
+            mcp: Some(vec![raku_protocol::context_inspection::ContextToolServer {
+                name: "docs".into(),
+                status: Some("connected".into()),
+                tools: vec![ContextTool {
+                    name: "search".into(),
+                    description: Some("Find documentation".into()),
+                    deferred: false,
+                }],
+                error: None,
+            }]),
+            error: None,
+        });
         let snapshot = ContextSnapshot {
             manifest: Some(manifest("claude")),
             injections: VecDeque::from([PromptInjection {
                 label: "title".into(),
                 text: "language".into(),
             }]),
-            breakdown: Some(breakdown(42)),
+            breakdown: Some(breakdown),
+            raku_tools: Some(raku_tools("explore", true)),
         };
         write_context_snapshot(&path, &snapshot).unwrap();
         let read: ContextSnapshot = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(read.manifest, snapshot.manifest);
         assert_eq!(read.injections, snapshot.injections);
         assert_eq!(read.breakdown, snapshot.breakdown);
+        assert_eq!(read.raku_tools, snapshot.raku_tools);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    fn raku_tools(name: &str, with_definition: bool) -> RakuToolContext {
+        RakuToolContext {
+            source: if with_definition { RakuToolContextSource::ToolDefinition } else { RakuToolContextSource::PromptUpdate },
+            recorded_at_ms: 1,
+            subagents: vec![crate::model::SubagentToolAgent { name: name.into(), description: format!("About {name}") }],
+            definitions: with_definition.then(|| vec![serde_json::json!({
+                "type": "function", "name": "subagent", "description": format!("Available agents: {name}"),
+                "inputSchema": {"type": "object"}
+            })]),
+        }
+    }
+
+    #[test]
+    fn a_resumed_roster_remains_visible_without_a_prompt_injection_row() {
+        let mut inspection = ContextInspection::default();
+        inspection.set_manifest(manifest("codex"));
+        inspection.set_raku_tools(raku_tools("old", true));
+        inspection.set_raku_tools(raku_tools("new", false));
+        assert!(inspection.recorded.injections.is_empty());
+        assert_eq!(
+            inspection.recorded.raku_tools.as_ref().unwrap().subagents[0].name,
+            "new"
+        );
+        assert!(
+            inspection
+                .tool_definition_text
+                .as_ref()
+                .unwrap()
+                .contains("Available agents: old")
+        );
+        let ToolCatalogRow::Tool(agent) = &inspection.subagent_rows[0] else {
+            panic!("the sent roster must have visible rows");
+        };
+        assert_eq!(agent.name, "new");
+    }
+
+    #[test]
+    fn a_late_saved_definition_does_not_replace_the_live_roster() {
+        let mut inspection = ContextInspection::default();
+        inspection.set_raku_tools(raku_tools("live", false));
+        inspection.merge_saved(ContextSnapshot {
+            raku_tools: Some(raku_tools("saved", true)),
+            ..Default::default()
+        });
+        let tools = inspection.recorded.raku_tools.as_ref().unwrap();
+        assert_eq!(tools.source, RakuToolContextSource::PromptUpdate);
+        assert_eq!(tools.subagents[0].name, "live");
+        assert!(tools.definitions.is_some());
+    }
+
+    #[test]
+    fn tool_rows_distinguish_unreported_catalogs_from_confirmed_empty_lists() {
+        let mut inspection = ContextInspection::default();
+        inspection.set_manifest(manifest("codex"));
+        assert!(
+            inspection
+                .tool_rows
+                .iter()
+                .any(|row| matches!(row, ToolCatalogRow::MissingBuiltin))
+        );
+        assert!(
+            inspection
+                .tool_rows
+                .iter()
+                .any(|row| matches!(row, ToolCatalogRow::MissingMcp))
+        );
+        let mut breakdown = breakdown(42);
+        breakdown.tools = Some(raku_protocol::context_inspection::ContextToolCatalog {
+            builtin: Some(Vec::new()),
+            mcp: Some(Vec::new()),
+            error: None,
+        });
+        inspection.set_breakdown(breakdown);
+        assert!(!inspection.tool_rows.iter().any(|row| matches!(
+            row,
+            ToolCatalogRow::MissingBuiltin | ToolCatalogRow::MissingMcp
+        )));
+        assert_eq!(inspection.tool_rows.len(), 2);
+    }
+
+    #[test]
+    fn failed_tool_discovery_keeps_recorded_tools_while_usage_updates() {
+        use raku_protocol::context_inspection::{ContextToolCatalog, ContextToolServer};
+        let mut inspection = ContextInspection::default();
+        let mut previous = breakdown(42);
+        previous.tools = Some(ContextToolCatalog {
+            builtin: None,
+            mcp: Some(vec![ContextToolServer {
+                name: "docs".into(),
+                status: None,
+                error: None,
+                tools: vec![ContextTool {
+                    name: "search".into(),
+                    description: None,
+                    deferred: false,
+                }],
+            }]),
+            error: None,
+        });
+        inspection.set_breakdown(previous);
+        let mut current = breakdown(99);
+        current.tools = Some(ContextToolCatalog {
+            error: Some("Discovery unavailable".into()),
+            ..Default::default()
+        });
+        inspection.set_breakdown(current);
+        let saved = inspection.recorded.breakdown.unwrap();
+        assert_eq!(saved.total_tokens, Some(99));
+        let tools = saved.tools.unwrap();
+        assert_eq!(tools.mcp.unwrap()[0].tools[0].name, "search");
+        assert_eq!(tools.error.as_deref(), Some("Discovery unavailable"));
+        assert!(matches!(inspection.tool_rows[0], ToolCatalogRow::Error(_)));
     }
 
     #[test]
@@ -1483,6 +2035,7 @@ mod tests {
             categories: Vec::new(),
             sections: Vec::new(),
             token_split: Default::default(),
+            tools: None,
         });
         assert!(!inspection.pending);
         assert!(inspection.error.is_none());

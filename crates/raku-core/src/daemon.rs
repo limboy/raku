@@ -1811,6 +1811,7 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
         DriverEvent::PromptInjected(injection) => {
             ("promptInjected", serde_json::to_value(injection)?)
         }
+        DriverEvent::RakuToolsUpdated(tools) => ("rakuToolsUpdated", serde_json::to_value(tools)?),
         DriverEvent::ContextBreakdownUpdated(breakdown) => {
             ("contextBreakdownUpdated", serde_json::to_value(breakdown)?)
         }
@@ -1923,6 +1924,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         "goalUpdated" => DriverEvent::GoalUpdated(serde_json::from_value(payload)?),
         "launchManifest" => DriverEvent::LaunchManifest(serde_json::from_value(payload)?),
         "promptInjected" => DriverEvent::PromptInjected(serde_json::from_value(payload)?),
+        "rakuToolsUpdated" => DriverEvent::RakuToolsUpdated(serde_json::from_value(payload)?),
         "contextBreakdownUpdated" => {
             DriverEvent::ContextBreakdownUpdated(serde_json::from_value(payload)?)
         }

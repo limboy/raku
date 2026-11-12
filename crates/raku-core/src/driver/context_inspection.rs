@@ -6,7 +6,8 @@ use std::process::Command;
 
 use raku_protocol::context_inspection::{
     ContextBreakdown, ContextCategory, ContextCategoryKind, ContextDetail, ContextRow,
-    ContextSection, LaunchManifest, PromptInjection, TokenSplit, instructions_placeholder,
+    ContextSection, ContextTool, ContextToolCatalog, ContextToolServer, LaunchManifest,
+    PromptInjection, RakuToolContext, RakuToolContextSource, TokenSplit, instructions_placeholder,
 };
 use serde_json::Value;
 
@@ -15,6 +16,19 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or_default()
+}
+
+pub(crate) fn raku_tool_context(
+    source: RakuToolContextSource,
+    subagents: &[crate::model::SubagentToolAgent],
+    definitions: Option<Vec<Value>>,
+) -> RakuToolContext {
+    RakuToolContext {
+        source,
+        recorded_at_ms: now_ms(),
+        subagents: subagents.to_vec(),
+        definitions,
+    }
 }
 
 /// Build the manifest from the very `Command` about to be spawned. Only the
@@ -213,12 +227,24 @@ pub(crate) fn claude_breakdown(payload: &Value, detail: ContextDetail) -> Contex
     if let Some(messages) = payload.get("messageBreakdown") {
         let summary = [
             ("userMessageTokens", "context_inspector.messages_user"),
-            ("assistantMessageTokens", "context_inspector.messages_assistant"),
+            (
+                "assistantMessageTokens",
+                "context_inspector.messages_assistant",
+            ),
             ("toolCallTokens", "context_inspector.messages_tool_calls"),
-            ("toolResultTokens", "context_inspector.messages_tool_results"),
+            (
+                "toolResultTokens",
+                "context_inspector.messages_tool_results",
+            ),
             ("attachmentTokens", "context_inspector.messages_attachments"),
-            ("redirectedContextTokens", "context_inspector.messages_redirected"),
-            ("unattributedTokens", "context_inspector.messages_unattributed"),
+            (
+                "redirectedContextTokens",
+                "context_inspector.messages_redirected",
+            ),
+            (
+                "unattributedTokens",
+                "context_inspector.messages_unattributed",
+            ),
         ]
         .into_iter()
         .filter_map(|(key, label)| {
@@ -281,7 +307,86 @@ pub(crate) fn claude_breakdown(payload: &Value, detail: ContextDetail) -> Contex
         categories,
         sections,
         token_split,
+        tools: Some(claude_tool_catalog(payload)),
     }
+}
+
+fn reported_tool(value: &Value) -> Option<ContextTool> {
+    Some(ContextTool {
+        name: str_at(value, "name")?.to_owned(),
+        description: str_at(value, "description").map(str::to_owned),
+        deferred: value.get("isLoaded").and_then(Value::as_bool) == Some(false),
+    })
+}
+
+fn claude_tool_catalog(payload: &Value) -> ContextToolCatalog {
+    let builtin = payload
+        .get("systemTools")
+        .and_then(Value::as_array)
+        .map(|tools| {
+            let mut tools = tools
+                .iter()
+                .chain(array_at(payload, "deferredBuiltinTools"))
+                .filter_map(reported_tool)
+                .collect::<Vec<_>>();
+            tools.sort_by(|left, right| left.name.cmp(&right.name));
+            tools.dedup_by(|left, right| left.name == right.name);
+            tools
+        });
+    let mcp = payload
+        .get("mcpTools")
+        .and_then(Value::as_array)
+        .map(|tools| {
+            let mut servers = std::collections::BTreeMap::<String, Vec<ContextTool>>::new();
+            for tool in tools {
+                if let (Some(server), Some(tool)) =
+                    (str_at(tool, "serverName"), reported_tool(tool))
+                {
+                    servers.entry(server.to_owned()).or_default().push(tool);
+                }
+            }
+            servers
+                .into_iter()
+                .map(|(name, mut tools)| {
+                    tools.sort_by(|left, right| left.name.cmp(&right.name));
+                    ContextToolServer {
+                        name,
+                        tools,
+                        status: None,
+                        error: None,
+                    }
+                })
+                .collect()
+        });
+    ContextToolCatalog {
+        builtin,
+        mcp,
+        error: None,
+    }
+}
+
+/// One page of Codex's `mcpServerStatus/list` result. Keep server failures and
+/// empty catalogs as well as tools; neither means the catalog is unavailable.
+pub(crate) fn codex_tool_servers(payload: &Value) -> Vec<ContextToolServer> {
+    array_at(payload, "data")
+        .iter()
+        .filter_map(|server| {
+            let mut tools = server
+                .get("tools")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|tools| tools.values())
+                .filter_map(reported_tool)
+                .collect::<Vec<_>>();
+            tools.sort_by(|left, right| left.name.cmp(&right.name));
+            Some(ContextToolServer {
+                name: str_at(server, "name")?.to_owned(),
+                status: str_at(server, "runtimeStatus").map(str::to_owned),
+                tools,
+                error: str_at(server, "toolsError").map(str::to_owned),
+            })
+        })
+        .collect()
 }
 
 fn loaded_detail(item: &Value) -> Option<String> {
@@ -324,6 +429,7 @@ pub(crate) fn codex_breakdown(token_usage: Option<&Value>) -> ContextBreakdown {
                 reasoning: u64_at(last, "reasoningOutputTokens"),
             })
             .unwrap_or_default(),
+        tools: None,
     }
 }
 
@@ -348,7 +454,10 @@ pub(crate) fn pi_breakdown(stats: &Value, last_usage: Option<&Value>) -> Context
     let mut sections = Vec::new();
     let counts = [
         ("userMessages", "context_inspector.pi_user_messages"),
-        ("assistantMessages", "context_inspector.pi_assistant_messages"),
+        (
+            "assistantMessages",
+            "context_inspector.pi_assistant_messages",
+        ),
         ("toolCalls", "context_inspector.pi_tool_calls"),
         ("toolResults", "context_inspector.pi_tool_results"),
     ]
@@ -402,6 +511,7 @@ pub(crate) fn pi_breakdown(stats: &Value, last_usage: Option<&Value>) -> Context
                 reasoning: None,
             })
             .unwrap_or_default(),
+        tools: None,
     }
 }
 
@@ -533,6 +643,47 @@ mod tests {
     }
 
     #[test]
+    fn claude_tool_catalog_includes_deferred_tools_and_server_names() {
+        let catalog = claude_tool_catalog(&json!({
+            "systemTools": [{"name": "Read"}],
+            "deferredBuiltinTools": [{"name": "TaskCreate", "isLoaded": false}],
+            "mcpTools": [{"serverName": "docs", "name": "mcp__docs__read", "isLoaded": false}]
+        }));
+        let builtin = catalog.builtin.unwrap();
+        assert_eq!(
+            builtin
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Read", "TaskCreate"]
+        );
+        assert!(builtin[1].deferred);
+        let servers = catalog.mcp.unwrap();
+        assert_eq!(servers[0].name, "docs");
+        assert_eq!(servers[0].tools[0].name, "mcp__docs__read");
+        assert!(servers[0].tools[0].deferred);
+    }
+
+    #[test]
+    fn codex_tool_catalog_preserves_descriptions_empty_servers_and_failures() {
+        let servers = codex_tool_servers(&json!({"data": [
+            {"name": "docs", "runtimeStatus": "connected", "tools": {
+                "search": {"name": "search", "description": "Find documentation", "inputSchema": {"type": "object"}},
+                "read": {"name": "read", "inputSchema": {"type": "object"}}
+            }, "toolsError": null},
+            {"name": "unavailable", "runtimeStatus": "failed", "tools": {}, "toolsError": "Connection failed"}
+        ]}));
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].tools[0].name, "read");
+        assert_eq!(
+            servers[0].tools[1].description.as_deref(),
+            Some("Find documentation")
+        );
+        assert!(servers[1].tools.is_empty());
+        assert_eq!(servers[1].error.as_deref(), Some("Connection failed"));
+    }
+
+    #[test]
     fn pi_stats_use_last_message_for_the_split() {
         let stats = json!({"data": {
             "userMessages": 2, "assistantMessages": 3, "toolCalls": 4, "toolResults": 4,
@@ -559,7 +710,11 @@ mod tests {
         assert_eq!(manifest.program, "/usr/bin/true");
         assert_eq!(
             manifest.args,
-            ["-p", "--append-system-prompt", "<appended instructions, 10 chars>"]
+            [
+                "-p",
+                "--append-system-prompt",
+                "<appended instructions, 10 chars>"
+            ]
         );
         assert_eq!(
             manifest.env,

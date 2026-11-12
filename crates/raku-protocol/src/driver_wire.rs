@@ -130,6 +130,7 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
         DriverEvent::PromptInjected(injection) => {
             ("promptInjected", serde_json::to_value(injection)?)
         }
+        DriverEvent::RakuToolsUpdated(tools) => ("rakuToolsUpdated", serde_json::to_value(tools)?),
         DriverEvent::ContextBreakdownUpdated(breakdown) => {
             ("contextBreakdownUpdated", serde_json::to_value(breakdown)?)
         }
@@ -242,6 +243,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         "goalUpdated" => DriverEvent::GoalUpdated(serde_json::from_value(payload)?),
         "launchManifest" => DriverEvent::LaunchManifest(serde_json::from_value(payload)?),
         "promptInjected" => DriverEvent::PromptInjected(serde_json::from_value(payload)?),
+        "rakuToolsUpdated" => DriverEvent::RakuToolsUpdated(serde_json::from_value(payload)?),
         "contextBreakdownUpdated" => {
             DriverEvent::ContextBreakdownUpdated(serde_json::from_value(payload)?)
         }
@@ -351,6 +353,27 @@ mod tests {
     use crate::model::{
         ThreadGoal, ThreadGoalStatus, UserInputDelivery, UserInputOption, UserInputQuestion,
     };
+
+    #[test]
+    fn raku_tool_context_round_trips_without_losing_the_definition_or_roster() {
+        use crate::context_inspection::{RakuToolContext, RakuToolContextSource};
+        let record = RakuToolContext {
+            source: RakuToolContextSource::ToolDefinition,
+            recorded_at_ms: 42,
+            subagents: vec![crate::model::SubagentToolAgent {
+                name: "explore".into(),
+                description: "Search the code".into(),
+            }],
+            definitions: Some(vec![
+                serde_json::json!({"name": "subagent", "description": "Use explore", "inputSchema": {"type": "object"}}),
+            ]),
+        };
+        let wire = event_to_wire(DriverEvent::RakuToolsUpdated(Box::new(record.clone()))).unwrap();
+        let DriverEvent::RakuToolsUpdated(restored) = event_from_wire(wire).unwrap() else {
+            panic!("wrong event");
+        };
+        assert_eq!(*restored, record);
+    }
 
     #[test]
     fn goal_updates_round_trip_through_the_daemon_wire() {

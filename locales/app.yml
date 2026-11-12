@@ -2362,3 +2362,37 @@ context_inspector.stopped_nothing:
   en: "The provider isn't running and nothing was recorded for this task yet. Send a message to start it, then measure."
 context_inspector.saved_usage:
   en: "Last reported by the provider; no breakdown recorded"
+context_inspector.available_tools:
+  en: "Available tools"
+context_inspector.tools_on_demand:
+  en: "Loaded on demand"
+context_inspector.tools_builtin_unreported:
+  en: "Built-in tool list not reported by this provider"
+context_inspector.tools_mcp_unrecorded:
+  en: "MCP tool list not recorded"
+context_inspector.tools_error:
+  en: "Tool discovery failed: %{error}"
+context_inspector.tools_fetch_failed:
+  en: "The provider did not return a tool catalog."
+context_inspector.tools_incomplete:
+  en: "The provider returned an incomplete tool catalog."
+context_inspector.advertised_subagents:
+  en: "Subagents"
+context_inspector.agents_in_definition:
+  en: "Sent in tool definition"
+context_inspector.agents_in_prompt:
+  en: "Sent with resumed prompt"
+context_inspector.agents_in_extension:
+  en: "Passed to extension"
+context_inspector.no_advertised_subagents:
+  en: "No subagents were enabled in this record."
+context_inspector.show_definition:
+  en: "Show definition"
+context_inspector.hide_definition:
+  en: "Hide definition"
+context_inspector.original_definition_unrecorded:
+  en: "The current roster was sent with a prompt; the original tool definition was not recorded."
+context_inspector.subagents_unrecorded:
+  en: "The subagent roster was not recorded for this runtime. Its next launch will record it."
+context_inspector.roster_updates_definition:
+  en: "The current roster was sent as an update to this original tool definition."

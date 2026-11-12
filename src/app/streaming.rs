@@ -228,6 +228,9 @@ impl Raku {
             DriverEvent::PromptInjected(injection) => {
                 self.record_context_injection(session_id, injection, cx);
             }
+            DriverEvent::RakuToolsUpdated(tools) => {
+                self.record_raku_tool_context(session_id, *tools, cx);
+            }
             DriverEvent::ContextBreakdownUpdated(breakdown) => {
                 self.record_context_breakdown(session_id, *breakdown, cx);
             }
