@@ -496,11 +496,6 @@ impl Element for MathText {
                 wash(rect, self.palette.code_wash, CODE_WASH_RADIUS, window);
             }
         }
-        for range in &self.flat.token_ranges {
-            for rect in self.geometry.range_rects(range) {
-                window.paint_quad(self.palette.prompt_pill.quad(rect));
-            }
-        }
         if let Some(search) = &self.search {
             for found in search
                 .matches

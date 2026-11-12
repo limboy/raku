@@ -613,8 +613,6 @@ fn review_diff_flat_text(line: &crate::review_diff::Line, theme: &Theme) -> md::
         runs,
         links: Vec::new(),
         code_ranges: Vec::new(),
-        token_ranges: Vec::new(),
-        prompt_spacing: None,
         math: None,
         active_link: None,
     }

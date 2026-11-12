@@ -82,7 +82,7 @@ impl SubagentsState {
     }
 }
 
-/// The agent an agent-pill link names, if `target` is such a link.
+/// The agent an agent-mention link names, if `target` is such a link.
 pub(super) fn agent_link_name(target: &str) -> Option<&str> {
     let name = target.strip_prefix(md::render::AGENT_LINK_PREFIX)?;
     SubagentDefinition::is_valid_name(name).then_some(name)

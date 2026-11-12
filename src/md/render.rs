@@ -46,26 +46,21 @@ use super::selection::{
 use super::veil::{RowVeil, apply_veil};
 use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::menu::{ContextMenuHandle, context_menu};
-use crate::ui::prompt_pill::PromptPillStyle;
 use crate::ui::tooltip::Tooltip;
 
 mod math_text;
-mod prompt_spacing;
-
-use prompt_spacing::PromptSpacing;
 
 /// Selection geometry: the laid-out text handle for one painted element.
 #[derive(Clone)]
 pub enum TextGeometry {
     Text(TextLayout),
-    SpacedText(TextLayout, Rc<PromptSpacing>),
     Math(math_text::Geometry),
 }
 
 impl TextGeometry {
     fn bounds(&self) -> Bounds<Pixels> {
         match self {
-            Self::Text(layout) | Self::SpacedText(layout, _) => layout.bounds(),
+            Self::Text(layout) => layout.bounds(),
             Self::Math(layout) => layout.bounds(),
         }
     }
@@ -73,17 +68,13 @@ impl TextGeometry {
     fn index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
         match self {
             Self::Text(layout) => layout.index_for_position(position),
-            Self::SpacedText(layout, spacing) => layout
-                .index_for_position(position)
-                .map(|index| spacing.source_index(index))
-                .map_err(|index| spacing.source_index(index)),
             Self::Math(layout) => layout.index_for_position(position),
         }
     }
 
     fn is_missing(&self) -> bool {
         match self {
-            Self::Text(layout) | Self::SpacedText(layout, _) => layout_missing(layout),
+            Self::Text(layout) => layout_missing(layout),
             Self::Math(layout) => layout.is_missing(),
         }
     }
@@ -91,9 +82,6 @@ impl TextGeometry {
     fn range_rects(&self, range: &Range<usize>, pad_x: f32, inset_y: f32) -> Vec<Bounds<Pixels>> {
         match self {
             Self::Text(layout) => range_rects(layout, range, pad_x, inset_y),
-            Self::SpacedText(layout, spacing) => {
-                range_rects(layout, &spacing.display_range(range), pad_x, inset_y)
-            }
             Self::Math(layout) => layout.range_rects(range),
         }
     }
@@ -109,9 +97,9 @@ pub type TranscriptSelection = SelectionState<TextGeometry>;
 /// markdown view continues to use GPUI's ordinary URL opener.
 pub type LinkHandler = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
 
-/// Target prefix for a clickable agent pill.
+/// Target prefix for a clickable agent mention.
 ///
-/// The renderer only says which agent the pill stands for; the app resolves
+/// The renderer only says which agent the mention stands for; the app resolves
 /// it against Settings and ignores a name that no longer exists.
 pub(crate) const AGENT_LINK_PREFIX: &str = "raku-agent:";
 
@@ -271,7 +259,6 @@ pub struct Palette {
     pub search_match: Hsla,
     pub active_search_match: Hsla,
     pub accent: Hsla,
-    pub(crate) prompt_pill: PromptPillStyle,
     pub added: Hsla,
     pub removed: Hsla,
     is_dark: bool,
@@ -308,7 +295,6 @@ impl Palette {
                 0.70
             }),
             accent: theme.accent,
-            prompt_pill: PromptPillStyle::new(theme.accent, theme.is_dark),
             added: theme.success,
             removed: theme.danger,
             is_dark: theme.is_dark,
@@ -349,8 +335,6 @@ pub struct FlatText {
     pub runs: Vec<TextRun>,
     pub links: Vec<(Range<usize>, String)>,
     pub code_ranges: Vec<Range<usize>>,
-    pub token_ranges: Vec<Range<usize>>,
-    pub(crate) prompt_spacing: Option<Rc<PromptSpacing>>,
     pub math: Option<Rc<math_text::MathData>>,
     pub(crate) active_link: Option<Rc<Cell<Option<usize>>>>,
 }
@@ -401,7 +385,6 @@ pub fn flatten(
     let mut out: Vec<TextRun> = Vec::with_capacity(runs.len());
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
     let mut code_ranges: Vec<Range<usize>> = Vec::new();
-    let mut token_ranges = Vec::new();
     let mut math = Vec::new();
 
     for run in runs {
@@ -411,9 +394,6 @@ pub fn flatten(
         let start = text.len();
         text.push_str(&run.text);
         let end = text.len();
-        if run.style.prompt_token.is_some() {
-            token_ranges.push(start..end);
-        }
         if run.style.math {
             math.push(math_text::MathSpan {
                 range: start..end,
@@ -421,14 +401,15 @@ pub fn flatten(
                 display: false,
             });
         }
-        // An agent pill stays a pill, with none of a link's underline, but
-        // clicking or activating it can reach the agent it names.
-        if run.style.prompt_token == Some(raku_protocol::composer::PromptTokenKind::Agent)
-            && let Some(name) = run.text.strip_prefix('@')
-            && !name.is_empty()
-        {
-            links.push((start..end, format!("{AGENT_LINK_PREFIX}{name}")));
-        }
+        // A mention reads as ordinary text; an agent mention is a link the
+        // app resolves to that agent's settings.
+        let agent_target = (run.style.prompt_token
+            == Some(raku_protocol::composer::PromptTokenKind::Agent)
+            && run.style.link.is_none())
+        .then(|| run.text.strip_prefix('@'))
+        .flatten()
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("{AGENT_LINK_PREFIX}{name}"));
 
         // Only a code span resolves a workspace file, but a span that resolves
         // is a link: the mono face, the code colour and the wash would put the
@@ -447,7 +428,12 @@ pub fn flatten(
             })
         })
         .flatten();
-        let link = run.style.link.as_ref().or(file_target.as_ref());
+        let link = run
+            .style
+            .link
+            .as_ref()
+            .or(file_target.as_ref())
+            .or(agent_target.as_ref());
         let as_code = run.style.code && link.is_none();
 
         let mut run_font = font(if as_code {
@@ -459,8 +445,6 @@ pub fn flatten(
             // Inline code is never bold. It is already the denser face, and the
             // small cut only ships regular and italic.
             FontWeight::NORMAL
-        } else if run.style.prompt_token.is_some() && base_weight < FontWeight::MEDIUM {
-            FontWeight::MEDIUM
         } else if run.style.bold && base_weight < FontWeight::SEMIBOLD {
             FontWeight::SEMIBOLD
         } else {
@@ -495,19 +479,23 @@ pub fn flatten(
             font: run_font,
             // Inline code keeps the prose color; the mono face and the wash
             // already set it apart, so a hue would only add noise.
+            // A mention carries the key colour so it reads as one unit.
             color: if run.style.prompt_token.is_some() {
-                palette.prompt_pill.foreground
+                palette.accent
             } else {
                 base_color
             },
             // Inline code's wash is painted as *rounded* quads by the canvas
             // underlay; a run background could only ever be a square box.
             background_color: None,
-            underline: link.is_some().then_some(UnderlineStyle {
-                color: Some(link_underline(base_color)),
-                thickness: px(1.0),
-                wavy: false,
-            }),
+            // A mention's key colour is its affordance; no link underline.
+            underline: (link.is_some() && run.style.prompt_token.is_none()).then_some(
+                UnderlineStyle {
+                    color: Some(link_underline(base_color)),
+                    thickness: px(1.0),
+                    wavy: false,
+                },
+            ),
             strikethrough: run.style.strikethrough.then_some(StrikethroughStyle {
                 thickness: px(1.0),
                 color: Some(palette.tertiary),
@@ -551,14 +539,11 @@ pub fn flatten(
     }
 
     let active_link = (!links.is_empty()).then(|| Rc::new(Cell::new(None)));
-    let prompt_spacing = PromptSpacing::new(&text, &token_ranges);
     FlatText {
         text: text.into(),
         runs: out,
         links,
         code_ranges,
-        prompt_spacing,
-        token_ranges,
         math: (!math.is_empty()).then(|| Rc::new(math_text::MathData::new(math))),
         active_link,
     }
@@ -591,8 +576,6 @@ pub fn flatten_plain(
         runs,
         links: Vec::new(),
         code_ranges: Vec::new(),
-        token_ranges: Vec::new(),
-        prompt_spacing: None,
         math: None,
         active_link: None,
     }
@@ -1024,7 +1007,6 @@ fn text_element_with_selection(
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
     code_wash: Hsla,
-    prompt_pill: PromptPillStyle,
     selection_wash: Hsla,
     search_match_wash: Hsla,
     active_search_match_wash: Hsla,
@@ -1033,16 +1015,8 @@ fn text_element_with_selection(
     dashed: Vec<Range<usize>>,
     dashed_color: Hsla,
 ) -> AnyElement {
-    let (text, runs) = match &flat.prompt_spacing {
-        Some(spacing) => (spacing.text.clone(), spacing.runs(runs)),
-        None => (flat.text.clone(), runs),
-    };
-    let styled = StyledText::new(text).with_runs(runs);
-    let layout = styled.layout().clone();
-    let geometry = match &flat.prompt_spacing {
-        Some(spacing) => TextGeometry::SpacedText(layout, spacing.clone()),
-        None => TextGeometry::Text(layout),
-    };
+    let styled = StyledText::new(flat.text.clone()).with_runs(runs);
+    let geometry = TextGeometry::Text(styled.layout().clone());
 
     let body: AnyElement = if flat.links.is_empty() {
         styled.into_any_element()
@@ -1050,13 +1024,7 @@ fn text_element_with_selection(
         let (ranges, urls): (Vec<_>, Vec<_>) = flat
             .links
             .iter()
-            .map(|(range, url)| {
-                let range = flat
-                    .prompt_spacing
-                    .as_ref()
-                    .map_or_else(|| range.clone(), |spacing| spacing.display_range(range));
-                (range, url.clone())
-            })
+            .map(|(range, url)| (range.clone(), url.clone()))
             .unzip();
         let id = SharedString::from(format!("{}-t{}", key.row, key.index));
         let handler = link_handler.clone();
@@ -1080,7 +1048,6 @@ fn text_element_with_selection(
     let underlay = canvas(|_, _, _| (), {
         let text = flat.text.clone();
         let code_ranges = flat.code_ranges.clone();
-        let token_ranges = flat.token_ranges.clone();
         let geometry = geometry.clone();
         let key = key.clone();
         let links = flat.links.clone();
@@ -1096,11 +1063,6 @@ fn text_element_with_selection(
                         gpui::transparent_black(),
                         BorderStyle::default(),
                     ));
-                }
-            }
-            for range in &token_ranges {
-                for rect in geometry.range_rects(range, 0.0, 0.0) {
-                    window.paint_quad(prompt_pill.quad(rect));
                 }
             }
             if let Some(search) = &search {
@@ -1243,8 +1205,6 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
             runs: flat.runs.clone(),
             links,
             code_ranges: flat.code_ranges.clone(),
-            token_ranges: flat.token_ranges.clone(),
-            prompt_spacing: flat.prompt_spacing.clone(),
             math: flat.math.clone(),
             active_link: Some(flat.active_link.clone().unwrap_or_default()),
         }
@@ -1261,7 +1221,6 @@ fn text_element(flat: &Rc<FlatText>, key: TextKey, ctx: &Ctx) -> AnyElement {
         ctx.search.clone(),
         ctx.link_handler.clone(),
         ctx.palette.code_wash,
-        ctx.palette.prompt_pill,
         ctx.palette.selection,
         ctx.palette.search_match,
         ctx.palette.active_search_match,
@@ -1311,7 +1270,6 @@ pub fn selectable_flat_text(
         None,
         None,
         code_wash,
-        PromptPillStyle::new(code_wash, false),
         selection_wash,
         gpui::transparent_black(),
         gpui::transparent_black(),
@@ -1354,8 +1312,6 @@ pub fn flatten_tinted(
         text,
         links: Vec::new(),
         code_ranges: Vec::new(),
-        token_ranges: Vec::new(),
-        prompt_spacing: None,
         math: None,
         active_link: None,
     }
@@ -2256,8 +2212,6 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
             runs: code_runs(code, lang, &code_font, ctx.palette.secondary, ctx.palette),
             links: Vec::new(),
             code_ranges: Vec::new(),
-            token_ranges: Vec::new(),
-            prompt_spacing: None,
             math: None,
             active_link: None,
         }
@@ -2717,7 +2671,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_pills_keep_their_kind_when_a_file_has_the_same_name() {
+    fn prompt_tokens_keep_their_kind_when_a_file_has_the_same_name() {
         use raku_protocol::composer::{PromptToken, PromptTokenKind};
         let source = "@deploy";
         let files = FileLinks::new(std::path::Path::new("/workspace"), ["deploy"]);
@@ -2742,14 +2696,12 @@ mod tests {
                 Some(&files),
             );
             assert_eq!(flat.text.as_ref(), source);
-            assert_eq!(flat.token_ranges.len(), 1);
-            assert_eq!(flat.token_ranges[0], 0..7);
             assert_eq!(flat.links.is_empty(), kind == PromptTokenKind::Skill);
         }
     }
 
     #[test]
-    fn agent_pills_link_to_their_agent_without_an_underline() {
+    fn agent_mentions_are_plain_links_to_their_agent() {
         use raku_protocol::composer::{PromptToken, PromptTokenKind};
         let source = "subagent @explore ?";
         let tree = parser::parse_with_tokens(
@@ -2771,12 +2723,21 @@ mod tests {
             flat.links,
             vec![(9..17, format!("{AGENT_LINK_PREFIX}explore"))]
         );
-        // The pill is the affordance; a link's underline would draw inside it.
-        assert!(flat.runs.iter().all(|run| run.underline.is_none()));
+        // A mention reads in the key colour, without a link underline.
+        let mut offset = 0;
+        for run in &flat.runs {
+            let linked = offset >= 9 && offset < 17;
+            assert!(run.underline.is_none());
+            assert_eq!(
+                run.color,
+                if linked { palette.accent } else { palette.text }
+            );
+            offset += run.len;
+        }
     }
 
     #[gpui::test]
-    fn inline_prompt_pills_have_a_gap_and_keep_source_selection(cx: &mut TestAppContext) {
+    fn inline_prompt_mentions_keep_source_selection(cx: &mut TestAppContext) {
         use raku_protocol::composer::{PromptToken, PromptTokenKind};
 
         struct TestWindow {
@@ -2818,10 +2779,7 @@ mod tests {
         cx.run_until_parked();
         let registry = selection.registry.borrow();
         let entry = &registry.entries()[0];
-        let word = text_range_bounds(&entry.geometry, &(0..8))[0];
         let label = text_range_bounds(&entry.geometry, &(9..17))[0];
-        let pill = palette().prompt_pill.quad(label);
-        assert!(pill.bounds.left() - word.right() >= px(2.0));
         assert_eq!(entry.text.as_ref(), source);
         assert_eq!(
             entry

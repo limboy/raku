@@ -138,7 +138,7 @@ impl Raku {
             .update(cx, |input, cx| input.set_content(agent.instructions, cx));
     }
 
-    /// Open the agent a transcript pill names. A pill outlives the agent it
+    /// Open the agent a transcript mention names. A mention outlives the agent it
     /// was chosen for, so a name with no definition now has nothing to show.
     pub(in crate::app) fn open_agent_settings(
         &mut self,

@@ -62,8 +62,8 @@ use crate::terminal::TerminalView;
 use crate::theme::{SMALL_UI_FONT_SIZE, Theme, ThemePreference, sp};
 use crate::ui::text_field::TextField;
 use crate::ui::{
-    MenuChip, ProjectNameSelector, activity_noun, contain_scroll, file_icon, icon,
-    icon_button, motion, provider_color, provider_mark, status_color, toggle_switch,
+    MenuChip, ProjectNameSelector, activity_noun, contain_scroll, file_icon, icon, icon_button,
+    motion, provider_color, provider_mark, status_color, toggle_switch,
 };
 use crate::{
     CancelTaskSwitch, CancelTurn, CloseFind, CloseWindow, ConfirmTaskSwitch, CopySelection,
@@ -2780,7 +2780,7 @@ impl Raku {
                 let raku = cx.entity().downgrade();
                 Rc::new(move |target, window, cx| {
                     if let Some(name) = subagents::agent_link_name(target) {
-                        // A missing agent is still a handled link: its pill
+                        // A missing agent is still a handled link: its mention
                         // must not fall through to opening a browser URL.
                         let _ =
                             raku.update(cx, |raku, cx| raku.open_agent_settings(name, window, cx));

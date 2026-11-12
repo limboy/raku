@@ -8,7 +8,6 @@ use gpui::{
 pub mod image;
 pub mod menu;
 pub mod motion;
-pub(crate) mod prompt_pill;
 pub mod scrollbar;
 pub mod text_field;
 pub mod tooltip;
@@ -464,7 +463,7 @@ mod tests {
     #[test]
     fn every_referenced_icon_is_embedded() {
         use crate::assets::Assets;
-        use crate::model::{ActivityKind, ProviderKind};
+        use crate::model::ProviderKind;
         use gpui::AssetSource;
 
         let mut paths = vec![
@@ -506,20 +505,6 @@ mod tests {
         ];
         for provider in ProviderKind::ALL {
             paths.push(provider_icon(provider));
-        }
-        for kind in [
-            ActivityKind::Reasoning,
-            ActivityKind::Command,
-            ActivityKind::FileChange,
-            ActivityKind::FileRead,
-            ActivityKind::FileSearch,
-            ActivityKind::FileList,
-            ActivityKind::Search,
-            ActivityKind::Plan,
-            ActivityKind::Tool,
-            ActivityKind::Notice,
-        ] {
-            paths.push(activity_icon(kind));
         }
         for path in paths {
             assert!(

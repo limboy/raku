@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use crate::composer_complete::PromptToken;
 use crate::md::highlight::{self, Lang, TokenClass};
 use crate::ui::menu::{ContextMenuHandle, MenuItem, context_menu};
-use crate::ui::prompt_pill::PromptPillStyle;
 use crate::ui::scrollbar::{self, ScrollbarState};
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle, DispatchPhase, Element,
@@ -2849,9 +2848,6 @@ struct InputLayoutState {
 
 struct PrepaintState {
     cursor: Option<PaintQuad>,
-    /// Rounded backgrounds behind atomic tokens, one per visual row an atom
-    /// spans.
-    pills: Vec<PaintQuad>,
 }
 
 /// Find-match washes layered into [`input_text_runs`]: every match gets
@@ -2859,8 +2855,7 @@ struct PrepaintState {
 /// wins over the selection wash so the current match keeps its identity while
 /// selected — the way a find widget conventionally paints it.
 struct SearchPaint<'a> {
-    /// Atomic tokens, drawn in `atom_color` over their pill (painted
-    /// separately, since a run background cannot be rounded).
+    /// Atomic tokens (mentions), drawn in `atom_color`.
     atoms: &'a [PromptToken],
     atom_color: Hsla,
     matches: &'a [Range<usize>],
@@ -2956,41 +2951,20 @@ fn input_text_runs(
             } else {
                 None
             };
-            (start < end).then(|| {
-                let mut run = TextRun {
-                    len: end - start,
-                    color,
-                    background_color,
-                    underline: marked_range
-                        .filter(|range| range.start < end && range.end > start)
-                        .map(|_| UnderlineStyle {
-                            color: Some(base_run.color),
-                            thickness: px(1.0),
-                            wavy: false,
-                        }),
-                    ..base_run.clone()
-                };
-                if in_atom && run.font.weight < gpui::FontWeight::MEDIUM {
-                    run.font.weight = gpui::FontWeight::MEDIUM;
-                }
-                run
+            (start < end).then(|| TextRun {
+                len: end - start,
+                color,
+                background_color,
+                underline: marked_range
+                    .filter(|range| range.start < end && range.end > start)
+                    .map(|_| UnderlineStyle {
+                        color: Some(base_run.color),
+                        thickness: px(1.0),
+                        wavy: false,
+                    }),
+                ..base_run.clone()
             })
         })
-        .collect()
-}
-
-/// One rounded quad per visual row each atom covers. A soft wrap inside an
-/// atom splits it at the row edge, like any inline chip.
-fn atom_pills(
-    atoms: &[PromptToken],
-    layout: &TextLayout,
-    style: PromptPillStyle,
-) -> Vec<PaintQuad> {
-    atoms
-        .iter()
-        .filter(|atom| atom.end <= layout.len())
-        .flat_map(|atom| crate::md::render::range_rects(layout, &atom.range(), 0.0, 0.0))
-        .map(|bounds| style.quad(bounds))
         .collect()
 }
 
@@ -3059,7 +3033,7 @@ impl Element for InputElement {
         } else {
             SearchPaint {
                 atoms: &input.atoms,
-                atom_color: palette.prompt_pill.foreground,
+                atom_color: theme.accent,
                 matches: &input.search_matches,
                 active: input
                     .active_search_match
@@ -3167,15 +3141,7 @@ impl Element for InputElement {
             self.input
                 .update(cx, |input, _| input.caret_reconciled = Some(follow_state));
         }
-        let pills = {
-            let input = self.input.read(cx);
-            atom_pills(
-                &input.atoms,
-                &layout,
-                PromptPillStyle::new(theme.accent, theme.is_dark),
-            )
-        };
-        PrepaintState { cursor, pills }
+        PrepaintState { cursor }
     }
 
     fn paint(
@@ -3210,9 +3176,6 @@ impl Element for InputElement {
                 }
             }
         });
-        for pill in prepaint.pills.drain(..) {
-            window.paint_quad(pill);
-        }
         layout_state.text.paint(
             None,
             None,
