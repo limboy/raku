@@ -1372,7 +1372,7 @@ impl Raku {
         let output_flat = md::render::flatten_plain(
             output,
             md::render::MONO_FAMILY,
-            FontWeight::NORMAL,
+            DEFAULT_FONT_WEIGHT,
             theme.text_secondary,
         );
         let output_text = md::render::selectable_flat_text(

@@ -2052,7 +2052,7 @@ impl Raku {
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .font_weight(FontWeight::NORMAL)
+                                .font_weight(DEFAULT_FONT_WEIGHT)
                                 .text_color(theme.text_ghost)
                                 .child(tr!(
                                     "transcript.showing_first_files",
@@ -2938,7 +2938,7 @@ impl Raku {
                     .rounded(px(5.0))
                     .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(16.0))
-                    .font_weight(FontWeight::NORMAL)
+                    .font_weight(DEFAULT_FONT_WEIGHT)
                     .when(has_detail, |element| {
                         element
                             .track_focus(&item_focus)
@@ -3254,7 +3254,7 @@ impl Raku {
                         .child(md::render::plain_text(
                             content,
                             md::render::MONO_FAMILY,
-                            FontWeight::NORMAL,
+                            DEFAULT_FONT_WEIGHT,
                             theme.text_secondary,
                             &ctx,
                         ))
@@ -3347,7 +3347,7 @@ impl Raku {
                                         .font_weight(if command {
                                             FontWeight::MEDIUM
                                         } else {
-                                            FontWeight::NORMAL
+                                            DEFAULT_FONT_WEIGHT
                                         })
                                         .text_color(theme.text_secondary)
                                         .child(label),
@@ -3460,7 +3460,7 @@ impl Raku {
                                         content,
                                         Some(md::highlight::Lang::Shell),
                                         md::render::MONO_FAMILY,
-                                        FontWeight::NORMAL,
+                                        DEFAULT_FONT_WEIGHT,
                                         theme.text_secondary,
                                         &ctx,
                                     )))
@@ -3537,7 +3537,7 @@ impl Raku {
                                                 content,
                                                 output_lang,
                                                 md::render::MONO_FAMILY,
-                                                FontWeight::NORMAL,
+                                                DEFAULT_FONT_WEIGHT,
                                                 theme.text_secondary,
                                                 &ctx,
                                             ))
@@ -3631,7 +3631,7 @@ impl Raku {
             .max(2) as f32;
         let gutter = (mono_size * 0.62 * digits + 24.0).round();
         let palette = MarkdownPalette::from_theme(theme);
-        let code_font = font(md::render::MONO_FAMILY);
+        let code_font = default_font(md::render::MONO_FAMILY);
         let mut rows = div()
             .id(SharedString::from(format!("activity-read-scroll-{id}")))
             .w_full()
@@ -3882,14 +3882,14 @@ impl Raku {
                     .child(
                         div()
                             .flex_none()
-                            .font_weight(FontWeight::NORMAL)
+                            .font_weight(DEFAULT_FONT_WEIGHT)
                             .text_color(theme.success)
                             .child(SharedString::from(format!("+{}", file.additions))),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .font_weight(FontWeight::NORMAL)
+                            .font_weight(DEFAULT_FONT_WEIGHT)
                             .text_color(theme.danger)
                             .child(SharedString::from(format!("-{}", file.deletions))),
                     )

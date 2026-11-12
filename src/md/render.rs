@@ -44,7 +44,7 @@ use super::selection::{
     RegisteredText, SelectionRegistry, SelectionState, TextKey, line_range, word_range,
 };
 use super::veil::{RowVeil, apply_veil};
-use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
+use crate::theme::{DEFAULT_FONT_WEIGHT, SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::menu::{ContextMenuHandle, context_menu};
 use crate::ui::tooltip::Tooltip;
 
@@ -442,9 +442,8 @@ pub fn flatten(
             SANS_FAMILY
         });
         run_font.weight = if as_code {
-            // Inline code is never bold. It is already the denser face, and the
-            // small cut only ships regular and italic.
-            FontWeight::NORMAL
+            // Inline code keeps the default weight inside bold prose and headings.
+            DEFAULT_FONT_WEIGHT
         } else if run.style.bold && base_weight < FontWeight::SEMIBOLD {
             FontWeight::SEMIBOLD
         } else {
@@ -1787,7 +1786,7 @@ fn render_block(block: &Block, ctx: &Ctx) -> AnyElement {
                 flatten(
                     runs,
                     ctx.palette,
-                    FontWeight::NORMAL,
+                    DEFAULT_FONT_WEIGHT,
                     ctx.palette.text,
                     ctx.file_links.as_deref(),
                 )
@@ -1828,7 +1827,7 @@ fn render_block(block: &Block, ctx: &Ctx) -> AnyElement {
                 let mut flat = flatten_plain(
                     latex.clone(),
                     MONO_FAMILY,
-                    FontWeight::NORMAL,
+                    DEFAULT_FONT_WEIGHT,
                     ctx.palette.text,
                 );
                 flat.math = Some(Rc::new(math_text::MathData::new(vec![
@@ -2206,7 +2205,7 @@ fn render_code_block(language: Option<&str>, code: &str, runnable: bool, ctx: &C
     let flat = ctx.flat(key.index, || {
         let lang = language.and_then(highlight::lang_for_tag);
         let mut code_font = font(MONO_FAMILY);
-        code_font.weight = FontWeight::NORMAL;
+        code_font.weight = DEFAULT_FONT_WEIGHT;
         FlatText {
             text: SharedString::from(code.to_owned()),
             runs: code_runs(code, lang, &code_font, ctx.palette.secondary, ctx.palette),
@@ -2521,7 +2520,7 @@ fn render_table(
             &widths,
             align,
             ctx,
-            FontWeight::NORMAL,
+            DEFAULT_FONT_WEIGHT,
             index + 1 < rows.len(),
         ));
     }
@@ -2922,7 +2921,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_code_uses_the_small_cut_and_never_bolds() {
+    fn inline_code_uses_the_small_cut_and_default_weight() {
         let code_run = |source: &str, base: FontWeight| {
             let flat = flatten(&runs_of(source), &palette(), base, palette().text, None);
             flat.runs
@@ -2933,16 +2932,16 @@ mod tests {
         };
 
         let regular = code_run("a `code` b", FontWeight::NORMAL);
-        assert_eq!(regular.font.weight, FontWeight::NORMAL);
+        assert_eq!(regular.font.weight, DEFAULT_FONT_WEIGHT);
         assert_eq!(regular.font.style, FontStyle::Normal);
         // Bold prose and headings never bolden the code inside them.
         assert_eq!(
-            code_run("**`code`**", FontWeight::NORMAL).font.weight,
-            FontWeight::NORMAL
+            code_run("**`code`**", DEFAULT_FONT_WEIGHT).font.weight,
+            DEFAULT_FONT_WEIGHT
         );
         assert_eq!(
             code_run("`code`", FontWeight::BOLD).font.weight,
-            FontWeight::NORMAL
+            DEFAULT_FONT_WEIGHT
         );
         // Italic code resolves the italic face of the same cut.
         assert_eq!(

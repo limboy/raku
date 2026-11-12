@@ -737,20 +737,21 @@ impl Raku {
 
     fn render_font_selector(&self, target: FontTarget, cx: &mut Context<Self>) -> AnyElement {
         let (id, selected, list_index) = match target {
-            FontTarget::Interface => ("interface-font-selector", &self.state.interface_font, 0),
-            FontTarget::Transcript => ("transcript-font-selector", &self.state.transcript_font, 1),
+            FontTarget::Interface => ("interface-font-selector", &self.fonts.interface, 0),
+            FontTarget::Transcript => ("transcript-font-selector", &self.fonts.transcript, 1),
         };
         let handle = self.menu_handle(id, cx);
         let weak = cx.entity().downgrade();
-        let selected_index = selected.as_deref().map_or(Some(0), |family| {
+        let selected = (selected.as_ref() != ".SystemUIFont").then_some(selected);
+        let selected_index = selected.map_or(Some(0), |family| {
             self.font_family_indexes.get(family).copied()
         });
         crate::ui::menu::font_dropdown_menu(
             MenuChip::new(id)
                 .label(
                     selected
-                        .clone()
-                        .unwrap_or_else(|| tr!("settings.font_system")),
+                        .cloned()
+                        .unwrap_or_else(|| tr!("settings.font_system").into()),
                 )
                 .outlined()
                 .selected(handle.is_open())
@@ -768,9 +769,13 @@ impl Raku {
     }
 
     pub(super) fn load_font_families(&mut self, cx: &mut Context<Self>) {
+        let source = cx.try_global::<crate::theme::FontSource>().cloned();
         let text_system = cx.text_system().clone();
         let task = cx.background_executor().spawn(async move {
-            let mut fonts = text_system.all_font_names();
+            let mut fonts = source.map_or_else(
+                || text_system.all_font_names(),
+                |source| source.0.all_font_names(),
+            );
             fonts.retain(|font| !font.starts_with('.') && !font.trim().is_empty());
             fonts.sort_by_cached_key(|font| font.to_lowercase());
             fonts.dedup();
@@ -811,6 +816,7 @@ impl Raku {
         self.fonts = crate::theme::Fonts::new(
             self.state.interface_font.as_deref(),
             self.state.transcript_font.as_deref(),
+            cx,
         );
         cx.set_global(self.fonts.clone());
         self.remeasure_font_sized_surfaces();

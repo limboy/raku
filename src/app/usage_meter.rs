@@ -486,7 +486,7 @@ fn usage_panel(
         .flex_col()
         .gap(px(12.0))
         .text_size(sp(SMALL_UI_FONT_SIZE))
-        .font_weight(FontWeight::NORMAL);
+        .font_weight(DEFAULT_FONT_WEIGHT);
 
     // The context row always renders; a session with nothing measured yet
     // reads "0" over an empty track, exactly like the CLI's own panel.

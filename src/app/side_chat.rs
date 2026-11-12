@@ -1334,7 +1334,7 @@ impl Raku {
                         md::render::plain_text(
                             message.visible_content().to_owned(),
                             md::render::SANS_FAMILY,
-                            FontWeight::NORMAL,
+                            DEFAULT_FONT_WEIGHT,
                             theme.text,
                             &ctx,
                         )

@@ -144,7 +144,7 @@ impl Raku {
             .items_center()
             .cursor_default()
             .text_size(sp(SMALL_UI_FONT_SIZE))
-            .font_weight(FontWeight::NORMAL)
+            .font_weight(DEFAULT_FONT_WEIGHT)
             .bg(theme.inverse)
             .text_color(theme.on_inverse)
             .hover(|button| button.opacity(0.9))

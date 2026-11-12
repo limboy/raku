@@ -252,7 +252,7 @@ fn palette_content_match_text(
     text.push_str(&matched.snippet);
 
     let mut normal_font = window.text_style().font();
-    normal_font.weight = FontWeight::NORMAL;
+    normal_font.weight = DEFAULT_FONT_WEIGHT;
     let mut emphasized_font = normal_font.clone();
     emphasized_font.weight = FontWeight::SEMIBOLD;
     let mut runs = vec![TextRun {
@@ -1609,7 +1609,7 @@ impl Raku {
                                                 .font_weight(if highlighted {
                                                     FontWeight::MEDIUM
                                                 } else {
-                                                    FontWeight::NORMAL
+                                                    DEFAULT_FONT_WEIGHT
                                                 })
                                                 .text_color(if highlighted {
                                                     theme.text

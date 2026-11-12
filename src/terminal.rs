@@ -26,12 +26,12 @@ use gpui::{
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
     SharedString, StrikethroughStyle, Styled, StyledText, Subscription, Task, TextRun,
-    UnderlineStyle, Window, canvas, div, font, px, rgb,
+    UnderlineStyle, Window, canvas, div, px, rgb,
 };
 use parking_lot::Mutex;
 
 use crate::persistence::DEFAULT_RIGHT_PANEL_WIDTH;
-use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
+use crate::theme::{SMALL_UI_FONT_SIZE, Theme, default_font, sp};
 use crate::ui::scrollbar::{self, ScrollbarState};
 
 /// Fallback advance width, used only until the font has been measured.
@@ -101,7 +101,7 @@ static TERMINAL_FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
 });
 
 fn terminal_font() -> gpui::Font {
-    let mut terminal_font = font("JetBrains Mono");
+    let mut terminal_font = default_font("JetBrains Mono");
     terminal_font.fallbacks = Some(TERMINAL_FONT_FALLBACKS.clone());
     terminal_font
 }

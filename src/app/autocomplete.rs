@@ -693,7 +693,8 @@ impl Raku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let highlighted = highlight == index;
-        let font = window.text_style().font();
+        let mut font = window.text_style().font();
+        font.weight = DEFAULT_FONT_WEIGHT;
         let base = div()
             .id(index)
             .h(px(30.0))

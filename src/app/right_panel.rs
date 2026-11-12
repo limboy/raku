@@ -583,7 +583,7 @@ pub(super) fn render_diff_code_row(
 fn review_diff_flat_text(line: &crate::review_diff::Line, theme: &Theme) -> md::render::FlatText {
     let text = line.content.clone();
     let palette = MarkdownPalette::from_theme(theme);
-    let code_font = font(md::render::MONO_FAMILY);
+    let code_font = default_font(md::render::MONO_FAMILY);
     let mut runs = Vec::with_capacity(line.tokens.len() * 2 + 1);
     let mut offset = 0;
     let mut push = |len: usize, color: Hsla| {
@@ -4253,7 +4253,7 @@ impl Raku {
                         let text = SharedString::from(number.to_string());
                         let run = gpui::TextRun {
                             len: text.len(),
-                            font: gpui::font(md::render::MONO_FAMILY),
+                            font: default_font(md::render::MONO_FAMILY),
                             color: number_color,
                             ..Default::default()
                         };

@@ -871,7 +871,7 @@ fn render_markdown_message_body<'a>(
             md::render::plain_text(
                 content.to_owned(),
                 md::render::SANS_FAMILY,
-                FontWeight::NORMAL,
+                DEFAULT_FONT_WEIGHT,
                 theme.text,
                 ctx,
             )
@@ -906,7 +906,7 @@ pub(super) fn render_error_reply(
         .child(div().min_w_0().flex_1().child(md::render::plain_text(
             headline.to_owned(),
             md::render::SANS_FAMILY,
-            FontWeight::NORMAL,
+            DEFAULT_FONT_WEIGHT,
             theme.danger,
             ctx,
         )));
@@ -985,7 +985,7 @@ pub(super) fn render_error_reply(
                     .child(md::render::plain_text(
                         detail,
                         md::render::MONO_FAMILY,
-                        FontWeight::NORMAL,
+                        DEFAULT_FONT_WEIGHT,
                         theme.text_secondary,
                         ctx,
                     )),
@@ -1394,7 +1394,7 @@ pub(super) fn render_message(
                 .child(md::render::plain_text(
                     content.clone(),
                     md::render::SANS_FAMILY,
-                    FontWeight::NORMAL,
+                    DEFAULT_FONT_WEIGHT,
                     theme.text_tertiary,
                     ctx,
                 )),

@@ -226,7 +226,9 @@ pub fn run() {
     {
         let _ = session_links_tx.try_send(session_id);
     }
-    let application = gpui_platform::application();
+    let platform = gpui_platform::current_platform(false);
+    let font_source = crate::theme::FontSource(platform.text_system());
+    let application = gpui::Application::with_platform(platform);
     application.on_open_urls(move |urls| {
         for session_id in urls.iter().filter_map(|url| session_link::session_id(url)) {
             let _ = session_links_tx.try_send(session_id);
@@ -240,6 +242,7 @@ pub fn run() {
             // attribution. Other platforms also benefit from one stable
             // process identity.
             cx.set_app_identity(APP_ID, APP_NAME);
+            cx.set_global(font_source);
             crate::assets::register_fonts(cx).expect("failed to register bundled fonts");
             crate::input::init(cx);
             crate::ui::menu::init(cx);

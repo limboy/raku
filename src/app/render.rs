@@ -291,6 +291,7 @@ impl Render for Raku {
             .flex()
             .text_color(theme.text)
             .font_family(self.fonts.interface.clone())
+            .font_weight(DEFAULT_FONT_WEIGHT)
             // Both panels slide through a container that narrows while their
             // content keeps its full width and is clipped: the sidebar list
             // and the right panel's surfaces never reflow on the way in or
@@ -453,7 +454,7 @@ impl Raku {
         let message = md::render::plain_text(
             message,
             md::render::SANS_FAMILY,
-            FontWeight::NORMAL,
+            DEFAULT_FONT_WEIGHT,
             theme.text,
             &text_ctx,
         );

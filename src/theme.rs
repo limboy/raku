@@ -1,9 +1,32 @@
-use gpui::{App, Global, Hsla, Rems, SharedString, Window, WindowAppearance, hsla, rems, rgb};
+use gpui::{
+    App, Font, FontWeight, Global, Hsla, PlatformTextSystem, Rems, SharedString, Window,
+    WindowAppearance, hsla, rems, rgb,
+};
+
+use std::sync::Arc;
 
 pub use raku_client::theme::ThemePreference;
 
 /// Standard size for compact interface controls, descriptions, and metadata.
 pub const SMALL_UI_FONT_SIZE: f32 = 13.0;
+
+/// Shared default for interface text, prose, and code; emphasis can be heavier.
+pub const DEFAULT_FONT_WEIGHT: FontWeight = FontWeight::NORMAL;
+
+/// Fonts shaped outside the element tree must use the same default as the UI.
+pub fn default_font(family: impl Into<SharedString>) -> Font {
+    Font {
+        weight: DEFAULT_FONT_WEIGHT,
+        ..gpui::font(family)
+    }
+}
+
+/// The platform inventory excludes GPUI's synthetic fallback family names.
+/// Keep this same source as the app's text system, including bundled fonts.
+#[derive(Clone)]
+pub(crate) struct FontSource(pub Arc<dyn PlatformTextSystem>);
+
+impl Global for FontSource {}
 
 /// Shared family names keep font reads allocation-free on rendering paths.
 #[derive(Clone)]
@@ -15,11 +38,13 @@ pub struct Fonts {
 impl Global for Fonts {}
 
 impl Fonts {
-    pub fn new(interface: Option<&str>, transcript: Option<&str>) -> Self {
+    /// Called at startup and on explicit font changes, never while rendering.
+    pub fn new(interface: Option<&str>, transcript: Option<&str>, cx: &App) -> Self {
+        let source = cx.try_global::<FontSource>();
         let family = |name: Option<&str>| {
-            name.filter(|name| !name.trim().is_empty())
-                .map(|name| SharedString::from(name.to_owned()))
-                .unwrap_or_else(|| ".SystemUIFont".into())
+            resolve_font_family(name, |name| {
+                source.is_none_or(|source| source.0.font_id(&default_font(name.to_owned())).is_ok())
+            })
         };
         Self {
             interface: family(interface),
@@ -30,8 +55,20 @@ impl Fonts {
     pub fn current(cx: &App) -> Self {
         cx.try_global::<Self>()
             .cloned()
-            .unwrap_or_else(|| Self::new(None, None))
+            .unwrap_or_else(|| Self::new(None, None, cx))
     }
+}
+
+fn resolve_font_family(
+    name: Option<&str>,
+    is_available: impl FnOnce(&str) -> bool,
+) -> SharedString {
+    name.filter(|name| !name.trim().is_empty())
+        .filter(|name| is_available(name))
+        .map(|name| SharedString::from(name.to_owned()))
+        // Resolve the system family directly so GPUI keeps the requested weight
+        // and style; its emergency fallback stack contains only regular fonts.
+        .unwrap_or_else(|| ".SystemUIFont".into())
 }
 
 /// Scaled pixels: a dimension authored at the fixed 14px chrome size,
@@ -250,4 +287,31 @@ pub fn apply_theme_preference(preference: ThemePreference, window: &mut Window, 
         cx,
     );
     window.refresh();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_font_uses_the_system_family_instead_of_emergency_fallback() {
+        let family = resolve_font_family(Some("Missing Font"), |_| false);
+        assert_eq!(family.as_ref(), ".SystemUIFont");
+    }
+
+    #[test]
+    fn available_font_keeps_the_selected_family() {
+        let family = resolve_font_family(Some("Source Han Sans SC"), |name| {
+            name == "Source Han Sans SC"
+        });
+        assert_eq!(family.as_ref(), "Source Han Sans SC");
+    }
+
+    #[test]
+    fn default_font_preferences_skip_platform_lookup() {
+        for name in [None, Some(""), Some("  ")] {
+            let family = resolve_font_family(name, |_| panic!("no font to look up"));
+            assert_eq!(family.as_ref(), ".SystemUIFont");
+        }
+    }
 }

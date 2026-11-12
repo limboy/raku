@@ -14,8 +14,8 @@ use gpui::{
     ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, NavigationDirection, ObjectFit, PathPromptOptions, Pixels, Render, ScrollHandle,
     SharedString, Stateful, StyleRefinement, TextRun, WeakEntity, Window, WindowBounds, canvas,
-    div, ease_out_quint, fill, font, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, pulsating_between, px, rgb,
+    div, ease_out_quint, fill, img, linear_color_stop, linear_gradient, list, point, prelude::*,
+    pulsating_between, px, rgb,
 };
 use uuid::Uuid;
 
@@ -59,7 +59,9 @@ use crate::persistence::{
 use crate::query::{Query, QueryCache};
 use crate::review_diff::{Snapshot as ReviewDiffSnapshot, Source as ReviewDiffSource};
 use crate::terminal::TerminalView;
-use crate::theme::{SMALL_UI_FONT_SIZE, Theme, ThemePreference, sp};
+use crate::theme::{
+    DEFAULT_FONT_WEIGHT, SMALL_UI_FONT_SIZE, Theme, ThemePreference, default_font, sp,
+};
 use crate::ui::text_field::TextField;
 use crate::ui::{
     MenuChip, ProjectNameSelector, activity_noun, contain_scroll, file_icon, icon, icon_button,
@@ -1996,6 +1998,7 @@ impl Raku {
         let fonts = crate::theme::Fonts::new(
             state.interface_font.as_deref(),
             state.transcript_font.as_deref(),
+            cx,
         );
         cx.set_global(fonts.clone());
         // Chrome text is authored in `sp` rems against this fixed size; only

@@ -534,7 +534,7 @@ impl Raku {
                     // headline. Pin the rows' metrics for the filter field.
                     .text_size(sp(13.0))
                     .line_height(sp(16.0))
-                    .font_weight(FontWeight::NORMAL)
+                    .font_weight(DEFAULT_FONT_WEIGHT)
                     .rounded(px(13.0))
                     .overflow_hidden()
                     .border_1()

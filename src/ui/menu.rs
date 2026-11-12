@@ -83,7 +83,7 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-use crate::theme::{SMALL_UI_FONT_SIZE, Theme, sp};
+use crate::theme::{DEFAULT_FONT_WEIGHT, SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::icon;
 
 /// One row of a menu.
@@ -1378,6 +1378,7 @@ impl RenderOnce for MenuCard {
         });
 
         let mut root_card = div()
+            .font_weight(DEFAULT_FONT_WEIGHT)
             .id(self.id)
             .min_w(px(176.0))
             .max_w(px(320.0))
@@ -1466,6 +1467,7 @@ impl RenderOnce for MenuCard {
             let offset = submenu_offset.unwrap_or(0.0);
             let mut submenu_card = div()
                 .id(SharedString::from(format!("submenu-{parent_index}")))
+                .font_weight(DEFAULT_FONT_WEIGHT)
                 .occlude()
                 .min_w(px(176.0))
                 .max_w(px(320.0))
