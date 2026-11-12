@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.9] - 2026-11-12
+
+- Hide the Git section for folders that are not inside a repository
+- Show follow-up decision cards only when a reply needs the user's input to continue
+
 ## [2.5.8] - 2026-11-12
 
 - Show status icons for all active background tasks, including subagents
