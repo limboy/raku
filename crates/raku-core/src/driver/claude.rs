@@ -29,7 +29,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -331,18 +331,36 @@ const TASK_LIST_INSTRUCTIONS: &str = concat!(
     "goes without a list."
 );
 
-/// Claude's task list, rebuilt from the tool stream: `TaskCreate` and
-/// `TaskUpdate` each name one task, never the list, so the whole list the
-/// pinned view needs only exists as the sum of the calls so far.
+/// Claude persists tasks for the whole session. The pinned list includes only
+/// tasks created or explicitly resumed in the current prompted turn; finishing
+/// an older task must not bring its old plan back into view.
 #[derive(Debug, Default)]
 struct ClaudeTaskList {
     /// Task id → step, in creation order.
     tasks: Vec<(String, PlanStep)>,
     /// Task tool inputs awaiting their result, by tool-use id.
     pending: HashMap<String, Value>,
+    current: HashSet<String>,
+    /// The writer advances this before sending a fresh prompt. Steering and
+    /// background wakes keep the same plan because they continue its turn.
+    turn_generation: Arc<AtomicU64>,
+    observed_turn_generation: u64,
 }
 
 impl ClaudeTaskList {
+    fn sync_turn(&mut self) {
+        let generation = self.turn_generation.load(Ordering::Relaxed);
+        if generation != self.observed_turn_generation {
+            self.begin_turn();
+            self.observed_turn_generation = generation;
+        }
+    }
+
+    fn begin_turn(&mut self) {
+        self.current.clear();
+        self.pending.clear();
+    }
+
     fn is_task_tool(name: &str) -> bool {
         name == TASK_CREATE_TOOL || name == TASK_UPDATE_TOOL
     }
@@ -389,14 +407,20 @@ impl ClaudeTaskList {
         };
         let status = input.get("status").and_then(Value::as_str);
         if let Some(id) = text(input.get("taskId")) {
-            let Some(index) = self.tasks.iter().position(|(task, _)| *task == id) else {
+            let index = if let Some(index) = self.tasks.iter().position(|(task, _)| *task == id) {
+                index
+            } else {
+                if matches!(status, Some("completed" | "deleted")) {
+                    return None;
+                }
                 // A list begun before this process started (a resumed
                 // session): Claude's own store already holds this update.
                 self.tasks = claude_tasks_on_disk(session_id)?;
-                return self.steps();
+                self.tasks.iter().position(|(task, _)| *task == id)?
             };
             if status == Some("deleted") {
                 self.tasks.remove(index);
+                self.current.remove(&id);
             } else {
                 let step = &mut self.tasks[index].1;
                 if status.is_some() {
@@ -404,6 +428,9 @@ impl ClaudeTaskList {
                 }
                 if let Some(subject) = text(input.get("subject")) {
                     step.text = subject;
+                }
+                if matches!(status, Some("pending" | "in_progress")) {
+                    self.current.insert(id);
                 }
             }
         } else {
@@ -413,19 +440,26 @@ impl ClaudeTaskList {
                 .or_else(|| text(input.get("subject")))?;
             if !self.tasks.iter().any(|(task, _)| *task == id) {
                 self.tasks.push((
-                    id,
+                    id.clone(),
                     PlanStep {
                         text: subject,
                         status: PlanStepStatus::Pending,
                     },
                 ));
             }
+            self.current.insert(id);
         }
         self.steps()
     }
 
     fn steps(&self) -> Option<Vec<PlanStep>> {
-        (!self.tasks.is_empty()).then(|| self.tasks.iter().map(|(_, step)| step.clone()).collect())
+        let steps = self
+            .tasks
+            .iter()
+            .filter(|(id, _)| self.current.contains(id))
+            .map(|(_, step)| step.clone())
+            .collect::<Vec<_>>();
+        (!steps.is_empty()).then_some(steps)
     }
 }
 
@@ -792,6 +826,8 @@ impl ClaudeDriver {
         let (commands, command_rx) = unbounded();
         let permission_policy = permission_policy(mode);
         let turn_active = Arc::new(Mutex::new(false));
+        let task_list_turn = Arc::new(AtomicU64::new(0));
+        let reader_task_list_turn = task_list_turn.clone();
         let pending_task_stops = Arc::new(Mutex::new(HashMap::<String, BackgroundWorkKey>::new()));
         let pending_user_inputs = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
         let pending_plans = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
@@ -831,6 +867,10 @@ impl ClaudeDriver {
                     subagent_calls: reader_subagent_calls,
                     manual_compaction: reader_compaction,
                     compaction_cancelled: reader_compaction_cancelled,
+                    task_list: ClaudeTaskList {
+                        turn_generation: reader_task_list_turn,
+                        ..ClaudeTaskList::default()
+                    },
                     ..ClaudeStreamState::default()
                 };
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -877,6 +917,7 @@ impl ClaudeDriver {
                         }
 
                         CommandMessage::Prompt(text) => {
+                            task_list_turn.fetch_add(1, Ordering::Relaxed);
                             compaction_cancelled.store(false, Ordering::Release);
                             *writer_turn.lock() = true;
                             if track_title {
@@ -2096,6 +2137,9 @@ fn begin_unprompted_turn(
     if *active && !state.parked {
         return;
     }
+    if !*active {
+        state.task_list.begin_turn();
+    }
     *active = true;
     state.parked = false;
     let _ = events.send(DriverEvent::TurnStarted);
@@ -2111,6 +2155,7 @@ fn handle_message(
     permission_policy: PermissionPolicy,
     state: &mut ClaudeStreamState,
 ) {
+    state.task_list.sync_turn();
     match value.get("type").and_then(Value::as_str) {
         Some("system") => {
             // The init handshake carries the CLI's own command registry —
@@ -3955,40 +4000,42 @@ mod tests {
         );
     }
 
+    // Payloads from live CLI task calls, including the cross-turn completion
+    // that originally brought an older model-picker plan back after a commit.
+    fn task_call(id: &str, name: &str, input: Value, result: Value) -> [Value; 2] {
+        [
+            json!({"type":"assistant","message":{"content":[
+                {"type":"tool_use","id":id,"name":name,"input":input}]}}),
+            json!({"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":id,"content":"ok"}]},
+                "tool_use_result":result}),
+        ]
+    }
+
     #[test]
     fn task_tool_calls_accumulate_into_the_whole_task_list() {
         let (events, event_rx, commands, _command_rx, turn, mut state) = harness();
-        // Payloads from a live CLI 2.1.316 turn with the todo tools enabled.
-        let call = |id: &str, name: &str, input: Value, result: Value| {
-            [
-                json!({"type":"assistant","message":{"content":[
-                    {"type":"tool_use","id":id,"name":name,"input":input}]}}),
-                json!({"type":"user","message":{"content":[
-                    {"type":"tool_result","tool_use_id":id,"content":"ok"}]},
-                    "tool_use_result":result}),
-            ]
-        };
         let wire = [
-            call(
+            task_call(
                 "t1",
                 "TaskCreate",
                 json!({"subject":"Alpha","description":"Step Alpha"}),
                 json!({"task":{"id":"1","subject":"Alpha"}}),
             ),
-            call(
+            task_call(
                 "t2",
                 "TaskCreate",
                 json!({"subject":"Beta","description":"Step Beta"}),
                 json!({"task":{"id":"2","subject":"Beta"}}),
             ),
-            call(
+            task_call(
                 "t3",
                 "TaskUpdate",
                 json!({"taskId":"1","status":"completed"}),
                 json!({"success":true,"taskId":"1","updatedFields":["status"],
                     "statusChange":{"from":"pending","to":"completed"}}),
             ),
-            call(
+            task_call(
                 "t4",
                 "TaskUpdate",
                 json!({"taskId":"2","status":"in_progress"}),
@@ -4046,6 +4093,152 @@ mod tests {
                 step("Beta", PlanStepStatus::InProgress)
             ]
         );
+    }
+
+    #[test]
+    fn finishing_an_old_task_during_a_commit_does_not_restore_its_plan() {
+        let (events, event_rx, commands, _command_rx, turn, mut state) = harness();
+        let side_chat = "Port subagent model select into side chat";
+        let text_generation = "Use scrollable dropdown in text generation model select";
+        for (generation, call, expected) in [
+            (
+                1,
+                task_call(
+                    "create-side-chat",
+                    "TaskCreate",
+                    json!({"subject":side_chat}),
+                    json!({"task":{"id":"1","subject":side_chat}}),
+                ),
+                Some((side_chat, PlanStepStatus::Pending)),
+            ),
+            (
+                1,
+                task_call(
+                    "finish-side-chat",
+                    "TaskUpdate",
+                    json!({"taskId":"1","status":"completed"}),
+                    json!({"success":true,"taskId":"1","updatedFields":["status"]}),
+                ),
+                Some((side_chat, PlanStepStatus::Completed)),
+            ),
+            (
+                2,
+                task_call(
+                    "create-text-generation",
+                    "TaskCreate",
+                    json!({"subject":text_generation}),
+                    json!({"task":{"id":"4","subject":text_generation}}),
+                ),
+                Some((text_generation, PlanStepStatus::Pending)),
+            ),
+            (
+                2,
+                task_call(
+                    "start-text-generation",
+                    "TaskUpdate",
+                    json!({"taskId":"4","status":"in_progress"}),
+                    json!({"success":true,"taskId":"4","updatedFields":["status"]}),
+                ),
+                Some((text_generation, PlanStepStatus::InProgress)),
+            ),
+            (
+                3,
+                task_call(
+                    "finish-text-generation-after-commit",
+                    "TaskUpdate",
+                    json!({"status":"completed","taskId":"4"}),
+                    json!({"success":true,"taskId":"4","updatedFields":["status"],
+                        "statusChange":{"from":"in_progress","to":"completed"}}),
+                ),
+                None,
+            ),
+        ] {
+            // The prompt writer advances the generation before each request.
+            state
+                .task_list
+                .turn_generation
+                .store(generation, Ordering::Relaxed);
+            for value in call {
+                handle_message(
+                    &value,
+                    "s",
+                    &events,
+                    &commands,
+                    &turn,
+                    PermissionPolicy::AutoApprove,
+                    &mut state,
+                );
+            }
+            let snapshots = event_rx
+                .try_iter()
+                .filter_map(|event| match event {
+                    DriverEvent::RichActivity(item) if !item.plan_steps.is_empty() => {
+                        Some(item.plan_steps)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if let Some((text, status)) = expected {
+                assert_eq!(
+                    snapshots,
+                    [vec![PlanStep {
+                        text: text.into(),
+                        status
+                    }]]
+                );
+            } else {
+                assert!(
+                    snapshots.is_empty(),
+                    "commit must not bring back an old plan"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_old_task_can_be_explicitly_resumed_without_restoring_other_tasks() {
+        let mut list = ClaudeTaskList {
+            tasks: vec![
+                (
+                    "1".into(),
+                    PlanStep {
+                        text: "Old completed work".into(),
+                        status: PlanStepStatus::Completed,
+                    },
+                ),
+                (
+                    "4".into(),
+                    PlanStep {
+                        text: "Work to resume".into(),
+                        status: PlanStepStatus::Pending,
+                    },
+                ),
+            ],
+            ..ClaudeTaskList::default()
+        };
+        for status in ["in_progress", "completed"] {
+            list.pending
+                .insert("update".into(), json!({"taskId":"4","status":status}));
+            let steps = list
+                .settle("update", false, Some(&json!({"success":true})), "s")
+                .unwrap();
+            assert_eq!(steps.len(), 1);
+            assert_eq!(steps[0].text, "Work to resume");
+            assert_eq!(steps[0].status, PlanStepStatus::from_wire(Some(status)));
+        }
+        // A resumed transport may have no cached tasks at all. Bookkeeping
+        // completions still must not load the session's whole persisted plan.
+        let mut empty = ClaudeTaskList::default();
+        empty.pending.insert(
+            "finish-old".into(),
+            json!({"taskId":"4","status":"completed"}),
+        );
+        assert!(
+            empty
+                .settle("finish-old", false, Some(&json!({"success":true})), "s")
+                .is_none()
+        );
+        assert!(empty.tasks.is_empty());
     }
 
     #[test]

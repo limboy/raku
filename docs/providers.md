@@ -393,6 +393,11 @@ only reports denials after the fact on `result`.
 **Lifetime** — long-lived. One process serves the conversation, with turns fed
 as newline-delimited user messages on stdin.
 
+Claude's native tasks also live for the whole conversation. Raku pins only
+tasks created or explicitly resumed (`pending` / `in_progress`) in the current
+prompted turn. Completing an older task is bookkeeping and does not restore
+its plan. Steering and a parked turn's background wake keep the current list.
+
 **Per turn** — write `{"type":"user","message":{"role":"user","content":[…]},
 "parent_tool_use_id":null}`; the turn ends with a `result` message carrying
 `is_error`, `stop_reason`, usage, and `permission_denials`.
