@@ -90,29 +90,50 @@ pub fn discover_catalog(
     provider: ProviderKind,
     binary: &Path,
 ) -> (Vec<ProviderModel>, Vec<ProviderAgentPreset>) {
-    let (discovered, discovered_presets) = match provider {
-        ProviderKind::Codex => (discover_codex_models(binary), None),
-        ProviderKind::Claude => (discover_claude_models(binary), None),
+    let (discovered, discovered_presets, enabled_models) = match provider {
+        ProviderKind::Codex => (discover_codex_models(binary), None, HashMap::new()),
+        ProviderKind::Claude => (discover_claude_models(binary), None, HashMap::new()),
         ProviderKind::Pi => std::thread::scope(|scope| {
-            // The Console round trip overlaps the RPC probe instead of
+            // The gateway round trips overlap the RPC probe instead of
             // extending discovery.
-            let disabled = scope.spawn(opencode_console_disabled_models);
+            let enabled = scope.spawn(opencode_enabled_models);
             let models = discover_pi_models(binary);
-            let disabled = disabled.join().unwrap_or_default();
-            (without_disabled_models(models, &disabled), None)
+            (models, None, enabled.join().unwrap_or_default())
         }),
     };
-    let models = if discovered.is_empty() {
-        // A failed or empty probe keeps the last successful discovery over
-        // the hardcoded catalog, so one bad CLI run can't shrink the picker.
+    let refresh_cache = !discovered.is_empty() || !enabled_models.is_empty();
+    let models = resolve_catalog_models(discovered, &enabled_models, || {
         cached_models(provider).unwrap_or_else(|| fallback_models(provider))
-    } else {
-        let models = deduplicate(discovered);
+    });
+    if refresh_cache {
         write_cached_models(provider, &models);
-        models
-    };
+    }
     let presets = discovered_presets.unwrap_or_default();
     (models, presets)
+}
+
+fn resolve_catalog_models(
+    discovered: Vec<ProviderModel>,
+    enabled_models: &HashMap<String, HashSet<String>>,
+    fallback: impl FnOnce() -> Vec<ProviderModel>,
+) -> Vec<ProviderModel> {
+    // Only a failed or empty CLI probe falls back. An authoritative empty
+    // gateway list must stay empty, and applies to cached catalogs too.
+    let models = if discovered.is_empty() {
+        fallback()
+    } else {
+        deduplicate(discovered)
+    };
+    models
+        .into_iter()
+        .filter(|model| {
+            model.id.split_once('/').is_none_or(|(provider, id)| {
+                enabled_models
+                    .get(provider)
+                    .is_none_or(|enabled| enabled.contains(id))
+            })
+        })
+        .collect()
 }
 
 /// Where a provider's last discovered catalog is cached. Debug builds keep it
@@ -272,40 +293,36 @@ fn claude_release_label(label: &str, description: Option<&str>) -> String {
         None => label.to_owned(),
     }
 }
-/// Pi's providers backed by an OpenCode Console workspace: Zen and Go.
-const PI_OPENCODE_PROVIDERS: [&str; 2] = ["opencode", crate::usage::PI_OPENCODE_GO_PROVIDER];
+/// Each gateway reports the models enabled for its own API key's workspace.
+const PI_OPENCODE_PROVIDERS: [(&str, &str); 2] = [
+    ("opencode", "https://opencode.ai/zen/v1/models"),
+    (
+        crate::usage::PI_OPENCODE_GO_PROVIDER,
+        "https://opencode.ai/zen/go/v1/models",
+    ),
+];
 
-/// The workspace config OpenCode's own CLI loads. It is keyed by the API key's
-/// workspace and lists, per provider, the models switched off on the
-/// Console's Models page.
-const OPENCODE_CONSOLE_CONFIG_URL: &str = "https://opencode.ai/console/api/v2/config";
-
-/// `provider/model` ids of Pi's OpenCode models that the user's workspace
-/// disabled. Pi lists every model it ships for these providers, and requests
-/// to a disabled one would fail. Empty when Pi has no OpenCode key or the
-/// Console can't be read, which leaves the catalog unfiltered. Blocking
-/// file and network I/O.
-fn opencode_console_disabled_models() -> HashSet<String> {
-    let mut configs: HashMap<String, Option<Value>> = HashMap::new();
-    let mut disabled = HashSet::new();
-    for provider in PI_OPENCODE_PROVIDERS {
+/// Pi lists every model it ships for Zen and Go, even models the workspace
+/// hasn't enabled. Use the gateways' enabled catalogs rather than inferring
+/// availability from the Console's sparse disabled-model overrides. A failed
+/// request leaves that provider unfiltered; a successful empty list hides all
+/// of its models. Blocking file and network I/O.
+fn opencode_enabled_models() -> HashMap<String, HashSet<String>> {
+    let mut enabled = HashMap::new();
+    for (provider, url) in PI_OPENCODE_PROVIDERS {
         let Some(api_key) = crate::usage::pi_opencode_api_key(provider) else {
             continue;
         };
-        // Zen and Go usually share one key, hence one workspace and one fetch.
-        let config = configs
-            .entry(api_key)
-            .or_insert_with_key(|api_key| fetch_opencode_console_config(api_key));
-        if let Some(config) = config {
-            disabled.extend(opencode_disabled_model_ids(config, provider));
+        if let Some(models) = fetch_opencode_enabled_model_ids(url, &api_key) {
+            enabled.insert(provider.to_owned(), models);
         }
     }
-    disabled
+    enabled
 }
 
-fn fetch_opencode_console_config(api_key: &str) -> Option<Value> {
+fn fetch_opencode_enabled_model_ids(url: &str, api_key: &str) -> Option<HashSet<String>> {
     let (status, body) = crate::usage::http_get(
-        OPENCODE_CONSOLE_CONFIG_URL,
+        url,
         &[
             format!("Authorization: Bearer {api_key}"),
             "Accept: application/json".to_owned(),
@@ -313,38 +330,23 @@ fn fetch_opencode_console_config(api_key: &str) -> Option<Value> {
         ],
     )
     .ok()?;
-    (status == 200)
-        .then(|| serde_json::from_str(&body).ok())
-        .flatten()
-}
-
-/// Live shape verified on 2026-11-04:
-/// `{"providers":{"opencode-go":{"models":{"glm-5.2":{"disabled":true}}}}}`.
-fn opencode_disabled_model_ids<'a>(
-    config: &'a Value,
-    provider: &'a str,
-) -> impl Iterator<Item = String> + 'a {
-    config
-        .get("providers")
-        .and_then(|providers| providers.get(provider))
-        .and_then(|provider| provider.get("models"))
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .filter(|(_, model)| model.get("disabled").and_then(Value::as_bool) == Some(true))
-        .map(move |(model_id, _)| format!("{provider}/{model_id}"))
-}
-
-fn without_disabled_models(
-    models: Vec<ProviderModel>,
-    disabled: &HashSet<String>,
-) -> Vec<ProviderModel> {
-    if disabled.is_empty() {
-        return models;
+    if status != 200 {
+        return None;
     }
-    models
-        .into_iter()
-        .filter(|model| !disabled.contains(&model.id))
+    parse_opencode_enabled_model_ids(&serde_json::from_str(&body).ok()?)
+}
+
+/// Live shape verified on 2026-11-13 for both Zen and Go:
+/// `{"object":"list","data":[{"id":"gemini-4-argon",...}]}`.
+fn parse_opencode_enabled_model_ids(response: &Value) -> Option<HashSet<String>> {
+    response
+        .get("data")?
+        .as_array()?
+        .iter()
+        .map(|model| {
+            let id = model.get("id")?.as_str()?.trim();
+            (!id.is_empty()).then(|| id.to_owned())
+        })
         .collect()
 }
 
@@ -1032,30 +1034,60 @@ printf '%s\n' '{"type":"control_response","response":{"request_id":"raku-initial
     }
 
     #[test]
-    fn opencode_console_disabled_models_leave_only_enabled_pi_models() {
-        let config = json!({"providers": {
-            "opencode": {"models": {"glm-5.2": {"disabled": true}}},
-            "opencode-go": {"models": {
-                "kimi-k3": {"disabled": true},
-                "glm-5.3": {"disabled": false}
-            }}
-        }});
-        let disabled = PI_OPENCODE_PROVIDERS
-            .into_iter()
-            .flat_map(|provider| opencode_disabled_model_ids(&config, provider))
-            .collect::<HashSet<_>>();
+    fn parses_opencode_enabled_catalogs_and_distinguishes_empty_from_invalid() {
+        let enabled = parse_opencode_enabled_model_ids(&json!({
+            "object": "list",
+            "data": [
+                {"id": "gemini-4-argon", "object": "model", "owned_by": "opencode"},
+                {"id": "deepseek-v4.1-flash", "object": "model"},
+                {"id": "gemini-4-argon", "object": "model"}
+            ]
+        }));
+        assert_eq!(
+            enabled,
+            Some(HashSet::from([
+                "gemini-4-argon".to_owned(),
+                "deepseek-v4.1-flash".to_owned(),
+            ]))
+        );
+        assert_eq!(
+            parse_opencode_enabled_model_ids(&json!({"data": []})),
+            Some(HashSet::new())
+        );
+        for invalid in [
+            json!({"error": {"message": "Unauthorized"}}),
+            json!({"data": null}),
+            json!({"data": [{"name": "Missing id"}]}),
+            json!({"data": [{"id": "  "}]}),
+        ] {
+            assert!(parse_opencode_enabled_model_ids(&invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn opencode_catalogs_leave_only_enabled_models_for_each_provider() {
+        let enabled = HashMap::from([
+            ("opencode".to_owned(), HashSet::from(["kimi-k3".to_owned()])),
+            (
+                "opencode-go".to_owned(),
+                HashSet::from(["glm-5.3".to_owned(), "glm-5.2".to_owned()]),
+            ),
+        ]);
         let models = [
             "opencode-go/kimi-k3",
             "opencode-go/glm-5.3",
             // Zen's switch must not hide Go's model of the same name.
             "opencode-go/glm-5.2",
             "opencode/glm-5.2",
+            "opencode/kimi-k3",
+            // A model absent from the gateway must not leak from Pi's catalog.
+            "opencode/unlisted-model",
             "anthropic/kimi-k3",
         ]
         .map(|id| ProviderModel::new(id, id))
         .to_vec();
 
-        let ids = without_disabled_models(models, &disabled)
+        let ids = resolve_catalog_models(models, &enabled, || panic!("live catalog is present"))
             .into_iter()
             .map(|model| model.id)
             .collect::<Vec<_>>();
@@ -1065,9 +1097,54 @@ printf '%s\n' '{"type":"control_response","response":{"request_id":"raku-initial
             [
                 "opencode-go/glm-5.3",
                 "opencode-go/glm-5.2",
+                "opencode/kimi-k3",
                 "anthropic/kimi-k3"
             ]
         );
+    }
+
+    #[test]
+    fn opencode_enabled_catalogs_also_filter_cached_fallbacks() {
+        let enabled = HashMap::from([
+            ("opencode".to_owned(), HashSet::new()),
+            (
+                "opencode-go".to_owned(),
+                HashSet::from(["gemini-4-argon".to_owned()]),
+            ),
+        ]);
+        let models = resolve_catalog_models(Vec::new(), &enabled, || {
+            [
+                "opencode/gemini-4-carbon",
+                "opencode-go/gemini-4-argon",
+                "opencode-go/kimi-k3",
+                "anthropic/kimi-k3",
+            ]
+            .map(|id| ProviderModel::new(id, id))
+            .to_vec()
+        });
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["opencode-go/gemini-4-argon", "anthropic/kimi-k3"]
+        );
+
+        let models = resolve_catalog_models(
+            vec![ProviderModel::new("opencode/kimi-k3", "Kimi K3")],
+            &enabled,
+            || panic!("an empty enabled catalog must not revive cached models"),
+        );
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn unavailable_opencode_catalogs_preserve_pi_models() {
+        let models = resolve_catalog_models(Vec::new(), &HashMap::new(), || {
+            vec![ProviderModel::new("opencode/kimi-k3", "Kimi K3")]
+        });
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "opencode/kimi-k3");
     }
 
     #[test]
