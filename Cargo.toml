@@ -1,6 +1,6 @@
 [package]
 name = "raku"
-version = "2.5.10"
+version = "2.5.11"
 edition = "2024"
 description = "A fast, native control plane for local coding agents"
 license = "GPL-3.0-only"

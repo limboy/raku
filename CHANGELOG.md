@@ -16,6 +16,13 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.11] - 2026-11-13
+
+- Make the model picker in Side Chat and Text Generation scrollable
+- Show only the OpenCode Zen and Go models enabled for the current workspace
+- Keep Claude's pinned task list scoped to the current turn
+- Keep the working status label's text steady while it shimmers
+
 ## [2.5.10] - 2026-11-13
 
 - Add a configurable fallback font for characters the chosen font lacks, with Auto following the interface language
