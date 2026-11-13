@@ -2204,6 +2204,7 @@ impl Raku {
                 SharedString::from(label),
                 theme.text_tertiary,
                 theme.text,
+                theme.canvas,
             ))
             .when(!parked, |row| {
                 row.child(

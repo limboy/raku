@@ -1,7 +1,7 @@
 use super::*;
 
 use chrono::{Datelike, Days};
-use gpui::{HighlightStyle, StyledText};
+use gpui::RenderOnce;
 use std::path::Path;
 
 const USER_MESSAGE_MAX_HEIGHT: f32 = 400.0;
@@ -25,41 +25,34 @@ pub(super) fn pulse_dot(size: f32, color: Hsla) -> AnyElement {
 
 /// The live turn's status label ("Working", "Running a command", …) with a
 /// soft highlight sweeping across it, the transcript's "still working" signal.
-/// Each character is tinted toward `highlight` by its distance from a band
+/// Each glyph is tinted toward `highlight` by its distance from a band
 /// centre that rides the shared pulse clock. The sweep starts off the left
 /// edge and rests off the right edge, so under reduce-motion — where the clock
 /// holds phase 0 — the label renders as plain `base` text.
-pub(super) fn shimmer_text(text: SharedString, base: Hsla, highlight: Hsla) -> AnyElement {
-    /// Half-width of the highlight band, in characters.
-    const BAND: f32 = 3.0;
-    /// Share of the cycle spent sweeping; the rest is a pause between passes.
-    const SWEEP: f32 = 0.42;
+pub(super) fn shimmer_text(
+    text: SharedString,
+    base: Hsla,
+    highlight: Hsla,
+    background: Hsla,
+) -> AnyElement {
+    // Status colors are neutral in both themes. Reproduce the base shade by
+    // fading the highlight over the canvas, keeping its RGB (and macOS's
+    // luminance-dependent glyph dilation) fixed throughout the sweep.
+    let contrast = highlight.l - background.l;
+    let base_opacity = if contrast.abs() > f32::EPSILON {
+        ((base.l - background.l) / contrast).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
     motion::pulse(Duration::from_millis(2100), move |phase| {
-        let chars = text.chars().count() as f32;
-        let progress = (phase / SWEEP).min(1.0);
-        let centre = -BAND + progress * (chars + 2.0 * BAND);
-        let highlights = text
-            .char_indices()
-            .enumerate()
-            .filter_map(|(index, (start, ch))| {
-                let distance = (index as f32 + 0.5 - centre).abs();
-                if distance >= BAND {
-                    return None;
-                }
-                let weight = 0.5 * (1.0 + (std::f32::consts::PI * distance / BAND).cos());
-                let color = base.blend(highlight.opacity(weight));
-                Some((
-                    start..start + ch.len_utf8(),
-                    HighlightStyle {
-                        color: Some(color),
-                        ..Default::default()
-                    },
-                ))
-            })
-            .collect::<Vec<_>>();
         div()
-            .text_color(base)
-            .child(StyledText::new(text).with_highlights(highlights))
+            .text_color(highlight)
+            .child(ShimmerText {
+                text,
+                base_opacity,
+                highlight,
+                phase,
+            })
             .into_any_element()
     })
     // Mounted for the whole turn: this is what sets the transcript pane's
@@ -67,6 +60,79 @@ pub(super) fn shimmer_text(text: SharedString, base: Hsla, highlight: Hsla) -> A
     // steps visibly at 15 Hz, so this one rides the ~30 Hz pulse cadence.
     .every(1)
     .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct ShimmerText {
+    text: SharedString,
+    base_opacity: f32,
+    highlight: Hsla,
+    phase: f32,
+}
+
+impl RenderOnce for ShimmerText {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let line_height = window.pixel_snap(
+            style
+                .line_height
+                .to_pixels(font_size.into(), window.rem_size()),
+        );
+        let chars = self.text.chars().count().max(1) as f32;
+        // Color boundaries split GPUI's shaping runs and can change kerning
+        // and ligatures. Shape one uniform run; animate only its glyph paint.
+        let line = window.text_system().shape_line(
+            self.text.clone(),
+            font_size,
+            &[style.to_run(self.text.len())],
+            None,
+        );
+        let width = line.width();
+        let band = 3.0 * f32::from(width) / chars;
+        // Sweep for the first 42% of the cycle, then pause off the right edge.
+        let centre = -band + (self.phase / 0.42).min(1.0) * (f32::from(width) + 2.0 * band);
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let baseline = bounds.origin
+                    + point(
+                        px(0.0),
+                        (line_height - line.ascent - line.descent) / 2.0 + line.ascent,
+                    );
+                window.paint_layer(bounds, |window| {
+                    for run in &line.runs {
+                        for glyph in &run.glyphs {
+                            let distance = (f32::from(glyph.position.x) - centre).abs();
+                            let weight = if distance < band {
+                                0.5 * (1.0 + (std::f32::consts::PI * distance / band).cos())
+                            } else {
+                                0.0
+                            };
+                            let origin = baseline + glyph.position;
+                            if glyph.is_emoji {
+                                let _ =
+                                    window.paint_emoji(origin, run.font_id, glyph.id, font_size);
+                            } else {
+                                let color = self.highlight.opacity(
+                                    self.base_opacity + (1.0 - self.base_opacity) * weight,
+                                );
+                                let _ = window.paint_glyph(
+                                    origin,
+                                    run.font_id,
+                                    glyph.id,
+                                    font_size,
+                                    color,
+                                );
+                            }
+                        }
+                    }
+                });
+            },
+        )
+        .w(width.ceil())
+        .h(line_height)
+    }
 }
 
 pub(super) fn format_message_time(created_at: u64) -> String {
