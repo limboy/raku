@@ -1766,7 +1766,7 @@ impl Raku {
             let weak = cx.entity().downgrade();
             let model_handle = self.menu_handle("side-chat-model-selector", cx);
             let label = self.model_display_name(provider, selected_model.as_deref());
-            let selector = dropdown_menu(
+            let selector = scrollable_dropdown_menu(
                 MenuChip::new("side-chat-model-selector")
                     .label(label)
                     .outlined()

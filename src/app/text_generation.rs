@@ -258,7 +258,7 @@ impl Raku {
             let weak = cx.entity().downgrade();
             let handle = self.menu_handle("text-generation-model-selector", cx);
             let label = self.model_display_name(provider, selected_model.as_deref());
-            dropdown_menu(
+            scrollable_dropdown_menu(
                 MenuChip::new("text-generation-model-selector")
                     .label(label)
                     .outlined()
