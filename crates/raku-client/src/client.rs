@@ -14,6 +14,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 use uuid::Uuid;
 
+use crate::diagnostics::log_daemon_event;
 use raku_protocol::MAX_WIRE_MESSAGE_BYTES;
 use raku_protocol::{
     ClientMessage, Command, PROTOCOL_VERSION, ReplayCursor, Request, ResponseOutcome,
@@ -127,6 +128,11 @@ impl DaemonClient {
         let (events, receiver) = unbounded();
         let key = (session_id, runtime_id);
         let mut sessions = self.inner.sessions.lock();
+        // A subscriber registered after the disconnect sweep must also see
+        // a closed channel, so its runtime adapter can follow a replacement.
+        if self.is_disconnected() {
+            return receiver;
+        }
         sessions.insert(key, events.clone());
         // Keep the subscription lock while draining the pre-subscription
         // replay queue. The socket thread takes these locks in the same order,
@@ -142,8 +148,8 @@ impl DaemonClient {
     /// Whether two handles send through the same WebSocket connection.
     ///
     /// The daemon supervisor publishes replacement clients after a managed
-    /// restart. Runtime adapters use this identity check to ignore the
-    /// subscription's initial snapshot and wait for an actual replacement.
+    /// restart or transport reconnect. Runtime adapters use this check to
+    /// ignore the subscription's initial snapshot and wait for a replacement.
     pub fn same_connection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
@@ -152,13 +158,37 @@ impl DaemonClient {
         self.inner.disconnected.load(Ordering::Acquire)
     }
 
+    pub(crate) fn reconnect(&self, address: &str, token: String) -> anyhow::Result<Self> {
+        debug_assert!(self.is_disconnected());
+        let replacement = Self::connect_with_resume(address, token, self.last_sequences())?;
+        // Cursors include events buffered before a runtime subscribed. They
+        // will not be replayed again, so carry them into the new connection
+        // ahead of anything it has just received. No caller can subscribe to
+        // the replacement until this method returns.
+        let buffered = std::mem::take(&mut *self.inner.pending_events.lock());
+        let mut pending = replacement.inner.pending_events.lock();
+        for (key, mut older) in buffered {
+            let newer = pending.entry(key).or_default();
+            older.append(newer);
+            while older.len() > MAX_BUFFERED_EVENTS_PER_RUNTIME {
+                older.pop_front();
+            }
+            *newer = older;
+        }
+        drop(pending);
+        Ok(replacement)
+    }
+
     pub fn unsubscribe(&self, session_id: Uuid, runtime_id: Uuid) {
         self.inner.sessions.lock().remove(&(session_id, runtime_id));
     }
 
     pub fn subscribe_task_state(&self) -> Receiver<u64> {
         let (events, receiver) = unbounded();
-        self.inner.task_state_subscribers.lock().push(events);
+        let mut subscribers = self.inner.task_state_subscribers.lock();
+        if !self.is_disconnected() {
+            subscribers.push(events);
+        }
         receiver
     }
 
@@ -320,7 +350,7 @@ fn run_client(
     // The hello read may have buffered replayed events behind it, which no
     // readiness event will report; drain once before the first wait.
     let mut drain = true;
-    'connection: loop {
+    let disconnect_reason = 'connection: loop {
         if drain {
             drain = false;
             loop {
@@ -331,10 +361,12 @@ fn run_client(
                             continue;
                         };
                         if !deliver_server_message(message, &inner) {
-                            break 'connection;
+                            break 'connection None;
                         }
                     }
-                    Ok(Message::Close(_)) => break 'connection,
+                    Ok(Message::Close(frame)) => {
+                        break 'connection Some(format!("daemon closed WebSocket: {frame:?}"));
+                    }
                     Ok(Message::Ping(_)) => {
                         let _ = socket.flush();
                     }
@@ -342,11 +374,11 @@ fn run_client(
                     // Drained. Level-triggered interest reports anything an
                     // interrupted read left behind as soon as it is rearmed.
                     Err(tungstenite::Error::Io(error)) if retryable_io(&error) => break,
-                    Err(_) => break 'connection,
+                    Err(error) => break 'connection Some(format!("read failed: {error}")),
                 }
             }
-            if readable.rearm().is_err() {
-                break;
+            if let Err(error) = readable.rearm() {
+                break Some(format!("could not rearm socket readiness: {error}"));
             }
         }
         select! {
@@ -355,14 +387,14 @@ fn run_client(
                 while let Some(next) = message {
                     match next {
                         Outgoing::Message(message) => {
-                            if write_json(&mut socket, &message).is_err() {
-                                break 'connection;
+                            if let Err(error) = write_json(&mut socket, &message) {
+                                break 'connection Some(format!("write failed: {error:#}"));
                             }
                         }
                         Outgoing::Shutdown => {
                             let _ = write_json(&mut socket, &ClientMessage::Shutdown);
                             let _ = socket.flush();
-                            break 'connection;
+                            break 'connection None;
                         }
                     }
                     message = outgoing.try_recv().ok();
@@ -370,13 +402,15 @@ fn run_client(
             }
             recv(readable.ready) -> ready => {
                 if ready.is_err() {
-                    break;
+                    break Some("socket readiness watcher stopped".into());
                 }
                 drain = true;
             }
         }
-    }
+    };
 
+    drop(readable);
+    drop(socket);
     inner.disconnected.store(true, Ordering::Release);
     let pending = std::mem::take(&mut *inner.pending.lock());
     for (_, response) in pending {
@@ -391,6 +425,9 @@ fn run_client(
     // `processExited` event emitted by the daemon.
     drop(std::mem::take(&mut *inner.sessions.lock()));
     inner.task_state_subscribers.lock().clear();
+    if let Some(reason) = disconnect_reason {
+        log_daemon_event(format_args!("Raku daemon transport disconnected: {reason}"));
+    }
 }
 
 /// Routes one server message. Returns `false` once the daemon says it is
@@ -659,6 +696,18 @@ mod tests {
                 .begin_request(Uuid::nil(), Uuid::nil(), Command::LoadComposerDrafts)
                 .is_err()
         );
+        assert!(matches!(
+            client
+                .subscribe(Uuid::new_v4(), Uuid::new_v4())
+                .recv_timeout(Duration::from_secs(1)),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected)
+        ));
+        assert!(matches!(
+            client
+                .subscribe_task_state()
+                .recv_timeout(Duration::from_secs(1)),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected)
+        ));
         server.join().unwrap();
     }
 

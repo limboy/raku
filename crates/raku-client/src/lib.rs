@@ -7,6 +7,7 @@
 mod client;
 pub mod command_env;
 pub mod composer_complete;
+mod diagnostics;
 pub mod driver;
 pub mod legacy_data;
 pub mod persistence;

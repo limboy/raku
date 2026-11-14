@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use uuid::Uuid;
 
 use crate::DaemonClient;
+use crate::diagnostics::log_daemon_event;
 use raku_protocol::{
     APP_EXECUTABLE_ENV, Command, DAEMON_TOKEN_ENV, DaemonReady, DaemonSettings, PROTOCOL_VERSION,
     ResponsePayload,
@@ -24,6 +25,8 @@ const REBUILD_POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub struct DaemonProcess {
     client: DaemonClient,
     child: Child,
+    address: String,
+    token: String,
 }
 
 impl DaemonProcess {
@@ -116,7 +119,7 @@ impl DaemonProcess {
                 return Err(error);
             }
         };
-        let client = match DaemonClient::connect(&client_address, token) {
+        let client = match DaemonClient::connect(&client_address, token.clone()) {
             Ok(client) => client,
             Err(error) => {
                 let _ = child.kill();
@@ -124,7 +127,12 @@ impl DaemonProcess {
                 return Err(error);
             }
         };
-        Ok(Self { client, child })
+        Ok(Self {
+            client,
+            child,
+            address: client_address,
+            token,
+        })
     }
 
     pub fn client(&self) -> DaemonClient {
@@ -312,13 +320,15 @@ fn monitor_daemon(
             return;
         }
 
-        let process_exited = {
+        let (process_exited, transport_disconnected) = {
             let mut target = inner.target.lock();
             match &mut *target {
-                DaemonTarget::Local(process) => process.has_exited(),
+                DaemonTarget::Local(process) => {
+                    (process.has_exited(), process.client.is_disconnected())
+                }
                 // A failed spawn leaves no child to poll. Keep retrying even
                 // when executable rebuild watching is disabled in Release.
-                DaemonTarget::Restarting(_) => true,
+                DaemonTarget::Restarting(_) => (true, true),
             }
         };
 
@@ -326,17 +336,28 @@ fn monitor_daemon(
         let observed_stamp = ExecutableStamp::read(executable).ok();
         let executable_changed = watch_for_rebuilds
             && observed_stamp.is_some_and(|observed| Some(observed) != active_stamp);
-        if !process_exited && !executable_changed {
+        if !process_exited && !executable_changed && !transport_disconnected {
             continue;
         }
         let _restart = inner.restart.lock();
         if !inner.running.load(Ordering::Acquire) {
             return;
         }
-        match replace_local_daemon(&inner, executable) {
+        // Losing the desktop transport does not end daemon-owned provider
+        // runtimes. Reconnect to the same child and resume its event journal;
+        // only an exited process or a rebuilt executable calls for a restart.
+        let recovery = if process_exited || executable_changed {
+            log_daemon_event(format_args!(
+                "restarting Raku daemon: process_exited={process_exited}, executable_changed={executable_changed}"
+            ));
+            replace_local_daemon(&inner, executable)
+        } else {
+            reconnect_local_daemon(&inner)
+        };
+        match recovery {
             Ok(()) => {}
             Err(error) => {
-                eprintln!("could not restart rebuilt Raku daemon: {error:#}");
+                log_daemon_event(format_args!("could not recover Raku daemon: {error:#}"));
                 continue;
             }
         }
@@ -347,6 +368,37 @@ fn monitor_daemon(
         drop(_restart);
         drop(inner);
     }
+}
+
+fn reconnect_local_daemon(inner: &SupervisorInner) -> anyhow::Result<()> {
+    let (previous, address, token, pid) = {
+        let target = inner.target.lock();
+        let DaemonTarget::Local(process) = &*target else {
+            bail!("there is no live Raku daemon to reconnect to");
+        };
+        (
+            process.client(),
+            process.address.clone(),
+            process.token.clone(),
+            process.child.id(),
+        )
+    };
+    // Connection and handshake I/O must not hold the target lock: UI callers
+    // can continue reading the current client while recovery runs here.
+    let client = previous.reconnect(&address, token)?;
+    {
+        let mut target = inner.target.lock();
+        let DaemonTarget::Local(process) = &mut *target else {
+            unreachable!("daemon recovery is serialized by the restart lock");
+        };
+        process.client = client.clone();
+        inner
+            .client_updates
+            .lock()
+            .retain(|subscriber| subscriber.send(client.clone()).is_ok());
+    }
+    log_daemon_event(format_args!("reconnected to live Raku daemon pid={pid}"));
+    Ok(())
 }
 
 fn replace_local_daemon(inner: &SupervisorInner, executable: &Path) -> anyhow::Result<()> {
@@ -371,11 +423,16 @@ fn replace_local_daemon(inner: &SupervisorInner, executable: &Path) -> anyhow::R
     drop(previous);
     let replacement = DaemonProcess::spawn(executable)?;
     let client = replacement.client();
-    *inner.target.lock() = DaemonTarget::Local(replacement);
-    inner
-        .client_updates
-        .lock()
-        .retain(|subscriber| subscriber.send(client.clone()).is_ok());
+    let pid = replacement.child.id();
+    {
+        let mut target = inner.target.lock();
+        *target = DaemonTarget::Local(replacement);
+        inner
+            .client_updates
+            .lock()
+            .retain(|subscriber| subscriber.send(client.clone()).is_ok());
+    }
+    log_daemon_event(format_args!("restarted Raku daemon pid={pid}"));
     Ok(())
 }
 
@@ -440,6 +497,235 @@ fn persist_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_transport_reconnects_to_the_live_daemon_and_resumes_events() {
+        use raku_protocol::{
+            ClientMessage, ReplayCursor, ResponseOutcome, SequencedEvent, ServerMessage,
+            WireDriverEvent,
+        };
+        use std::net::{TcpListener, TcpStream};
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = std::env::temp_dir().join(format!("raku-reconnect-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("daemon");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let ready = serde_json::to_string(&DaemonReady {
+            address: address.to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            pid: 0,
+        })
+        .unwrap();
+        // The child remains alive after its first WebSocket closes. Recovery
+        // must reconnect to it, preserving its provider runtimes.
+        std::fs::write(
+            &executable,
+            format!("#!/bin/sh\nprintf '%s\\n' '{ready}'\nexec /bin/sleep 30\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let session_id = Uuid::new_v4();
+        let runtime_id = Uuid::new_v4();
+        let late_session_id = Uuid::new_v4();
+        let late_runtime_id = Uuid::new_v4();
+        let epoch = Uuid::new_v4();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let server_stopped = stopped.clone();
+        let (disconnect, disconnect_rx) = crossbeam_channel::bounded(1);
+        let server = std::thread::spawn(move || {
+            let mut initial_token = None;
+            for (connection, stream) in listener.incoming().take(3).enumerate() {
+                let stream = stream.unwrap();
+                if server_stopped.load(Ordering::Acquire) {
+                    return;
+                }
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut socket = tungstenite::accept(stream).unwrap();
+                let hello: ClientMessage =
+                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                let ClientMessage::Hello {
+                    token, resume_from, ..
+                } = hello
+                else {
+                    panic!("expected hello");
+                };
+                if connection == 0 {
+                    assert!(resume_from.is_empty());
+                    initial_token = Some(token);
+                } else {
+                    assert_eq!(Some(token), initial_token);
+                    assert_eq!(resume_from.len(), 2);
+                    for (session_id, runtime_id) in
+                        [(session_id, runtime_id), (late_session_id, late_runtime_id)]
+                    {
+                        let ReplayCursor {
+                            epoch: resumed_epoch,
+                            sequence,
+                            ..
+                        } = resume_from
+                            .iter()
+                            .find(|cursor| {
+                                cursor.session_id == session_id && cursor.runtime_id == runtime_id
+                            })
+                            .unwrap();
+                        assert_eq!(*resumed_epoch, epoch);
+                        assert_eq!(*sequence, 1);
+                    }
+                }
+                let send = |socket: &mut tungstenite::WebSocket<TcpStream>, message| {
+                    socket
+                        .send(tungstenite::Message::Text(
+                            serde_json::to_string(&message).unwrap().into(),
+                        ))
+                        .unwrap();
+                };
+                if connection == 1 {
+                    // A failed reconnect must retry without killing the live
+                    // child or losing the original pre-subscription buffer.
+                    send(
+                        &mut socket,
+                        ServerMessage::Rejected {
+                            message: "temporarily unavailable".into(),
+                        },
+                    );
+                    continue;
+                }
+                send(
+                    &mut socket,
+                    ServerMessage::Hello {
+                        protocol_version: PROTOCOL_VERSION,
+                        daemon_version: "test".into(),
+                    },
+                );
+                // Deliberately replay a duplicate as well as the missed event.
+                for (session_id, runtime_id) in
+                    [(session_id, runtime_id), (late_session_id, late_runtime_id)]
+                {
+                    for sequence in 1..=if connection == 0 { 1 } else { 2 } {
+                        send(
+                            &mut socket,
+                            ServerMessage::Event(SequencedEvent {
+                                session_id,
+                                runtime_id,
+                                epoch,
+                                sequence,
+                                event: WireDriverEvent::new(
+                                    "textDelta",
+                                    serde_json::json!(sequence),
+                                ),
+                            }),
+                        );
+                    }
+                }
+                loop {
+                    let message: ClientMessage =
+                        serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                    let ClientMessage::Request(request) = message else {
+                        break;
+                    };
+                    let payload = match request.command {
+                        Command::GetSettings => ResponsePayload::Settings {
+                            settings: DaemonSettings::default(),
+                        },
+                        Command::UpdateSettings { .. } => ResponsePayload::Ack,
+                        Command::AttachSession => ResponsePayload::SessionRuntime {
+                            runtime_id: Some(runtime_id),
+                            capabilities: Default::default(),
+                        },
+                        Command::SaveTaskState { .. } => ResponsePayload::TaskStateSaved {
+                            sessions: Vec::new(),
+                        },
+                        _ => panic!("unexpected test daemon command"),
+                    };
+                    send(
+                        &mut socket,
+                        ServerMessage::Response {
+                            request_id: request.request_id,
+                            outcome: ResponseOutcome::Ok { payload },
+                        },
+                    );
+                    if connection == 0 {
+                        let _ = disconnect_rx.recv_timeout(Duration::from_secs(5));
+                        let _ = socket.close(None);
+                        break;
+                    }
+                }
+            }
+        });
+
+        let supervisor = DaemonSupervisor::spawn(&executable, false).unwrap();
+        let clients = supervisor.subscribe_clients();
+        let initial = clients.recv_timeout(Duration::from_secs(1)).unwrap();
+        let events = initial.subscribe(session_id, runtime_id);
+        let first = events.recv_timeout(Duration::from_secs(1)).unwrap();
+        let pid = match &*supervisor.inner.target.lock() {
+            DaemonTarget::Local(process) => process.child.id(),
+            _ => panic!("initial daemon must be running"),
+        };
+        disconnect.send(()).unwrap();
+        let replacement = clients.recv_timeout(Duration::from_secs(5));
+        let replayed = replacement.as_ref().ok().map(|client| {
+            client
+                .subscribe(session_id, runtime_id)
+                .recv_timeout(Duration::from_secs(1))
+        });
+        let late_events = replacement.as_ref().ok().map(|client| {
+            let events = client.subscribe(late_session_id, late_runtime_id);
+            (0..2)
+                .map(|_| {
+                    events
+                        .recv_timeout(Duration::from_secs(1))
+                        .map(|event| event.sequence)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        });
+        let attached = replacement
+            .as_ref()
+            .ok()
+            .map(|client| client.request(session_id, Uuid::nil(), Command::AttachSession));
+        let saved = replacement.as_ref().ok().map(|client| {
+            client.request(
+                Uuid::nil(),
+                Uuid::nil(),
+                Command::SaveTaskState {
+                    projects: Vec::new(),
+                    live_session_ids: Vec::new(),
+                    sessions: Vec::new(),
+                },
+            )
+        });
+        let same_process = match &mut *supervisor.inner.target.lock() {
+            DaemonTarget::Local(process) => process.child.id() == pid && !process.has_exited(),
+            _ => false,
+        };
+
+        stopped.store(true, Ordering::Release);
+        supervisor.shutdown_for_relaunch().unwrap();
+        let _ = TcpStream::connect(address);
+        server.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+
+        assert_eq!(first.sequence, 1);
+        let replacement = replacement.expect("live daemon should get a replacement connection");
+        assert!(!initial.same_connection(&replacement));
+        assert!(same_process, "reconnecting must not restart the daemon");
+        assert_eq!(replayed.unwrap().unwrap().sequence, 2);
+        assert_eq!(late_events.unwrap().unwrap(), vec![1, 2]);
+        assert!(matches!(
+            attached,
+            Some(Ok(ResponsePayload::SessionRuntime { runtime_id: Some(id), .. })) if id == runtime_id
+        ));
+        assert!(matches!(
+            saved,
+            Some(Ok(ResponsePayload::TaskStateSaved { .. }))
+        ));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -595,7 +881,12 @@ mod tests {
         let supervisor = DaemonSupervisor {
             inner: Arc::new(SupervisorInner {
                 executable: PathBuf::from("/bin/cat"),
-                target: Mutex::new(DaemonTarget::Local(DaemonProcess { client, child })),
+                target: Mutex::new(DaemonTarget::Local(DaemonProcess {
+                    client,
+                    child,
+                    address: address.to_string(),
+                    token: "test-token".into(),
+                })),
                 restart: Mutex::new(()),
                 settings: Mutex::new(DaemonSettings::default()),
                 persisted_settings: Mutex::new(None),
