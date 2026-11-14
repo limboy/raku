@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.12] - 2026-11-15
+
+- Restore running tasks and saving automatically after a local daemon connection drops
+
 ## [2.5.11] - 2026-11-13
 
 - Make the model picker in Side Chat and Text Generation scrollable
