@@ -11,6 +11,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -423,7 +424,9 @@ impl PiDriver {
 
         let (commands, command_rx) = unbounded();
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let cancel_requested = Arc::new(AtomicBool::new(false));
         let reader_pending = pending.clone();
+        let reader_cancel_requested = cancel_requested.clone();
         let reader_commands = commands.clone();
         let reader_events = events.clone();
         // The newest assistant message's usage: session stats are cumulative,
@@ -434,7 +437,10 @@ impl PiDriver {
             thread::Builder::new()
                 .name("raku-pi-reader".into())
                 .spawn(move || {
-                    let mut stream_state = PiStreamState::default();
+                    let mut stream_state = PiStreamState {
+                        cancel_requested: reader_cancel_requested,
+                        ..PiStreamState::default()
+                    };
                     for line in BufReader::new(stdout).lines() {
                         match line {
                             Ok(line) if !line.trim().is_empty() => {
@@ -491,6 +497,7 @@ impl PiDriver {
                 })?;
 
         let writer_pending = pending;
+        let writer_cancel_requested = cancel_requested;
         let writer_events = events.clone();
         thread::Builder::new()
             .name("raku-pi-writer".into())
@@ -688,6 +695,7 @@ impl PiDriver {
                             }
                         }
                         CommandMessage::Prompt(prompt) => {
+                            writer_cancel_requested.store(false, Ordering::SeqCst);
                             let result = send_prompt(
                                 &mut stdin,
                                 &writer_pending,
@@ -730,6 +738,7 @@ impl PiDriver {
                             }
                         }
                         CommandMessage::Cancel => {
+                            writer_cancel_requested.store(true, Ordering::SeqCst);
                             interrupt_pending_compactions(&writer_pending, &writer_events);
                             if let Err(error) = send_request(
                                 &mut stdin,
@@ -1298,12 +1307,17 @@ struct PiStreamState {
     message_pending_text: String,
     reasoning_blocks: HashMap<u64, (String, bool)>,
     failed: bool,
+    error_emitted: bool,
+    pending_error: Option<String>,
+    cancel_requested: Arc<AtomicBool>,
     tools: HashMap<String, PiTrackedTool>,
 }
 
 impl PiStreamState {
     fn reset_turn(&mut self) {
+        let cancel_requested = self.cancel_requested.clone();
         *self = Self::default();
+        self.cancel_requested = cancel_requested;
     }
 
     fn reasoning_block(
@@ -1485,6 +1499,13 @@ fn handle_pi_message(
             return;
         }
         flush_pending_message_text(events, state);
+        let cancelled = state.cancel_requested.swap(false, Ordering::SeqCst);
+        if cancelled {
+            state.failed = false;
+            state.pending_error = None;
+        } else if value.get("aborted").and_then(Value::as_bool) == Some(true) {
+            state.failed = true;
+        }
         if state.run_started {
             pending.lock().retain(|_, response| {
                 matches!(
@@ -1492,6 +1513,15 @@ fn handle_pi_message(
                     PendingResponse::Request(_) | PendingResponse::Compact(_)
                 )
             });
+            if state.failed && !state.error_emitted {
+                let error = state.pending_error.take().unwrap_or_else(|| {
+                    tr!(
+                        "errors.provider_complete_turn",
+                        provider = flavor.display_name()
+                    )
+                });
+                let _ = events.send(DriverEvent::Error(error));
+            }
             let success = !state.failed;
             let _ = events.send(DriverEvent::TurnFinished {
                 success,
@@ -1671,6 +1701,8 @@ fn handle_pi_message(
                 Some("error") => {
                     flush_pending_message_text(events, state);
                     state.failed = true;
+                    state.error_emitted = true;
+                    state.pending_error = None;
                     let _ = events.send(DriverEvent::Error(pi_error_message(flavor, update)));
                 }
                 _ => {}
@@ -1687,7 +1719,11 @@ fn handle_pi_message(
                     });
                 }
                 emit_completed_message_fallback(value.get("message"), events, state);
+                record_assistant_outcome(value.get("message"), state);
             }
+        }
+        "turn_end" => {
+            record_assistant_outcome(value.get("message"), state);
         }
         "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
             // Speculative tools may run before message_end. Leave a possible
@@ -1833,18 +1869,27 @@ fn handle_pi_message(
                 }
             }
         }
+        "auto_retry_start" => {
+            state.error_emitted = false;
+        }
         "auto_retry_end" => {
             if value.get("success").and_then(Value::as_bool) == Some(true) {
                 state.failed = false;
+                state.pending_error = None;
+                state.error_emitted = false;
             } else {
                 state.failed = true;
+                state.error_emitted = true;
                 let message = value
                     .get("finalError")
                     .and_then(Value::as_str)
-                    .map(str::to_owned)
+                    .map(unwrap_pi_provider_error)
+                    .filter(|message| !message.trim().is_empty())
+                    .or_else(|| state.pending_error.take())
                     .unwrap_or_else(|| {
                         format!("{} exhausted its automatic retries", flavor.display_name())
                     });
+                state.pending_error = None;
                 let _ = events.send(DriverEvent::Error(message));
             }
         }
@@ -1939,19 +1984,111 @@ fn emit_completed_message_fallback(
     }
 }
 
-fn pi_error_message(flavor: PiFlavor, value: &Value) -> String {
+fn record_assistant_outcome(message: Option<&Value>, state: &mut PiStreamState) {
+    let Some(message) = message else {
+        return;
+    };
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return;
+    }
+    match message.get("stopReason").and_then(Value::as_str) {
+        Some("error") => {
+            state.failed = true;
+            if !state.error_emitted
+                && let Some(error) = pi_optional_error_message(message)
+            {
+                state.pending_error = Some(error);
+            }
+        }
+        Some("aborted") => {
+            if !state.cancel_requested.load(Ordering::SeqCst) {
+                state.failed = true;
+                if !state.error_emitted
+                    && let Some(error) = pi_optional_error_message(message)
+                {
+                    state.pending_error = Some(error);
+                }
+            }
+        }
+        Some(_) => {
+            state.failed = false;
+            state.pending_error = None;
+            state.error_emitted = false;
+        }
+        None => {}
+    }
+}
+
+fn pi_optional_error_message(value: &Value) -> Option<String> {
     value
         .get("error")
         .and_then(Value::as_str)
         .or_else(|| value.get("errorMessage").and_then(Value::as_str))
         .or_else(|| value.get("reason").and_then(Value::as_str))
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            tr!(
-                "errors.provider_reported_error",
-                provider = flavor.display_name()
-            )
-        })
+        .map(unwrap_pi_provider_error)
+        .filter(|message| !message.trim().is_empty())
+}
+
+fn unwrap_pi_provider_error(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with('{') {
+        return raw.to_owned();
+    }
+    let Ok(mut current) = serde_json::from_str::<Value>(trimmed) else {
+        return raw.to_owned();
+    };
+    let mut fallback_code: Option<u64> = None;
+    let mut fallback_status: Option<String> = None;
+
+    for _ in 0..4 {
+        let obj = current
+            .get("error")
+            .filter(|inner| inner.is_object())
+            .unwrap_or(&current);
+        if let Some(code) = obj.get("code").and_then(Value::as_u64) {
+            fallback_code = Some(code);
+        }
+        if let Some(status) = obj
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            fallback_status = Some(status.to_owned());
+        }
+        let Some(message) = obj
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            break;
+        };
+        if message.starts_with('{')
+            && let Ok(inner) = serde_json::from_str::<Value>(message)
+            && inner.is_object()
+        {
+            current = inner;
+            continue;
+        }
+        return match (fallback_code, fallback_status.as_deref()) {
+            (Some(code), Some(status)) => format!("{code} {status}: {message}"),
+            (Some(code), None) => format!("{code}: {message}"),
+            (None, Some(status)) => format!("{status}: {message}"),
+            (None, None) => message.to_owned(),
+        };
+    }
+
+    raw.to_owned()
+}
+
+fn pi_error_message(flavor: PiFlavor, value: &Value) -> String {
+    pi_optional_error_message(value).unwrap_or_else(|| {
+        tr!(
+            "errors.provider_reported_error",
+            provider = flavor.display_name()
+        )
+    })
 }
 
 struct PiXdevCall {
@@ -3454,6 +3591,171 @@ mod tests {
         assert!(matches!(
             event_rx.recv().unwrap(),
             DriverEvent::TurnFinished { success: true, .. }
+        ));
+    }
+
+    #[test]
+    fn non_retryable_message_end_error_fails_turn_and_unwraps_google_json() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        let google_error = r#"{"error":{"message":"{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota.\",\n    \"status\": \"RESOURCE_EXHAUSTED\"\n  }\n}\n","code":429,"status":"Too Many Requests"}}"#;
+        let failed = json!({
+            "role": "assistant",
+            "content": [],
+            "stopReason": "error",
+            "errorMessage": google_error,
+        });
+        for value in [
+            json!({"type": "agent_start"}),
+            json!({"type": "turn_start"}),
+            json!({"type": "message_start", "message": failed}),
+            json!({"type": "message_end", "message": failed}),
+            json!({"type": "turn_end", "message": failed, "toolResults": []}),
+            json!({"type": "agent_end", "willRetry": false}),
+            json!({"type": "agent_settled", "aborted": false}),
+        ] {
+            handle_pi_message(
+                PiFlavor::Pi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+
+        let emitted = event_rx.try_iter().collect::<Vec<_>>();
+        assert!(matches!(emitted.first(), Some(DriverEvent::TurnStarted)));
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            DriverEvent::Error(message)
+                if message == "429 RESOURCE_EXHAUSTED: You exceeded your current quota."
+        )));
+        assert!(matches!(
+            emitted.last(),
+            Some(DriverEvent::TurnFinished { success: false, .. })
+        ));
+    }
+
+    #[test]
+    fn unexpected_aborted_message_end_fails_turn_with_reason() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        let aborted = json!({
+            "role": "assistant",
+            "content": [],
+            "stopReason": "aborted",
+            "errorMessage": "Request aborted",
+        });
+        for value in [
+            json!({"type": "agent_start"}),
+            json!({"type": "turn_start"}),
+            json!({"type": "message_start", "message": aborted}),
+            json!({"type": "message_end", "message": aborted}),
+            json!({"type": "turn_end", "message": aborted, "toolResults": []}),
+            json!({"type": "agent_end", "willRetry": false}),
+            json!({"type": "agent_settled", "aborted": true}),
+        ] {
+            handle_pi_message(
+                PiFlavor::Pi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+
+        let emitted = event_rx.try_iter().collect::<Vec<_>>();
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            DriverEvent::Error(message) if message == "Request aborted"
+        )));
+        assert!(matches!(
+            emitted.last(),
+            Some(DriverEvent::TurnFinished { success: false, .. })
+        ));
+    }
+
+    #[test]
+    fn user_cancelled_abort_does_not_emit_provider_error() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        state.cancel_requested.store(true, Ordering::SeqCst);
+        let aborted = json!({
+            "role": "assistant",
+            "content": [],
+            "stopReason": "aborted",
+            "errorMessage": "Request aborted",
+        });
+        for value in [
+            json!({"type": "agent_start"}),
+            json!({"type": "message_end", "message": aborted}),
+            json!({"type": "agent_settled", "aborted": true}),
+        ] {
+            handle_pi_message(
+                PiFlavor::Pi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+
+        let emitted = event_rx.try_iter().collect::<Vec<_>>();
+        assert!(
+            !emitted
+                .iter()
+                .any(|event| matches!(event, DriverEvent::Error(_)))
+        );
+        assert!(!state.cancel_requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn message_end_error_recovered_by_auto_retry_completes_without_error() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        let failed = json!({
+            "role": "assistant",
+            "content": [],
+            "stopReason": "error",
+            "errorMessage": "temporary 503",
+        });
+        let recovered = json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Done."}],
+            "stopReason": "stop",
+        });
+        for value in [
+            json!({"type": "agent_start"}),
+            json!({"type": "message_end", "message": failed}),
+            json!({"type": "agent_end", "willRetry": true}),
+            json!({"type": "auto_retry_start", "attempt": 1, "errorMessage": "temporary 503"}),
+            json!({"type": "agent_start"}),
+            json!({"type": "message_end", "message": recovered}),
+            json!({"type": "auto_retry_end", "success": true, "attempt": 1}),
+            json!({"type": "agent_settled", "aborted": false}),
+        ] {
+            handle_pi_message(
+                PiFlavor::Pi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+
+        let emitted = event_rx.try_iter().collect::<Vec<_>>();
+        assert!(
+            !emitted
+                .iter()
+                .any(|event| matches!(event, DriverEvent::Error(_)))
+        );
+        assert!(matches!(
+            emitted.last(),
+            Some(DriverEvent::TurnFinished { success: true, .. })
         ));
     }
 }
