@@ -402,17 +402,8 @@ impl Raku {
         self.transcript_is_scrolled.set(false);
     }
 
-    /// Copy the transcript's text selection.
-    ///
-    /// This is the fallback leg of the copy shortcut: the composer holds focus almost
-    /// always, so it handles the keystroke first and propagates when it has
-    /// nothing selected of its own.
-    pub(super) fn copy_selection_action(
-        &mut self,
-        _: &CopySelection,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Copy the active text selection across Raku's non-editor surfaces.
+    fn copy_active_selection(&mut self, cx: &mut Context<Self>) -> bool {
         let reviewing_diff = self.right_panel_visible
             && self
                 .right_panel_active_surface
@@ -441,13 +432,46 @@ impl Raku {
                     })
                     .flatten()
             })
+            .or_else(|| self.markdown_preview_selected_text())
             .or_else(|| self.toast_selection.selection.borrow().selected_text())
             .or_else(|| self.skills_selection.selection.borrow().selected_text())
             .or_else(|| self.side_chat.selection.selection.borrow().selected_text())
             .or_else(|| self.transcript_selection.selection.borrow().selected_text());
         match selected {
-            Some(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
-            None => cx.propagate(),
+            Some(text) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Copy the transcript's text selection.
+    ///
+    /// This is the fallback leg of the copy shortcut: the composer holds focus almost
+    /// always, so it handles the keystroke first and propagates when it has
+    /// nothing selected of its own.
+    pub(super) fn copy_selection_action(
+        &mut self,
+        _: &CopySelection,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.copy_active_selection(cx) {
+            cx.propagate();
+        }
+    }
+
+    /// Fallback for the Edit -> Copy menu action when no text input has a
+    /// selection of its own.
+    pub(super) fn copy_input_action(
+        &mut self,
+        _: &crate::input::Copy,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.copy_active_selection(cx) {
+            cx.propagate();
         }
     }
 

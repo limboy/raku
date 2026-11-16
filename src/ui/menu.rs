@@ -1395,7 +1395,8 @@ impl RenderOnce for MenuCard {
             .bg(theme.menu)
             .shadow_lg()
             .flex()
-            .flex_col();
+            .flex_col()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         #[cfg(test)]
         {
             root_card = root_card.debug_selector(|| "MENU_ROOT".into());
@@ -1480,7 +1481,8 @@ impl RenderOnce for MenuCard {
                 .bg(theme.menu)
                 .shadow_lg()
                 .flex()
-                .flex_col();
+                .flex_col()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             #[cfg(test)]
             {
                 submenu_card = submenu_card.debug_selector(|| "MENU_SUBMENU".into());

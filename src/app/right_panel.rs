@@ -1249,6 +1249,42 @@ fn right_panel_tab_icon(
     }
 }
 
+fn selected_markdown_preview_text(
+    right_panel_visible: bool,
+    markdown_preview: bool,
+    active_surface: Option<&RightPanelSurface>,
+    files_selected_path: Option<&str>,
+    selection: &crate::md::selection::Selection,
+    is_reading_attachment: impl FnOnce(&str) -> bool,
+) -> Option<String> {
+    if !right_panel_visible || !markdown_preview {
+        return None;
+    }
+    let (display_path, editor_path) = match active_surface? {
+        RightPanelSurface::Files => {
+            let path = files_selected_path?;
+            (path.to_owned(), path.to_owned())
+        }
+        RightPanelSurface::File(path) => (path.clone(), path.clone()),
+        RightPanelSurface::AttachmentFile(attachment) => {
+            (attachment.name.to_string(), attachment.editor_path())
+        }
+        _ => return None,
+    };
+    if file_highlighter_language(&display_path) != "markdown" || is_reading_attachment(&editor_path)
+    {
+        return None;
+    }
+    let expected_row = format!("file-preview-{editor_path}");
+    let belongs_to_active_preview = selection
+        .spans()
+        .first()
+        .is_some_and(|span| span.key.row.as_ref() == expected_row);
+    belongs_to_active_preview
+        .then(|| selection.selected_text())
+        .flatten()
+}
+
 fn reusable_surface_index(
     surfaces: &[RightPanelSurface],
     requested: &RightPanelSurface,
@@ -2386,6 +2422,580 @@ mod tests {
             px(0.0)
         );
     }
+
+    #[test]
+    fn markdown_preview_selection_only_copies_visible_active_markdown_file() {
+        use crate::md::selection::{Selection, TextKey};
+
+        let mut selection = Selection::default();
+        selection.begin_with_span(
+            TextKey::new("file-preview-docs/README.md", 0),
+            "Selected heading".into(),
+            0..16,
+        );
+        let file_surface = RightPanelSurface::File("docs/README.md".into());
+        let files_surface = RightPanelSurface::Files;
+        let diff_surface = RightPanelSurface::Diff;
+        let code_surface = RightPanelSurface::File("src/main.rs".into());
+        let attachment = AttachmentFile::for_preview(
+            Path::new("/tmp/notes.md"),
+            Some("waku-attachment:notes"),
+            "notes.md",
+            false,
+            false,
+        )
+        .expect("attachment fixture");
+        let attachment_path = attachment.editor_path();
+        let attachment_surface = RightPanelSurface::AttachmentFile(attachment);
+
+        assert_eq!(
+            selected_markdown_preview_text(
+                true,
+                true,
+                Some(&file_surface),
+                None,
+                &selection,
+                |_| false,
+            ),
+            Some("Selected heading".to_owned())
+        );
+        assert_eq!(
+            selected_markdown_preview_text(
+                true,
+                true,
+                Some(&files_surface),
+                Some("docs/README.md"),
+                &selection,
+                |_| false,
+            ),
+            Some("Selected heading".to_owned())
+        );
+        assert_eq!(
+            selected_markdown_preview_text(
+                false,
+                true,
+                Some(&file_surface),
+                None,
+                &selection,
+                |_| false,
+            ),
+            None
+        );
+        assert_eq!(
+            selected_markdown_preview_text(
+                true,
+                false,
+                Some(&file_surface),
+                None,
+                &selection,
+                |_| false,
+            ),
+            None
+        );
+        assert_eq!(
+            selected_markdown_preview_text(
+                true,
+                true,
+                Some(&diff_surface),
+                None,
+                &selection,
+                |_| false,
+            ),
+            None
+        );
+        assert_eq!(
+            selected_markdown_preview_text(
+                true,
+                true,
+                Some(&code_surface),
+                None,
+                &selection,
+                |_| false,
+            ),
+            None
+        );
+        // A stale selection from a previous markdown file must not copy under another file.
+        assert_eq!(
+            selected_markdown_preview_text(
+                true,
+                true,
+                Some(&files_surface),
+                Some("docs/OTHER.md"),
+                &selection,
+                |_| false,
+            ),
+            None
+        );
+
+        let mut attachment_selection = Selection::default();
+        attachment_selection.begin_with_span(
+            TextKey::new(format!("file-preview-{attachment_path}"), 0),
+            "Attachment text".into(),
+            0..15,
+        );
+        assert_eq!(
+            selected_markdown_preview_text(
+                true,
+                true,
+                Some(&attachment_surface),
+                None,
+                &attachment_selection,
+                |_| false,
+            ),
+            Some("Attachment text".to_owned())
+        );
+        assert_eq!(
+            selected_markdown_preview_text(
+                true,
+                true,
+                Some(&attachment_surface),
+                None,
+                &attachment_selection,
+                |path| path == attachment_path,
+            ),
+            None
+        );
+    }
+
+    #[gpui::test]
+    fn markdown_preview_mouse_selection_copies_via_shortcut_and_menu_action(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::md::render::{
+            Ctx as MarkdownCtx, MarkdownView, Metrics as MarkdownMetrics,
+            Palette as MarkdownPalette, frame_reset, install_selection_input, markdown,
+        };
+
+        struct PreviewCopyHarness {
+            composer: Entity<TextInput>,
+            markdown: MarkdownView,
+            selection: TranscriptSelection,
+        }
+
+        impl PreviewCopyHarness {
+            fn copy_selected(&self, cx: &mut Context<Self>) -> bool {
+                let Some(text) = self.selection.selection.borrow().selected_text() else {
+                    return false;
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                true
+            }
+        }
+
+        impl Render for PreviewCopyHarness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let theme = Theme::current(cx);
+                let palette = MarkdownPalette::from_theme(&theme);
+                let ctx = MarkdownCtx::new(
+                    "file-preview-README.md",
+                    &palette,
+                    MarkdownMetrics::BODY,
+                    self.selection.clone(),
+                );
+                let selection_input = {
+                    let selection = self.selection.clone();
+                    canvas(
+                        |_, _, _| (),
+                        move |_, _, window, _| install_selection_input(window, &selection),
+                    )
+                    .absolute()
+                    .w(px(0.0))
+                    .h(px(0.0))
+                };
+                div()
+                    .key_context("Raku")
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .on_action(cx.listener(|this, _: &CopySelection, _, cx| {
+                        if !this.copy_selected(cx) {
+                            cx.propagate();
+                        }
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::input::Copy, _, cx| {
+                        if !this.copy_selected(cx) {
+                            cx.propagate();
+                        }
+                    }))
+                    .child(self.composer.clone())
+                    .child(
+                        div()
+                            .id("file-preview-README.md")
+                            .flex_1()
+                            .child(frame_reset(self.selection.clone()))
+                            .children(markdown(&self.markdown, &ctx)),
+                    )
+                    .child(selection_input)
+            }
+        }
+
+        cx.update(|cx| {
+            crate::theme::init(cx);
+            crate::input::init(cx);
+            cx.bind_keys([gpui::KeyBinding::new(
+                "secondary-c",
+                CopySelection,
+                Some("Raku"),
+            )]);
+        });
+        let selection = TranscriptSelection::default();
+        let mut markdown_view = MarkdownView::new();
+        markdown_view.set_text("Copyable preview paragraph.", false);
+        let (harness, cx) = cx.add_window_view(|window, cx| PreviewCopyHarness {
+            composer: cx.new(|cx| TextInput::new(window, cx)),
+            markdown: markdown_view,
+            selection: selection.clone(),
+        });
+        let composer = cx.read_entity(&harness, |harness, _| harness.composer.clone());
+        cx.update(|window, cx| window.focus(&composer.read(cx).focus_handle(cx), cx));
+        cx.run_until_parked();
+
+        let target = {
+            let registry = selection.registry.borrow();
+            let entry = registry.entries().first().expect("rendered markdown entry");
+            crate::md::render::text_range_bounds(&entry.geometry, &(0..1))[0].center()
+        };
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: target,
+                    modifiers: gpui::Modifiers::none(),
+                    click_count: 3,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: target,
+                    modifiers: gpui::Modifiers::none(),
+                    click_count: 3,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes("secondary-c");
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("Copyable preview paragraph.".to_owned())
+        );
+
+        cx.write_to_clipboard(ClipboardItem::new_string("cleared".to_owned()));
+        cx.dispatch_action(crate::input::Copy);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("Copyable preview paragraph.".to_owned())
+        );
+    }
+
+    #[gpui::test]
+    fn markdown_preview_right_click_menu_has_copy_item_bounds(cx: &mut gpui::TestAppContext) {
+        use crate::md::render::{
+            Ctx as MarkdownCtx, MarkdownView, Metrics as MarkdownMetrics,
+            Palette as MarkdownPalette, frame_reset, install_selection_input, markdown,
+        };
+        use crate::ui::menu::{ContextMenuHandle, MenuItem, context_menu};
+
+        struct RightClickPreviewHarness {
+            markdown: MarkdownView,
+            selection: TranscriptSelection,
+            menu: ContextMenuHandle,
+            scroll: ScrollHandle,
+        }
+
+        impl Render for RightClickPreviewHarness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let theme = Theme::current(cx);
+                let palette = MarkdownPalette::from_theme(&theme);
+                let ctx = MarkdownCtx::new(
+                    "file-preview-README.md",
+                    &palette,
+                    MarkdownMetrics::BODY,
+                    self.selection.clone(),
+                )
+                .with_context_menu(self.menu.clone());
+                let selection_input = {
+                    let selection = self.selection.clone();
+                    canvas(
+                        |_, _, _| (),
+                        move |_, _, window, _| install_selection_input(window, &selection),
+                    )
+                    .absolute()
+                    .w(px(0.0))
+                    .h(px(0.0))
+                };
+                let menu_selection = self.selection.clone();
+                let scroll = div()
+                    .id("file-preview-README.md")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(frame_reset(self.selection.clone()))
+                    .child(
+                        div()
+                            .px(px(16.0))
+                            .pt(px(14.0))
+                            .pb(px(24.0))
+                            .children(markdown(&self.markdown, &ctx)),
+                    );
+                let preview = context_menu(
+                    div().size_full().child(scroll),
+                    "file-preview-menu-README.md",
+                    &self.menu,
+                    move |_| {
+                        let Some(selected) = menu_selection.selection.borrow().selected_text()
+                        else {
+                            return Vec::new();
+                        };
+                        vec![MenuItem::new(tr!("menu.copy"), move |_, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(selected.clone()));
+                        })]
+                    },
+                );
+                div().size_full().flex().flex_col().child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .relative()
+                        .child(preview)
+                        .child(selection_input),
+                )
+            }
+        }
+
+        cx.update(|cx| {
+            crate::theme::init(cx);
+            crate::ui::menu::init(cx);
+        });
+        let selection = TranscriptSelection::default();
+        let mut markdown_view = MarkdownView::new();
+        markdown_view.set_text("Copyable preview paragraph.", false);
+        let menu = cx.update(ContextMenuHandle::new);
+        let (harness, cx) = cx.add_window_view(|_, _| RightClickPreviewHarness {
+            markdown: markdown_view,
+            selection: selection.clone(),
+            menu: menu.clone(),
+            scroll: ScrollHandle::new(),
+        });
+        cx.run_until_parked();
+
+        let target = {
+            let registry = selection.registry.borrow();
+            let entry = registry.entries().first().expect("rendered markdown entry");
+            crate::md::render::text_range_bounds(&entry.geometry, &(0..1))[0].center()
+        };
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: target,
+                    modifiers: gpui::Modifiers::none(),
+                    click_count: 3,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: target,
+                    modifiers: gpui::Modifiers::none(),
+                    click_count: 3,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            selection.selection.borrow().selected_text().as_deref(),
+            Some("Copyable preview paragraph.")
+        );
+
+        cx.simulate_mouse_down(target, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(target, MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        assert!(menu.is_open());
+        let menu_bounds = cx.debug_bounds("MENU_ROOT").expect("context menu bounds");
+        assert!(
+            menu_bounds.size.height > px(20.0),
+            "expected non-empty menu height, got {menu_bounds:?}"
+        );
+
+        let copy_target = menu_bounds.center();
+        cx.simulate_click(copy_target, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(!menu.is_open());
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("Copyable preview paragraph.".to_owned())
+        );
+        assert!(
+            cx.debug_bounds("MENU_ROOT").is_none(),
+            "context menu must disappear after clicking Copy"
+        );
+        let _ = harness;
+    }
+
+    #[gpui::test]
+    fn cached_markdown_preview_dismisses_context_menu_after_copy(cx: &mut gpui::TestAppContext) {
+        use crate::md::render::{
+            Ctx as MarkdownCtx, MarkdownView, Metrics as MarkdownMetrics,
+            Palette as MarkdownPalette, frame_reset, install_selection_input, markdown,
+        };
+        use crate::ui::menu::{ContextMenuHandle, MenuItem, context_menu};
+
+        struct InnerPane {
+            markdown: MarkdownView,
+            selection: TranscriptSelection,
+            menu: ContextMenuHandle,
+            scroll: ScrollHandle,
+        }
+
+        impl Render for InnerPane {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let theme = Theme::current(cx);
+                let palette = MarkdownPalette::from_theme(&theme);
+                let ctx = MarkdownCtx::new(
+                    "file-preview-README.md",
+                    &palette,
+                    MarkdownMetrics::BODY,
+                    self.selection.clone(),
+                )
+                .with_context_menu(self.menu.clone());
+                let selection_input = {
+                    let selection = self.selection.clone();
+                    canvas(
+                        |_, _, _| (),
+                        move |_, _, window, _| install_selection_input(window, &selection),
+                    )
+                    .absolute()
+                    .w(px(0.0))
+                    .h(px(0.0))
+                };
+                let menu_selection = self.selection.clone();
+                let scroll = div()
+                    .id("file-preview-README.md")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(frame_reset(self.selection.clone()))
+                    .child(
+                        div()
+                            .px(px(16.0))
+                            .pt(px(14.0))
+                            .pb(px(24.0))
+                            .children(markdown(&self.markdown, &ctx)),
+                    );
+                let preview = context_menu(
+                    div().size_full().child(scroll),
+                    "file-preview-menu-README.md",
+                    &self.menu,
+                    move |_| {
+                        let Some(selected) = menu_selection.selection.borrow().selected_text()
+                        else {
+                            return Vec::new();
+                        };
+                        vec![MenuItem::new(tr!("menu.copy"), move |_, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(selected.clone()));
+                        })]
+                    },
+                );
+                div().size_full().flex().flex_col().child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .relative()
+                        .child(preview)
+                        .child(selection_input),
+                )
+            }
+        }
+
+        struct OuterWindow {
+            pane: Entity<InnerPane>,
+        }
+
+        impl Render for OuterWindow {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    self.pane
+                        .clone()
+                        .cached(gpui::StyleRefinement::default().size_full()),
+                )
+            }
+        }
+
+        cx.update(|cx| {
+            crate::theme::init(cx);
+            crate::ui::menu::init(cx);
+        });
+        let selection = TranscriptSelection::default();
+        let mut markdown_view = MarkdownView::new();
+        markdown_view.set_text("Copyable preview paragraph.", false);
+        let menu = cx.update(ContextMenuHandle::new);
+        let (harness, cx) = cx.add_window_view(|_, cx| {
+            let pane = cx.new(|_| InnerPane {
+                markdown: markdown_view,
+                selection: selection.clone(),
+                menu: menu.clone(),
+                scroll: ScrollHandle::new(),
+            });
+            OuterWindow { pane }
+        });
+        let pane = cx.read_entity(&harness, |outer, _| outer.pane.clone());
+        let _ = pane;
+        cx.run_until_parked();
+
+        let target = {
+            let registry = selection.registry.borrow();
+            let entry = registry.entries().first().expect("rendered markdown entry");
+            crate::md::render::text_range_bounds(&entry.geometry, &(0..1))[0].center()
+        };
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: target,
+                    modifiers: gpui::Modifiers::none(),
+                    click_count: 3,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: target,
+                    modifiers: gpui::Modifiers::none(),
+                    click_count: 3,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        cx.simulate_mouse_down(target, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(target, MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        let menu_bounds = cx.debug_bounds("MENU_ROOT").expect("context menu bounds");
+        cx.simulate_click(menu_bounds.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("Copyable preview paragraph.".to_owned())
+        );
+        assert!(
+            cx.debug_bounds("MENU_ROOT").is_none(),
+            "cached pane context menu must disappear after clicking Copy"
+        );
+    }
 }
 
 impl Raku {
@@ -2608,6 +3218,27 @@ impl Raku {
             Some(RightPanelSurface::AttachmentFile(attachment)) => Some(attachment.editor_path()),
             _ => None,
         }
+    }
+
+    /// Text selected in the active file's rendered markdown preview.
+    ///
+    /// The preview's selection registry is only reset while the preview
+    /// paints, so a hidden tab keeps its last selection. Gate on the surface
+    /// actually on screen instead of copying text the reader cannot see.
+    pub(super) fn markdown_preview_selected_text(&self) -> Option<String> {
+        let selection = self.file_preview_selection.selection.borrow();
+        selected_markdown_preview_text(
+            self.right_panel_visible,
+            self.state.markdown_preview,
+            self.active_right_panel_surface(),
+            self.right_panel_files_selected_path.as_deref(),
+            &selection,
+            |editor_path| {
+                self.right_panel_file_editors
+                    .get(editor_path)
+                    .is_some_and(|editor| editor.reading && editor.attachment.is_some())
+            },
+        )
     }
 
     fn right_panel_file_is_dirty(&self, relative_path: &str) -> bool {
@@ -4378,6 +5009,9 @@ impl Raku {
     /// choice follows the user across files and sessions.
     fn toggle_markdown_preview(&mut self, cx: &mut Context<Self>) {
         self.state.markdown_preview = !self.state.markdown_preview;
+        if !self.state.markdown_preview {
+            self.file_preview_selection.clear();
+        }
         self.save();
         cx.notify();
     }
@@ -4399,9 +5033,20 @@ impl Raku {
         let mut cache = self.file_preview_markdown.borrow_mut();
         if !matches!(cache.as_ref(), Some((cached, _)) if cached == relative_path) {
             *cache = Some((relative_path.to_owned(), MarkdownView::new()));
+            self.file_preview_selection.clear();
         }
         let (_, view) = cache.as_mut().expect("entry ensured above");
         view.set_text(editor_state.read(cx).content(), false);
+        let right_panel_pane = self.right_panel_pane.clone();
+        // Right panel is a cached pane, so opening or closing the preview
+        // context menu needs a pane notify; a window refresh alone keeps the
+        // cached card element in place after Copy or dismiss.
+        let preview_menu = self.menu_handle_with("file-preview-math", cx, move |_, window, cx| {
+            let pane = right_panel_pane.clone();
+            window.defer(cx, move |_, cx| {
+                pane.update(cx, |_, cx| cx.notify());
+            });
+        });
         let ctx = MarkdownCtx::new(
             format!("file-preview-{relative_path}"),
             &palette,
@@ -4414,7 +5059,7 @@ impl Raku {
         .with_font_family(self.fonts.interface.clone())
         .with_font_fallbacks(self.fonts.fallbacks())
         .with_math_enabled(self.state.render_math)
-        .with_math_context_menu(self.menu_handle("file-preview-math", cx))
+        .with_context_menu(preview_menu.clone())
         .with_link_handler(self.markdown_link_handler.clone());
         let document = md::render::markdown(view, &ctx);
 
@@ -4429,29 +5074,43 @@ impl Raku {
             .h(px(0.0))
         };
 
+        let menu_selection = self.file_preview_selection.clone();
+        let scroll = div()
+            .id(SharedString::from(format!("file-preview-{relative_path}")))
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.file_preview_scroll_handle)
+            // Painted before the document, so the frame's selection
+            // registry holds exactly this frame's text elements.
+            .child(md::render::frame_reset(self.file_preview_selection.clone()))
+            .child(
+                div()
+                    .px(px(16.0))
+                    .pt(px(14.0))
+                    .pb(px(24.0))
+                    .text_color(theme.text)
+                    .children(document),
+            );
+        let preview = context_menu(
+            div().size_full().child(scroll),
+            SharedString::from(format!("file-preview-menu-{relative_path}")),
+            &preview_menu,
+            move |_| {
+                let Some(selected) = menu_selection.selection.borrow().selected_text() else {
+                    return Vec::new();
+                };
+                vec![MenuItem::new(tr!("menu.copy"), move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(selected.clone()));
+                })]
+            },
+        );
+
         div()
             .flex_1()
             .min_h_0()
             .relative()
             .bg(theme.surface)
-            .child(
-                div()
-                    .id(SharedString::from(format!("file-preview-{relative_path}")))
-                    .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.file_preview_scroll_handle)
-                    // Painted before the document, so the frame's selection
-                    // registry holds exactly this frame's text elements.
-                    .child(md::render::frame_reset(self.file_preview_selection.clone()))
-                    .child(
-                        div()
-                            .px(px(16.0))
-                            .pt(px(14.0))
-                            .pb(px(24.0))
-                            .text_color(theme.text)
-                            .children(document),
-                    ),
-            )
+            .child(preview)
             .child(selection_input)
             .child(scrollbar::vertical(
                 &self.file_preview_scroll_handle,
