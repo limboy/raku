@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.13] - 2026-11-16
+
+- Allow copying text selected in the right-panel Markdown preview
+- Keep queued follow-up previews on one line so multi-line prompts stay inside the row
+- Surface Pi's non-retryable and aborted turn errors in the transcript
+
 ## [2.5.12] - 2026-11-15
 
 - Restore running tasks and saving automatically after a local daemon connection drops
