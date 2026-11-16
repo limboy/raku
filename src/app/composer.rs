@@ -2499,7 +2499,7 @@ impl Raku {
         let mut list = div().flex().flex_col().py(px(4.0));
         for message in &session.queued_messages {
             let message_id = message.id;
-            let content = if message.visible_content().trim().is_empty() {
+            let raw_content = if message.visible_content().trim().is_empty() {
                 message
                     .attachments
                     .iter()
@@ -2509,6 +2509,9 @@ impl Raku {
             } else {
                 message.visible_content().to_owned()
             };
+            // The row is a fixed-height single line; hard breaks in pasted
+            // multi-line text would render as extra lines and spill out of it.
+            let content = single_line_label(&raw_content);
             let steer_control = steerable.then(|| {
                 div()
                     .id(SharedString::from(format!(
