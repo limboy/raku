@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.5.14] - 2026-11-17
+
+- Always show the project selector in the composer
+- Remove the diff button from the header toolbar
+
 ## [2.5.13] - 2026-11-16
 
 - Allow copying text selected in the right-panel Markdown preview
