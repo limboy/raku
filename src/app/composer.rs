@@ -3288,9 +3288,7 @@ impl Raku {
         } else {
             "icons/folder.svg"
         };
-        // A sidebar filtered to one project (or to "No project") already
-        // names the composer's project, so the chip would only repeat it.
-        let project_selector = self.sidebar_project_filter.is_none().then(|| {
+        let project_selector = {
             let project_handle = self.project_picker_handle(ProjectPickerSite::Composer, cx);
             self.render_project_picker(
                 MenuChip::new("workspace-project")
@@ -3303,7 +3301,7 @@ impl Raku {
                 ProjectPickerSite::Composer,
                 cx,
             )
-        });
+        };
 
         let branch_selector = self.render_branch_selector(cx);
 
@@ -3331,7 +3329,7 @@ impl Raku {
                     .tab_stop(false)
                     .text_size(sp(SMALL_UI_FONT_SIZE))
                     .line_height(sp(14.0))
-                    .children(project_selector)
+                    .child(project_selector)
                     .children(branch_selector)
                     .child(div().flex_1())
                     .children(usage_meter),
