@@ -3185,16 +3185,6 @@ impl Raku {
         }
     }
 
-    pub(super) fn toggle_right_panel_diff(&mut self, cx: &mut Context<Self>) {
-        if self.right_panel_visible
-            && self.active_right_panel_surface() == Some(&RightPanelSurface::Diff)
-        {
-            self.set_right_panel_visible(false, cx);
-        } else {
-            self.set_right_panel_diff_source(ReviewDiffSource::Uncommitted, cx);
-        }
-    }
-
     pub(super) fn request_active_terminal_focus(&mut self) {
         self.right_panel_pending_terminal_focus = self
             .active_right_panel_surface()

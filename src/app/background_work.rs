@@ -1028,8 +1028,6 @@ impl Raku {
     pub(super) fn render_background_work_summary(&self, cx: &mut Context<Self>) -> AnyElement {
         let session = self.selected_session();
         let session_id = session.map(|session| session.id);
-        let diff_selected = self.right_panel_visible
-            && self.active_right_panel_surface() == Some(&RightPanelSurface::Diff);
         let (processes, agents) = session_id
             .map(|session_id| self.background_work_counts(session_id))
             .unwrap_or_default();
@@ -1072,45 +1070,6 @@ impl Raku {
                         .child(pulse_dot(5.0, theme.accent)),
                 )
             });
-        let diff = {
-            let focus = self.transcript_control_focus("header-git-status", cx);
-            div()
-                .id("header-git-status")
-                .track_focus(&focus)
-                .tab_index(0)
-                .tab_stop(true)
-                .size(px(28.0))
-                .rounded(px(7.0))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_default()
-                .focus_visible(|style| style.border_1().border_color(theme.accent))
-                .when(diff_selected, |style| style.bg(theme.overlay_strong))
-                .when(!diff_selected, |style| {
-                    style.hover(|style| style.bg(theme.overlay))
-                })
-                .active(|style| style.bg(theme.overlay_strong))
-                .child(icon("icons/file-diff.svg", 20.0, theme.text))
-                .tooltip(Tooltip::text(tr!("environment.changes")))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation();
-                })
-                .on_click(cx.listener(|this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.toggle_right_panel_diff(cx);
-                }))
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    if !event.keystroke.modifiers.modified()
-                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                    {
-                        this.toggle_right_panel_diff(cx);
-                        cx.stop_propagation();
-                    }
-                }))
-                .into_any_element()
-        };
         let weak = cx.entity().downgrade();
         let info = popover(
             trigger,
@@ -1134,7 +1093,6 @@ impl Raku {
             .items_center()
             .gap(px(8.0))
             .child(info)
-            .child(diff)
             .child(self.render_right_panel_toggle(cx))
             .children(self.render_side_chat_trigger(cx))
             .into_any_element()
