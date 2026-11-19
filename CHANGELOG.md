@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.1] - 2026-11-20
+
+- Add weekly routine schedules, and set a routine's interval, time of day, or weekday in its own row of the routine dialog
+- Fix long text in the routine, goal, and commit dialogs spilling over the controls below; the field now grows, then scrolls
+
 ## [2.6.0] - 2026-11-20
 
 - Add scheduled session routines that run read-only background checks, optionally on a chosen subagent, and post to the session when there is new progress
