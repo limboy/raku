@@ -1163,7 +1163,7 @@ impl StateStore {
             .prepare(
                 "SELECT id, project_id, title, auto_title, provider, model, status,
                         created_at, updated_at, last_reply_at, active_compaction, side_chat,
-                        subagent
+                        subagent, routine
                  FROM sessions ORDER BY updated_at",
             )
             .map_err(to_io_error)?;
@@ -1184,6 +1184,7 @@ impl StateStore {
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             })
             .map_err(to_io_error)?
@@ -1293,6 +1294,9 @@ impl StateStore {
         session.active_compaction = stored.active_compaction;
         session.context_usage_pending = stored.context_usage_pending;
         session.runtime_event_cursor = stored.runtime_event_cursor;
+        // `routine` is a list column: the skeleton already carries the current
+        // value, and a skeleton save never rewrites this detail row, so the
+        // stored copy may describe a routine that has since been removed.
 
         let mut statement = connection
             .prepare(
@@ -1567,6 +1571,7 @@ type SessionColumns = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 /// Builds a list-only session from its columns. `messages`,
@@ -1589,6 +1594,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         active_compaction,
         side_chat,
         subagent,
+        routine,
     ) = row;
     Some(AgentSession {
         id: Uuid::parse_str(&id).ok()?,
@@ -1618,6 +1624,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         runtime_event_cursor: None,
         side_chat: side_chat.and_then(|json| serde_json::from_str(&json).ok()),
         subagent: subagent.and_then(|json| serde_json::from_str(&json).ok()),
+        routine: routine.and_then(|json| serde_json::from_str(&json).ok()),
         provider_session_id: None,
         messages: Vec::new(),
         transcript_blocks: Vec::new(),
@@ -1959,8 +1966,8 @@ fn message_fingerprint(message: &Message, position: usize) -> u64 {
 /// listing sessions never has to deserialize a transcript.
 const UPSERT_SESSION: &str = "INSERT INTO sessions(
          id, project_id, title, auto_title, provider, model, status,
-         created_at, updated_at, last_reply_at, active_compaction, side_chat, subagent
-     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         created_at, updated_at, last_reply_at, active_compaction, side_chat, subagent, routine
+     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
      ON CONFLICT(id) DO UPDATE SET
          project_id    = excluded.project_id,
          title         = excluded.title,
@@ -1973,7 +1980,8 @@ const UPSERT_SESSION: &str = "INSERT INTO sessions(
          last_reply_at = excluded.last_reply_at,
          active_compaction = excluded.active_compaction,
          side_chat     = excluded.side_chat,
-         subagent      = excluded.subagent";
+         subagent      = excluded.subagent,
+         routine       = excluded.routine";
 
 const INSERT_PROJECT: &str = "INSERT INTO projects(id, name, path, position, created_at)
      VALUES(?1, ?2, ?3, ?4, ?5)
@@ -2025,6 +2033,11 @@ fn session_params(session: &AgentSession) -> Vec<rusqlite::types::Value> {
             .subagent
             .as_ref()
             .and_then(|origin| serde_json::to_string(origin).ok())
+            .map_or(Value::Null, Value::Text),
+        session
+            .routine
+            .as_ref()
+            .and_then(|routine| serde_json::to_string(routine).ok())
             .map_or(Value::Null, Value::Text),
     ]
 }
@@ -4444,6 +4457,115 @@ mod tests {
         let state = store_in(&directory).load_or_fresh(PathBuf::from("/"));
         assert!(state.projects.is_empty());
         assert!(state.selected_session.is_none());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn session_routine_survives_list_only_reload_and_skeleton_update() {
+        use crate::model::{RoutineRunOutcome, RoutineSchedule, SessionRoutine};
+
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let id = state.sessions[0].id;
+        {
+            let session = state.session_mut(id).unwrap();
+            session.begin_turn("Track release");
+            session.finish_active_turn(crate::model::TurnStatus::Completed);
+            session.routine = Some(SessionRoutine::new(
+                "Check latest release".into(),
+                RoutineSchedule::EveryMinutes { minutes: 30 },
+                1_700_000_000,
+            ));
+        }
+        store.save(&mut state).unwrap();
+
+        let reopened = store_in(&directory);
+        let mut loaded = reopened.load().unwrap();
+        assert!(!loaded.sessions[0].detail_loaded);
+        assert_eq!(
+            loaded.sessions[0]
+                .routine
+                .as_ref()
+                .map(|r| r.prompt.as_str()),
+            Some("Check latest release")
+        );
+
+        // Update routine metadata on the unhydrated skeleton and save.
+        {
+            let session = loaded.session_mut(id).unwrap();
+            session.routine.as_mut().unwrap().record_run(
+                1_700_001_800,
+                420,
+                RoutineRunOutcome::NoUpdate,
+                Some("Still v1.0".into()),
+                Some("v1.0".into()),
+                None,
+            );
+            session.updated_at = 1_700_001_800;
+        }
+        reopened.save(&mut loaded).unwrap();
+
+        // Reload and hydrate: both the updated routine AND original messages remain intact.
+        let verify = store_in(&directory);
+        let mut restored = verify.load().unwrap();
+        assert_eq!(
+            restored.sessions[0]
+                .routine
+                .as_ref()
+                .and_then(|r| r.last_snapshot.as_deref()),
+            Some("v1.0")
+        );
+        verify.hydrate(&mut restored.sessions[0]).unwrap();
+        assert_eq!(restored.sessions[0].messages.len(), 1);
+        assert_eq!(
+            restored.sessions[0]
+                .routine
+                .as_ref()
+                .and_then(|r| r.last_snapshot.as_deref()),
+            Some("v1.0")
+        );
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn routine_removed_from_a_skeleton_stays_removed_after_hydration() {
+        use crate::model::{RoutineSchedule, SessionRoutine};
+
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let id = state.sessions[0].id;
+        {
+            let session = state.session_mut(id).unwrap();
+            session.begin_turn("Track release");
+            session.finish_active_turn(crate::model::TurnStatus::Completed);
+            session.routine = Some(SessionRoutine::new(
+                "Check latest release".into(),
+                RoutineSchedule::EveryMinutes { minutes: 30 },
+                1_700_000_000,
+            ));
+        }
+        // A hydrated save also writes the routine into the detail row.
+        store.save(&mut state).unwrap();
+
+        // Removed from Settings without opening the task: a skeleton save
+        // clears only the list column.
+        let reopened = store_in(&directory);
+        let mut loaded = reopened.load().unwrap();
+        assert!(!loaded.sessions[0].detail_loaded);
+        {
+            let session = loaded.session_mut(id).unwrap();
+            assert!(session.routine.take().is_some());
+            session.updated_at = 1_700_001_800;
+        }
+        reopened.save(&mut loaded).unwrap();
+
+        let verify = store_in(&directory);
+        let mut restored = verify.load().unwrap();
+        assert!(restored.sessions[0].routine.is_none());
+        verify.hydrate(&mut restored.sessions[0]).unwrap();
+        assert!(restored.sessions[0].routine.is_none());
         fs::remove_dir_all(directory).ok();
     }
 }

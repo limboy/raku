@@ -229,6 +229,7 @@ impl Render for Raku {
         let command_palette = self.render_command_palette(window, cx);
         let commit_dialog = self.render_commit_dialog(cx);
         let goal_dialog = self.render_goal_dialog(window, cx);
+        let routine_dialog = self.render_routine_dialog(window, cx);
         let toast = self.render_active_toast(cx);
         let content = div()
             .key_context("Raku")
@@ -389,6 +390,7 @@ impl Render for Raku {
             .children(command_palette)
             .children(commit_dialog)
             .children(goal_dialog)
+            .children(routine_dialog)
             .children(image_preview)
             .children(task_switcher)
             .into_any_element();
@@ -439,9 +441,10 @@ impl Raku {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::current(cx);
-        let (status_icon, status_color) = match tone {
-            ToastTone::Alert => ("icons/alert.svg", theme.danger),
-            ToastTone::Success => ("icons/check.svg", theme.success),
+        let status = match tone {
+            ToastTone::Alert => Some(("icons/alert.svg", theme.danger)),
+            ToastTone::Success => Some(("icons/check.svg", theme.success)),
+            ToastTone::Info => None,
         };
         let palette = MarkdownPalette::from_theme(&theme);
         let text_ctx = MarkdownCtx::new(
@@ -502,7 +505,9 @@ impl Raku {
                     .occlude()
                     .max_w(px(560.0))
                     .min_w_0()
-                    .px(px(10.0))
+                    .pr(px(10.0))
+                    // Text alone sits a little further in than an icon would.
+                    .pl(px(if status.is_some() { 10.0 } else { 14.0 }))
                     .py(px(7.0))
                     .rounded(px(10.0))
                     .border_1()
@@ -520,7 +525,9 @@ impl Raku {
                     }))
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(md::render::frame_reset(self.toast_selection.clone()))
-                    .child(icon(status_icon, 14.0, status_color))
+                    .when_some(status, |toast, (status_icon, status_color)| {
+                        toast.child(icon(status_icon, 14.0, status_color))
+                    })
                     .child(div().flex_1().min_w_0().whitespace_normal().child(message))
                     .child(dismiss)
                     .child(self.toast_selection_input()),

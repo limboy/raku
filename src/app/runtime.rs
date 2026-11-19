@@ -133,6 +133,7 @@ pub(super) fn merge_remote_session_catalog(
             local.model = remote.model;
             local.created_at = remote.created_at;
             local.last_reply_at = remote.last_reply_at;
+            local.routine = remote.routine;
             if !has_local_runtime(local.id) {
                 local.status = remote.status;
                 local.active_compaction = remote.active_compaction;
@@ -3196,6 +3197,7 @@ impl Raku {
             self.enqueue_follow_up_submission(session_id, submission, cx);
             return None;
         }
+        let submission = routines::attach_unseen_routine_updates(session, submission);
         let prompt = submission.prompt.clone();
         let human_prompt = submission.human_prompt();
         let has_input = !submission

@@ -3704,6 +3704,8 @@ impl Raku {
             || self.command_palette.is_open()
             || self.task_switcher.is_open()
             || self.commit_dialog.is_some()
+            || self.goal_dialog.is_some()
+            || self.routine_dialog.is_some()
             || self.image_preview.is_some()
             || self.composer.read(cx).context_menu_open(cx)
             || self

@@ -133,7 +133,12 @@ impl Raku {
                             .iter_mut()
                             .find(|existing| existing.id == session_id)
                         {
-                            *existing = session;
+                            // A routine delivery may have loaded it while this
+                            // fetch was in flight; its copy predates that
+                            // update and would drop it.
+                            if !existing.detail_loaded {
+                                *existing = session;
+                            }
                             true
                         } else {
                             false
@@ -288,6 +293,14 @@ impl Raku {
             self.remove_side_chat(side_chat_id, cx);
         }
         self.finished_session_ids.remove(&session_id);
+        self.cancel_routine_check(session_id);
+        if self
+            .routine_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.session_id == session_id)
+        {
+            self.routine_dialog = None;
+        }
         self.forget_context_snapshot(session_id, cx);
         let Some(index) = self
             .state

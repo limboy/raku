@@ -42,6 +42,8 @@ export const sessions = sqliteTable(
     sideChat: text("side_chat"),
     /** Subagent origin JSON (parent task, tool call, agent); null for tasks. Needed before hydration. */
     subagent: text("subagent"),
+    /** Scheduled routine JSON (schedule, prompt, snapshot, run log); null when unscheduled. Needed before hydration. */
+    routine: text("routine"),
     /** Session creation time, unix seconds. */
     createdAt: integer("created_at").notNull(),
     /** Any mutation, unix seconds — including title edits and truncation. */

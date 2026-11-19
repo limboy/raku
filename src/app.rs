@@ -214,11 +214,12 @@ enum SettingsPage {
     SideChat,
     Subagents,
     TextGeneration,
+    Routines,
 }
 
 impl SettingsPage {
     /// Number of pages; sizes per-page state such as the tab focus handles.
-    const COUNT: usize = SettingsPage::TextGeneration as usize + 1;
+    const COUNT: usize = SettingsPage::Routines as usize + 1;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -250,6 +251,9 @@ struct ToastState {
 enum ToastTone {
     Alert,
     Success,
+    /// A plain notice that is neither a problem nor an achievement, such as a
+    /// routine check that found nothing new. Drawn without a status icon.
+    Info,
 }
 
 fn paused_toast_duration(remaining: Duration, elapsed: Duration) -> Duration {
@@ -1262,6 +1266,9 @@ pub struct Raku {
     /// off-thread; frames only read this in-memory value.
     commit_dialog: Option<commit_dialog::CommitDialogState>,
     goal_dialog: Option<goal_dialog::GoalDialogState>,
+    routine_dialog: Option<routine_dialog::RoutineDialogState>,
+    routine_checks: routines::RoutineChecks,
+    routine_scheduler_task: Option<gpui::Task<()>>,
     /// View state of the right panel's Context tab.
     context_panel: context_inspector::ContextInspectorState,
     /// What the Context tab has recorded per task. Outlives the provider
@@ -1734,6 +1741,8 @@ mod image_preview;
 mod project_picker;
 mod render;
 mod right_panel;
+mod routine_dialog;
+mod routines;
 mod runtime;
 mod save_status;
 mod session_export;
@@ -1764,6 +1773,7 @@ pub use commit_dialog::init as init_commit_dialog_keys;
 use components::*;
 pub use composer_history::init as init_composer_history;
 pub use goal_dialog::init as init_goal_dialog_keys;
+pub use routine_dialog::init as init_routine_dialog_keys;
 pub use image_preview::init as init_image_preview_keys;
 use project_picker::ProjectPickerSite;
 pub use settings::init as init_settings_keys;
@@ -1869,6 +1879,10 @@ impl Raku {
 
     pub(super) fn show_success_toast(&mut self, message: impl Into<String>) {
         self.show_toast_with_tone(message, ToastTone::Success);
+    }
+
+    pub(super) fn show_info_toast(&mut self, message: impl Into<String>) {
+        self.show_toast_with_tone(message, ToastTone::Info);
     }
 
     fn show_toast_with_tone(&mut self, message: impl Into<String>, tone: ToastTone) {
@@ -2901,6 +2915,9 @@ impl Raku {
                 branch_operation_pending: false,
                 commit_dialog: None,
                 goal_dialog: None,
+                routine_dialog: None,
+                routine_checks: routines::RoutineChecks::default(),
+                routine_scheduler_task: None,
                 context_panel: context_inspector::ContextInspectorState::new(cx),
                 context_inspections: HashMap::new(),
                 context_snapshot_loads: HashSet::new(),
@@ -3152,6 +3169,7 @@ impl Raku {
                 this.show_toast(message);
             }
             this.start_sidebar_date_clock(cx);
+            this.start_routine_scheduler(cx);
             this.schedule_automatic_backups(cx);
             this.restart_task_state_sync();
             for session_id in startup_live_session_ids {

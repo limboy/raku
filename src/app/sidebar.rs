@@ -1272,18 +1272,34 @@ impl Raku {
             SessionStatus::Connecting | SessionStatus::Working
         );
         let pinned = self.state.pinned_session_ids.contains(&session_id);
+        let routine_checking = self.is_routine_running(session_id);
+        let routine_active = session
+            .routine
+            .as_ref()
+            .is_some_and(|routine| routine.enabled);
+        let routine_schedule_hint = session
+            .routine
+            .as_ref()
+            .map(|routine| routines::routine_schedule_label(routine.schedule));
         let finished_indicator = sidebar_session_indicates_finished(
             &self.finished_session_ids,
             selected,
             session.status,
             session_id,
         );
+        let show_routine_indicator = (routine_checking || routine_active)
+            && !working
+            && !matches!(
+                session.status,
+                SessionStatus::Background | SessionStatus::Waiting | SessionStatus::Failed
+            );
         let has_trailing_indicator = pinned
             || working
             || matches!(
                 session.status,
                 SessionStatus::Background | SessionStatus::Waiting | SessionStatus::Failed
             )
+            || show_routine_indicator
             || finished_indicator;
         let rename_input =
             (self.session_rename == Some(session_id)).then(|| self.session_rename_input.clone());
@@ -1417,6 +1433,39 @@ impl Raku {
                             12.0,
                             status_color(&theme, session.status),
                         ))
+                    })
+                    .when(show_routine_indicator, |element| {
+                        if routine_checking {
+                            element.child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "sidebar-routine-checking-{session_id}"
+                                    )))
+                                    .tooltip(Tooltip::text(tr!("routine.sidebar_tooltip_checking")))
+                                    .child(motion::spin_slow(icon(
+                                        "icons/loader-circle-bold.svg",
+                                        12.0,
+                                        theme.accent,
+                                    ))),
+                            )
+                        } else {
+                            let tooltip = tr!(
+                                "routine.sidebar_tooltip_active",
+                                schedule = routine_schedule_hint.clone().unwrap_or_default()
+                            );
+                            element.child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "sidebar-routine-active-{session_id}"
+                                    )))
+                                    .tooltip(Tooltip::text(tooltip))
+                                    .child(icon(
+                                        "icons/ant/alarm-clock.svg",
+                                        12.0,
+                                        theme.text_tertiary,
+                                    )),
+                            )
+                        }
                     })
                     .when(finished_indicator, |element| {
                         element.child(
@@ -1666,6 +1715,7 @@ impl Raku {
                     cx,
                 ),
             )
+            .children(self.render_routine_header_button(cx))
             .child(self.render_background_work_summary(cx))
             .when(
                 !self.right_panel_visible && self.fps_counter_visible,
@@ -1822,7 +1872,7 @@ impl Raku {
     }
 }
 
-fn localized_session_title(session: &AgentSession) -> String {
+pub(super) fn localized_session_title(session: &AgentSession) -> String {
     let title = session.display_title();
     if title == AgentSession::DEFAULT_TITLE {
         tr!("session.new_task")
@@ -1857,6 +1907,7 @@ fn sidebar_session_menu_items(
 ) -> Vec<MenuItem> {
     let pin_raku = raku.clone();
     let rename_raku = raku.clone();
+    let routine_raku = raku.clone();
     let copy_raku = raku.clone();
     let export_raku = raku.clone();
     let remove_raku = raku;
@@ -1864,6 +1915,11 @@ fn sidebar_session_menu_items(
         MenuItem::new(tr!("common.rename"), move |window, cx| {
             let _ = rename_raku.update(cx, |raku, cx| {
                 raku.begin_session_rename(session_id, window, cx);
+            });
+        }),
+        MenuItem::new(tr!("routine.menu_item"), move |window, cx| {
+            let _ = routine_raku.update(cx, |raku, cx| {
+                raku.open_routine_dialog(session_id, window, cx);
             });
         }),
         MenuItem::Separator,
@@ -2672,21 +2728,25 @@ mod tests {
     fn sidebar_session_menu_items_has_copy_and_export_submenus(cx: &mut gpui::TestAppContext) {
         let session_id = Uuid::new_v4();
         let items = sidebar_session_menu_items(session_id, false, WeakEntity::new_invalid());
-        assert_eq!(items.len(), 8);
+        assert_eq!(items.len(), 9);
 
         match &items[0] {
             MenuItem::Entry { label, .. } => assert_eq!(label, tr!("common.rename").as_str()),
             _ => panic!("expected rename entry"),
         }
-        assert!(matches!(&items[1], MenuItem::Separator));
-        match &items[2] {
+        match &items[1] {
+            MenuItem::Entry { label, .. } => assert_eq!(label, tr!("routine.menu_item").as_str()),
+            _ => panic!("expected routine entry"),
+        }
+        assert!(matches!(&items[2], MenuItem::Separator));
+        match &items[3] {
             MenuItem::Entry { label, .. } => assert_eq!(label, tr!("session.pin").as_str()),
             _ => panic!("expected pin entry"),
         }
-        assert!(matches!(&items[3], MenuItem::Separator));
+        assert!(matches!(&items[4], MenuItem::Separator));
 
         // Copy submenu
-        match &items[4] {
+        match &items[5] {
             MenuItem::Submenu { label, items, .. } => {
                 assert_eq!(label, tr!("common.copy").as_str());
                 let sub_items = cx.update(|cx| items(cx));
@@ -2714,7 +2774,7 @@ mod tests {
         }
 
         // Export submenu
-        match &items[5] {
+        match &items[6] {
             MenuItem::Submenu { label, items, .. } => {
                 assert_eq!(label, tr!("common.export").as_str());
                 let sub_items = cx.update(|cx| items(cx));
@@ -2735,14 +2795,14 @@ mod tests {
             _ => panic!("expected export submenu"),
         }
 
-        assert!(matches!(&items[6], MenuItem::Separator));
-        match &items[7] {
+        assert!(matches!(&items[7], MenuItem::Separator));
+        match &items[8] {
             MenuItem::Entry { label, .. } => assert_eq!(label, tr!("common.remove").as_str()),
             _ => panic!("expected remove entry"),
         }
 
         let pinned_items = sidebar_session_menu_items(session_id, true, WeakEntity::new_invalid());
-        match &pinned_items[2] {
+        match &pinned_items[3] {
             MenuItem::Entry { label, .. } => assert_eq!(label, tr!("session.unpin").as_str()),
             _ => panic!("expected unpin entry"),
         }

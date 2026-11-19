@@ -801,6 +801,10 @@ pub struct AgentSession {
     /// column so a skeleton knows it is a subagent before hydration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent: Option<SubagentOrigin>,
+    /// Scheduled background check attached to this session. Stored as a list
+    /// column so the scheduler and sidebar see it before transcript hydration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routine: Option<SessionRoutine>,
     /// Read-only compatibility field for v1 state files. New saves omit it.
     #[serde(default, skip_serializing)]
     pub provider_session_id: Option<String>,
@@ -841,6 +845,254 @@ fn detail_loaded_default() -> bool {
 
 fn is_detail_loaded(detail_loaded: &bool) -> bool {
     *detail_loaded
+}
+
+/// Minimum allowed interval between routine checks in minutes.
+pub const ROUTINE_MIN_INTERVAL_MINUTES: u32 = 5;
+/// Consecutive failed checks before a routine pauses itself automatically.
+pub const ROUTINE_MAX_CONSECUTIVE_FAILURES: u32 = 3;
+/// Maximum number of recent check records kept on a session routine.
+pub const ROUTINE_MAX_RUN_HISTORY: usize = 12;
+/// Maximum character length kept for `SessionRoutine::last_snapshot`.
+pub const ROUTINE_MAX_SNAPSHOT_CHARS: usize = 4000;
+
+/// Cadence for a session's scheduled routine check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoutineSchedule {
+    /// Run every N minutes (clamped to [`ROUTINE_MIN_INTERVAL_MINUTES`]).
+    EveryMinutes { minutes: u32 },
+    /// Run once per day at local `hour:minute` (24-hour clock).
+    Daily { hour: u8, minute: u8 },
+}
+
+impl Default for RoutineSchedule {
+    fn default() -> Self {
+        Self::EveryMinutes { minutes: 60 }
+    }
+}
+
+impl RoutineSchedule {
+    /// Built-in schedule presets offered in the routine configuration dialog.
+    pub const PRESETS: &'static [Self] = &[
+        Self::EveryMinutes { minutes: 15 },
+        Self::EveryMinutes { minutes: 30 },
+        Self::EveryMinutes { minutes: 60 },
+        Self::EveryMinutes { minutes: 180 },
+        Self::EveryMinutes { minutes: 360 },
+        Self::EveryMinutes { minutes: 720 },
+        Self::Daily { hour: 9, minute: 0 },
+        Self::Daily {
+            hour: 18,
+            minute: 0,
+        },
+        Self::Daily {
+            hour: 21,
+            minute: 0,
+        },
+    ];
+
+    /// Computes the next unix-second timestamp strictly after `now_secs`.
+    pub fn next_run_after(self, now_secs: u64) -> u64 {
+        match self {
+            Self::EveryMinutes { minutes } => {
+                let clamped = minutes.max(ROUTINE_MIN_INTERVAL_MINUTES) as u64;
+                now_secs.saturating_add(clamped * 60)
+            }
+            Self::Daily { hour, minute } => {
+                use chrono::{Local, TimeZone as _};
+                let hour = (hour as u32).min(23);
+                let minute = (minute as u32).min(59);
+                let now_dt = Local
+                    .timestamp_opt(now_secs as i64, 0)
+                    .single()
+                    .unwrap_or_else(Local::now);
+                let today = now_dt.date_naive();
+                let candidate = |date: chrono::NaiveDate| -> Option<u64> {
+                    let naive = date.and_hms_opt(hour, minute, 0)?;
+                    let local = Local
+                        .from_local_datetime(&naive)
+                        .earliest()
+                        .or_else(|| Local.from_local_datetime(&naive).latest())?;
+                    u64::try_from(local.timestamp()).ok()
+                };
+                if let Some(ts) = candidate(today)
+                    && ts > now_secs
+                {
+                    return ts;
+                }
+                if let Some(tomorrow) = today.succ_opt()
+                    && let Some(ts) = candidate(tomorrow)
+                {
+                    return ts;
+                }
+                now_secs.saturating_add(24 * 60 * 60)
+            }
+        }
+    }
+}
+
+/// Outcome of one scheduled routine probe.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoutineRunOutcome {
+    #[default]
+    NoUpdate,
+    Updated,
+    Failed,
+    SkippedBusy,
+}
+
+/// One historical entry in [`SessionRoutine::recent_runs`].
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutineRunRecord {
+    pub checked_at: u64,
+    pub duration_ms: u64,
+    pub outcome: RoutineRunOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Recurring check attached to a session.
+///
+/// Each trigger runs in an isolated read-only context carrying only the check
+/// prompt and [`Self::last_snapshot`]. Only when the check reports new
+/// progress does a message land in the session's transcript.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRoutine {
+    pub enabled: bool,
+    pub prompt: String,
+    pub schedule: RoutineSchedule,
+    /// Name of the subagent definition whose provider, model, effort and
+    /// instructions run each check. `None` runs on the task's own provider
+    /// and model. Checks stay read-only whatever the agent's access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_checked_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_updated_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<RoutineRunOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_snapshot: Option<String>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_runs: Vec<RoutineRunRecord>,
+}
+
+impl SessionRoutine {
+    pub fn new(prompt: String, schedule: RoutineSchedule, now: u64) -> Self {
+        Self {
+            enabled: true,
+            prompt,
+            schedule,
+            runner: None,
+            created_at: now,
+            updated_at: now,
+            last_checked_at: None,
+            last_updated_at: None,
+            next_run_at: Some(schedule.next_run_after(now)),
+            last_outcome: None,
+            last_error: None,
+            last_snapshot: None,
+            consecutive_failures: 0,
+            recent_runs: Vec::new(),
+        }
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool, now: u64) {
+        self.enabled = enabled;
+        self.updated_at = now;
+        if enabled {
+            self.consecutive_failures = 0;
+            self.last_error = None;
+            self.next_run_at = Some(self.schedule.next_run_after(now));
+        } else {
+            self.next_run_at = None;
+        }
+    }
+
+    pub fn record_run(
+        &mut self,
+        checked_at: u64,
+        duration_ms: u64,
+        outcome: RoutineRunOutcome,
+        summary: Option<String>,
+        snapshot: Option<String>,
+        error: Option<String>,
+    ) {
+        self.last_checked_at = Some(checked_at);
+        self.last_outcome = Some(outcome);
+        self.updated_at = checked_at;
+
+        match outcome {
+            RoutineRunOutcome::Updated => {
+                self.last_updated_at = Some(checked_at);
+                self.last_error = None;
+                self.consecutive_failures = 0;
+                if let Some(snapshot) = snapshot {
+                    self.last_snapshot = Some(truncate_routine_text(&snapshot, ROUTINE_MAX_SNAPSHOT_CHARS));
+                }
+            }
+            RoutineRunOutcome::NoUpdate => {
+                self.last_error = None;
+                self.consecutive_failures = 0;
+                if let Some(snapshot) = snapshot {
+                    self.last_snapshot = Some(truncate_routine_text(&snapshot, ROUTINE_MAX_SNAPSHOT_CHARS));
+                }
+            }
+            RoutineRunOutcome::Failed => {
+                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                self.last_error = error.map(|e| truncate_routine_text(&e, 400));
+                if self.consecutive_failures >= ROUTINE_MAX_CONSECUTIVE_FAILURES {
+                    self.enabled = false;
+                    self.next_run_at = None;
+                }
+            }
+            RoutineRunOutcome::SkippedBusy => {}
+        }
+
+        if self.enabled {
+            self.next_run_at = Some(self.schedule.next_run_after(checked_at));
+        } else {
+            self.next_run_at = None;
+        }
+
+        let summary = summary
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .map(|s| truncate_routine_text(&s, 240));
+        self.recent_runs.push(RoutineRunRecord {
+            checked_at,
+            duration_ms,
+            outcome,
+            summary,
+        });
+        if self.recent_runs.len() > ROUTINE_MAX_RUN_HISTORY {
+            let excess = self.recent_runs.len() - ROUTINE_MAX_RUN_HISTORY;
+            self.recent_runs.drain(..excess);
+        }
+    }
+}
+
+fn truncate_routine_text(input: &str, max_chars: usize) -> String {
+    let trimmed = input.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_owned();
+    }
+    let mut out = trimmed.chars().take(max_chars).collect::<String>();
+    out.push('…');
+    out
 }
 
 /// First line of the hidden context a side chat's first prompt carries.
@@ -1361,6 +1613,7 @@ impl AgentSession {
             runtime_event_cursor: None,
             side_chat: None,
             subagent: None,
+            routine: None,
             provider_session_id: None,
             messages: Vec::new(),
             transcript_blocks: Vec::new(),
@@ -1402,6 +1655,7 @@ impl AgentSession {
             runtime_event_cursor: None,
             side_chat: self.side_chat.clone(),
             subagent: self.subagent.clone(),
+            routine: self.routine.clone(),
             provider_session_id: None,
             messages: Vec::new(),
             transcript_blocks: Vec::new(),
@@ -1456,6 +1710,7 @@ impl AgentSession {
             || !self.turns.is_empty()
             || !self.messages.is_empty()
             || self.provider_cursor.is_some()
+            || self.routine.is_some()
     }
 
     /// Drops the loaded transcript so the session returns to its skeleton

@@ -97,6 +97,9 @@ enum PaletteAction {
     ResumeProviderSession(ProviderSessionSummary),
     SelectTask(Uuid),
     OpenSettings,
+    OpenRoutinesSettings,
+    ConfigureSessionRoutine(Uuid),
+    RunSessionRoutineNow(Uuid),
     ChooseModel,
     OpenResume,
 }
@@ -906,6 +909,11 @@ impl Raku {
                 PaletteAction::OpenSettings,
             ),
             (
+                "routine.command_open_settings",
+                "routines schedule timer cron automation",
+                PaletteAction::OpenRoutinesSettings,
+            ),
+            (
                 "command_palette.choose_model",
                 "model models provider",
                 PaletteAction::ChooseModel,
@@ -935,6 +943,36 @@ impl Raku {
                 order: candidates.len(),
                 recency: 0,
             });
+        }
+        if let Some(session) = self.selected_session()
+            && !session.is_child()
+        {
+            let label = tr!("routine.command_configure");
+            candidates.push(CommandPaletteItem {
+                section: PaletteSection::Commands,
+                search_text: format!("routine schedule timer cron {label}"),
+                label,
+                detail: Some(session.display_title().to_owned()),
+                provider: Some(session.provider),
+                action: PaletteAction::ConfigureSessionRoutine(session.id),
+                content_match: None,
+                order: candidates.len(),
+                recency: 0,
+            });
+            if session.routine.is_some() && !self.is_routine_running(session.id) {
+                let run_label = tr!("routine.command_check_now");
+                candidates.push(CommandPaletteItem {
+                    section: PaletteSection::Commands,
+                    search_text: format!("routine check now run schedule {run_label}"),
+                    label: run_label,
+                    detail: Some(session.display_title().to_owned()),
+                    provider: Some(session.provider),
+                    action: PaletteAction::RunSessionRoutineNow(session.id),
+                    content_match: None,
+                    order: candidates.len(),
+                    recency: 0,
+                });
+            }
         }
         if let Some(session) = self.selected_session()
             && session.provider.capabilities().compaction.manual
@@ -1271,6 +1309,19 @@ impl Raku {
             PaletteAction::OpenSettings => {
                 self.close_command_palette(window, cx);
                 self.open_settings_action(&OpenSettings, window, cx);
+            }
+            PaletteAction::OpenRoutinesSettings => {
+                self.close_command_palette(window, cx);
+                self.open_settings_action(&OpenSettings, window, cx);
+                self.open_settings_page(SettingsPage::Routines, cx);
+            }
+            PaletteAction::ConfigureSessionRoutine(session_id) => {
+                self.close_command_palette(window, cx);
+                self.open_routine_dialog(session_id, window, cx);
+            }
+            PaletteAction::RunSessionRoutineNow(session_id) => {
+                self.close_command_palette(window, cx);
+                self.trigger_session_routine_now(session_id, cx);
             }
             PaletteAction::ChooseModel => {
                 self.close_command_palette(window, cx);

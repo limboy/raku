@@ -792,6 +792,7 @@ fn merge_skeleton_list_columns(existing: &mut AgentSession, incoming: AgentSessi
     if incoming.updated_at >= existing.updated_at {
         existing.title = incoming.title;
         existing.project_id = incoming.project_id;
+        existing.routine = incoming.routine;
         existing.updated_at = incoming.updated_at;
     }
 }
@@ -808,6 +809,7 @@ fn merge_stale_session_metadata(existing: &mut AgentSession, incoming: AgentSess
         existing.service_tier = incoming.service_tier;
         existing.context_window = incoming.context_window;
         existing.agent_preset = incoming.agent_preset;
+        existing.routine = incoming.routine;
         existing.updated_at = incoming.updated_at;
         existing.last_reply_at = incoming.last_reply_at.or(existing.last_reply_at);
     }

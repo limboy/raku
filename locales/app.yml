@@ -2400,3 +2400,112 @@ context_inspector.subagents_unrecorded:
   en: "The subagent roster was not recorded for this runtime. Its next launch will record it."
 context_inspector.roster_updates_definition:
   en: "The current roster was sent as an update to this original tool definition."
+
+settings.routines:
+  en: "Routines"
+routine.title:
+  en: "Session routine"
+routine.header_tooltip:
+  en: "Schedule routine check"
+routine.header_checking:
+  en: "Checking…"
+routine.header_failed:
+  en: "Error"
+routine.status_active:
+  en: "Active"
+routine.status_paused:
+  en: "Paused"
+routine.status_checking:
+  en: "Checking…"
+routine.status_error:
+  en: "Auto-paused"
+routine.prompt_label:
+  en: "What to monitor"
+routine.prompt_placeholder:
+  en: "Describe what to check and what counts as new progress (e.g. \"Check the latest release of X; report only when a new version ships\")."
+routine.schedule_label:
+  en: "Schedule"
+routine.every_minutes:
+  en: "Every %{count} min"
+routine.every_hours:
+  en: "Every %{count} h"
+routine.daily_at:
+  en: "Daily at %{time}"
+routine.save:
+  en: "Save routine"
+routine.check_now:
+  en: "Check now"
+routine.pause:
+  en: "Pause routine"
+routine.resume:
+  en: "Resume routine"
+routine.remove:
+  en: "Remove routine"
+routine.last_checked:
+  en: "Last checked %{time}"
+routine.next_check:
+  en: "Next check %{time}"
+routine.never_checked:
+  en: "Not checked yet"
+routine.outcome_updated:
+  en: "Update delivered"
+routine.outcome_no_update:
+  en: "No new progress"
+routine.outcome_failed:
+  en: "Check failed"
+routine.outcome_skipped_busy:
+  en: "Skipped (busy)"
+routine.update_pill:
+  en: "Routine update · %{time}"
+routine.notification_body:
+  en: "New routine update delivered"
+routine.toast_saved:
+  en: "Routine saved"
+routine.toast_removed:
+  en: "Routine removed"
+routine.toast_paused:
+  en: "Routine paused"
+routine.toast_resumed:
+  en: "Routine resumed"
+routine.toast_no_update:
+  en: "No new progress found"
+routine.toast_updated:
+  en: "Routine delivered a new update"
+routine.toast_failed:
+  en: "Routine check failed: %{error}"
+routine.toast_auto_paused:
+  en: "Routine paused after repeated failures"
+routine.menu_item:
+  en: "Routine…"
+routine.sidebar_tooltip_active:
+  en: "Scheduled routine (%{schedule})"
+routine.sidebar_tooltip_checking:
+  en: "Checking routine…"
+routine.command_configure:
+  en: "Configure session routine"
+routine.command_check_now:
+  en: "Run session routine now"
+routine.command_open_settings:
+  en: "Manage all routines"
+routine.settings_heading:
+  en: "Session routines"
+routine.settings_description:
+  en: "Scheduled checks run in an isolated read-only context while Raku is open, and post to their session only when new progress is found."
+routine.settings_empty:
+  en: "No routines yet. Open any task and click the clock button in the header to schedule recurring checks."
+routine.settings_open_session:
+  en: "Open task"
+routine.settings_edit:
+  en: "Edit"
+routine.settings_error_banner:
+  en: "Last error: %{error}"
+routine.runner_label:
+  en: "Run with"
+routine.runner_task:
+  en: "This task's model"
+routine.runner_unavailable:
+  en: "%{name} (unavailable)"
+routine.runner_missing:
+  en: "Routine runner \"%{name}\" is not available. Enable it in Settings → Subagents or choose another runner."
+routine.runner_via:
+  en: "via %{name}"

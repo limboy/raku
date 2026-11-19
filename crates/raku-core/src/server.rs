@@ -18,7 +18,7 @@ use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket, accept_hdr_with_config};
 use uuid::Uuid;
 
-use crate::model::{AgentSession, Project, ProviderKind, SessionStatus};
+use crate::model::{AgentSession, Project, ProviderKind, SessionRoutine, SessionStatus};
 use crate::protocol::MAX_WIRE_MESSAGE_BYTES;
 use crate::protocol::{
     ClientMessage, Command, PROTOCOL_VERSION, ReplayCursor, Request, ResponseOutcome,
@@ -157,6 +157,7 @@ struct SessionCatalogEntry {
     status: SessionStatus,
     created_at: u64,
     last_reply_at: Option<u64>,
+    routine: Option<SessionRoutine>,
 }
 
 impl From<&AgentSession> for SessionCatalogEntry {
@@ -170,6 +171,7 @@ impl From<&AgentSession> for SessionCatalogEntry {
             status: session.status,
             created_at: session.created_at,
             last_reply_at: session.last_reply_at,
+            routine: session.routine.clone(),
         }
     }
 }

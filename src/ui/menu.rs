@@ -819,17 +819,41 @@ pub fn dropdown_menu<E>(
 where
     E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
 {
+    dropdown_menu_with_priority(trigger, id, handle, align, 1, items)
+}
+
+/// [`dropdown_menu`] whose card paints at `priority`. GPUI orders every
+/// deferred draw in one flat sort, so a dropdown inside a deferred modal
+/// needs a priority above that modal's or its card paints underneath it.
+pub fn dropdown_menu_with_priority<E>(
+    trigger: E,
+    id: impl Into<ElementId>,
+    handle: &ContextMenuHandle,
+    align: MenuAlign,
+    priority: usize,
+    items: impl Fn(&mut App) -> Vec<MenuItem> + 'static,
+) -> AnyElement
+where
+    E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
+{
     let id: ElementId = id.into();
     let items = Rc::new(items);
-    anchored_surface(trigger, handle, align, SurfaceFocus::Card, move |handle| {
-        MenuCard {
-            id: id.clone(),
-            handle: handle.clone(),
-            items: items.clone(),
-            scrollable: false,
-        }
-        .into_any_element()
-    })
+    anchored_surface_with_priority(
+        trigger,
+        handle,
+        align,
+        SurfaceFocus::Card,
+        priority,
+        move |handle| {
+            MenuCard {
+                id: id.clone(),
+                handle: handle.clone(),
+                items: items.clone(),
+                scrollable: false,
+            }
+            .into_any_element()
+        },
+    )
 }
 
 /// A dropdown for large, flat option catalogs, with a bounded, virtualized list.
@@ -1096,6 +1120,20 @@ fn anchored_surface<E>(
 where
     E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
 {
+    anchored_surface_with_priority(trigger, handle, align, focus_target, 1, card)
+}
+
+fn anchored_surface_with_priority<E>(
+    trigger: E,
+    handle: &ContextMenuHandle,
+    align: MenuAlign,
+    focus_target: SurfaceFocus,
+    priority: usize,
+    card: impl Fn(&ContextMenuHandle) -> AnyElement + 'static,
+) -> AnyElement
+where
+    E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
+{
     let open_at = handle.state.borrow().open;
     let press_handle = handle.clone();
     let toggle_handle = handle.clone();
@@ -1149,7 +1187,7 @@ where
                 px(TRIGGER_GAP),
                 px(8.0),
             ))
-            .with_priority(1),
+            .with_priority(priority),
         )
         .into_any_element()
 }
