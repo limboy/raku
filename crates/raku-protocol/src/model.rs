@@ -864,6 +864,9 @@ pub enum RoutineSchedule {
     EveryMinutes { minutes: u32 },
     /// Run once per day at local `hour:minute` (24-hour clock).
     Daily { hour: u8, minute: u8 },
+    /// Run once per week on `weekday` (0 = Monday … 6 = Sunday) at local
+    /// `hour:minute` (24-hour clock).
+    Weekly { weekday: u8, hour: u8, minute: u8 },
 }
 
 impl Default for RoutineSchedule {
@@ -873,25 +876,6 @@ impl Default for RoutineSchedule {
 }
 
 impl RoutineSchedule {
-    /// Built-in schedule presets offered in the routine configuration dialog.
-    pub const PRESETS: &'static [Self] = &[
-        Self::EveryMinutes { minutes: 15 },
-        Self::EveryMinutes { minutes: 30 },
-        Self::EveryMinutes { minutes: 60 },
-        Self::EveryMinutes { minutes: 180 },
-        Self::EveryMinutes { minutes: 360 },
-        Self::EveryMinutes { minutes: 720 },
-        Self::Daily { hour: 9, minute: 0 },
-        Self::Daily {
-            hour: 18,
-            minute: 0,
-        },
-        Self::Daily {
-            hour: 21,
-            minute: 0,
-        },
-    ];
-
     /// Computes the next unix-second timestamp strictly after `now_secs`.
     pub fn next_run_after(self, now_secs: u64) -> u64 {
         match self {
@@ -899,37 +883,56 @@ impl RoutineSchedule {
                 let clamped = minutes.max(ROUTINE_MIN_INTERVAL_MINUTES) as u64;
                 now_secs.saturating_add(clamped * 60)
             }
-            Self::Daily { hour, minute } => {
-                use chrono::{Local, TimeZone as _};
-                let hour = (hour as u32).min(23);
-                let minute = (minute as u32).min(59);
-                let now_dt = Local
-                    .timestamp_opt(now_secs as i64, 0)
-                    .single()
-                    .unwrap_or_else(Local::now);
-                let today = now_dt.date_naive();
-                let candidate = |date: chrono::NaiveDate| -> Option<u64> {
-                    let naive = date.and_hms_opt(hour, minute, 0)?;
-                    let local = Local
-                        .from_local_datetime(&naive)
-                        .earliest()
-                        .or_else(|| Local.from_local_datetime(&naive).latest())?;
-                    u64::try_from(local.timestamp()).ok()
-                };
-                if let Some(ts) = candidate(today)
-                    && ts > now_secs
-                {
-                    return ts;
-                }
-                if let Some(tomorrow) = today.succ_opt()
-                    && let Some(ts) = candidate(tomorrow)
-                {
-                    return ts;
-                }
-                now_secs.saturating_add(24 * 60 * 60)
+            Self::Daily { hour, minute } => next_local_slot(now_secs, hour, minute, |_| true)
+                .unwrap_or(now_secs.saturating_add(24 * 3600)),
+            Self::Weekly {
+                weekday,
+                hour,
+                minute,
+            } => {
+                let weekday = u32::from(weekday.min(6));
+                next_local_slot(now_secs, hour, minute, |date| {
+                    use chrono::Datelike as _;
+                    date.weekday().num_days_from_monday() == weekday
+                })
+                .unwrap_or(now_secs.saturating_add(7 * 24 * 3600))
             }
         }
     }
+}
+
+/// First local `hour:minute` strictly after `now_secs` on a date `accept`
+/// allows, searching today and the following week.
+fn next_local_slot(
+    now_secs: u64,
+    hour: u8,
+    minute: u8,
+    accept: impl Fn(chrono::NaiveDate) -> bool,
+) -> Option<u64> {
+    use chrono::{Local, TimeZone as _};
+    let hour = u32::from(hour).min(23);
+    let minute = u32::from(minute).min(59);
+    let now_dt = Local
+        .timestamp_opt(now_secs as i64, 0)
+        .single()
+        .unwrap_or_else(Local::now);
+    let mut date = now_dt.date_naive();
+    for _ in 0..=7 {
+        if accept(date) {
+            let naive = date.and_hms_opt(hour, minute, 0)?;
+            let local = Local
+                .from_local_datetime(&naive)
+                .earliest()
+                .or_else(|| Local.from_local_datetime(&naive).latest());
+            if let Some(ts) = local.and_then(|local| u64::try_from(local.timestamp()).ok())
+                && ts > now_secs
+            {
+                return Some(ts);
+            }
+        }
+        date = date.succ_opt()?;
+    }
+    None
 }
 
 /// Outcome of one scheduled routine probe.
@@ -1041,14 +1044,16 @@ impl SessionRoutine {
                 self.last_error = None;
                 self.consecutive_failures = 0;
                 if let Some(snapshot) = snapshot {
-                    self.last_snapshot = Some(truncate_routine_text(&snapshot, ROUTINE_MAX_SNAPSHOT_CHARS));
+                    self.last_snapshot =
+                        Some(truncate_routine_text(&snapshot, ROUTINE_MAX_SNAPSHOT_CHARS));
                 }
             }
             RoutineRunOutcome::NoUpdate => {
                 self.last_error = None;
                 self.consecutive_failures = 0;
                 if let Some(snapshot) = snapshot {
-                    self.last_snapshot = Some(truncate_routine_text(&snapshot, ROUTINE_MAX_SNAPSHOT_CHARS));
+                    self.last_snapshot =
+                        Some(truncate_routine_text(&snapshot, ROUTINE_MAX_SNAPSHOT_CHARS));
                 }
             }
             RoutineRunOutcome::Failed => {

@@ -113,9 +113,36 @@ pub(super) fn routine_schedule_label(schedule: RoutineSchedule) -> String {
             tr!("routine.every_minutes", count = minutes)
         }
         RoutineSchedule::Daily { hour, minute } => {
-            let time = format!("{hour:02}:{minute:02}");
-            tr!("routine.daily_at", time = time)
+            tr!("routine.daily_at", time = routine_time_label(hour, minute))
         }
+        RoutineSchedule::Weekly {
+            weekday,
+            hour,
+            minute,
+        } => tr!(
+            "routine.weekly_at",
+            weekday = routine_weekday_label(weekday),
+            time = routine_time_label(hour, minute)
+        ),
+    }
+}
+
+/// A routine's local time of day, on the 24-hour clock the rest of the
+/// routine UI uses.
+pub(super) fn routine_time_label(hour: u8, minute: u8) -> String {
+    format!("{hour:02}:{minute:02}")
+}
+
+/// Localized weekday name for a routine's `weekday` (0 = Monday).
+pub(super) fn routine_weekday_label(weekday: u8) -> String {
+    match weekday {
+        0 => tr!("time.monday"),
+        1 => tr!("time.tuesday"),
+        2 => tr!("time.wednesday"),
+        3 => tr!("time.thursday"),
+        4 => tr!("time.friday"),
+        5 => tr!("time.saturday"),
+        _ => tr!("time.sunday"),
     }
 }
 
@@ -1580,6 +1607,31 @@ mod tests {
     fn schedule_next_run_clamps_minimum_interval() {
         let next = RoutineSchedule::EveryMinutes { minutes: 1 }.next_run_after(1000);
         assert_eq!(next, 1000 + 5 * 60);
+    }
+
+    #[test]
+    fn weekly_schedule_lands_on_its_weekday_within_a_week() {
+        use chrono::{Datelike as _, Local, TimeZone as _, Timelike as _};
+        let now = Local::now().timestamp() as u64;
+        for weekday in 0..7u8 {
+            let schedule = RoutineSchedule::Weekly {
+                weekday,
+                hour: 9,
+                minute: 30,
+            };
+            let next = schedule.next_run_after(now);
+            assert!(next > now && next <= now + 7 * 24 * 3600 + 3600);
+            let local = Local.timestamp_opt(next as i64, 0).unwrap();
+            assert_eq!(local.weekday().num_days_from_monday(), u32::from(weekday));
+            assert_eq!((local.hour(), local.minute()), (9, 30));
+            // From the slot itself, the next run is a week later.
+            let after = schedule.next_run_after(next);
+            let after_local = Local.timestamp_opt(after as i64, 0).unwrap();
+            assert_eq!(
+                after_local.date_naive(),
+                local.date_naive() + chrono::Days::new(7)
+            );
+        }
     }
 
     #[test]

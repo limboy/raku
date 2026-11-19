@@ -1,16 +1,20 @@
 //! Session routine dialog, header trigger, and Settings -> Routines overview.
 
 use gpui::{
-    AnyElement, App, Entity, FocusHandle, KeyBinding, MouseButton, SharedString, Window, actions,
+    AnyElement, App, Entity, FocusHandle, KeyBinding, MouseButton, SharedString, Subscription,
+    Window, actions,
 };
 
-use super::routines::{format_routine_timestamp, routine_schedule_label};
+use super::routines::{
+    format_routine_timestamp, routine_schedule_label, routine_time_label, routine_weekday_label,
+};
 use super::sidebar::localized_session_title;
 use super::*;
 use crate::model::{
-    ROUTINE_MAX_CONSECUTIVE_FAILURES, RoutineRunOutcome, RoutineSchedule, SessionRoutine,
+    ROUTINE_MAX_CONSECUTIVE_FAILURES, ROUTINE_MIN_INTERVAL_MINUTES, RoutineRunOutcome,
+    RoutineSchedule, SessionRoutine,
 };
-use crate::ui::menu::dropdown_menu_with_priority;
+use crate::ui::menu::{dropdown_menu_with_priority, scrollable_dropdown_menu_with_priority};
 use crate::ui::{ActivationExt as _, motion};
 
 actions!(
@@ -41,6 +45,50 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
+/// What choosing one routine-dialog menu option does to the dialog.
+type RoutineMenuApply = Rc<dyn Fn(&mut Raku, &mut Context<Raku>)>;
+
+/// Step between the times of day the time menu offers.
+const ROUTINE_TIME_STEP_MINUTES: u16 = 15;
+
+/// Which kind of schedule the dialog is editing. Each kind keeps its own
+/// sub-settings, so switching back and forth does not lose them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RoutineFrequency {
+    Interval,
+    Daily,
+    Weekly,
+}
+
+impl RoutineFrequency {
+    const ALL: [Self; 3] = [Self::Interval, Self::Daily, Self::Weekly];
+
+    fn label(self) -> String {
+        match self {
+            Self::Interval => tr!("routine.frequency_interval"),
+            Self::Daily => tr!("routine.frequency_daily"),
+            Self::Weekly => tr!("routine.frequency_weekly"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RoutineIntervalUnit {
+    Minutes,
+    Hours,
+}
+
+impl RoutineIntervalUnit {
+    const ALL: [Self; 2] = [Self::Minutes, Self::Hours];
+
+    fn label(self) -> String {
+        match self {
+            Self::Minutes => tr!("routine.unit_minutes"),
+            Self::Hours => tr!("routine.unit_hours"),
+        }
+    }
+}
+
 struct RoutineRunnerOption {
     name: Option<String>,
     label: String,
@@ -52,7 +100,15 @@ struct RoutineRunnerOption {
 pub(super) struct RoutineDialogState {
     pub(super) session_id: Uuid,
     prompt: Entity<TextInput>,
-    schedule: RoutineSchedule,
+    frequency: RoutineFrequency,
+    /// The interval's count, typed; read through [`Self::schedule`].
+    interval: Entity<TextInput>,
+    interval_unit: RoutineIntervalUnit,
+    /// 0 = Monday … 6 = Sunday, for a weekly schedule.
+    weekday: u8,
+    /// Local time of day shared by the daily and weekly schedules.
+    hour: u8,
+    minute: u8,
     /// Chosen subagent definition by name; `None` is the task's own model.
     runner: Option<String>,
     /// The runner choices as of opening.
@@ -61,6 +117,39 @@ pub(super) struct RoutineDialogState {
     check_now_focus: FocusHandle,
     toggle_focus: FocusHandle,
     remove_focus: FocusHandle,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl RoutineDialogState {
+    /// The interval in minutes, or `None` while the typed count is not a
+    /// whole number reaching [`ROUTINE_MIN_INTERVAL_MINUTES`].
+    fn interval_minutes(&self, cx: &App) -> Option<u32> {
+        let count: u32 = self.interval.read(cx).content().trim().parse().ok()?;
+        let minutes = match self.interval_unit {
+            RoutineIntervalUnit::Minutes => count,
+            RoutineIntervalUnit::Hours => count.checked_mul(60)?,
+        };
+        (minutes >= ROUTINE_MIN_INTERVAL_MINUTES).then_some(minutes)
+    }
+
+    /// The schedule the dialog currently describes, or `None` while it is
+    /// invalid.
+    fn schedule(&self, cx: &App) -> Option<RoutineSchedule> {
+        Some(match self.frequency {
+            RoutineFrequency::Interval => RoutineSchedule::EveryMinutes {
+                minutes: self.interval_minutes(cx)?,
+            },
+            RoutineFrequency::Daily => RoutineSchedule::Daily {
+                hour: self.hour,
+                minute: self.minute,
+            },
+            RoutineFrequency::Weekly => RoutineSchedule::Weekly {
+                weekday: self.weekday,
+                hour: self.hour,
+                minute: self.minute,
+            },
+        })
+    }
 }
 
 impl Raku {
@@ -106,6 +195,55 @@ impl Raku {
             input.set_content(initial_prompt, cx);
         });
         let prompt_focus = prompt.read(cx).focus_handle(cx);
+
+        // Every kind starts from sensible sub-settings; the saved schedule
+        // then fills in its own.
+        let today = {
+            use chrono::Datelike as _;
+            chrono::Local::now().weekday().num_days_from_monday() as u8
+        };
+        let (mut frequency, mut interval_count, mut interval_unit) =
+            (RoutineFrequency::Interval, 1, RoutineIntervalUnit::Hours);
+        let (mut weekday, mut hour, mut minute) = (today, 9, 0);
+        match schedule {
+            RoutineSchedule::EveryMinutes { minutes } if minutes % 60 == 0 => {
+                interval_count = minutes / 60;
+            }
+            RoutineSchedule::EveryMinutes { minutes } => {
+                interval_count = minutes;
+                interval_unit = RoutineIntervalUnit::Minutes;
+            }
+            RoutineSchedule::Daily {
+                hour: saved_hour,
+                minute: saved_minute,
+            } => {
+                frequency = RoutineFrequency::Daily;
+                (hour, minute) = (saved_hour, saved_minute);
+            }
+            RoutineSchedule::Weekly {
+                weekday: saved_weekday,
+                hour: saved_hour,
+                minute: saved_minute,
+            } => {
+                frequency = RoutineFrequency::Weekly;
+                (weekday, hour, minute) = (saved_weekday.min(6), saved_hour, saved_minute);
+            }
+        }
+        let interval = cx.new(|cx| TextInput::new(window, cx));
+        interval.update(cx, |input, cx| {
+            input.set_content(interval_count.to_string(), cx);
+        });
+        // Save and the minimum-interval hint follow the typed count, and
+        // Return in the field saves like the dialog's shortcut.
+        let subscriptions = vec![cx.subscribe_in(
+            &interval,
+            window,
+            |raku, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Submit(_) => raku.confirm_routine_dialog(window, cx),
+                InputEvent::Edited => cx.notify(),
+                _ => {}
+            },
+        )];
         let runner = existing.as_ref().and_then(|routine| routine.runner.clone());
         let mut runner_options = vec![RoutineRunnerOption {
             name: None,
@@ -143,13 +281,19 @@ impl Raku {
         self.routine_dialog = Some(RoutineDialogState {
             session_id,
             prompt,
-            schedule,
+            frequency,
+            interval,
+            interval_unit,
+            weekday,
+            hour,
+            minute,
             runner,
             runner_options,
             save_focus: cx.focus_handle(),
             check_now_focus: cx.focus_handle(),
             toggle_focus: cx.focus_handle(),
             remove_focus: cx.focus_handle(),
+            _subscriptions: subscriptions,
         });
 
         window.on_next_frame(move |window, _| {
@@ -167,9 +311,13 @@ impl Raku {
         cx.notify();
     }
 
-    fn set_routine_dialog_schedule(&mut self, schedule: RoutineSchedule, cx: &mut Context<Self>) {
+    fn update_routine_dialog(
+        &mut self,
+        cx: &mut Context<Self>,
+        update: impl FnOnce(&mut RoutineDialogState),
+    ) {
         if let Some(dialog) = self.routine_dialog.as_mut() {
-            dialog.schedule = schedule;
+            update(dialog);
             cx.notify();
         }
     }
@@ -186,7 +334,9 @@ impl Raku {
             return;
         };
         let session_id = dialog.session_id;
-        let schedule = dialog.schedule;
+        let Some(schedule) = dialog.schedule(cx) else {
+            return;
+        };
         let runner = dialog.runner.clone();
         let prompt = dialog.prompt.read(cx).content().trim().to_owned();
         if prompt.is_empty() {
@@ -201,7 +351,9 @@ impl Raku {
             return;
         };
         let session_id = dialog.session_id;
-        let schedule = dialog.schedule;
+        let Some(schedule) = dialog.schedule(cx) else {
+            return;
+        };
         let runner = dialog.runner.clone();
         let prompt = dialog.prompt.read(cx).content().trim().to_owned();
         if prompt.is_empty() {
@@ -411,7 +563,11 @@ impl Raku {
             .cloned();
         let running = self.is_routine_running(session_id);
         let prompt_non_empty = !dialog.prompt.read(cx).content().trim().is_empty();
-        let selected_schedule = dialog.schedule;
+        let schedule_valid = dialog.schedule(cx).is_some();
+        let frequency = dialog.frequency;
+        let interval_unit = dialog.interval_unit;
+        let interval_valid = dialog.interval_minutes(cx).is_some();
+        let (weekday, hour, minute) = (dialog.weekday, dialog.hour, dialog.minute);
         let selected_runner = dialog.runner.clone();
         let theme = Theme::current(cx);
         let weak = cx.entity().downgrade();
@@ -430,33 +586,157 @@ impl Raku {
             }
         });
 
-        // Schedule and runner are menus rather than chip grids: nine presets
-        // and every subagent as chips made the dialog mostly buttons.
-        let schedule_handle = self.menu_handle("routine-schedule-menu", cx);
-        let schedule_weak = weak.clone();
-        let schedule_field = dropdown_menu_with_priority(
-            MenuChip::new("routine-schedule")
-                .label(routine_schedule_label(selected_schedule))
-                .outlined()
-                .background(theme.inset)
-                .selected(schedule_handle.is_open())
-                .w_full()
-                .justify_between(),
-            "routine-schedule-menu",
-            &schedule_handle,
-            MenuAlign::BelowLeft,
-            ROUTINE_DIALOG_MENU_PRIORITY,
-            move |_| {
-                RoutineSchedule::PRESETS
-                    .iter()
-                    .map(|&preset| {
-                        let weak = schedule_weak.clone();
-                        MenuItem::new(routine_schedule_label(preset), move |_, cx| {
-                            let _ = weak.update(cx, |raku, cx| {
-                                raku.set_routine_dialog_schedule(preset, cx);
-                            });
+        // Schedule and runner are rows of one grouped list, each value a
+        // borderless menu chip on the right. The schedule kind picks which
+        // sub-rows follow: an interval count, or a day and a time.
+        let chip = |id: &'static str, label: String, open: bool| {
+            MenuChip::new(id)
+                .label(label)
+                .selected(open)
+                .min_w_0()
+                .max_w(px(260.0))
+        };
+        let menu = |id: &'static str,
+                    label: String,
+                    handle: &ContextMenuHandle,
+                    items: Vec<(String, bool, RoutineMenuApply)>| {
+            let items = Rc::new(items);
+            let weak = weak.clone();
+            dropdown_menu_with_priority(
+                chip(id, label, handle.is_open()),
+                SharedString::from(format!("{id}-menu")),
+                handle,
+                MenuAlign::BelowRight,
+                ROUTINE_DIALOG_MENU_PRIORITY,
+                move |_| {
+                    items
+                        .iter()
+                        .map(|(label, selected, apply)| {
+                            let weak = weak.clone();
+                            let apply = apply.clone();
+                            MenuItem::new(label.clone(), move |_, cx| {
+                                let _ = weak.update(cx, |raku, cx| apply(raku, cx));
+                            })
+                            .selected(*selected)
                         })
-                        .selected(preset == selected_schedule)
+                        .collect()
+                },
+            )
+        };
+
+        let frequency_handle = self.menu_handle("routine-frequency-menu", cx);
+        let frequency_field = menu(
+            "routine-frequency",
+            frequency.label(),
+            &frequency_handle,
+            RoutineFrequency::ALL
+                .iter()
+                .map(|&option| {
+                    let apply: RoutineMenuApply = Rc::new(move |raku, cx| {
+                        raku.update_routine_dialog(cx, |dialog| dialog.frequency = option);
+                    });
+                    (option.label(), option == frequency, apply)
+                })
+                .collect(),
+        );
+
+        let unit_handle = self.menu_handle("routine-interval-unit-menu", cx);
+        let unit_field = menu(
+            "routine-interval-unit",
+            interval_unit.label(),
+            &unit_handle,
+            RoutineIntervalUnit::ALL
+                .iter()
+                .map(|&option| {
+                    let apply: RoutineMenuApply = Rc::new(move |raku, cx| {
+                        raku.update_routine_dialog(cx, |dialog| dialog.interval_unit = option);
+                    });
+                    (option.label(), option == interval_unit, apply)
+                })
+                .collect(),
+        );
+        let interval_field = div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .w(px(56.0))
+                    .h(px(26.0))
+                    .px(px(8.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(if interval_valid {
+                        theme.border_strong
+                    } else {
+                        theme.danger
+                    })
+                    .bg(theme.inset)
+                    .flex()
+                    .items_center()
+                    .text_size(sp(13.0))
+                    .line_height(sp(16.0))
+                    .text_color(theme.text)
+                    .child(dialog.interval.clone()),
+            )
+            .child(unit_field)
+            .into_any_element();
+
+        let weekday_handle = self.menu_handle("routine-weekday-menu", cx);
+        let weekday_field = menu(
+            "routine-weekday",
+            routine_weekday_label(weekday),
+            &weekday_handle,
+            (0..7u8)
+                .map(|option| {
+                    let apply: RoutineMenuApply = Rc::new(move |raku, cx| {
+                        raku.update_routine_dialog(cx, |dialog| dialog.weekday = option);
+                    });
+                    (routine_weekday_label(option), option == weekday, apply)
+                })
+                .collect(),
+        );
+
+        // Times of day in fixed steps, plus the saved time when it falls
+        // between them, so opening the menu never drops the current value.
+        let mut times = (0..24 * 60)
+            .step_by(ROUTINE_TIME_STEP_MINUTES as usize)
+            .map(|total: u16| ((total / 60) as u8, (total % 60) as u8))
+            .collect::<Vec<_>>();
+        if !times.contains(&(hour, minute)) {
+            times.push((hour, minute));
+            times.sort_unstable();
+        }
+        let time_handle = self.menu_handle("routine-time-menu", cx);
+        let time_weak = weak.clone();
+        let time_field = scrollable_dropdown_menu_with_priority(
+            chip(
+                "routine-time",
+                routine_time_label(hour, minute),
+                time_handle.is_open(),
+            ),
+            "routine-time-menu",
+            &time_handle,
+            MenuAlign::BelowRight,
+            ROUTINE_DIALOG_MENU_PRIORITY,
+            px(176.0),
+            move |_| {
+                times
+                    .iter()
+                    .map(|&(option_hour, option_minute)| {
+                        let weak = time_weak.clone();
+                        MenuItem::new(
+                            routine_time_label(option_hour, option_minute),
+                            move |_, cx| {
+                                let _ = weak.update(cx, |raku, cx| {
+                                    raku.update_routine_dialog(cx, |dialog| {
+                                        dialog.hour = option_hour;
+                                        dialog.minute = option_minute;
+                                    });
+                                });
+                            },
+                        )
+                        .selected((option_hour, option_minute) == (hour, minute))
                     })
                     .collect()
             },
@@ -475,19 +755,13 @@ impl Raku {
             .unwrap_or_else(|| (tr!("routine.runner_task"), true));
         let runner_weak = weak.clone();
         let runner_field = dropdown_menu_with_priority(
-            MenuChip::new("routine-runner")
-                .label(runner_label)
-                .outlined()
-                .background(theme.inset)
+            chip("routine-runner", runner_label, runner_handle.is_open())
                 .when(!runner_available, |chip| {
                     chip.icon("icons/alert.svg", theme.danger)
-                })
-                .selected(runner_handle.is_open())
-                .w_full()
-                .justify_between(),
+                }),
             "routine-runner-menu",
             &runner_handle,
-            MenuAlign::BelowLeft,
+            MenuAlign::BelowRight,
             ROUTINE_DIALOG_MENU_PRIORITY,
             move |_| {
                 let mut items = Vec::new();
@@ -514,21 +788,72 @@ impl Raku {
             },
         );
 
-        let field = |label: String, control: AnyElement| {
+        let row = |label: String, hint: Option<String>, control: AnyElement| {
             div()
-                .min_w_0()
-                .flex_1()
+                .min_h(px(40.0))
+                .px(px(12.0))
+                .py(px(6.0))
                 .flex()
-                .flex_col()
-                .gap(px(6.0))
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
                 .child(
                     div()
-                        .text_size(sp(12.0))
-                        .text_color(theme.text_tertiary)
-                        .child(label),
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .text_size(sp(13.0))
+                        .line_height(sp(16.0))
+                        .text_color(theme.text_secondary)
+                        .child(label)
+                        .when_some(hint, |column, hint| {
+                            column.child(
+                                div()
+                                    .text_size(sp(11.5))
+                                    .line_height(sp(14.0))
+                                    .text_color(theme.danger)
+                                    .child(hint),
+                            )
+                        }),
                 )
-                .child(control)
+                .child(div().min_w_0().flex().justify_end().child(control))
+                .into_any_element()
         };
+        let mut rows = vec![row(tr!("routine.schedule_label"), None, frequency_field)];
+        match frequency {
+            RoutineFrequency::Interval => rows.push(row(
+                tr!("routine.every_label"),
+                (!interval_valid).then(|| {
+                    tr!(
+                        "routine.interval_minimum",
+                        count = ROUTINE_MIN_INTERVAL_MINUTES
+                    )
+                }),
+                interval_field,
+            )),
+            RoutineFrequency::Daily => {
+                rows.push(row(tr!("routine.time_label"), None, time_field));
+            }
+            RoutineFrequency::Weekly => {
+                rows.push(row(tr!("routine.day_label"), None, weekday_field));
+                rows.push(row(tr!("routine.time_label"), None, time_field));
+            }
+        }
+        rows.push(row(tr!("routine.runner_label"), None, runner_field));
+        let mut settings = div()
+            .mx(px(16.0))
+            .mt(px(14.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(theme.border)
+            .flex()
+            .flex_col();
+        for (index, row) in rows.into_iter().enumerate() {
+            if index > 0 {
+                settings = settings.child(div().mx(px(12.0)).h(px(1.0)).bg(theme.border));
+            }
+            settings = settings.child(row);
+        }
 
         // One line of state instead of a history box: the latest outcome and
         // when the next check runs. The full log stays out of the way.
@@ -639,7 +964,8 @@ impl Raku {
                 );
         }
 
-        let check_enabled = prompt_non_empty && !running;
+        let can_save = prompt_non_empty && schedule_valid;
+        let check_enabled = can_save && !running;
         let check_now = div()
             .id("routine-dialog-check-now")
             .track_focus(&dialog.check_now_focus)
@@ -684,7 +1010,7 @@ impl Raku {
         let save = div()
             .id("routine-dialog-save")
             .track_focus(&dialog.save_focus)
-            .when(prompt_non_empty, |button| button.tab_index(0))
+            .when(can_save, |button| button.tab_index(0))
             .h(px(28.0))
             .px(px(12.0))
             .rounded(px(7.0))
@@ -697,7 +1023,7 @@ impl Raku {
             .cursor_default()
             .text_size(sp(SMALL_UI_FONT_SIZE))
             .text_color(theme.on_inverse)
-            .when(!prompt_non_empty, |button| button.opacity(0.45))
+            .when(!can_save, |button| button.opacity(0.45))
             .focus_visible(|style| style.border_color(theme.accent))
             .child(tr!("routine.save"))
             .child(
@@ -706,7 +1032,7 @@ impl Raku {
                     .opacity(0.6)
                     .child(crate::platform::primary_shortcut("⌘↩", "Ctrl+Enter")),
             )
-            .when(prompt_non_empty, |button| {
+            .when(can_save, |button| {
                 button
                     .hover(|style| style.opacity(0.9))
                     .active(|style| style.opacity(0.8))
@@ -784,15 +1110,7 @@ impl Raku {
                     .bg(theme.inset)
                     .child(dialog.prompt.clone()),
             )
-            .child(
-                div()
-                    .px(px(16.0))
-                    .pt(px(14.0))
-                    .flex()
-                    .gap(px(10.0))
-                    .child(field(tr!("routine.schedule_label"), schedule_field))
-                    .child(field(tr!("routine.runner_label"), runner_field)),
-            )
+            .child(settings)
             .children(status)
             .child(div().mt(px(14.0)).h(px(1.0)).bg(theme.border))
             .child(

@@ -723,12 +723,7 @@ impl Raku {
                     .child(icon("icons/git-branch.svg", 15.0, theme.text))
                     .child(div().min_w_0().truncate().child(branch)),
             )
-            .child(
-                div()
-                    .relative()
-                    .py(px(10.0))
-                    .child(message),
-            )
+            .child(div().relative().py(px(10.0)).child(message))
             .child(div().px(px(8.0)).child(include))
             .when_some(error, |card, error| {
                 card.child(

@@ -2431,6 +2431,26 @@ routine.every_hours:
   en: "Every %{count} h"
 routine.daily_at:
   en: "Daily at %{time}"
+routine.weekly_at:
+  en: "Every %{weekday} at %{time}"
+routine.frequency_interval:
+  en: "Interval"
+routine.frequency_daily:
+  en: "Daily"
+routine.frequency_weekly:
+  en: "Weekly"
+routine.every_label:
+  en: "Every"
+routine.day_label:
+  en: "Day"
+routine.time_label:
+  en: "Time"
+routine.unit_minutes:
+  en: "minutes"
+routine.unit_hours:
+  en: "hours"
+routine.interval_minimum:
+  en: "At least %{count} minutes"
 routine.save:
   en: "Save routine"
 routine.check_now:

@@ -850,6 +850,7 @@ where
                 handle: handle.clone(),
                 items: items.clone(),
                 scrollable: false,
+                scroll_width: px(320.0),
             }
             .into_any_element()
         },
@@ -867,17 +868,43 @@ pub fn scrollable_dropdown_menu<E>(
 where
     E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
 {
+    scrollable_dropdown_menu_with_priority(trigger, id, handle, align, 1, px(320.0), items)
+}
+
+/// [`scrollable_dropdown_menu`] painted at `priority` (see
+/// [`dropdown_menu_with_priority`]) and `width` wide, for a short-labelled
+/// catalog such as times of day inside a modal.
+pub fn scrollable_dropdown_menu_with_priority<E>(
+    trigger: E,
+    id: impl Into<ElementId>,
+    handle: &ContextMenuHandle,
+    align: MenuAlign,
+    priority: usize,
+    width: Pixels,
+    items: impl Fn(&mut App) -> Vec<MenuItem> + 'static,
+) -> AnyElement
+where
+    E: ParentElement + Styled + InteractiveElement + IntoElement + 'static,
+{
     let id: ElementId = id.into();
     let items = Rc::new(items);
-    anchored_surface(trigger, handle, align, SurfaceFocus::Card, move |handle| {
-        MenuCard {
-            id: id.clone(),
-            handle: handle.clone(),
-            items: items.clone(),
-            scrollable: true,
-        }
-        .into_any_element()
-    })
+    anchored_surface_with_priority(
+        trigger,
+        handle,
+        align,
+        SurfaceFocus::Card,
+        priority,
+        move |handle| {
+            MenuCard {
+                id: id.clone(),
+                handle: handle.clone(),
+                items: items.clone(),
+                scrollable: true,
+                scroll_width: width,
+            }
+            .into_any_element()
+        },
+    )
 }
 
 /// A font menu can contain hundreds of families. Keep its rows virtualized and
@@ -1317,6 +1344,7 @@ where
                     handle: handle.clone(),
                     items,
                     scrollable: false,
+                    scroll_width: px(320.0),
                 }
                 .into_any_element(),
                 Bounds::new(position, Size::default()),
@@ -1334,6 +1362,8 @@ struct MenuCard {
     id: ElementId,
     handle: ContextMenuHandle,
     scrollable: bool,
+    /// Width of a scrollable card, whose virtualized rows cannot size it.
+    scroll_width: Pixels,
     #[allow(clippy::type_complexity)]
     items: Rc<dyn Fn(&mut App) -> Vec<MenuItem>>,
 }
@@ -1423,7 +1453,7 @@ impl RenderOnce for MenuCard {
             .min_w(px(176.0))
             .max_w(px(320.0))
             .when(self.scrollable, |card| {
-                card.w(px(320.0))
+                card.w(self.scroll_width)
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             })
             .py(px(CARD_PADDING))
