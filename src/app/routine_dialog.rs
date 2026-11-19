@@ -91,10 +91,16 @@ impl Raku {
             .map(|routine| routine.schedule)
             .unwrap_or_default();
 
+        // Three lines when empty, growing to nine before the prompt scrolls
+        // inside the box; a fixed box let long prompts paint over the
+        // schedule fields and the action bar.
         let prompt = cx.new(|cx| {
-            TextInput::new(window, cx)
+            let mut input = TextInput::new(window, cx)
                 .multi_line()
-                .placeholder(tr!("routine.prompt_placeholder"))
+                .auto_height_within(px(66.0), px(198.0))
+                .placeholder(tr!("routine.prompt_placeholder"));
+            input.set_padding_x(px(10.0));
+            input
         });
         prompt.update(cx, |input, cx| {
             input.set_content(initial_prompt, cx);
@@ -769,17 +775,13 @@ impl Raku {
             )
             .child(
                 div()
+                    .relative()
                     .mx(px(16.0))
-                    .h(px(88.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
+                    .py(px(6.0))
                     .rounded(px(10.0))
                     .border_1()
                     .border_color(theme.border_strong)
                     .bg(theme.inset)
-                    .text_size(sp(13.5))
-                    .line_height(sp(20.0))
-                    .text_color(theme.text)
                     .child(dialog.prompt.clone()),
             )
             .child(

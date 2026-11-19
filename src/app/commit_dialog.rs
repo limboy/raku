@@ -149,10 +149,16 @@ impl Raku {
             deletions: cached_branch.map_or(0, |snapshot| snapshot.deletions),
             ..Default::default()
         };
+        // Four lines when empty, growing to ten before the message scrolls
+        // inside the field instead of overflowing the card.
         let message = cx.new(|cx| {
-            TextInput::new(window, cx)
+            let mut input = TextInput::new(window, cx)
                 .multi_line()
-                .placeholder(tr!("commit.message_placeholder"))
+                .auto_height_within(px(88.0), px(220.0))
+                .placeholder(tr!("commit.message_placeholder"));
+            input.set_padding_x(px(16.0));
+            input.set_auto_height_text_size(px(14.0), cx);
+            input
         });
         let message_focus = message.read(cx).focus();
         let id = Uuid::new_v4();
@@ -719,12 +725,8 @@ impl Raku {
             )
             .child(
                 div()
-                    .h(px(112.0))
-                    .px(px(16.0))
+                    .relative()
                     .py(px(10.0))
-                    .text_size(sp(14.0))
-                    .line_height(sp(21.0))
-                    .text_color(theme.text)
                     .child(message),
             )
             .child(div().px(px(8.0)).child(include))

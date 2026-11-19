@@ -700,6 +700,9 @@ fn pasted_text_for_mode(mode: FieldMode, text: &str) -> String {
 /// Tallest an [`auto_height`](TextInput::auto_height) field grows before
 /// its text scrolls under an overlay scrollbar instead of growing the card.
 const AUTO_HEIGHT_MAX: Pixels = px(300.);
+/// Shortest an [`auto_height`](TextInput::auto_height) field shrinks to:
+/// one line of the default metrics.
+const AUTO_HEIGHT_MIN: Pixels = px(24.);
 
 /// The shared text engine under every box that takes typing — search inputs,
 /// the address bar, file editors, and the composer wrapper: native macOS
@@ -716,6 +719,12 @@ pub struct TextInput {
     /// up to [`AUTO_HEIGHT_MAX`] before it scrolls; otherwise a
     /// multi-line field inherits the embedding view's metrics.
     auto_height: bool,
+    /// Height range an auto-height field's viewport stays within; defaults
+    /// to [`AUTO_HEIGHT_MIN`]..=[`AUTO_HEIGHT_MAX`]. A dialog narrows it so
+    /// long text scrolls inside the field instead of pushing the card
+    /// past its controls.
+    auto_height_min: Pixels,
+    auto_height_max: Pixels,
     /// Text size an auto-height field renders at, replacing its 13.5px
     /// default. The line height follows at `size + 8`.
     auto_height_text_size: Option<Pixels>,
@@ -764,7 +773,7 @@ pub struct TextInput {
     /// address bar's page echo shows the start of the URL.
     scroll_offset: Pixels,
     /// Vertical scroll state for an auto-height field, whose height is
-    /// capped at [`AUTO_HEIGHT_MAX`].
+    /// capped at `auto_height_max`.
     scroll_handle: ScrollHandle,
     scrollbar_state: Rc<ScrollbarState>,
     /// Horizontal inset an auto-height embedder moves inside the field, so
@@ -830,6 +839,8 @@ impl TextInput {
             read_only: false,
             submit_on_enter: false,
             auto_height: false,
+            auto_height_min: AUTO_HEIGHT_MIN,
+            auto_height_max: AUTO_HEIGHT_MAX,
             auto_height_text_size: None,
             accepts_media_paste: false,
             accepts_text_snippet_paste: false,
@@ -971,6 +982,16 @@ impl TextInput {
     /// scrollbar that follows the caret.
     pub fn auto_height(mut self) -> Self {
         self.auto_height = true;
+        self
+    }
+
+    /// [`auto_height`](Self::auto_height) within `min..=max` instead of the
+    /// composer's range: the field holds at least `min` even when empty, so
+    /// the whole box takes focus clicks, and scrolls past `max`.
+    pub fn auto_height_within(mut self, min: Pixels, max: Pixels) -> Self {
+        self.auto_height = true;
+        self.auto_height_min = min;
+        self.auto_height_max = max.max(min);
         self
     }
 
@@ -3267,8 +3288,8 @@ impl Render for TextInput {
             // rely on the same line height.
             .when(self.auto_height, |field| {
                 field
-                    .min_h(px(24.0))
-                    .max_h(AUTO_HEIGHT_MAX)
+                    .min_h(self.auto_height_min)
+                    .max_h(self.auto_height_max)
                     .overflow_y_scroll()
                     .track_scroll(&scroll_handle)
                     .px(padding_x)

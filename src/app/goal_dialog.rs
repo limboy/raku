@@ -83,10 +83,16 @@ impl Raku {
                 .and_then(|session| session.thread_goal.as_ref())
                 .map(|goal| goal.objective.clone())
         });
+        // Four lines when empty, growing to ten before the objective scrolls
+        // inside the field instead of overflowing the card.
         let objective = cx.new(|cx| {
-            TextInput::new(window, cx)
+            let mut input = TextInput::new(window, cx)
                 .multi_line()
-                .placeholder(tr!("goal.objective_placeholder"))
+                .auto_height_within(px(88.0), px(220.0))
+                .placeholder(tr!("goal.objective_placeholder"));
+            input.set_padding_x(px(16.0));
+            input.set_auto_height_text_size(px(14.0), cx);
+            input
         });
         if let Some(content) = content {
             objective.update(cx, |input, cx| input.set_content(content, cx));
@@ -441,12 +447,8 @@ impl Raku {
             )
             .child(
                 div()
-                    .h(px(112.0))
-                    .px(px(16.0))
+                    .relative()
                     .py(px(10.0))
-                    .text_size(sp(14.0))
-                    .line_height(sp(21.0))
-                    .text_color(theme.text)
                     .child(dialog.objective.clone()),
             );
         if replace && current.is_some() {
