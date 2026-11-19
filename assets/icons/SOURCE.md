@@ -30,10 +30,14 @@ the dashes stay legible at 11px. Four Raku derivatives extend the pack so the
 session status icons
 hold up at a 12px row: `loader-circle-bold` redraws `ant/loader` at the same
 `398`-unit outer radius and 270° arc with a `96`-unit ring instead of `58`,
-and `alert-bold`, `hourglass-bold`, and `x-bold` reuse the supplied
-`ant/warning`, `ant/clock`, and `ant/x` paths with a `38`-unit
-`currentColor` stroke that expands every outline edge by roughly 19 units per
-side. Four more derivatives serve the code-block header controls: `copy-bold`,
+and `alert-bold` and `x-bold` reuse the supplied `ant/warning` and `ant/x`
+paths with a `38`-unit `currentColor` stroke that expands every outline edge
+by roughly 19 units per side. `hourglass-bold`, the waiting-in-background
+status, is drawn rather than derived: the pack has no hourglass, and the
+`ant/clock` it once reused read too much like the `alarm-clock` that marks
+scheduled routines in the same row. It is Lucide's
+hourglass scaled to the `1000`-unit box as a `96`-unit round stroke, the
+weight the expanded outlines reach. Four more derivatives serve the code-block header controls: `copy-bold`,
 `play-bold`, `check-bold`, and `eye-bold` crop the pack's generous view-box
 padding to the glyph bounds and add a 16–26-unit stroke calibrated to the same
 ~1.5px weight at the button's 15px glyph size. `check-bold-stroke` keeps the
