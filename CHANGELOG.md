@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.0] - 2026-11-20
+
+- Add scheduled session routines that run read-only background checks, optionally on a chosen subagent, and post to the session when there is new progress
+- Show an hourglass for waiting task status so it is not confused with the routine alarm clock
+
 ## [2.5.14] - 2026-11-17
 
 - Always show the project selector in the composer
