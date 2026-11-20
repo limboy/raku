@@ -422,6 +422,7 @@ try {
     join(mountedContents, "Resources", "pi", "session-title.ts"),
     join(mountedContents, "Resources", "pi", "command-descriptions.ts"),
     join(mountedContents, "Resources", "pi", "subagent.ts"),
+    join(mountedContents, "Resources", "pi", "ask-user-question.ts"),
     join(mountedSparkleFramework, "Sparkle"),
   ]) {
     await access(artifact);

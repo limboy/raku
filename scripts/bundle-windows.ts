@@ -139,7 +139,12 @@ try {
   }
   const resourcesDirectory = join(packageDirectory, "resources");
   await mkdir(join(resourcesDirectory, "pi"), { recursive: true });
-  for (const extension of ["session-title.ts", "command-descriptions.ts", "subagent.ts"]) {
+  for (const extension of [
+    "session-title.ts",
+    "command-descriptions.ts",
+    "subagent.ts",
+    "ask-user-question.ts",
+  ]) {
     await copyFile(
       join(projectRoot, "resources", "pi", extension),
       join(resourcesDirectory, "pi", extension),

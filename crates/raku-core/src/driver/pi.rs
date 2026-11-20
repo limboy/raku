@@ -25,7 +25,8 @@ use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
 use crate::model::{
-    ActivityKind, DriverEvent, ProviderResumeCursor, ReportedCommand, unix_time_millis,
+    ActivityKind, DriverEvent, ProviderResumeCursor, ReportedCommand, UserInputAnswer,
+    UserInputDelivery, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
@@ -312,6 +313,98 @@ fn pi_subagent_request(value: &Value) -> Option<crate::model::SubagentRequest> {
     })
 }
 
+/// The extension that gives Pi the `ask_user_question` tool, shaped like
+/// Claude Code's `AskUserQuestion`. Its calls reach Raku as `input` requests
+/// titled [`PI_ASK_USER_REQUEST_TITLE`] and become the same question form.
+pub(crate) fn pi_ask_user_extension_path() -> anyhow::Result<PathBuf> {
+    pi_extension_path("ask-user-question.ts", "Raku Pi question extension")
+}
+
+/// Title of the extension `input` request that carries an
+/// `ask_user_question` call. The placeholder is `{"questions": [...]}`, and
+/// the answer is a JSON array of [`UserInputAnswer`]s keyed by each
+/// question's index.
+const PI_ASK_USER_REQUEST_TITLE: &str = "raku:ask_user_question";
+
+/// The tool name the question extension registers.
+const PI_ASK_USER_TOOL: &str = "ask_user_question";
+
+/// Questions need the tool. A missing asset only costs the form: the model
+/// falls back to asking in its reply.
+fn configure_pi_ask_user_command(
+    command: &mut std::process::Command,
+    flavor: PiFlavor,
+    extension: impl FnOnce() -> anyhow::Result<PathBuf>,
+) {
+    configure_pi_extension(command, extension, || {
+        format!(
+            "{} sessions will ask questions as plain text",
+            flavor.display_name()
+        )
+    });
+}
+
+/// Reads an `ask_user_question` call out of the extension request that
+/// carries it: the request id and its questions. `Some` with no questions
+/// means the call was ours but unusable, and the dialog should be cancelled.
+fn pi_user_input_request(value: &Value) -> Option<(String, Vec<UserInputQuestion>)> {
+    if value.get("method").and_then(Value::as_str) != Some("input")
+        || value.get("title").and_then(Value::as_str) != Some(PI_ASK_USER_REQUEST_TITLE)
+    {
+        return None;
+    }
+    let request_id = value.get("id").and_then(Value::as_str)?.to_owned();
+    let call: Value = value
+        .get("placeholder")
+        .and_then(Value::as_str)
+        .and_then(|placeholder| serde_json::from_str(placeholder).ok())
+        .unwrap_or(Value::Null);
+    let text = |value: &Value, field: &str| {
+        value
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    let questions = call
+        .get("questions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, question)| {
+            let text_value = text(question, "question")?;
+            let options = question
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|option| {
+                    Some(UserInputOption {
+                        label: text(option, "label")?,
+                        description: text(option, "description"),
+                    })
+                })
+                .collect();
+            Some(UserInputQuestion {
+                // The extension matches answers by the question's position,
+                // which survives questions that repeat the same text.
+                id: index.to_string(),
+                header: text(question, "header")
+                    .unwrap_or_else(|| format!("Question {}", index + 1)),
+                question: text_value,
+                options,
+                multi_select: question
+                    .get("multiSelect")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+        .collect();
+    Some((request_id, questions))
+}
+
 impl PiDriver {
     pub fn start(options: DriverStartOptions, events: DriverEventSender) -> anyhow::Result<Self> {
         let flavor = PiFlavor::Pi;
@@ -372,6 +465,13 @@ impl PiDriver {
         // A subagent is named by the call that launched it, and cannot
         // delegate further: without the tool, depth one is structural. The
         // read-only tool allowlist would drop the tool anyway.
+        // Only a session the user is watching can answer a question: a
+        // subagent's would block with nobody to see it, and a side chat's
+        // read-only tool allowlist would drop the tool anyway.
+        let asks_user = !subagent.child && !read_only;
+        if asks_user {
+            configure_pi_ask_user_command(&mut command, flavor, pi_ask_user_extension_path);
+        }
         if !subagent.child {
             configure_pi_title_command(&mut command, flavor, pi_title_extension_path);
             if !read_only && !subagent.agents.is_empty() {
@@ -386,11 +486,14 @@ impl PiDriver {
         let manifest = super::context_inspection::launch_manifest(
             &command,
             instructions,
-            if !subagent.child && !read_only && !subagent.agents.is_empty() {
-                vec![crate::model::SUBAGENT_TOOL.to_owned()]
-            } else {
-                Vec::new()
-            },
+            asks_user
+                .then(|| PI_ASK_USER_TOOL.to_owned())
+                .into_iter()
+                .chain(
+                    (!subagent.child && !read_only && !subagent.agents.is_empty())
+                        .then(|| crate::model::SUBAGENT_TOOL.to_owned()),
+                )
+                .collect(),
             Vec::new(),
         );
         let command = command
@@ -959,6 +1062,19 @@ impl DriverControl for PiDriver {
     }
 
     fn respond(&self, _request_id: String, _option_id: String) {}
+
+    fn respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) {
+        let Ok(value) = serde_json::to_string(&answers) else {
+            let _ = self
+                .commands
+                .send(CommandMessage::CancelExtensionRequest(request_id));
+            return;
+        };
+        let _ = self.commands.send(CommandMessage::AnswerExtensionRequest {
+            id: request_id,
+            value,
+        });
+    }
 
     fn respond_subagent(&self, request_id: String, result: String) {
         let _ = self.commands.send(CommandMessage::AnswerExtensionRequest {
@@ -1898,6 +2014,18 @@ fn handle_pi_message(
                 let _ = events.send(DriverEvent::SubagentRequested(request));
                 return;
             }
+            if let Some((request_id, questions)) = pi_user_input_request(&value) {
+                if questions.is_empty() {
+                    let _ = commands.send(CommandMessage::CancelExtensionRequest(request_id));
+                } else {
+                    let _ = events.send(DriverEvent::UserInputRequested {
+                        request_id,
+                        questions,
+                        delivery: UserInputDelivery::Request,
+                    });
+                }
+                return;
+            }
             let method = value.get("method").and_then(Value::as_str);
             let id = value.get("id").and_then(Value::as_str);
             if matches!(method, Some("select" | "confirm" | "input" | "editor"))
@@ -2600,6 +2728,96 @@ mod tests {
                 "title": "Your name?",
             }))
             .is_none()
+        );
+    }
+
+    #[test]
+    fn a_question_dialog_becomes_a_user_input_request() {
+        let (request_id, questions) = pi_user_input_request(&json!({
+            "type": "extension_ui_request",
+            "id": "ui-3",
+            "method": "input",
+            "title": PI_ASK_USER_REQUEST_TITLE,
+            "placeholder": json!({
+                "questions": [
+                    {
+                        "question": "What's your favorite number?",
+                        "header": " Number ",
+                        "options": [
+                            {"label": "73", "description": "The best number"},
+                            {"label": " "},
+                            {"label": "13"},
+                        ],
+                    },
+                    {"question": " ", "header": "Skipped", "options": []},
+                    {"question": "Which colors?", "options": [], "multiSelect": true},
+                ],
+            }).to_string(),
+        }))
+        .expect("the dialog carries a question call");
+        assert_eq!(request_id, "ui-3");
+        assert_eq!(
+            questions,
+            vec![
+                UserInputQuestion {
+                    id: "0".into(),
+                    header: "Number".into(),
+                    question: "What's your favorite number?".into(),
+                    options: vec![
+                        UserInputOption {
+                            label: "73".into(),
+                            description: Some("The best number".into()),
+                        },
+                        UserInputOption {
+                            label: "13".into(),
+                            description: None,
+                        },
+                    ],
+                    multi_select: false,
+                },
+                UserInputQuestion {
+                    id: "2".into(),
+                    header: "Question 3".into(),
+                    question: "Which colors?".into(),
+                    options: Vec::new(),
+                    multi_select: true,
+                },
+            ]
+        );
+
+        // A malformed call is still ours, so it is cancelled rather than
+        // treated as an unknown dialog.
+        let (_, questions) = pi_user_input_request(&json!({
+            "type": "extension_ui_request",
+            "id": "ui-4",
+            "method": "input",
+            "title": PI_ASK_USER_REQUEST_TITLE,
+            "placeholder": "not json",
+        }))
+        .expect("the title marks the dialog as a question call");
+        assert!(questions.is_empty());
+
+        assert!(
+            pi_user_input_request(&json!({
+                "type": "extension_ui_request",
+                "id": "ui-5",
+                "method": "input",
+                "title": PI_SUBAGENT_REQUEST_TITLE,
+                "placeholder": "{}",
+            }))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn question_answers_reach_the_extension_keyed_by_position() {
+        let answers = vec![UserInputAnswer {
+            question_id: "0".into(),
+            answers: vec!["73".into()],
+        }];
+        assert_eq!(
+            serde_json::to_value(&answers).unwrap(),
+            json!([{"questionId": "0", "answers": ["73"]}])
         );
     }
 
