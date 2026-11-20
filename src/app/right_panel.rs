@@ -4093,6 +4093,7 @@ impl Raku {
                         .track_focus(&filter_focus)
                         .tab_index(0)
                         .icon("icons/search.svg", 13.0)
+                        .transparent()
                         .w_full(),
                     ),
             )
@@ -5901,6 +5902,7 @@ impl Raku {
                             self.right_panel_diff_filter.clone(),
                         )
                         .icon("icons/search.svg", 13.0)
+                        .transparent()
                         .w_full(),
                     ),
             )

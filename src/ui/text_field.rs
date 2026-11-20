@@ -22,6 +22,7 @@ pub struct TextField {
     base: Stateful<Div>,
     input: gpui::Entity<TextInput>,
     icon: Option<(&'static str, f32)>,
+    filled: bool,
     trailing: Vec<AnyElement>,
 }
 
@@ -31,6 +32,7 @@ impl TextField {
             base: div().id(id),
             input,
             icon: None,
+            filled: true,
             trailing: Vec::new(),
         }
     }
@@ -38,6 +40,13 @@ impl TextField {
     /// Leading icon, tinted tertiary like the address bar's lock.
     pub fn icon(mut self, path: &'static str, size: f32) -> Self {
         self.icon = Some((path, size));
+        self
+    }
+
+    /// Drop the inset fill and keep only the border, for a field that sits
+    /// directly on its panel surface.
+    pub fn transparent(mut self) -> Self {
+        self.filled = false;
         self
     }
 }
@@ -74,7 +83,7 @@ impl RenderOnce for TextField {
             } else {
                 theme.border_strong
             })
-            .bg(theme.inset)
+            .when(self.filled, |element| element.bg(theme.inset))
             .flex()
             .items_center()
             .gap(px(6.0))
