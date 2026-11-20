@@ -1413,7 +1413,15 @@ pub(super) fn render_message(
                     theme,
                     ctx,
                 ),
-                None => render_markdown_message_body(&content, markdown, theme, ctx),
+                // The fallback must match what the markdown view was given: a
+                // reply that is only a `follow-up` fence parses to nothing,
+                // and its raw fence must not leak back in as plain text.
+                None => render_markdown_message_body(
+                    super::follow_up::split_follow_up(&content).0,
+                    markdown,
+                    theme,
+                    ctx,
+                ),
             };
             let mut column = div()
                 .w_full()
