@@ -12,11 +12,15 @@ const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Publish small durable references instead of megabytes of base64 to clients.
 /// Runs on the daemon's event/history worker before serialization and replay.
+///
+/// Every activity kind, not just generated images: tool screenshots (browser,
+/// computer use, image reads) arrive as `data:` URLs too. Left inline, the
+/// desktop keeps them in its live session and resends all of them with each
+/// task-state save, until one save outgrows the wire limit and every
+/// reconnect is dropped on that same save.
 pub(crate) fn externalize(activity: &mut ActivityItem, blobs: &crate::blob_store::BlobStore) {
-    if activity.kind == ActivityKind::ImageGeneration {
-        for url in &mut activity.image_urls {
-            *url = blobs.store_data_url(url);
-        }
+    for url in &mut activity.image_urls {
+        *url = blobs.store_data_url(url);
     }
 }
 
@@ -156,6 +160,35 @@ mod tests {
         assert!(serde_json::to_string(&item).unwrap().len() < 1024);
         externalize(&mut item, &blobs);
         assert!(crate::blob_store::is_blob_reference(&item.image_urls[0]));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Tool screenshots must not reach clients as base64 either: the desktop
+    /// resends its live sessions on every save, so inline screenshots grow
+    /// each save until one exceeds the daemon's wire limit.
+    #[test]
+    fn tool_screenshots_are_externalized_before_transport() {
+        let root = std::env::temp_dir().join(format!("raku-tool-blob-{}", uuid::Uuid::new_v4()));
+        let blobs = crate::blob_store::BlobStore::new(root.clone());
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.resize(64 * 1024, 7);
+        let tiny = data_url(b"\x89PNG\r\n\x1a\n").unwrap();
+        let mut item = ActivityItem::new(None, ActivityKind::Tool, "Screenshot", None, true)
+            .with_image_urls(vec![
+                data_url(&bytes).unwrap(),
+                tiny.clone(),
+                "https://example.com/a.png".into(),
+            ]);
+        externalize(&mut item, &blobs);
+        assert!(crate::blob_store::is_blob_reference(&item.image_urls[0]));
+        assert_eq!(
+            std::fs::read(blobs.path_for(&item.image_urls[0]).unwrap()).unwrap(),
+            bytes
+        );
+        // Tiny payloads and remote URLs stay as they are.
+        assert_eq!(item.image_urls[1], tiny);
+        assert_eq!(item.image_urls[2], "https://example.com/a.png");
+        assert!(serde_json::to_string(&item).unwrap().len() < 2048);
         std::fs::remove_dir_all(root).unwrap();
     }
 

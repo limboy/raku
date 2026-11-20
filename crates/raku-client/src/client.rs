@@ -387,7 +387,7 @@ fn run_client(
                 while let Some(next) = message {
                     match next {
                         Outgoing::Message(message) => {
-                            if let Err(error) = write_json(&mut socket, &message) {
+                            if let Err(error) = write_request(&mut socket, &message, &inner) {
                                 break 'connection Some(format!("write failed: {error:#}"));
                             }
                         }
@@ -634,6 +634,44 @@ fn retryable_error(error: &(dyn std::error::Error + 'static)) -> bool {
     error.source().is_some_and(retryable_error)
 }
 
+/// Sends one client message, refusing any the daemon would refuse.
+///
+/// The daemon enforces [`MAX_WIRE_MESSAGE_BYTES`] by dropping the whole
+/// connection. A request over the limit would therefore fail every other
+/// in-flight request with it, and because a failed save is resent unchanged,
+/// each reconnect would be dropped on the same save forever. Fail just that
+/// request instead and keep the connection.
+fn write_request<S: io::Read + io::Write>(
+    socket: &mut WebSocket<S>,
+    message: &ClientMessage,
+    inner: &ClientInner,
+) -> anyhow::Result<()> {
+    let payload = serde_json::to_string(message)?;
+    if !fits_on_wire(payload.len()) {
+        let error = format!(
+            "this change is too large to save ({:.1} MB; the limit is {} MB)",
+            payload.len() as f64 / (1024.0 * 1024.0),
+            MAX_WIRE_MESSAGE_BYTES / (1024 * 1024),
+        );
+        log_daemon_event(format_args!(
+            "refused oversized daemon request: {} bytes",
+            payload.len()
+        ));
+        if let ClientMessage::Request(request) = message
+            && let Some(pending) = inner.pending.lock().remove(&request.request_id)
+        {
+            let _ = pending.send(Err(RpcError { message: error }));
+        }
+        return Ok(());
+    }
+    socket.send(Message::Text(payload.into()))?;
+    Ok(())
+}
+
+fn fits_on_wire(payload_bytes: usize) -> bool {
+    payload_bytes <= MAX_WIRE_MESSAGE_BYTES
+}
+
 fn write_json<S: io::Read + io::Write, T: serde::Serialize>(
     socket: &mut WebSocket<S>,
     value: &T,
@@ -709,6 +747,74 @@ mod tests {
             Err(crossbeam_channel::RecvTimeoutError::Disconnected)
         ));
         server.join().unwrap();
+    }
+
+    /// The daemon drops a connection that sends a frame over its limit. An
+    /// oversized request must fail alone, before it reaches the socket, so the
+    /// connection keeps serving everything else.
+    #[test]
+    fn oversized_requests_fail_without_dropping_the_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let _hello = socket.read().unwrap();
+            let send = |socket: &mut WebSocket<TcpStream>, message: &ServerMessage| {
+                socket
+                    .send(Message::Text(
+                        serde_json::to_string(message).unwrap().into(),
+                    ))
+                    .unwrap();
+            };
+            send(
+                &mut socket,
+                &ServerMessage::Hello {
+                    protocol_version: PROTOCOL_VERSION,
+                    daemon_version: "test".into(),
+                },
+            );
+            // Only the small request may arrive; answer it.
+            let text = socket.read().unwrap().into_text().unwrap();
+            let ClientMessage::Request(request) =
+                serde_json::from_str::<ClientMessage>(text.as_ref()).unwrap()
+            else {
+                panic!("expected a request");
+            };
+            assert!(matches!(request.command, Command::LoadComposerDrafts));
+            send(
+                &mut socket,
+                &ServerMessage::Response {
+                    request_id: request.request_id,
+                    outcome: ResponseOutcome::Ok {
+                        payload: ResponsePayload::Ack,
+                    },
+                },
+            );
+            let _ = socket.read();
+        });
+        let client = DaemonClient::connect(&address, "token".into()).unwrap();
+        let oversized = client.request(
+            Uuid::nil(),
+            Uuid::nil(),
+            Command::SearchSessionMessages {
+                query: "x".repeat(MAX_WIRE_MESSAGE_BYTES),
+                limit: 1,
+            },
+        );
+        let small = client.request(Uuid::nil(), Uuid::nil(), Command::LoadComposerDrafts);
+        let disconnected = client.is_disconnected();
+        client.shutdown();
+        server.join().unwrap();
+
+        let error = oversized
+            .expect_err("an oversized request must fail")
+            .to_string();
+        assert!(error.contains("too large"), "{error}");
+        assert!(matches!(small, Ok(ResponsePayload::Ack)), "{small:?}");
+        assert!(!disconnected);
+        assert!(fits_on_wire(MAX_WIRE_MESSAGE_BYTES));
+        assert!(!fits_on_wire(MAX_WIRE_MESSAGE_BYTES + 1));
     }
 
     #[test]
