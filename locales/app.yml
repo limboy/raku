@@ -19,11 +19,11 @@ session.export_conversation:
 session.export_all:
   en: Export All
 session.copy_conversation:
-  en: Copy Conversation
+  en: Copy conversation
 session.copy_all:
-  en: Copy All
+  en: Copy all content
 session.copy_deeplink:
-  en: Copy Deeplink
+  en: Copy deeplink
 session.attaching:
   en: Attaching session…
 session.open:
