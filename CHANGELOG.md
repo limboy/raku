@@ -16,6 +16,15 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.2] - 2026-11-20
+
+- Rename the file reveal action to Reveal in Finder on macOS
+- Fill the whole row on hover and selection in the right-panel file tree, with file icons aligned to folder chevrons and larger names
+- Remove the background fill from the Files and Review filter inputs
+- Use sentence case for the Copy, Export, and Open in default app menu items
+- Add space below the last task in the sidebar
+- Set the header title and new-task heading in regular weight
+
 ## [2.6.1] - 2026-11-20
 
 - Add weekly routine schedules, and set a routine's interval, time of day, or weekday in its own row of the routine dialog
