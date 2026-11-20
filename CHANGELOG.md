@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.6] - 2026-11-20
+
+- Show a slash command's argument hint inline after you type it, and show skills' argument hints in the command list
+- Let Pi agents ask you questions with the same structured question form Claude and Codex use
+- Fix a reply made up only of a follow-up question showing the raw follow-up block
+
 ## [2.6.5] - 2026-11-20
 
 - Notify when an agent in the background needs your approval, has a question, or has a plan ready for review
