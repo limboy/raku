@@ -625,32 +625,67 @@ fn limit_entry_windows(body: &Value) -> Vec<PlanWindow> {
 /// The older flat shape, kept as a fallback for accounts the `limits` array
 /// has not reached.
 fn flat_field_windows(body: &Value) -> Vec<PlanWindow> {
-    [
-        "five_hour",
-        "seven_day",
-        "seven_day_opus",
-        "seven_day_sonnet",
-    ]
-    .into_iter()
-    .filter_map(|key| {
-        let window = body.get(key)?;
-        let label = match key {
-            "five_hour" => tr!("usage.hour_limit", count = 5),
-            "seven_day" => tr!("usage.weekly_all_models"),
-            "seven_day_opus" => tr!("usage.weekly_model", model = "Opus"),
-            "seven_day_sonnet" => tr!("usage.weekly_model", model = "Sonnet"),
-            _ => return None,
-        };
-        Some(PlanWindow {
-            label,
-            percent: window
-                .get("utilization")
-                .and_then(Value::as_f64)?
-                .clamp(0.0, 100.0),
-            resets_at: parse_reset(window.get("resets_at")),
+    CLAUDE_WINDOW_KEYS
+        .into_iter()
+        .filter_map(|key| {
+            let window = body.get(key)?;
+            Some(PlanWindow {
+                label: claude_window_label(key)?,
+                percent: window
+                    .get("utilization")
+                    .and_then(Value::as_f64)?
+                    .clamp(0.0, 100.0),
+                resets_at: parse_reset(window.get("resets_at")),
+            })
         })
+        .collect()
+}
+
+/// Claude's quota lanes in panel order. The usage endpoint's flat shape and
+/// Claude Code's `rate_limit_event` both key them this way.
+const CLAUDE_WINDOW_KEYS: [&str; 4] = [
+    "five_hour",
+    "seven_day",
+    "seven_day_opus",
+    "seven_day_sonnet",
+];
+
+fn claude_window_label(key: &str) -> Option<String> {
+    Some(match key {
+        "five_hour" => tr!("usage.hour_limit", count = 5),
+        "seven_day" => tr!("usage.weekly_all_models"),
+        "seven_day_opus" => tr!("usage.weekly_model", model = "Opus"),
+        "seven_day_sonnet" => tr!("usage.weekly_model", model = "Sonnet"),
+        _ => return None,
     })
-    .collect()
+}
+
+/// Plan rows from the `rate_limit_info` of Claude Code's stream-json
+/// `rate_limit_event`. The CLI reads the account's unified quota headers on
+/// every model response whatever credential it holds — including a
+/// `CLAUDE_CODE_OAUTH_TOKEN` setup token, which the usage endpoint refuses
+/// for lacking the `user:profile` scope. Utilization arrives as a fraction
+/// with a unix reset time. Only the lanes the response carried are present
+/// (`five_hour` and `seven_day` on 2.1.327), so callers merge this into an
+/// endpoint snapshot rather than replacing one.
+pub fn claude_rate_limit_plan_usage(info: &Value) -> Option<PlanUsage> {
+    let lanes = info.get("unifiedWindows")?;
+    let windows: Vec<PlanWindow> = CLAUDE_WINDOW_KEYS
+        .into_iter()
+        .filter_map(|key| {
+            let window = lanes.get(key)?;
+            Some(PlanWindow {
+                label: claude_window_label(key)?,
+                percent: (window.get("utilization").and_then(Value::as_f64)? * 100.0)
+                    .clamp(0.0, 100.0),
+                resets_at: window.get("resetsAt").and_then(Value::as_i64),
+            })
+        })
+        .collect();
+    (!windows.is_empty()).then_some(PlanUsage {
+        plan_label: None,
+        windows,
+    })
 }
 
 fn parse_reset(value: Option<&Value>) -> Option<i64> {
@@ -719,6 +754,40 @@ mod tests {
              "is_active": false}
         ]
     }"#;
+
+    #[test]
+    fn claude_rate_limit_event_maps_fractional_lanes_in_panel_order() {
+        // Captured from Claude Code 2.1.327 stream-json on a setup token.
+        let info: Value = serde_json::from_str(
+            r#"{"status":"allowed","resetsAt":1795179600,"rateLimitType":"five_hour",
+                "overageStatus":"rejected","isUsingOverage":false,
+                "unifiedWindows":{
+                    "seven_day":{"utilization":0.53,"resetsAt":1795438800,"status":"allowed"},
+                    "five_hour":{"utilization":0.1,"resetsAt":1795179600,"status":"allowed"}}}"#,
+        )
+        .unwrap();
+        let usage = claude_rate_limit_plan_usage(&info).expect("both lanes should map");
+        assert_eq!(usage.plan_label, None);
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[0].label, tr!("usage.hour_limit", count = 5));
+        assert!((usage.windows[0].percent - 10.0).abs() < 1e-9);
+        assert_eq!(usage.windows[0].resets_at, Some(1795179600));
+        assert_eq!(usage.windows[1].label, tr!("usage.weekly_all_models"));
+        assert!((usage.windows[1].percent - 53.0).abs() < 1e-9);
+        assert_eq!(usage.windows[1].resets_at, Some(1795438800));
+    }
+
+    #[test]
+    fn claude_rate_limit_event_without_lanes_reports_nothing() {
+        assert_eq!(
+            claude_rate_limit_plan_usage(&serde_json::json!({"status": "allowed"})),
+            None
+        );
+        assert_eq!(
+            claude_rate_limit_plan_usage(&serde_json::json!({"unifiedWindows": {}})),
+            None
+        );
+    }
 
     fn credentials(tier: Option<&str>, subscription: Option<&str>) -> OauthCredentials {
         OauthCredentials {

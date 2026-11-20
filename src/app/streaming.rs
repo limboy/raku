@@ -635,8 +635,18 @@ impl Raku {
                     .find(|session| session.id == session_id)
                     .map(|session| session.provider)
                 {
-                    self.plan_usage
-                        .insert(usage_meter::PlanUsageKey::Provider(provider), usage);
+                    let key = usage_meter::PlanUsageKey::Provider(provider);
+                    match self.plan_usage.get_mut(&key) {
+                        // Claude's turn events carry only the lanes the
+                        // response did; keep the endpoint's plan name and
+                        // per-model rows around them.
+                        Some(existing) if provider == ProviderKind::Claude => {
+                            usage_meter::merge_plan_usage(existing, usage);
+                        }
+                        _ => {
+                            self.plan_usage.insert(key, usage);
+                        }
+                    }
                 }
             }
             DriverEvent::GoalUpdated(goal) => {

@@ -2599,8 +2599,18 @@ fn handle_message(
                 summary: None,
             });
         }
-        // `system` status/thinking-token notices and `rate_limit_event` are not
-        // transcript content.
+        // Quota needles, not transcript content. Every model response carries
+        // them, so the plan meter works even when the usage endpoint refuses
+        // the CLI's credential.
+        Some("rate_limit_event") => {
+            if let Some(usage) = value
+                .get("rate_limit_info")
+                .and_then(crate::usage::claude_rate_limit_plan_usage)
+            {
+                let _ = events.send(DriverEvent::PlanUsageUpdated(usage));
+            }
+        }
+        // `system` status/thinking-token notices are not transcript content.
         _ => {}
     }
 }
@@ -4355,6 +4365,30 @@ mod tests {
         assert!(matches!(&seen[3], DriverEvent::RichActivity(item)
                 if item.complete && item.output.as_deref() == Some("hi")));
         assert_eq!(seen.len(), 4, "replayed prompt or control noise leaked");
+    }
+
+    #[test]
+    fn rate_limit_events_feed_the_plan_meter() {
+        let (events, event_rx, commands, _command_rx, turn, mut state) = harness();
+        // Shape from Claude Code 2.1.327's stream-json output.
+        handle_message(
+            &json!({"type":"rate_limit_event","rate_limit_info":{
+                "status":"allowed","resetsAt":1795179600,"rateLimitType":"five_hour",
+                "unifiedWindows":{
+                    "five_hour":{"utilization":0.1,"resetsAt":1795179600,"status":"allowed"},
+                    "seven_day":{"utilization":0.53,"resetsAt":1795438800,"status":"allowed"}}}}),
+            "s",
+            &events,
+            &commands,
+            &turn,
+            PermissionPolicy::AutoApprove,
+            &mut state,
+        );
+        let Ok(DriverEvent::PlanUsageUpdated(usage)) = event_rx.try_recv() else {
+            panic!("the quota lanes should update the plan meter");
+        };
+        assert_eq!(usage.windows.len(), 2);
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[test]

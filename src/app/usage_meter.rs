@@ -103,7 +103,14 @@ impl Raku {
             }
             let provider = key.provider();
             let interval = if self.plan_usage_error.contains_key(&key) {
-                PLAN_USAGE_RETRY
+                // Turn events already keep the meter current (a Claude setup
+                // token is refused by the endpoint), so a failing endpoint
+                // need not be retried soon.
+                if self.plan_usage.contains_key(&key) {
+                    PLAN_USAGE_REFRESH
+                } else {
+                    PLAN_USAGE_RETRY
+                }
             } else if self.plan_usage_stale.contains(&key) {
                 PLAN_USAGE_REFRESH_STALE
             } else {
@@ -367,6 +374,25 @@ impl Raku {
 /// can report a lifetime/cumulative token counter that exceeds the
 /// model's window; the context can never be more than fully used, so anything
 /// past the window reads as full rather than an impossible percentage.
+/// Fold a partial snapshot into the panel's: lanes it reports replace the
+/// same-labelled rows in place, new lanes append, and rows or a plan name it
+/// does not carry survive.
+pub(super) fn merge_plan_usage(existing: &mut PlanUsage, update: PlanUsage) {
+    if update.plan_label.is_some() {
+        existing.plan_label = update.plan_label;
+    }
+    for window in update.windows {
+        match existing
+            .windows
+            .iter_mut()
+            .find(|row| row.label == window.label)
+        {
+            Some(row) => *row = window,
+            None => existing.windows.push(window),
+        }
+    }
+}
+
 fn context_percent(usage: ContextUsage) -> Option<f64> {
     usage
         .window
@@ -697,6 +723,45 @@ fn meter_bar(theme: &Theme, percent: f64) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_plan_updates_keep_rows_and_plan_name_they_do_not_carry() {
+        let row = |label: &str, percent: f64| crate::usage::PlanWindow {
+            label: label.to_owned(),
+            percent,
+            resets_at: Some(1),
+        };
+        let mut existing = PlanUsage {
+            plan_label: Some("Max (20x)".to_owned()),
+            windows: vec![
+                row("5-hour", 4.0),
+                row("Weekly", 50.0),
+                row("Weekly Opus", 7.0),
+            ],
+        };
+        merge_plan_usage(
+            &mut existing,
+            PlanUsage {
+                plan_label: None,
+                windows: vec![row("Weekly", 53.0), row("5-hour", 10.0), row("New", 1.0)],
+            },
+        );
+        assert_eq!(existing.plan_label.as_deref(), Some("Max (20x)"));
+        let rows: Vec<_> = existing
+            .windows
+            .iter()
+            .map(|window| (window.label.as_str(), window.percent))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("5-hour", 10.0),
+                ("Weekly", 53.0),
+                ("Weekly Opus", 7.0),
+                ("New", 1.0)
+            ]
+        );
+    }
 
     #[test]
     fn only_opencode_go_pi_models_select_the_go_quota() {
