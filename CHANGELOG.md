@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.3] - 2026-11-20
+
+- Show Claude plan usage limits from each turn, so the 5-hour and weekly meters work when Claude Code signs in with a long-lived `CLAUDE_CODE_OAUTH_TOKEN`
+
 ## [2.6.2] - 2026-11-20
 
 - Rename the file reveal action to Reveal in Finder on macOS
