@@ -4199,10 +4199,9 @@ impl Raku {
                     .items_center()
                     .justify_center()
                     .map(|slot| match entry.file_icon {
-                        Some(file_icon_path) if !entry.is_dir => slot.child(file_icon(
-                            file_icon_path,
-                            WORKING_TREE_LEADING_SIZE,
-                        )),
+                        Some(file_icon_path) if !entry.is_dir => {
+                            slot.child(file_icon(file_icon_path, WORKING_TREE_LEADING_SIZE))
+                        }
                         _ => slot.child(icon(
                             if entry.expanded {
                                 "icons/chevron-down.svg"
