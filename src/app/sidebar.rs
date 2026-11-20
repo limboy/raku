@@ -881,7 +881,8 @@ impl Raku {
                                     })
                                     .unwrap_or_else(|| div().into_any_element())
                             })
-                            .size_full(),
+                            .size_full()
+                            .pb(px(10.0)),
                         ),
                     )
                     .child(scrollbar::vertical(
