@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.5] - 2026-11-20
+
+- Notify when an agent in the background needs your approval, has a question, or has a plan ready for review
+- Ask before quitting while agents or background commands are still running, since quitting stops them
+
 ## [2.6.4] - 2026-11-20
 
 - Fix the connection to the Raku daemon getting stuck after a session with many screenshots, which kept showing "Recent changes aren't saved yet" until Raku was restarted
