@@ -1556,7 +1556,8 @@ impl AgentSession {
 
     /// A hidden session that belongs to another task: a side chat or a
     /// subagent. It takes no git checkpoints, raises no notifications or
-    /// unread markers, and is deleted with its parent.
+    /// unread markers of its own (a wait for the user is announced as its
+    /// parent's), and is deleted with its parent.
     pub fn is_child(&self) -> bool {
         self.is_side_chat() || self.is_subagent()
     }

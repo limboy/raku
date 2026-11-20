@@ -627,6 +627,9 @@ project.add_project: プロジェクトを追加
 session.stopped: 停止しました
 session.turn_completed: ターンが完了しました
 session.turn_waiting_background: バックグラウンドタスクを待っています
+session.waiting_permission: 承認が必要です
+session.waiting_question: 確認したいことがあります
+session.waiting_plan: プランの確認を待っています
 transcript.waiting_background: バックグラウンドタスクを待っています
 session.stopped_before_response: エージェントは回答を返す前に停止しました
 session.codex_exited_before_response: Codex app-server は回答を返す前に終了しました

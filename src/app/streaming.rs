@@ -16,6 +16,42 @@ impl Raku {
         if session.is_child() {
             return None;
         }
+        self.task_notification_title(session, cx)
+    }
+
+    /// Announce that `session_id` is blocked on the user — a permission
+    /// prompt, a question, or a plan awaiting approval — under the same
+    /// conditions as a turn-end banner. A side chat or subagent blocks the
+    /// task it belongs to, so the banner names that task and opens it.
+    fn notify_waiting_for_user(&self, session_id: Uuid, body: String, cx: &App) {
+        let Some(session) = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+        else {
+            return;
+        };
+        let task = session
+            .parent_session()
+            .and_then(|parent| {
+                self.state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == parent)
+            })
+            .unwrap_or(session);
+        if let Some(title) = self.task_notification_title(task, cx) {
+            crate::platform::show_task_notification(
+                &task_notification_tag(task.id),
+                &title,
+                &body,
+                cx,
+            );
+        }
+    }
+
+    fn task_notification_title(&self, session: &AgentSession, cx: &App) -> Option<String> {
         let other_project = self.state.selected_project != Some(session.project_id);
         if cx.active_window().is_some() && !other_project {
             return None;
@@ -513,6 +549,7 @@ impl Raku {
                     if let Some(session) = self.state.session_mut(session_id) {
                         session.status = SessionStatus::Waiting;
                     }
+                    self.notify_waiting_for_user(session_id, tr!("session.waiting_permission"), cx);
                 }
             }
             DriverEvent::SubagentRequested(request) => {
@@ -525,8 +562,11 @@ impl Raku {
                     let blocking = request_id.is_some();
                     self.pending_plans
                         .insert(session_id, PendingPlan { request_id });
-                    if blocking && let Some(session) = self.state.session_mut(session_id) {
-                        session.status = SessionStatus::Waiting;
+                    if blocking {
+                        if let Some(session) = self.state.session_mut(session_id) {
+                            session.status = SessionStatus::Waiting;
+                        }
+                        self.notify_waiting_for_user(session_id, tr!("session.waiting_plan"), cx);
                     }
                 }
             }
@@ -544,10 +584,17 @@ impl Raku {
                     }
                     // An async question does not block the provider: its turn
                     // keeps running and the answer becomes the next message.
-                    if delivery == UserInputDelivery::Request
-                        && let Some(session) = self.state.session_mut(session_id)
-                    {
-                        session.status = SessionStatus::Waiting;
+                    // It still surfaces as the turn-end banner once the turn
+                    // settles, so only a blocking question announces itself.
+                    if delivery == UserInputDelivery::Request {
+                        if let Some(session) = self.state.session_mut(session_id) {
+                            session.status = SessionStatus::Waiting;
+                        }
+                        self.notify_waiting_for_user(
+                            session_id,
+                            tr!("session.waiting_question"),
+                            cx,
+                        );
                     }
                 }
             }

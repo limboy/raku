@@ -596,6 +596,9 @@ project.add_project: 添加项目
 session.stopped: 已停止
 session.turn_completed: 本轮已完成
 session.turn_waiting_background: 正在等待后台任务
+session.waiting_permission: 需要你的批准
+session.waiting_question: 有问题需要你回答
+session.waiting_plan: 计划等待你审阅
 transcript.waiting_background: 正在等待后台任务
 session.stopped_before_response: 智能体在返回回复前停止了
 session.codex_exited_before_response: Codex app-server 在返回回复前退出了

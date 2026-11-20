@@ -1222,6 +1222,12 @@ session.turn_completed:
   en: Turn completed
 session.turn_waiting_background:
   en: Waiting for background tasks
+session.waiting_permission:
+  en: Needs your approval
+session.waiting_question:
+  en: Has a question for you
+session.waiting_plan:
+  en: Plan ready for your review
 transcript.waiting_background:
   en: Waiting for background tasks
 session.stopped_before_response:
