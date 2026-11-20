@@ -1228,6 +1228,14 @@ session.waiting_question:
   en: Has a question for you
 session.waiting_plan:
   en: Plan ready for your review
+quit.running_title:
+  en: Tasks are still running
+quit.running_detail_one:
+  en: An agent or background command is still running in 1 task. Quitting will stop it.
+quit.running_detail_other:
+  en: Agents or background commands are still running in %{count} tasks. Quitting will stop them.
+quit.quit_anyway:
+  en: Quit Anyway
 transcript.waiting_background:
   en: Waiting for background tasks
 session.stopped_before_response:

@@ -630,6 +630,10 @@ session.turn_waiting_background: バックグラウンドタスクを待って�
 session.waiting_permission: 承認が必要です
 session.waiting_question: 確認したいことがあります
 session.waiting_plan: プランの確認を待っています
+quit.running_title: 実行中のタスクがあります
+quit.running_detail_one: 1 件のタスクでエージェントまたはバックグラウンドコマンドが実行中です。終了すると停止します。
+quit.running_detail_other: "%{count} 件のタスクでエージェントまたはバックグラウンドコマンドが実行中です。終了するとすべて停止します。"
+quit.quit_anyway: 終了する
 transcript.waiting_background: バックグラウンドタスクを待っています
 session.stopped_before_response: エージェントは回答を返す前に停止しました
 session.codex_exited_before_response: Codex app-server は回答を返す前に終了しました

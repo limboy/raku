@@ -356,8 +356,6 @@ pub fn run() {
                 KeyBinding::new("escape", BrowserAddressCancel, Some("BrowserAddress")),
             ]);
 
-            cx.on_action(|_: &Quit, cx| cx.quit());
-
             // Unlike AppKit, Linux has no Dock activation path that can
             // restore a hidden last window. Follow Zed's GPUI precedent and
             // terminate when the final window closes.
@@ -432,6 +430,21 @@ pub fn run() {
                 }
             })
             .detach();
+
+            // Quit asks first while agents or background commands are
+            // running, since the daemon that hosts them exits with Raku. The
+            // action can arrive mid-dispatch on this very window, so the
+            // update waits for the dispatch to finish.
+            cx.on_action(move |_: &Quit, cx| {
+                cx.defer(move |cx| {
+                    if window
+                        .update(cx, |raku, window, cx| raku.request_quit(window, cx))
+                        .is_err()
+                    {
+                        cx.quit();
+                    }
+                });
+            });
 
             cx.on_system_notification_response({
                 let window = window;

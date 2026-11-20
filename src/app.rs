@@ -1490,6 +1490,8 @@ pub struct Raku {
     /// Set when a turn finishes; the drain loop drops the workspace queries,
     /// since the event handler has no `Context` to refresh them itself.
     workspace_queries_stale: bool,
+    /// The quit confirmation is on screen; another Quit only refocuses it.
+    quit_prompt_open: bool,
     right_panel_terminals: HashMap<Uuid, Entity<TerminalView>>,
     right_panel_browsers: HashMap<Uuid, Entity<BrowserView>>,
     /// A Browser surface was just opened; the next right panel render moves
@@ -1739,6 +1741,7 @@ mod follow_up;
 mod goal_dialog;
 mod image_preview;
 mod project_picker;
+mod quit;
 mod render;
 mod right_panel;
 mod routine_dialog;
@@ -3036,6 +3039,7 @@ impl Raku {
                 right_panel_files_filter_collapsed_paths: HashSet::new(),
                 working_trees: QueryCache::new(MAX_CACHED_WORKSPACES),
                 workspace_queries_stale: false,
+                quit_prompt_open: false,
                 right_panel_terminals: HashMap::new(),
                 right_panel_browsers: HashMap::new(),
                 right_panel_pending_browser_focus: None,
