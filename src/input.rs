@@ -3815,9 +3815,9 @@ mod tests {
         (input, cx)
     }
 
-    fn setup_composer<'a>(
-        cx: &'a mut TestAppContext,
-    ) -> (Entity<ComposerInput>, &'a mut gpui::VisualTestContext) {
+    fn setup_composer(
+        cx: &mut TestAppContext,
+    ) -> (Entity<ComposerInput>, &mut gpui::VisualTestContext) {
         cx.update(super::init);
         let (harness, cx) = cx.add_window_view(|window, cx| {
             let composer = cx.new(|cx| ComposerInput::new(window, cx));
@@ -3830,9 +3830,9 @@ mod tests {
     }
 
     /// The main composer, the only owner that stages snippet pastes.
-    fn setup_snippet_composer<'a>(
-        cx: &'a mut TestAppContext,
-    ) -> (Entity<ComposerInput>, &'a mut gpui::VisualTestContext) {
+    fn setup_snippet_composer(
+        cx: &mut TestAppContext,
+    ) -> (Entity<ComposerInput>, &mut gpui::VisualTestContext) {
         cx.update(super::init);
         let (harness, cx) = cx.add_window_view(|window, cx| {
             let composer = cx.new(|cx| {
