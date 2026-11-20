@@ -1703,7 +1703,6 @@ impl Raku {
                                 .min_w_0()
                                 .truncate()
                                 .text_size(sp(14.0))
-                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text)
                                 .child(SharedString::from(title)),
                         ),
@@ -1742,7 +1741,6 @@ impl Raku {
                     div()
                         .mt(px(16.0))
                         .text_size(sp(20.0))
-                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
                         .child(tr_cow!("onboarding.open_project_to_begin")),
                 )
@@ -1858,7 +1856,6 @@ impl Raku {
                     .flex()
                     .items_baseline()
                     .text_size(sp(20.0))
-                    .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .when(projectless_selected, |element| {
                         element.child(tr_cow!("onboarding.what_should_we_build"))
