@@ -15,11 +15,11 @@ use tungstenite::{Message, WebSocket};
 use uuid::Uuid;
 
 use crate::diagnostics::log_daemon_event;
-use raku_protocol::MAX_WIRE_MESSAGE_BYTES;
 use raku_protocol::{
     ClientMessage, Command, PROTOCOL_VERSION, ReplayCursor, Request, ResponseOutcome,
     ResponsePayload, RpcError, SequencedEvent, ServerMessage,
 };
+use raku_protocol::{MAX_HANDSHAKE_MESSAGE_BYTES, MAX_WIRE_MESSAGE_BYTES};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_BUFFERED_EVENTS_PER_RUNTIME: usize = 4096;
@@ -39,10 +39,15 @@ struct ClientInner {
     disconnected: AtomicBool,
 }
 
+type RuntimeKey = (Uuid, Uuid);
+
 #[derive(Clone, Copy)]
 struct LastSequence {
     epoch: Uuid,
     sequence: u64,
+    /// When this runtime last delivered an event. Reconnects resume the most
+    /// recently active runtimes first when not every cursor fits the hello.
+    seen: Instant,
 }
 
 #[derive(Clone)]
@@ -60,6 +65,7 @@ impl DaemonClient {
         token: String,
         resume_from: Vec<ReplayCursor>,
     ) -> anyhow::Result<Self> {
+        let seen = Instant::now();
         let last_sequences = resume_from
             .iter()
             .map(|cursor| {
@@ -68,10 +74,28 @@ impl DaemonClient {
                     LastSequence {
                         epoch: cursor.epoch,
                         sequence: cursor.sequence,
+                        seen,
                     },
                 )
             })
             .collect();
+        Self::connect_resuming(address, token, last_sequences)
+    }
+
+    /// Connects and asks the daemon to replay what `known` has not seen.
+    ///
+    /// The hello must fit the daemon's pre-authentication limit, so only the
+    /// most recently active cursors that fit are sent. The rest stay in the
+    /// new connection's table: a runtime resumed without its cursor is
+    /// replayed from its journal start, and that table discards everything
+    /// already delivered, so trimming costs a re-send, never a duplicate.
+    fn connect_resuming(
+        address: &str,
+        token: String,
+        known: HashMap<RuntimeKey, LastSequence>,
+    ) -> anyhow::Result<Self> {
+        let resume_from = resume_cursors_that_fit(&token, &known);
+        let last_sequences = known;
         let url = daemon_url(address)?;
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_WIRE_MESSAGE_BYTES))
@@ -160,7 +184,8 @@ impl DaemonClient {
 
     pub(crate) fn reconnect(&self, address: &str, token: String) -> anyhow::Result<Self> {
         debug_assert!(self.is_disconnected());
-        let replacement = Self::connect_with_resume(address, token, self.last_sequences())?;
+        let known = self.inner.last_sequences.lock().clone();
+        let replacement = Self::connect_resuming(address, token, known)?;
         // Cursors include events buffered before a runtime subscribed. They
         // will not be replayed again, so carry them into the new connection
         // ahead of anything it has just received. No caller can subscribe to
@@ -328,6 +353,51 @@ impl PendingResponse {
     }
 }
 
+/// The replay cursors to send in a hello: most recently active first, as many
+/// as fit under [`MAX_HANDSHAKE_MESSAGE_BYTES`] with room to spare.
+fn resume_cursors_that_fit(
+    token: &str,
+    known: &HashMap<RuntimeKey, LastSequence>,
+) -> Vec<ReplayCursor> {
+    // Headroom for the WebSocket framing and any serializer variance.
+    const SLACK_BYTES: usize = 1024;
+    let empty_hello = serde_json::to_string(&ClientMessage::Hello {
+        protocol_version: PROTOCOL_VERSION,
+        token: token.to_owned(),
+        resume_from: Vec::new(),
+    })
+    .map_or(usize::MAX, |hello| hello.len());
+    let mut budget = MAX_HANDSHAKE_MESSAGE_BYTES
+        .saturating_sub(empty_hello)
+        .saturating_sub(SLACK_BYTES);
+    let mut recent = known.iter().collect::<Vec<_>>();
+    recent.sort_unstable_by_key(|(_, cursor)| std::cmp::Reverse(cursor.seen));
+    let mut cursors = Vec::new();
+    for (&(session_id, runtime_id), cursor) in recent {
+        let cursor = ReplayCursor {
+            session_id,
+            runtime_id,
+            epoch: cursor.epoch,
+            sequence: cursor.sequence,
+        };
+        // One separating comma per cursor.
+        let size = serde_json::to_string(&cursor).map_or(usize::MAX, |json| json.len() + 1);
+        if size > budget {
+            break;
+        }
+        budget -= size;
+        cursors.push(cursor);
+    }
+    if cursors.len() < known.len() {
+        log_daemon_event(format_args!(
+            "resuming {} of {} runtime cursors to fit the daemon hello",
+            cursors.len(),
+            known.len()
+        ));
+    }
+    cursors
+}
+
 fn daemon_url(address: &str) -> anyhow::Result<String> {
     let normalized = if address.starts_with("ws://") || address.starts_with("wss://") {
         address.to_owned()
@@ -449,17 +519,28 @@ fn deliver_server_message(message: ServerMessage, inner: &ClientInner) -> bool {
         ServerMessage::Event(event) => {
             let should_deliver = {
                 let mut sequences = inner.last_sequences.lock();
-                let previous = sequences
-                    .entry((event.session_id, event.runtime_id))
-                    .or_insert(LastSequence {
-                        epoch: event.epoch,
-                        sequence: 0,
+                let key = (event.session_id, event.runtime_id);
+                if !sequences.contains_key(&key) {
+                    // The daemon journals one runtime per session: starting
+                    // a runtime deletes the previous one's journal and drops
+                    // its late events. Its cursor can never matter again, and
+                    // keeping it would grow every reconnect hello.
+                    sequences.retain(|&(session_id, runtime_id), _| {
+                        session_id != event.session_id || runtime_id == event.runtime_id
                     });
+                }
+                let seen = Instant::now();
+                let previous = sequences.entry(key).or_insert(LastSequence {
+                    epoch: event.epoch,
+                    sequence: 0,
+                    seen,
+                });
                 if previous.epoch == event.epoch && event.sequence <= previous.sequence {
                     false
                 } else {
                     previous.epoch = event.epoch;
                     previous.sequence = event.sequence;
+                    previous.seen = seen;
                     true
                 }
             };
@@ -815,6 +896,179 @@ mod tests {
         assert!(!disconnected);
         assert!(fits_on_wire(MAX_WIRE_MESSAGE_BYTES));
         assert!(!fits_on_wire(MAX_WIRE_MESSAGE_BYTES + 1));
+    }
+
+    fn cursor_table(
+        runtimes: impl IntoIterator<Item = (RuntimeKey, u64, Instant)>,
+        epoch: Uuid,
+    ) -> HashMap<RuntimeKey, LastSequence> {
+        runtimes
+            .into_iter()
+            .map(|(key, sequence, seen)| {
+                (
+                    key,
+                    LastSequence {
+                        epoch,
+                        sequence,
+                        seen,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// A long-lived app sees far more runtimes than one hello can name. The
+    /// hello must stay under the daemon's pre-authentication limit, or every
+    /// reconnect is refused until the app restarts.
+    #[test]
+    fn reconnect_hello_fits_the_daemon_limit_and_keeps_recent_runtimes() {
+        let epoch = Uuid::new_v4();
+        let now = Instant::now();
+        let recent = (Uuid::new_v4(), Uuid::new_v4());
+        let mut runtimes = (0..2000)
+            .map(|index| {
+                (
+                    (Uuid::new_v4(), Uuid::new_v4()),
+                    u64::MAX,
+                    now.checked_sub(Duration::from_secs(10 + index)).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        runtimes.push((recent, 7, now));
+        let known = cursor_table(runtimes, epoch);
+        let token = "t".repeat(64);
+        let cursors = resume_cursors_that_fit(&token, &known);
+        let hello = serde_json::to_string(&ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            token: token.clone(),
+            resume_from: cursors.clone(),
+        })
+        .unwrap();
+        assert!(
+            hello.len() <= MAX_HANDSHAKE_MESSAGE_BYTES,
+            "{}",
+            hello.len()
+        );
+        assert!(cursors.len() > 100 && cursors.len() < known.len());
+        assert_eq!(
+            (cursors[0].session_id, cursors[0].runtime_id),
+            recent,
+            "the most recently active runtime resumes first"
+        );
+
+        let few = cursor_table([(recent, 7, now)], epoch);
+        assert_eq!(resume_cursors_that_fit(&token, &few).len(), 1);
+    }
+
+    /// Starting a runtime deletes the session's previous journal in the
+    /// daemon, so the client forgets that runtime's cursor too.
+    #[test]
+    fn a_new_runtime_supersedes_the_sessions_previous_cursor() {
+        let inner = ClientInner {
+            outgoing: unbounded().0,
+            pending: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            pending_events: Mutex::new(HashMap::new()),
+            task_state_subscribers: Mutex::new(Vec::new()),
+            last_sequences: Mutex::new(HashMap::new()),
+            disconnected: AtomicBool::new(false),
+        };
+        let epoch = Uuid::new_v4();
+        let (session, other_session) = (Uuid::new_v4(), Uuid::new_v4());
+        let (old_runtime, new_runtime, other_runtime) =
+            (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let event = |session_id, runtime_id, sequence| {
+            ServerMessage::Event(SequencedEvent {
+                session_id,
+                runtime_id,
+                epoch,
+                sequence,
+                event: raku_protocol::WireDriverEvent::new("turnStarted", serde_json::Value::Null),
+            })
+        };
+        deliver_server_message(event(session, old_runtime, 1), &inner);
+        deliver_server_message(event(other_session, other_runtime, 1), &inner);
+        deliver_server_message(event(session, new_runtime, 1), &inner);
+        deliver_server_message(event(session, new_runtime, 2), &inner);
+        let mut keys = inner
+            .last_sequences
+            .lock()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        keys.sort();
+        let mut expected = vec![(session, new_runtime), (other_session, other_runtime)];
+        expected.sort();
+        assert_eq!(keys, expected);
+        assert_eq!(
+            inner.last_sequences.lock()[&(session, new_runtime)].sequence,
+            2
+        );
+    }
+
+    /// A cursor left out of the hello is replayed from the journal start, but
+    /// the connection still knows it and must not redeliver old events.
+    #[test]
+    fn trimmed_cursors_still_suppress_replayed_duplicates() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let epoch = Uuid::new_v4();
+        let now = Instant::now();
+        let stale = (Uuid::new_v4(), Uuid::new_v4());
+        let mut runtimes = (0..2000)
+            .map(|_| ((Uuid::new_v4(), Uuid::new_v4()), 1, now))
+            .collect::<Vec<_>>();
+        runtimes.push((stale, 5, now.checked_sub(Duration::from_secs(60)).unwrap()));
+        let known = cursor_table(runtimes, epoch);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let text = socket.read().unwrap().into_text().unwrap();
+            assert!(text.len() <= MAX_HANDSHAKE_MESSAGE_BYTES);
+            let ClientMessage::Hello { resume_from, .. } =
+                serde_json::from_str::<ClientMessage>(text.as_ref()).unwrap()
+            else {
+                panic!("expected hello");
+            };
+            assert!(
+                !resume_from
+                    .iter()
+                    .any(|cursor| (cursor.session_id, cursor.runtime_id) == stale)
+            );
+            let mut send = |message: ServerMessage| {
+                socket
+                    .send(Message::Text(
+                        serde_json::to_string(&message).unwrap().into(),
+                    ))
+                    .unwrap();
+            };
+            send(ServerMessage::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                daemon_version: "test".into(),
+            });
+            // Without a cursor the daemon replays the whole journal.
+            for sequence in 1..=6 {
+                send(ServerMessage::Event(SequencedEvent {
+                    session_id: stale.0,
+                    runtime_id: stale.1,
+                    epoch,
+                    sequence,
+                    event: raku_protocol::WireDriverEvent::new(
+                        "textDelta",
+                        serde_json::json!(sequence),
+                    ),
+                }));
+            }
+            let _ = socket.read();
+        });
+        let client = DaemonClient::connect_resuming(&address, "token".into(), known).unwrap();
+        let events = client.subscribe(stale.0, stale.1);
+        let first = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        let extra = events.recv_timeout(Duration::from_millis(200));
+        client.shutdown();
+        server.join().unwrap();
+        assert_eq!(first.sequence, 6);
+        assert!(extra.is_err(), "only the unseen event is delivered");
     }
 
     #[test]

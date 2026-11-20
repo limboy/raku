@@ -21,6 +21,9 @@ use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
 pub const PROTOCOL_VERSION: u32 = 20;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
+/// Limit on messages before the daemon has authenticated the client,
+/// including the hello and its replay cursors.
+pub const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 64 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "RAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "RAKU_DAEMON_ADDRESS";
 pub const APP_EXECUTABLE_ENV: &str = "RAKU_APP_EXECUTABLE";

@@ -19,11 +19,11 @@ use tungstenite::{Message, WebSocket, accept_hdr_with_config};
 use uuid::Uuid;
 
 use crate::model::{AgentSession, Project, ProviderKind, SessionRoutine, SessionStatus};
-use crate::protocol::MAX_WIRE_MESSAGE_BYTES;
 use crate::protocol::{
     ClientMessage, Command, PROTOCOL_VERSION, ReplayCursor, Request, ResponseOutcome,
     ResponsePayload, RpcError, SequencedEvent, ServerMessage, WireDriverEvent,
 };
+use crate::protocol::{MAX_HANDSHAKE_MESSAGE_BYTES, MAX_WIRE_MESSAGE_BYTES};
 
 /// How long the accept loop and idle connections block before rechecking the
 /// shared shutdown flag. Sockets and queues wake them as soon as there is
@@ -35,7 +35,6 @@ const SHUTDOWN_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 /// not reading. Keeping the connection would let its event queue grow without
 /// bound, so it is dropped; clients reconnect and resume from their cursors.
 const SOCKET_WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 64;
 const MAX_REPLAY_EVENTS_PER_SESSION: usize = 2048;
 /// Per-subscriber cap on queued daemon messages. A subscriber that falls this

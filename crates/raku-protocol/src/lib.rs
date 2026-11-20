@@ -56,8 +56,8 @@ pub use driver_wire::{decode_enum, encode_enum, event_from_wire, event_to_wire};
 pub use model::{parse_command_exit_status, strip_ansi};
 pub use protocol::{
     APP_EXECUTABLE_ENV, ClientMessage, Command, DAEMON_ADDRESS_ENV, DAEMON_TOKEN_ENV, DaemonReady,
-    MAX_WIRE_MESSAGE_BYTES, PROTOCOL_VERSION, ReplayCursor, Request, ResponseOutcome,
-    ResponsePayload, RpcError, SequencedEvent, ServerMessage, WireDriverEvent,
+    MAX_HANDSHAKE_MESSAGE_BYTES, MAX_WIRE_MESSAGE_BYTES, PROTOCOL_VERSION, ReplayCursor, Request,
+    ResponseOutcome, ResponsePayload, RpcError, SequencedEvent, ServerMessage, WireDriverEvent,
     WireDriverStartOptions, WireSessionOptions,
 };
 pub use settings::DaemonSettings;
