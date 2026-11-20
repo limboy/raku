@@ -991,7 +991,7 @@ impl Raku {
         let reveal_button = action_button(
             SharedString::from(format!("skill-reveal-{}", skill.row_key)),
             "icons/folder.svg",
-            tr!("skills.reveal"),
+            crate::platform::reveal_label(),
         )
         .on_click(cx.listener({
             let skill_file = skill_file.clone();

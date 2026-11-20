@@ -206,6 +206,16 @@ pub fn reveal_in_file_manager(path: &std::path::Path, cx: &gpui::App) {
     cx.reveal_path(path);
 }
 
+/// The platform's own name for [`reveal_in_file_manager`]: macOS calls it
+/// "Reveal in Finder"; other desktops have no single file manager to name.
+pub fn reveal_label() -> String {
+    if cfg!(target_os = "macos") {
+        tr!("common.reveal_in_finder")
+    } else {
+        tr!("common.show_in_file_manager")
+    }
+}
+
 /// Open `path` with its default application — a document in its editor.
 pub fn open_with_default_app(path: &std::path::Path, cx: &gpui::App) {
     cx.open_with_system(path);

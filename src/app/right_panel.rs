@@ -11,6 +11,8 @@ const REVIEW_DIFF_FILE_HEADER_HEIGHT: f32 = 36.0;
 const RIGHT_PANEL_TOGGLE_SIZE: f32 = 28.0;
 const RIGHT_TITLEBAR_INSET: f32 = 14.0;
 const RIGHT_TITLEBAR_GAP: f32 = 6.0;
+const WORKING_TREE_LEADING_SIZE: f32 = 14.0;
+const WORKING_TREE_FONT_SIZE: f32 = 14.0;
 const MAX_ATTACHMENT_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 
 fn file_menu_items(path: PathBuf) -> Vec<MenuItem> {
@@ -20,7 +22,7 @@ fn file_menu_items(path: PathBuf) -> Vec<MenuItem> {
             crate::platform::open_with_default_app(&open_path, cx);
         })
         .icon("icons/external-link.svg"),
-        MenuItem::new(tr!("common.reveal_in_finder"), move |_, cx| {
+        MenuItem::new(crate::platform::reveal_label(), move |_, cx| {
             crate::platform::reveal_in_file_manager(&path, cx);
         })
         .icon("icons/folder.svg"),
@@ -4172,47 +4174,58 @@ impl Raku {
             .id(SharedString::from(format!(
                 "right-panel-file-{relative_path}"
             )))
+            .w_full()
             .h(px(30.0))
-            .mx(px(8.0))
             .pl(px(8.0 + entry.depth as f32 * 16.0))
             .pr(px(8.0))
             .rounded(px(6.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(8.0))
             .cursor_default()
             .when(selected, |element| element.bg(theme.overlay_strong))
             .hover(|element| element.bg(theme.overlay))
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 this.navigate_right_panel_file_tree(index, event, window, cx);
             }))
-            .child(if entry.is_dir {
-                icon(
-                    if entry.expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.0,
-                    theme.text_ghost,
-                )
-                .into_any_element()
-            } else {
-                div().w(px(10.0)).h(px(10.0)).flex_none().into_any_element()
-            })
-            .when_some(entry.file_icon, |element, file_icon_path| {
-                element.child(file_icon(file_icon_path, 14.0))
-            })
+            // Directories and files share one leading column: a chevron for a
+            // directory, the file-type icon for a file.
+            .child(
+                div()
+                    .size(px(WORKING_TREE_LEADING_SIZE))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .map(|slot| match entry.file_icon {
+                        Some(file_icon_path) if !entry.is_dir => slot.child(file_icon(
+                            file_icon_path,
+                            WORKING_TREE_LEADING_SIZE,
+                        )),
+                        _ => slot.child(icon(
+                            if entry.expanded {
+                                "icons/chevron-down.svg"
+                            } else {
+                                "icons/chevron-right.svg"
+                            },
+                            12.0,
+                            theme.text_tertiary,
+                        )),
+                    }),
+            )
             .child(
                 div()
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_size(sp(SMALL_UI_FONT_SIZE))
-                    .text_color(theme.text_secondary)
+                    .text_size(sp(WORKING_TREE_FONT_SIZE))
+                    .text_color(theme.text)
                     .child(entry.name),
             );
-        if entry.is_dir {
+        // List rows lay out as roots and shrink to their content, so the
+        // full-width wrapper gives the hover and selection fill the whole
+        // row inside the panel gutter.
+        let row: AnyElement = if entry.is_dir {
             let focus =
                 self.transcript_control_focus(format!("right-panel-directory-{relative_path}"), cx);
             let keyboard_path = absolute_path.clone();
@@ -4261,8 +4274,8 @@ impl Raku {
                     raku.clone(),
                 )
             })
-            .into_any_element()
-        }
+        };
+        div().w_full().px(px(8.0)).child(row).into_any_element()
     }
 
     fn navigate_right_panel_file_tree(

@@ -146,14 +146,6 @@ fn image_menu_items(
 
 type ImageActionCallback = Rc<dyn Fn(&mut Window, &mut App)>;
 
-fn image_reveal_label() -> String {
-    if cfg!(target_os = "macos") {
-        tr!("attachments.reveal_in_finder")
-    } else {
-        tr!("common.reveal_in_finder")
-    }
-}
-
 fn image_action_menu_items(
     image: &Arc<gpui::Image>,
     add_to_chat: ImageActionCallback,
@@ -169,7 +161,7 @@ fn image_action_menu_items(
             cx.write_to_clipboard(ClipboardItem::new_image(image.as_ref()));
         })
         .icon("icons/copy.svg"),
-        MenuItem::new(image_reveal_label(), move |window, cx| {
+        MenuItem::new(crate::platform::reveal_label(), move |window, cx| {
             reveal_in_finder(window, cx)
         })
         .icon("icons/folder.svg"),
@@ -178,7 +170,7 @@ fn image_action_menu_items(
 
 pub(super) fn attachment_menu_items(path: PathBuf, can_reveal: bool) -> Vec<MenuItem> {
     vec![
-        MenuItem::new(tr!("common.reveal_in_finder"), move |_, cx| {
+        MenuItem::new(crate::platform::reveal_label(), move |_, cx| {
             crate::platform::reveal_in_file_manager(&path, cx);
         })
         .icon("icons/folder.svg")
@@ -847,7 +839,7 @@ mod tests {
             [
                 tr!("common.add_to_chat"),
                 tr!("common.copy_image"),
-                image_reveal_label()
+                crate::platform::reveal_label()
             ]
         );
         let (_, window) = cx.add_window_view(|_, _| Harness);

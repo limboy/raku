@@ -424,7 +424,7 @@ impl Raku {
         .on_activation(cx, |this, _, cx| this.choose_backup_directory(cx));
         let reveal = backup_button(
             "backup-reveal",
-            tr!("common.reveal_in_finder"),
+            crate::platform::reveal_label(),
             &ui.focus[1],
             self.state.backup_directory.is_none(),
             theme,

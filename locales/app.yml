@@ -487,8 +487,6 @@ common.add_to_chat:
   en: Add to chat
 common.copy_image:
   en: Copy image
-attachments.reveal_in_finder:
-  en: Reveal in Finder
 code_run.run_tooltip:
   en: Run in terminal and send output to the agent
 code_run.running:
@@ -1054,8 +1052,6 @@ skills.duplicate_many:
   en: "Same name in %{count} other locations — the most specific copy wins"
 skills.open_file:
   en: Open SKILL.md
-skills.reveal:
-  en: Show in File Manager
 skills.copy_path:
   en: Copy Path
 skills.path_copied:
@@ -1825,6 +1821,8 @@ common.dismiss_notification:
   en: Dismiss notification
 
 common.reveal_in_finder:
+  en: Reveal in Finder
+common.show_in_file_manager:
   en: Show in File Manager
 
 attachments.close_preview:

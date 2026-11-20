@@ -2165,7 +2165,7 @@ mod tests {
                     }),
                     MenuItem::Separator,
                     MenuItem::new("Open in Default App", |_, _| {}),
-                    MenuItem::new("Show in File Manager", |_, _| {}),
+                    MenuItem::new("Reveal in Finder", |_, _| {}),
                 ]
             })
         }

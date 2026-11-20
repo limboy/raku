@@ -250,7 +250,6 @@ common.copy_to_composer: 入力欄にコピー
 common.copy_code: コードをコピー
 common.add_to_chat: チャットに追加
 common.copy_image: 画像をコピー
-attachments.reveal_in_finder: Finder で表示
 code_run.run_tooltip: ターミナルで実行し、出力をエージェントに送信
 code_run.running: ターミナルで実行中…
 code_run.queued_output: ターミナル出力
@@ -540,7 +539,6 @@ skills.allowed_tools: ツール
 skills.duplicate_one: 同名のスキルが他の 1 か所にもあります — 最も限定的な場所にあるスキルが優先されます
 skills.duplicate_many: "同名のスキルが他の %{count} か所にもあります — 最も限定的な場所にあるスキルが優先されます"
 skills.open_file: SKILL.md を開く
-skills.reveal: ファイルマネージャーで表示
 skills.copy_path: パスをコピー
 skills.path_copied: パスをコピーしました
 skills.delete: 削除
@@ -932,7 +930,8 @@ find.replace_all: すべて置換（%{shortcut}）
 find.toggle_replace: 置換欄の表示を切り替える
 
 common.dismiss_notification: 通知を閉じる
-common.reveal_in_finder: ファイルマネージャーで表示
+common.reveal_in_finder: Finder で表示
+common.show_in_file_manager: ファイルマネージャーで表示
 
 attachments.close_preview: 画像プレビューを閉じる
 attachments.open_preview: "%{name} を開く"
