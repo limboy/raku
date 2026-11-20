@@ -764,6 +764,11 @@ pub struct TextInput {
     accepts_atoms: bool,
     content: SharedString,
     placeholder: SharedString,
+    /// Ghost usage text drawn after the content, such as a slash command's
+    /// argument hint. Drawn only while `content` still equals the text it was
+    /// computed for, so an edit the owner has not reconciled yet can never
+    /// show a stale hint.
+    trailing_hint: Option<TrailingHint>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -798,6 +803,12 @@ pub struct TextInput {
     context_menu: ContextMenuHandle,
     blink_cursor: Entity<BlinkCursor>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone, PartialEq)]
+struct TrailingHint {
+    for_content: SharedString,
+    hint: SharedString,
 }
 
 #[derive(Clone, Copy)]
@@ -856,6 +867,7 @@ impl TextInput {
             accepts_atoms: false,
             content: "".into(),
             placeholder: "".into(),
+            trailing_hint: None,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -951,6 +963,20 @@ impl TextInput {
         let placeholder = placeholder.into();
         if self.placeholder != placeholder {
             self.placeholder = placeholder;
+            cx.notify();
+        }
+    }
+
+    /// Show `hint` in ghost text after the content while the content is
+    /// exactly `for_content`; `None` clears it.
+    pub fn set_trailing_hint(
+        &mut self,
+        hint: Option<(SharedString, SharedString)>,
+        cx: &mut Context<Self>,
+    ) {
+        let hint = hint.map(|(for_content, hint)| TrailingHint { for_content, hint });
+        if self.trailing_hint != hint {
+            self.trailing_hint = hint;
             cx.notify();
         }
     }
@@ -2862,6 +2888,68 @@ impl InputElement {
     }
 }
 
+/// Color for placeholder and trailing-hint text.
+///
+/// gpui dilates glyphs whose color is light (luminance ≥ 0.6), which catches
+/// the light theme's ghost grey and draws it heavier than typed text.
+/// Translucent black composites to the same grey on the white composer
+/// without tripping that.
+fn ghost_text_color(theme: &Theme) -> Hsla {
+    if theme.is_dark {
+        theme.text_ghost
+    } else {
+        gpui::hsla(0.0, 0.0, 0.0, 1.0 - theme.text_ghost.l)
+    }
+}
+
+/// Paint `hint` as ghost text where the content ends, truncated with an
+/// ellipsis to the room left on that row. Shaping goes through the window's
+/// line cache, so a steady hint costs no reshaping frame to frame.
+fn paint_trailing_hint(
+    hint: SharedString,
+    content_len: usize,
+    layout: &TextLayout,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(origin) = layout.position_for_index(content_len) else {
+        return;
+    };
+    let style = window.text_style();
+    let font = style.font();
+    let font_size = style.font_size.to_pixels(window.rem_size());
+    let available = bounds.right() - origin.x;
+    // Under a couple of glyphs of room an ellipsis alone says nothing.
+    if available < font_size * 2.0 {
+        return;
+    }
+    let run = TextRun {
+        len: hint.len(),
+        font: font.clone(),
+        color: ghost_text_color(&Theme::current(cx)),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let runs = [run];
+    let (text, runs) = window
+        .text_system()
+        .line_wrapper(font, font_size)
+        .truncate_line(hint, available, "…", &runs, gpui::TruncateFrom::End);
+    let line = window
+        .text_system()
+        .shape_line(text, font_size, &runs, None);
+    let _ = line.paint(
+        origin,
+        layout.line_height(),
+        gpui::TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+}
+
 struct InputLayoutState {
     text: StyledText,
     text_layout_state: (),
@@ -3022,16 +3110,12 @@ impl Element for InputElement {
         let theme = Theme::current(cx);
         let content_is_empty = content.is_empty();
         let (display_text, text_color, selected_range, marked_range) = if content_is_empty {
-            // gpui dilates glyphs whose color is light (luminance ≥ 0.6), which
-            // catches the light theme's ghost grey and draws the placeholder
-            // heavier than typed text. Translucent black composites to the
-            // same grey on the white composer without tripping that.
-            let color = if theme.is_dark {
-                theme.text_ghost
-            } else {
-                gpui::hsla(0.0, 0.0, 0.0, 1.0 - theme.text_ghost.l)
-            };
-            (input.placeholder.clone(), color, None, None)
+            (
+                input.placeholder.clone(),
+                ghost_text_color(&theme),
+                None,
+                None,
+            )
         } else {
             (
                 content,
@@ -3178,6 +3262,12 @@ impl Element for InputElement {
         let input = self.input.read(cx);
         let focus_handle = input.focus_handle.clone();
         let visually_focused = input.is_visually_focused(window);
+        let content_len = input.content.len();
+        let trailing_hint = input
+            .trailing_hint
+            .as_ref()
+            .filter(|hint| content_len > 0 && hint.for_content == input.content)
+            .map(|hint| hint.hint.clone());
         window.handle_input(
             &focus_handle,
             ElementInputHandler::new(bounds, self.input.clone()),
@@ -3206,10 +3296,13 @@ impl Element for InputElement {
             window,
             cx,
         );
+        let text_layout = layout_state.text.layout().clone();
+        if let Some(hint) = trailing_hint {
+            paint_trailing_hint(hint, content_len, &text_layout, bounds, window, cx);
+        }
         if visually_focused && let Some(cursor) = prepaint.cursor.take() {
             window.paint_quad(cursor);
         }
-        let text_layout = layout_state.text.layout().clone();
         self.input.update(cx, |input, _| {
             input.last_layout = Some(text_layout);
         });
@@ -3540,6 +3633,16 @@ impl ComposerInput {
     ) {
         self.input
             .update(cx, |input, cx| input.set_placeholder(placeholder, cx));
+    }
+
+    /// Forwarded [`TextInput::set_trailing_hint`].
+    pub fn set_trailing_hint(
+        &mut self,
+        hint: Option<(SharedString, SharedString)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.input
+            .update(cx, |input, cx| input.set_trailing_hint(hint, cx));
     }
 
     /// Splice `text` over `range`, as the `@`/`/` autocomplete accepts a row.

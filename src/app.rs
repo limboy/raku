@@ -2485,6 +2485,7 @@ impl Raku {
                     }
                     ComposerEvent::Edited => {
                         this.schedule_composer_draft_save(cx);
+                        this.sync_composer_argument_hint(cx);
                         cx.notify();
                     }
                     ComposerEvent::Focus => {}

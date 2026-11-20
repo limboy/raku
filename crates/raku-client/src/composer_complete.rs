@@ -47,6 +47,24 @@ pub fn command_composer_text(command: &SlashCommand, sigil: char) -> String {
     format!("{sigil}{}", command.name)
 }
 
+/// The argument hint to show inline after `prompt`, when the prompt is a
+/// known slash command followed only by spaces — `/release ` before any
+/// argument is typed. Typing an argument, a newline, or anything before the
+/// command hides it.
+pub fn inline_argument_hint<'a>(prompt: &str, commands: &'a [SlashCommand]) -> Option<&'a str> {
+    let name = prompt.strip_prefix('/')?;
+    let trimmed = name.trim_end_matches(' ');
+    if trimmed.len() == name.len() || trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
+        return None;
+    }
+    commands
+        .iter()
+        .find(|command| command.name == trimmed)?
+        .argument_hint
+        .as_deref()
+        .filter(|hint| !hint.trim().is_empty())
+}
+
 /// What kind of token accepting `command` inserts.
 pub fn command_token_kind(command: &SlashCommand) -> PromptTokenKind {
     if command.scope == CommandScope::Skill {
@@ -469,6 +487,25 @@ mod tests {
             Some("default")
         );
         assert_eq!(toggled_fast_service_tier(None, &[]), None);
+    }
+
+    #[test]
+    fn inline_argument_hint_shows_only_before_an_argument() {
+        let mut release = command("release", CommandScope::Skill);
+        release.argument_hint = Some("[patch|minor|major]".to_owned());
+        let commands = [release, command("review", CommandScope::Builtin)];
+        let hint = |prompt| inline_argument_hint(prompt, &commands);
+        assert_eq!(hint("/release "), Some("[patch|minor|major]"));
+        assert_eq!(hint("/release   "), Some("[patch|minor|major]"));
+        // Still choosing the command, or already past the argument.
+        assert_eq!(hint("/release"), None);
+        assert_eq!(hint("/release p"), None);
+        assert_eq!(hint("/release \n"), None);
+        assert_eq!(hint(" /release "), None);
+        // Unknown or hint-less commands.
+        assert_eq!(hint("/rel "), None);
+        assert_eq!(hint("/review "), None);
+        assert_eq!(hint("/ "), None);
     }
 
     #[test]

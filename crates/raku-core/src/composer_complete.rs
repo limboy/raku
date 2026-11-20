@@ -367,7 +367,7 @@ fn scan_skill_files(provider: ProviderKind, root: &Path, commands: &mut Vec<Slas
             name,
             description: front.description.unwrap_or_default(),
             scope: CommandScope::Skill,
-            argument_hint: None,
+            argument_hint: front.argument_hint,
             template: None,
         });
     }
@@ -1192,7 +1192,7 @@ mod tests {
         std::fs::create_dir_all(root.join("real/my-skill")).unwrap();
         std::fs::write(
             root.join("real/my-skill/SKILL.md"),
-            "---\nname: my-skill\ndescription: linked skill\n---\nBody",
+            "---\nname: my-skill\ndescription: linked skill\nargument-hint: \"[patch|minor]\"\n---\nBody",
         )
         .unwrap();
         std::fs::create_dir_all(root.join("real/commands")).unwrap();
@@ -1204,10 +1204,11 @@ mod tests {
 
         let mut commands = Vec::new();
         scan_skill_files(ProviderKind::Claude, &root.join("skills"), &mut commands);
-        assert!(
-            commands.iter().any(|c| c.name == "my-skill"),
-            "symlinked skill missing: {commands:?}"
-        );
+        let skill = commands
+            .iter()
+            .find(|c| c.name == "my-skill")
+            .unwrap_or_else(|| panic!("symlinked skill missing: {commands:?}"));
+        assert_eq!(skill.argument_hint.as_deref(), Some("[patch|minor]"));
         scan_command_files(
             &root.join("commands"),
             CommandScope::User,

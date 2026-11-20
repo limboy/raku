@@ -160,12 +160,37 @@ impl AutocompleteUi {
 }
 
 impl Raku {
+    /// Keep the composer's inline argument hint in step with its text and
+    /// the command index: `/release ` shows the skill's `argument-hint` after
+    /// the caret until an argument is typed. Runs on an edit or an index
+    /// change, never on a frame; the field draws the hint only while its text
+    /// still matches, so a missed sync degrades to no hint, not a wrong one.
+    pub(super) fn sync_composer_argument_hint(&mut self, cx: &mut Context<Self>) {
+        let prompt = self.composer.read(cx).content(cx);
+        let hint = composer_complete::inline_argument_hint(prompt, &self.slash_command_index).map(
+            |hint| {
+                (
+                    SharedString::from(prompt.to_owned()),
+                    SharedString::from(hint.to_owned()),
+                )
+            },
+        );
+        self.composer
+            .update(cx, |composer, cx| composer.set_trailing_hint(hint, cx));
+    }
+
     /// Refresh the drawn command and file indexes for the selected session.
     ///
     /// A cache hit lands immediately; a miss starts discovery on the
     /// background executor and re-runs this when it arrives. Nothing here may
     /// touch the filesystem directly.
     pub(super) fn refresh_composer_sources(&mut self, cx: &mut Context<Self>) {
+        self.refresh_composer_indexes(cx);
+        // A command typed before its index landed gets its hint now.
+        self.sync_composer_argument_hint(cx);
+    }
+
+    fn refresh_composer_indexes(&mut self, cx: &mut Context<Self>) {
         let Some(project_path) = self
             .selected_workspace_path()
             .map(std::path::Path::to_path_buf)
