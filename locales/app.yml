@@ -1610,7 +1610,7 @@ files.relative_path:
 files.filename:
   en: Filename
 files.open_in_default_app:
-  en: Open in Default App
+  en: Open in default app
 files.preview_markdown:
   en: Preview markdown
 files.edit_markdown_source:

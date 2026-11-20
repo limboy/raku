@@ -2164,7 +2164,7 @@ mod tests {
                         ]
                     }),
                     MenuItem::Separator,
-                    MenuItem::new("Open in Default App", |_, _| {}),
+                    MenuItem::new("Open in default app", |_, _| {}),
                     MenuItem::new("Reveal in Finder", |_, _| {}),
                 ]
             })
