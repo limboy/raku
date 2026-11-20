@@ -15,9 +15,9 @@ menu.new_task:
 menu.new_project:
   en: New Project…
 session.export_conversation:
-  en: Export Conversation
+  en: Export conversation
 session.export_all:
-  en: Export All
+  en: Export all content
 session.copy_conversation:
   en: Copy conversation
 session.copy_all:
