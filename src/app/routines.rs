@@ -29,6 +29,8 @@ const ROUTINE_CONTEXT_MAX_CHARS: usize = 8000;
 /// Failed transcript loads before a found update is recorded as a failed
 /// check instead of being retried.
 const ROUTINE_DELIVERY_MAX_HYDRATION_ATTEMPTS: u32 = 3;
+/// How much of an unparseable probe reply is written to the log.
+const ROUTINE_LOG_REPLY_MAX_CHARS: usize = 2000;
 
 /// Routine probe bookkeeping owned by the UI entity.
 #[derive(Default)]
@@ -93,7 +95,7 @@ struct RoutineCheckOutcome {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawRoutineProbeJson {
+struct RawRoutineProbe {
     has_update: bool,
     #[serde(default)]
     summary: Option<String>,
@@ -259,20 +261,21 @@ pub(super) fn build_routine_probe_prompt(
         );
     }
 
+    // Tagged plain text rather than JSON: the content is written verbatim, so
+    // a model that uses a bare `"` as a quotation mark or forgets to escape a
+    // line break cannot make the reply unreadable.
     prompt.push_str(
-        "\nRespond ONLY with a single JSON object (inside a ```json fenced block) using this exact schema:\n\
-         ```json\n\
-         {\n\
-           \"has_update\": true,\n\
-           \"summary\": \"One short sentence describing what changed or that nothing changed (see the Language rule).\",\n\
-           \"message\": \"Well-structured Markdown update to post into the session when has_update is true (include dates, concrete facts, and source links when available; see the Language rule). Leave empty string when has_update is false.\",\n\
-           \"snapshot\": \"Compact factual summary of the current state (<= 600 chars) to compare against on the next check, see the Language rule.\"\n\
-         }\n\
-         ```\n\
+        "\nRespond ONLY with these four tags, in this order, and nothing outside them:\n\
+         <has_update>true or false</has_update>\n\
+         <summary>One short sentence describing what changed or that nothing changed (see the Language rule).</summary>\n\
+         <message>\n\
+         Well-structured Markdown update to post into the session when has_update is true (include dates, concrete facts, and source links when available; see the Language rule). Leave it empty when has_update is false.\n\
+         </message>\n\
+         <snapshot>Compact factual summary of the current state (<= 600 chars) to compare against on the next check (see the Language rule).</snapshot>\n\
          Rules:\n\
-         - Set \"has_update\" to false if nothing materially changed since <previous_snapshot>, unless the Delivery rule below applies.\n\
-         - Never invent facts or links. If the source could not be reached, explain briefly in \"summary\" and set \"has_update\" to false.\n\
-         - Do not include any commentary outside the JSON block.\n",
+         - Write each tag's content verbatim as plain text or Markdown. Do not escape quotes or line breaks, do not use XML entities, and do not wrap the tags in a code block.\n\
+         - Set <has_update> to false if nothing materially changed since <previous_snapshot>, unless the Delivery rule below applies.\n\
+         - Never invent facts or links. If the source could not be reached, explain briefly in <summary> and set <has_update> to false.\n",
     );
     // Named outright: inferring it from the target let a one-line English
     // prompt come back in whatever language the model picked. A language the
@@ -280,14 +283,14 @@ pub(super) fn build_routine_probe_prompt(
     // same idea: checks post only on change unless the target asks for a
     // message every time.
     prompt.push_str(&format!(
-        "- Instructions inside <monitoring_target> about language or format apply to your reply; \
-         they are not things to monitor.\n\
+        "- Instructions inside <monitoring_target> about language or format apply to what you \
+         write inside the tags; they are not things to monitor and never replace the tag format.\n\
          - Delivery: if <monitoring_target> asks for a message on every check (for example \
          \"post every time\", \"always send a summary\", \"每次都发\", or a recurring greeting, \
-         reminder, or digest), set \"has_update\" to true on every check and write a fresh \
-         \"message\". <previous_snapshot> is then context, not a gate.\n\
+         reminder, or digest), set <has_update> to true on every check and write a fresh \
+         <message>. <previous_snapshot> is then context, not a gate.\n\
          - Language: if <monitoring_target> says which language to write in (for example \
-         \"reply in Chinese\" or \"用中文回复\"), write \"summary\", \"message\" and \"snapshot\" in \
+         \"reply in Chinese\" or \"用中文回复\"), write <summary>, <message> and <snapshot> in \
          that language. Otherwise write them in {reply_language}. Keep names, product terms, and \
          quotes in their original form.\n"
     ));
@@ -305,35 +308,46 @@ fn routine_reply_language(language: crate::i18n::AppLanguage) -> &'static str {
     }
 }
 
-/// Extracts and validates the structured JSON result from the probe response.
+/// Extracts and validates the structured result from the probe response:
+/// the tagged format the prompt asks for, else a JSON object, which older
+/// prompts asked for and some models still send.
 fn parse_routine_probe_response(raw: &str) -> anyhow::Result<RoutineProbeResult> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         anyhow::bail!("routine check returned an empty response");
     }
 
-    let parsed = extract_json_candidates(trimmed)
-        .into_iter()
-        .find_map(|candidate| serde_json::from_str::<RawRoutineProbeJson>(candidate).ok());
-
-    let Some(raw_json) = parsed else {
-        anyhow::bail!("routine check did not return valid JSON");
+    let raw_probe = match parse_tagged_probe(trimmed) {
+        Some(Ok(probe)) => probe,
+        Some(Err(error)) => {
+            log_unparsed_routine_reply(&error.to_string(), trimmed);
+            return Err(error);
+        }
+        None => match parse_json_probe(trimmed) {
+            Ok(probe) => probe,
+            Err(detail) => {
+                log_unparsed_routine_reply(&detail, trimmed);
+                anyhow::bail!(
+                    "routine check reply has no <has_update> tag or valid JSON: {detail}"
+                );
+            }
+        },
     };
 
-    let summary = raw_json
+    let summary = raw_probe
         .summary
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
-    let message = raw_json
+    let message = raw_probe
         .message
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
-    let snapshot = raw_json
+    let snapshot = raw_probe
         .snapshot
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
 
-    let has_update = raw_json.has_update && (message.is_some() || summary.is_some());
+    let has_update = raw_probe.has_update && (message.is_some() || summary.is_some());
     let message = if has_update {
         message.or_else(|| summary.clone())
     } else {
@@ -346,6 +360,164 @@ fn parse_routine_probe_response(raw: &str) -> anyhow::Result<RoutineProbeResult>
         message,
         snapshot,
     })
+}
+
+/// Reads the `<has_update>` / `<summary>` / `<message>` / `<snapshot>` reply.
+/// `None` when the reply has no `<has_update>` tag at all, so the caller can
+/// try JSON; an error when the tag is there but its value is not a boolean.
+///
+/// Tags are read in the order the prompt asks for, starting at the last
+/// `<has_update>` so a template the model echoed first is skipped. The message
+/// runs to its last closing tag, so Markdown that itself contains `<summary>`
+/// or `</message>` cannot cut it short or leak into another field.
+fn parse_tagged_probe(text: &str) -> Option<anyhow::Result<RawRoutineProbe>> {
+    let anchor = text.rfind("<has_update>")?;
+    let text = &text[anchor..];
+    let (has_update, rest) = tag_span(text, "has_update", false);
+    let has_update = match has_update
+        .trim_matches(|c: char| c.is_whitespace() || c == '`' || c == '"')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "true" | "yes" => true,
+        "false" | "no" => false,
+        other => {
+            return Some(Err(anyhow::anyhow!(
+                "routine check returned an unrecognized <has_update> value: {other}"
+            )));
+        }
+    };
+
+    // The snapshot comes last, so its last opening tag bounds the message.
+    let (body, snapshot) = match rest.rfind("<snapshot>") {
+        Some(at) => (
+            &rest[..at],
+            Some(tag_span(&rest[at..], "snapshot", false).0),
+        ),
+        None => (rest, None),
+    };
+    let (summary, body) = optional_tag(body, "summary", false);
+    let (message, _) = optional_tag(body, "message", true);
+
+    Some(Ok(RawRoutineProbe {
+        has_update,
+        summary: summary.map(str::to_owned),
+        message: message.map(str::to_owned),
+        snapshot: snapshot.map(str::to_owned),
+    }))
+}
+
+/// The content of `<tag>…</tag>` where `text` starts at the opening tag, and
+/// the text after the closing tag. `last_close` ends the value at the last
+/// closing tag instead of the first. A missing closing tag takes the rest of
+/// `text`, so a reply cut off mid-value still yields what arrived.
+fn tag_span<'a>(text: &'a str, tag: &str, last_close: bool) -> (&'a str, &'a str) {
+    let body = text.strip_prefix(&format!("<{tag}>")).unwrap_or(text);
+    let close = format!("</{tag}>");
+    let end = if last_close {
+        body.rfind(&close)
+    } else {
+        body.find(&close)
+    };
+    match end {
+        Some(end) => (&body[..end], &body[end + close.len()..]),
+        None => (body, ""),
+    }
+}
+
+/// The first `<tag>` in `text`, if any, read with [`tag_span`].
+fn optional_tag<'a>(text: &'a str, tag: &str, last_close: bool) -> (Option<&'a str>, &'a str) {
+    match text.find(&format!("<{tag}>")) {
+        Some(at) => {
+            let (value, rest) = tag_span(&text[at..], tag, last_close);
+            (Some(value), rest)
+        }
+        None => (None, text),
+    }
+}
+
+/// Parses the legacy JSON reply, repairing bare quotes inside string values
+/// when the strict parse fails. The error is the strict parser's message.
+fn parse_json_probe(text: &str) -> Result<RawRoutineProbe, String> {
+    let candidates = extract_json_candidates(text);
+    let mut first_error: Option<serde_json::Error> = None;
+    for candidate in &candidates {
+        match serde_json::from_str::<RawRoutineProbe>(candidate) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    // Models writing Chinese often use a bare ASCII `"` as a quotation mark
+    // inside a string value. Repair runs only after every strict attempt
+    // failed, so valid replies never pay for it.
+    candidates
+        .iter()
+        .find_map(|candidate| {
+            let repaired = repair_unescaped_json_quotes(candidate)?;
+            serde_json::from_str::<RawRoutineProbe>(&repaired).ok()
+        })
+        .ok_or_else(|| {
+            first_error.map_or_else(|| "no JSON object found".to_owned(), |e| e.to_string())
+        })
+}
+
+/// Logs an unreadable probe reply so the failure can be diagnosed without
+/// digging through the provider's own session files.
+fn log_unparsed_routine_reply(detail: &str, reply: &str) {
+    eprintln!(
+        "raku: could not read routine check reply ({detail}); reply begins: {}",
+        truncate_for_log(reply, ROUTINE_LOG_REPLY_MAX_CHARS)
+    );
+}
+
+/// Escapes `"` characters inside JSON string values that a model left bare,
+/// such as `"summary": "焦点为"会计处理"，…"`. A quote inside a string closes
+/// it only when the next non-whitespace character can follow a string value
+/// (`,` `}` `]` `:` or the end); any other quote is taken as literal text.
+/// Returns `None` when nothing needed escaping.
+fn repair_unescaped_json_quotes(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut in_string = false;
+    let mut repaired = false;
+    let mut chars = text.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        if in_string && ch == '\\' {
+            out.push(ch);
+            if let Some((_, escaped)) = chars.next() {
+                out.push(escaped);
+            }
+            continue;
+        }
+        if ch == '"' {
+            if !in_string {
+                in_string = true;
+            } else {
+                let closes = text[index + 1..]
+                    .chars()
+                    .find(|next| !next.is_whitespace())
+                    .is_none_or(|next| matches!(next, ',' | '}' | ']' | ':'));
+                if closes {
+                    in_string = false;
+                } else {
+                    out.push_str("\\\"");
+                    repaired = true;
+                    continue;
+                }
+            }
+        }
+        out.push(ch);
+    }
+    repaired.then_some(out)
+}
+
+/// The first `max_chars` characters of `text` for a log line.
+fn truncate_for_log(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_owned(),
+    }
 }
 
 fn extract_json_candidates(text: &str) -> Vec<&str> {
@@ -1401,6 +1573,85 @@ mod tests {
     fn rejects_invalid_json_probe_response() {
         assert!(parse_routine_probe_response("no json here").is_err());
         assert!(parse_routine_probe_response("   ").is_err());
+        let error = parse_routine_probe_response("{\"has_update\": tru}")
+            .expect_err("invalid json")
+            .to_string();
+        assert!(error.starts_with("routine check reply has no <has_update> tag or valid JSON: "));
+    }
+
+    #[test]
+    fn parses_tagged_probe_response_verbatim() {
+        let raw = "<has_update>true</has_update>\n<summary>SEC 调查焦点为\"会计处理\"</summary>\n<message>\n## 更新\n\n- **[P0]** 他说 \"go\"\n- line \\n stays\n</message>\n<snapshot>NVDA 125.53</snapshot>";
+        let parsed = parse_routine_probe_response(raw).expect("tagged reply");
+        assert!(parsed.has_update);
+        assert_eq!(
+            parsed.summary.as_deref(),
+            Some("SEC 调查焦点为\"会计处理\"")
+        );
+        assert_eq!(
+            parsed.message.as_deref(),
+            Some("## 更新\n\n- **[P0]** 他说 \"go\"\n- line \\n stays")
+        );
+        assert_eq!(parsed.snapshot.as_deref(), Some("NVDA 125.53"));
+    }
+
+    #[test]
+    fn tagged_message_may_contain_tag_like_markdown() {
+        let raw = "<has_update>true</has_update>\n<summary>s</summary>\n<message>\n<details><summary>More</summary>body</details>\nquote: </message> here\n</message>\n<snapshot>snap</snapshot>";
+        let parsed = parse_routine_probe_response(raw).expect("tagged reply");
+        assert_eq!(parsed.summary.as_deref(), Some("s"));
+        assert_eq!(
+            parsed.message.as_deref(),
+            Some("<details><summary>More</summary>body</details>\nquote: </message> here")
+        );
+        assert_eq!(parsed.snapshot.as_deref(), Some("snap"));
+    }
+
+    #[test]
+    fn tagged_reply_skips_an_echoed_template_and_reads_no_update() {
+        let raw = "Format: <has_update>true or false</has_update><summary>x</summary>\n\n<has_update> False </has_update>\n<summary>Nothing new</summary>\n<message></message>\n<snapshot>v1.9</snapshot>";
+        let parsed = parse_routine_probe_response(raw).expect("tagged reply");
+        assert!(!parsed.has_update);
+        assert_eq!(parsed.summary.as_deref(), Some("Nothing new"));
+        assert!(parsed.message.is_none());
+        assert_eq!(parsed.snapshot.as_deref(), Some("v1.9"));
+    }
+
+    #[test]
+    fn tagged_reply_cut_off_mid_message_keeps_what_arrived() {
+        let raw = "<has_update>true</has_update><summary>s</summary><message>partial";
+        let parsed = parse_routine_probe_response(raw).expect("tagged reply");
+        assert_eq!(parsed.message.as_deref(), Some("partial"));
+        assert!(parsed.snapshot.is_none());
+    }
+
+    #[test]
+    fn rejects_unrecognized_has_update_value() {
+        let error = parse_routine_probe_response("<has_update>maybe</has_update>")
+            .expect_err("not a boolean")
+            .to_string();
+        assert!(error.contains("<has_update>"));
+    }
+
+    #[test]
+    fn repairs_bare_quotes_inside_string_values() {
+        let raw = "```json\n{\n  \"has_update\": true,\n  \"summary\": \"SEC 调查焦点首次明确为\"会计处理\"，NVDA 暴跌\",\n  \"message\": \"## 更新\\n- 「会计处理」\",\n  \"snapshot\": \"他说 \"go\" 了\"\n}\n```";
+        let parsed = parse_routine_probe_response(raw).expect("repaired json");
+        assert!(parsed.has_update);
+        assert_eq!(
+            parsed.summary.as_deref(),
+            Some("SEC 调查焦点首次明确为\"会计处理\"，NVDA 暴跌")
+        );
+        assert_eq!(parsed.message.as_deref(), Some("## 更新\n- 「会计处理」"));
+        assert_eq!(parsed.snapshot.as_deref(), Some("他说 \"go\" 了"));
+    }
+
+    #[test]
+    fn quote_repair_leaves_valid_json_alone() {
+        assert_eq!(
+            repair_unescaped_json_quotes("{\"a\": \"x \\\"y\\\" z\", \"b\": [\"c\"]}"),
+            None
+        );
     }
 
     #[test]
@@ -1590,7 +1841,9 @@ mod tests {
         // A language asked for in the target takes precedence over the setting.
         assert!(prompt.contains("if <monitoring_target> says which language to write in"));
         // The target can opt into a message on every check.
-        assert!(prompt.contains("set \"has_update\" to true on every check"));
+        assert!(prompt.contains("set <has_update> to true on every check"));
+        assert!(prompt.contains("<message>\n"));
+        assert!(!prompt.contains("JSON"));
         assert!(prompt.contains("unless the Delivery rule below applies"));
         assert!(!prompt.contains("same language as the monitoring target"));
         assert_eq!(
