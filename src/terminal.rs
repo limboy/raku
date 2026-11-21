@@ -1096,18 +1096,28 @@ impl TerminalView {
             ScrollDelta::Pixels(delta) => f32::from(delta.y) / TERMINAL_CELL_HEIGHT,
             ScrollDelta::Lines(delta) => delta.y,
         };
+        // Inline in the transcript, a terminal at its scroll limit hands the
+        // wheel back so the transcript keeps scrolling. Decide per event from
+        // the direction, not from whether a whole line moved: trackpad events
+        // carry a few pixels each, and letting the sub-line ones bubble would
+        // scroll the transcript and the terminal at the same time.
+        if self.inline {
+            let (offset, history) = {
+                let term = session.term.lock();
+                let grid = term.grid();
+                (grid.display_offset(), grid.history_size())
+            };
+            if !inline_scroll_can_move(delta, offset, history) {
+                self.scroll_accumulator = 0.0;
+                return;
+            }
+        }
+        cx.stop_propagation();
         self.scroll_accumulator += delta;
         let lines = self.scroll_accumulator.trunc() as i32;
         if lines != 0 {
             self.scroll_accumulator -= lines as f32;
-            let before = session.term.lock().grid().display_offset();
             session.scroll(lines);
-            let moved = session.term.lock().grid().display_offset() != before;
-            // Inline in the transcript, a terminal at its scroll limit hands
-            // the wheel back so the transcript keeps scrolling.
-            if moved || !self.inline {
-                cx.stop_propagation();
-            }
             cx.notify();
         }
     }
@@ -1474,6 +1484,19 @@ impl Render for TerminalView {
 }
 
 impl gpui::EventEmitter<TerminalCommandFinished> for TerminalView {}
+
+/// Whether a wheel delta (in lines, positive toward history) has room to move
+/// an inline terminal's viewport. `offset` is how far the view sits above the
+/// live bottom; `history` is the most it can be.
+fn inline_scroll_can_move(delta: f32, offset: usize, history: usize) -> bool {
+    if delta > 0.0 {
+        offset < history
+    } else if delta < 0.0 {
+        offset > 0
+    } else {
+        false
+    }
+}
 
 fn terminal_cursor_style(focused: bool, blink_visible: bool) -> TerminalCursorStyle {
     if !focused {
@@ -1904,6 +1927,23 @@ mod tests {
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::vte::ansi::Processor;
     use gpui::{Modifiers, point, size};
+
+    #[test]
+    fn inline_scroll_keeps_the_wheel_until_a_limit() {
+        // Sub-line trackpad deltas still belong to the terminal mid-history.
+        assert!(inline_scroll_can_move(0.1, 3, 10));
+        assert!(inline_scroll_can_move(-0.1, 3, 10));
+        // At the live bottom, scrolling down chains to the transcript.
+        assert!(!inline_scroll_can_move(-0.1, 0, 10));
+        assert!(inline_scroll_can_move(0.1, 0, 10));
+        // At the top of history, scrolling up chains.
+        assert!(!inline_scroll_can_move(0.1, 10, 10));
+        assert!(inline_scroll_can_move(-0.1, 10, 10));
+        // Output that fits never traps the wheel.
+        assert!(!inline_scroll_can_move(1.0, 0, 0));
+        assert!(!inline_scroll_can_move(-1.0, 0, 0));
+        assert!(!inline_scroll_can_move(0.0, 3, 10));
+    }
 
     fn key(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
         Keystroke {
