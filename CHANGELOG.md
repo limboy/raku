@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.7] - 2026-11-21
+
+- Fix scheduled routine checks failing with "did not return valid JSON" when the reply quotes text with plain double quotes, common in Chinese replies
+
 ## [2.6.6] - 2026-11-20
 
 - Show a slash command's argument hint inline after you type it, and show skills' argument hints in the command list
