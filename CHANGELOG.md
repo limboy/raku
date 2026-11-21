@@ -16,6 +16,10 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.8] - 2026-11-21
+
+- Fix trackpad scrolling inside inline terminals moving the transcript at the same time
+
 ## [2.6.7] - 2026-11-21
 
 - Fix scheduled routine checks failing with "did not return valid JSON" when the reply quotes text with plain double quotes, common in Chinese replies
