@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.9] - 2026-11-22
+
+- Show dialogs from Pi extensions (choices, confirmations, text input, and text editing) in Raku's question form, and let you dismiss them without stopping the turn
+- Let Pi agents ask open-ended questions that you answer by typing
+
 ## [2.6.8] - 2026-11-21
 
 - Fix trackpad scrolling inside inline terminals moving the transcript at the same time
