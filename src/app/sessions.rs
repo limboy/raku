@@ -1525,19 +1525,26 @@ impl Raku {
     }
 
     pub(super) fn sync_user_input_answer(&mut self, cx: &mut Context<Self>) {
-        let answer = self
+        let field = self
             .selected_runtime()
             .and_then(|runtime| runtime.pending_user_input.as_ref())
-            .and_then(|pending| {
-                pending
-                    .current_question()
-                    .map(|question| (pending, question))
-            })
-            .and_then(|(pending, question)| pending.custom_answers.get(&question.id))
-            .cloned()
-            .unwrap_or_default();
-        self.user_input_answer
-            .update(cx, |input, cx| input.set_content(answer, cx));
+            .map(PendingUserInput::answer_field);
+        self.set_user_input_field(field, cx);
+    }
+
+    /// Show a question's answer and placeholder in the shared answer field;
+    /// `None` empties it.
+    pub(super) fn set_user_input_field(
+        &self,
+        field: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        let (answer, placeholder) =
+            field.unwrap_or_else(|| (String::new(), tr!("user_input.other_placeholder")));
+        self.user_input_answer.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, cx);
+            input.set_content(answer, cx);
+        });
     }
 
     pub(super) fn update_user_input_custom_answer(
@@ -1555,12 +1562,13 @@ impl Raku {
         else {
             return;
         };
-        let Some(question_id) = pending
-            .current_question()
-            .map(|question| question.id.clone())
-        else {
+        let Some(question) = pending.current_question() else {
             return;
         };
+        if question.fixed_options && !question.options.is_empty() {
+            return;
+        }
+        let question_id = question.id.clone();
         let answer = answer.as_ref().to_owned();
         if answer.trim().is_empty() {
             pending.custom_answers.remove(&question_id);
@@ -1674,20 +1682,22 @@ impl Raku {
         };
 
         if should_submit {
-            let Some(runtime) = self.runtimes.get_mut(&session_id) else {
+            let Some(pending) = self
+                .runtimes
+                .get_mut(&session_id)
+                .and_then(|runtime| runtime.pending_user_input.take())
+            else {
                 return;
             };
-            let Some(pending) = runtime.pending_user_input.take() else {
-                return;
-            };
-            self.user_input_answer
-                .update(cx, |input, cx| input.clear(cx));
+            self.set_user_input_field(None, cx);
             match pending.delivery {
-                UserInputDelivery::Request => {
+                UserInputDelivery::Request | UserInputDelivery::CancellableRequest => {
                     let answers = pending.answers();
-                    runtime
-                        .driver
-                        .respond_user_input(pending.request_id, answers);
+                    if let Some(runtime) = self.runtimes.get(&session_id) {
+                        runtime
+                            .driver
+                            .respond_user_input(pending.request_id, answers);
+                    }
                     if let Some(session) = self.state.session_mut(session_id) {
                         session.status = SessionStatus::Working;
                     }
@@ -1708,25 +1718,34 @@ impl Raku {
         cx.notify();
     }
 
-    /// Close an async question without answering. The provider never
-    /// blocked on it, so there is nothing to reply to.
+    /// Close a dismissible prompt without answering. Async questions simply
+    /// close; a cancellable extension dialog sends an empty reply so the
+    /// extension resolves as cancelled without aborting the turn.
     pub(super) fn dismiss_user_input(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.state.selected_session else {
             return;
         };
-        let Some(runtime) = self.runtimes.get_mut(&session_id) else {
+        let Some(pending) = self.runtimes.get_mut(&session_id).and_then(|runtime| {
+            runtime
+                .pending_user_input
+                .as_ref()
+                .is_some_and(|pending| pending.delivery.is_dismissible())
+                .then(|| runtime.pending_user_input.take())
+                .flatten()
+        }) else {
             return;
         };
-        if runtime
-            .pending_user_input
-            .as_ref()
-            .is_none_or(|pending| pending.delivery != UserInputDelivery::Message)
-        {
-            return;
+        self.set_user_input_field(None, cx);
+        if pending.delivery == UserInputDelivery::CancellableRequest {
+            if let Some(runtime) = self.runtimes.get(&session_id) {
+                runtime
+                    .driver
+                    .respond_user_input(pending.request_id, Vec::new());
+            }
+            if let Some(session) = self.state.session_mut(session_id) {
+                session.status = SessionStatus::Working;
+            }
         }
-        runtime.pending_user_input = None;
-        self.user_input_answer
-            .update(cx, |input, cx| input.clear(cx));
         cx.notify();
     }
 

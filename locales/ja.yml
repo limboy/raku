@@ -588,6 +588,10 @@ composer.edit_in_composer: 入力欄で編集
 composer.steer: 指示を追加
 composer.remove_followup: キューから削除
 user_input.other_placeholder: 別の回答を入力
+user_input.text_placeholder: 回答を入力
+user_input.confirm_yes: はい
+user_input.confirm_no: いいえ
+user_input.extension_question: "%{provider} が入力を求めています"
 user_input.back: 戻る
 user_input.next: 次へ
 user_input.submit: 送信

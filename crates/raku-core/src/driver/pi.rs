@@ -122,6 +122,18 @@ enum CommandMessage {
         id: String,
         value: String,
     },
+    /// Remember how to answer an extension dialog Raku shows as the
+    /// question form, so the reply takes the shape its method expects.
+    TrackDialog {
+        id: String,
+        dialog: PiDialog,
+    },
+    /// Answer a question form: an `ask_user_question` call, or a tracked
+    /// extension dialog.
+    AnswerUserInput {
+        id: String,
+        answers: Vec<UserInputAnswer>,
+    },
     Options(SessionOptions),
     Rollback {
         turns: usize,
@@ -399,10 +411,171 @@ fn pi_user_input_request(value: &Value) -> Option<(String, Vec<UserInputQuestion
                     .get("multiSelect")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                fixed_options: false,
+                placeholder: None,
+                prefill: None,
             })
         })
         .collect();
     Some((request_id, questions))
+}
+
+/// An extension dialog (`ctx.ui.input`, `editor`, `select`, `confirm`) shown
+/// as the question form, and how its answer goes back to Pi.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PiDialog {
+    /// `input` and `editor`: the typed text is the value.
+    Text,
+    /// `select`: maps each trimmed display label back to the raw option string
+    /// Pi sent, so padded options round-trip verbatim.
+    Select { options: Vec<(String, String)> },
+    /// `confirm`: answered with `confirmed`, true when the user picked `yes`.
+    Confirm { yes: String },
+}
+
+/// Reads an extension dialog into the one question the form shows for it.
+/// `None` for anything that is not a dialog Raku can show, which the caller
+/// cancels as before.
+fn pi_extension_dialog(
+    flavor: PiFlavor,
+    value: &Value,
+) -> Option<(String, PiDialog, UserInputQuestion)> {
+    let id = value.get("id").and_then(Value::as_str)?.to_owned();
+    let text = |field: &str| {
+        value
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    let title = text("title");
+    let option = |label: String| UserInputOption {
+        label,
+        description: None,
+    };
+    let mut fixed_options = false;
+    let mut placeholder = None;
+    let mut prefill = None;
+    let (dialog, question, options) = match value.get("method").and_then(Value::as_str)? {
+        "input" => {
+            placeholder = text("placeholder");
+            (PiDialog::Text, title, Vec::new())
+        }
+        "editor" => {
+            // The prefill is the text being edited, so it is kept verbatim.
+            prefill = value
+                .get("prefill")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_owned);
+            (PiDialog::Text, title, Vec::new())
+        }
+        "select" => {
+            let mut raw_options = Vec::new();
+            let mut options = Vec::new();
+            for raw in value
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let label = trimmed.to_owned();
+                raw_options.push((label.clone(), raw.to_owned()));
+                options.push(option(label));
+            }
+            if options.is_empty() {
+                return None;
+            }
+            fixed_options = true;
+            (
+                PiDialog::Select {
+                    options: raw_options,
+                },
+                title,
+                options,
+            )
+        }
+        "confirm" => {
+            let yes = tr!("user_input.confirm_yes");
+            let question = match (title, text("message")) {
+                (Some(title), Some(message)) => Some(format!("{title}\n{message}")),
+                (title, message) => title.or(message),
+            };
+            let options = vec![option(yes.clone()), option(tr!("user_input.confirm_no"))];
+            fixed_options = true;
+            (PiDialog::Confirm { yes }, question, options)
+        }
+        _ => return None,
+    };
+    Some((
+        id,
+        dialog,
+        UserInputQuestion {
+            id: "0".into(),
+            header: flavor.display_name().to_owned(),
+            question: question.unwrap_or_else(|| {
+                tr!(
+                    "user_input.extension_question",
+                    provider = flavor.display_name()
+                )
+            }),
+            options,
+            multi_select: false,
+            fixed_options,
+            placeholder,
+            prefill,
+        },
+    ))
+}
+
+/// The `extension_ui_response` for a question form's answers. `dialog` is
+/// `None` for an `ask_user_question` call, whose extension reads the answers
+/// as JSON; a tracked dialog gets the single value its method expects.
+fn pi_user_input_response(
+    id: &str,
+    dialog: Option<&PiDialog>,
+    answers: &[UserInputAnswer],
+) -> Value {
+    let cancelled = || json!({"type": "extension_ui_response", "id": id, "cancelled": true});
+    let Some(dialog) = dialog else {
+        if answers.is_empty() {
+            return cancelled();
+        }
+        return match serde_json::to_string(answers) {
+            Ok(value) => json!({"type": "extension_ui_response", "id": id, "value": value}),
+            Err(_) => cancelled(),
+        };
+    };
+    let Some(answer) = answers
+        .first()
+        .map(|answer| answer.answers.join(", "))
+        .filter(|answer| !answer.trim().is_empty())
+    else {
+        return cancelled();
+    };
+    match dialog {
+        PiDialog::Text => {
+            json!({"type": "extension_ui_response", "id": id, "value": answer})
+        }
+        PiDialog::Select { options } => {
+            let value = options
+                .iter()
+                .find_map(|(label, raw)| (label == &answer).then_some(raw.as_str()))
+                .unwrap_or(answer.as_str());
+            json!({"type": "extension_ui_response", "id": id, "value": value})
+        }
+        PiDialog::Confirm { yes } => json!({
+            "type": "extension_ui_response",
+            "id": id,
+            "confirmed": answer.trim().eq_ignore_ascii_case(yes),
+        }),
+    }
 }
 
 impl PiDriver {
@@ -542,6 +715,7 @@ impl PiDriver {
                 .spawn(move || {
                     let mut stream_state = PiStreamState {
                         cancel_requested: reader_cancel_requested,
+                        asks_user,
                         ..PiStreamState::default()
                     };
                     for line in BufReader::new(stdout).lines() {
@@ -746,6 +920,8 @@ impl PiDriver {
                 // an RPC on the live session rather than a restart.
                 let mut current_model = model;
                 let mut current_effort = reasoning_effort;
+                // Extension dialogs shown as the question form, by request id.
+                let mut dialogs: HashMap<String, PiDialog> = HashMap::new();
                 while let Ok(message) = command_rx.recv() {
                     match message {
                         CommandMessage::RefreshContextUsage => {
@@ -798,6 +974,9 @@ impl PiDriver {
                             }
                         }
                         CommandMessage::Prompt(prompt) => {
+                            // Any dialog still tracked from a previous turn
+                            // timed out on Pi's side and is no longer live.
+                            dialogs.clear();
                             writer_cancel_requested.store(false, Ordering::SeqCst);
                             let result = send_prompt(
                                 &mut stdin,
@@ -843,6 +1022,19 @@ impl PiDriver {
                         CommandMessage::Cancel => {
                             writer_cancel_requested.store(true, Ordering::SeqCst);
                             interrupt_pending_compactions(&writer_pending, &writer_events);
+                            // A dialog has no abort signal of its own, so the
+                            // extension waiting on one would hold the turn
+                            // open; dismiss them before aborting.
+                            for (id, _) in dialogs.drain() {
+                                let _ = write_json_line(
+                                    &mut stdin,
+                                    &json!({
+                                        "type": "extension_ui_response",
+                                        "id": id,
+                                        "cancelled": true
+                                    }),
+                                );
+                            }
                             if let Err(error) = send_request(
                                 &mut stdin,
                                 &writer_pending,
@@ -920,7 +1112,19 @@ impl PiDriver {
                                 current_effort = options.reasoning_effort;
                             }
                         }
+                        CommandMessage::TrackDialog { id, dialog } => {
+                            dialogs.insert(id, dialog);
+                        }
+                        CommandMessage::AnswerUserInput { id, answers } => {
+                            let dialog = dialogs.remove(&id);
+                            let response =
+                                pi_user_input_response(&id, dialog.as_ref(), &answers);
+                            if write_json_line(&mut stdin, &response).is_err() {
+                                break;
+                            }
+                        }
                         CommandMessage::CancelExtensionRequest(id) => {
+                            dialogs.remove(&id);
                             if write_json_line(
                                 &mut stdin,
                                 &json!({
@@ -1064,15 +1268,9 @@ impl DriverControl for PiDriver {
     fn respond(&self, _request_id: String, _option_id: String) {}
 
     fn respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) {
-        let Ok(value) = serde_json::to_string(&answers) else {
-            let _ = self
-                .commands
-                .send(CommandMessage::CancelExtensionRequest(request_id));
-            return;
-        };
-        let _ = self.commands.send(CommandMessage::AnswerExtensionRequest {
+        let _ = self.commands.send(CommandMessage::AnswerUserInput {
             id: request_id,
-            value,
+            answers,
         });
     }
 
@@ -1426,14 +1624,17 @@ struct PiStreamState {
     error_emitted: bool,
     pending_error: Option<String>,
     cancel_requested: Arc<AtomicBool>,
+    asks_user: bool,
     tools: HashMap<String, PiTrackedTool>,
 }
 
 impl PiStreamState {
     fn reset_turn(&mut self) {
         let cancel_requested = self.cancel_requested.clone();
+        let asks_user = self.asks_user;
         *self = Self::default();
         self.cancel_requested = cancel_requested;
+        self.asks_user = asks_user;
     }
 
     fn reasoning_block(
@@ -2024,6 +2225,24 @@ fn handle_pi_message(
                         delivery: UserInputDelivery::Request,
                     });
                 }
+                return;
+            }
+            // Any other extension's dialog — `ctx.ui.input` and its
+            // siblings — gets the same form when this session has a user
+            // watching it; non-interactive sessions (subagents, side chats,
+            // routines) fall through and cancel it immediately.
+            if state.asks_user
+                && let Some((request_id, dialog, question)) = pi_extension_dialog(flavor, &value)
+            {
+                let _ = commands.send(CommandMessage::TrackDialog {
+                    id: request_id.clone(),
+                    dialog,
+                });
+                let _ = events.send(DriverEvent::UserInputRequested {
+                    request_id,
+                    questions: vec![question],
+                    delivery: UserInputDelivery::CancellableRequest,
+                });
                 return;
             }
             let method = value.get("method").and_then(Value::as_str);
@@ -2719,7 +2938,7 @@ mod tests {
         assert_eq!(request.session_id, None);
         assert!(request.background);
 
-        // Any other dialog is still an extension prompt Raku cancels.
+        // Any other dialog is not a subagent call.
         assert!(
             pi_subagent_request(&json!({
                 "type": "extension_ui_request",
@@ -2774,6 +2993,9 @@ mod tests {
                         },
                     ],
                     multi_select: false,
+                    fixed_options: false,
+                    placeholder: None,
+                    prefill: None,
                 },
                 UserInputQuestion {
                     id: "2".into(),
@@ -2781,6 +3003,9 @@ mod tests {
                     question: "Which colors?".into(),
                     options: Vec::new(),
                     multi_select: true,
+                    fixed_options: false,
+                    placeholder: None,
+                    prefill: None,
                 },
             ]
         );
@@ -2819,6 +3044,225 @@ mod tests {
             serde_json::to_value(&answers).unwrap(),
             json!([{"questionId": "0", "answers": ["73"]}])
         );
+    }
+
+    #[test]
+    fn extension_dialogs_become_one_question_forms() {
+        let (id, dialog, question) = pi_extension_dialog(
+            PiFlavor::Pi,
+            &json!({
+                "type": "extension_ui_request",
+                "id": "ui-6",
+                "method": "input",
+                "title": " Branch name? ",
+                "placeholder": "feature/...",
+            }),
+        )
+        .expect("an input dialog is shown");
+        assert_eq!(id, "ui-6");
+        assert_eq!(dialog, PiDialog::Text);
+        assert_eq!(question.id, "0");
+        assert_eq!(question.header, "Pi");
+        assert_eq!(question.question, "Branch name?");
+        assert!(question.options.is_empty());
+        assert!(!question.fixed_options);
+        assert_eq!(question.placeholder.as_deref(), Some("feature/..."));
+        assert_eq!(question.prefill, None);
+
+        let (_, dialog, question) = pi_extension_dialog(
+            PiFlavor::Pi,
+            &json!({
+                "type": "extension_ui_request",
+                "id": "ui-7",
+                "method": "editor",
+                "title": "Edit the message",
+                "prefill": "Line 1\nLine 2\n",
+            }),
+        )
+        .expect("an editor dialog is shown");
+        assert_eq!(dialog, PiDialog::Text);
+        assert!(!question.fixed_options);
+        assert_eq!(question.prefill.as_deref(), Some("Line 1\nLine 2\n"));
+
+        let (_, dialog, question) = pi_extension_dialog(
+            PiFlavor::Pi,
+            &json!({
+                "type": "extension_ui_request",
+                "id": "ui-8",
+                "method": "select",
+                "title": "Allow dangerous command?",
+                "options": [" Allow ", " ", "Block"],
+                "timeout": 10000,
+            }),
+        )
+        .expect("a select dialog is shown");
+        assert_eq!(
+            dialog,
+            PiDialog::Select {
+                options: vec![
+                    ("Allow".into(), " Allow ".into()),
+                    ("Block".into(), "Block".into()),
+                ]
+            }
+        );
+        assert!(question.fixed_options);
+        let labels: Vec<_> = question
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Allow", "Block"]);
+
+        let (_, dialog, question) = pi_extension_dialog(
+            PiFlavor::Pi,
+            &json!({
+                "type": "extension_ui_request",
+                "id": "ui-9",
+                "method": "confirm",
+                "title": "Clear session?",
+                "message": "All messages will be lost.",
+            }),
+        )
+        .expect("a confirm dialog is shown");
+        let PiDialog::Confirm { yes } = &dialog else {
+            panic!("a confirm dialog answers with `confirmed`");
+        };
+        assert!(question.fixed_options);
+        assert_eq!(question.options[0].label, *yes);
+        assert_eq!(question.options.len(), 2);
+        assert_eq!(
+            question.question,
+            "Clear session?\nAll messages will be lost."
+        );
+
+        // An untitled input still asks something; a select with nothing to
+        // pick and fire-and-forget methods are not forms.
+        let (_, _, question) = pi_extension_dialog(
+            PiFlavor::Pi,
+            &json!({"type": "extension_ui_request", "id": "ui-10", "method": "input"}),
+        )
+        .expect("an untitled input is shown");
+        assert!(!question.question.is_empty());
+        for request in [
+            json!({"type": "extension_ui_request", "id": "ui-11", "method": "select", "options": []}),
+            json!({"type": "extension_ui_request", "id": "ui-12", "method": "notify", "message": "hi"}),
+            json!({"type": "extension_ui_request", "method": "input", "title": "No id"}),
+        ] {
+            assert!(pi_extension_dialog(PiFlavor::Pi, &request).is_none());
+        }
+    }
+
+    #[test]
+    fn dialog_answers_take_the_shape_their_method_expects() {
+        let answer = |text: &str| {
+            vec![UserInputAnswer {
+                question_id: "0".into(),
+                answers: vec![text.into()],
+            }]
+        };
+        assert_eq!(
+            pi_user_input_response("ui-1", Some(&PiDialog::Text), &answer("main\nfix")),
+            json!({"type": "extension_ui_response", "id": "ui-1", "value": "main\nfix"})
+        );
+        let select = PiDialog::Select {
+            options: vec![
+                ("Allow".into(), " Allow ".into()),
+                ("Block".into(), "Block".into()),
+            ],
+        };
+        assert_eq!(
+            pi_user_input_response("ui-2", Some(&select), &answer("Allow")),
+            json!({"type": "extension_ui_response", "id": "ui-2", "value": " Allow "})
+        );
+        let confirm = PiDialog::Confirm { yes: "Yes".into() };
+        assert_eq!(
+            pi_user_input_response("ui-3", Some(&confirm), &answer("Yes")),
+            json!({"type": "extension_ui_response", "id": "ui-3", "confirmed": true})
+        );
+        assert_eq!(
+            pi_user_input_response("ui-4", Some(&confirm), &answer("No")),
+            json!({"type": "extension_ui_response", "id": "ui-4", "confirmed": false})
+        );
+        assert_eq!(
+            pi_user_input_response("ui-5", Some(&PiDialog::Text), &answer("  ")),
+            json!({"type": "extension_ui_response", "id": "ui-5", "cancelled": true})
+        );
+        // An `ask_user_question` call is not tracked and reads JSON answers,
+        // or cancels when dropped without answers.
+        assert_eq!(
+            pi_user_input_response("ui-6", None, &answer("73")),
+            json!({
+                "type": "extension_ui_response",
+                "id": "ui-6",
+                "value": r#"[{"questionId":"0","answers":["73"]}]"#,
+            })
+        );
+        assert_eq!(
+            pi_user_input_response("ui-7", None, &[]),
+            json!({"type": "extension_ui_response", "id": "ui-7", "cancelled": true})
+        );
+    }
+
+    #[test]
+    fn non_interactive_sessions_cancel_extension_dialogs_instead_of_blocking() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let request = json!({
+            "type": "extension_ui_request",
+            "id": "ui-bg",
+            "method": "confirm",
+            "title": "Proceed?",
+        });
+
+        // A non-interactive session (subagent, side chat, routine) cancels
+        // extension dialogs immediately and never emits a user input form.
+        let (commands, command_rx) = unbounded();
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let mut state = PiStreamState {
+            asks_user: false,
+            ..PiStreamState::default()
+        };
+        handle_pi_message(
+            PiFlavor::Pi,
+            request.clone(),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        assert!(event_rx.try_recv().is_err());
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(CommandMessage::CancelExtensionRequest(id)) if id == "ui-bg"
+        ));
+
+        // An interactive session tracks the dialog and surfaces a cancellable
+        // question form.
+        let (commands, command_rx) = unbounded();
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let mut state = PiStreamState {
+            asks_user: true,
+            ..PiStreamState::default()
+        };
+        handle_pi_message(
+            PiFlavor::Pi,
+            request,
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(CommandMessage::TrackDialog { id, dialog: PiDialog::Confirm { .. } }) if id == "ui-bg"
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(DriverEvent::UserInputRequested {
+                request_id,
+                delivery: UserInputDelivery::CancellableRequest,
+                ..
+            }) if request_id == "ui-bg"
+        ));
     }
 
     #[test]

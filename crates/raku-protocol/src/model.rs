@@ -3003,10 +3003,25 @@ pub enum UserInputDelivery {
     /// The provider is blocked on a request and the answer is its reply.
     #[default]
     Request,
+    /// The provider is blocked on a dialog that can be cancelled without
+    /// aborting the turn (Pi extension `ctx.ui.*` dialogs).
+    CancellableRequest,
     /// The provider asked without blocking (Codex `request_user_input_async`)
     /// and its turn carries on. The answer is sent as the next user message,
     /// and there is nothing to reply to when the user dismisses it.
     Message,
+}
+
+impl UserInputDelivery {
+    /// Whether the provider is blocked waiting for a response on this turn.
+    pub fn is_blocking(self) -> bool {
+        !matches!(self, Self::Message)
+    }
+
+    /// Whether the user can dismiss the prompt without stopping the turn.
+    pub fn is_dismissible(self) -> bool {
+        !matches!(self, Self::Request)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -3019,6 +3034,18 @@ pub struct UserInputQuestion {
     pub options: Vec<UserInputOption>,
     #[serde(default)]
     pub multi_select: bool,
+    /// When true, the user must pick from `options` and cannot enter arbitrary
+    /// free text (Pi's extension `select` and `confirm` dialogs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixed_options: bool,
+    /// Hint shown in the empty answer field, for a question asked as free
+    /// text (Pi's extension `input` dialog).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// Text the answer field starts with, for a question that asks the user
+    /// to edit existing text (Pi's extension `editor` dialog).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

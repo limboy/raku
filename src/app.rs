@@ -966,18 +966,45 @@ impl PendingUserInput {
         questions: Vec<UserInputQuestion>,
         delivery: UserInputDelivery,
     ) -> Self {
+        // A question that asks the user to edit text starts with that text
+        // as its answer.
+        let custom_answers = questions
+            .iter()
+            .filter_map(|question| Some((question.id.clone(), question.prefill.clone()?)))
+            .collect();
         Self {
             request_id,
             questions,
             delivery,
             question_index: 0,
             selections: HashMap::new(),
-            custom_answers: HashMap::new(),
+            custom_answers,
         }
     }
 
     fn current_question(&self) -> Option<&UserInputQuestion> {
         self.questions.get(self.question_index)
+    }
+
+    /// The answer field's content and placeholder for the current question.
+    /// With options the field offers another answer; without, it is the
+    /// answer itself.
+    fn answer_field(&self) -> (String, String) {
+        let question = self.current_question();
+        let content = question
+            .and_then(|question| self.custom_answers.get(&question.id))
+            .cloned()
+            .unwrap_or_default();
+        let placeholder = question
+            .and_then(|question| question.placeholder.clone())
+            .unwrap_or_else(|| {
+                if question.is_some_and(|question| question.options.is_empty()) {
+                    tr!("user_input.text_placeholder")
+                } else {
+                    tr!("user_input.other_placeholder")
+                }
+            });
+        (content, placeholder)
     }
 
     fn answers(&self) -> Vec<UserInputAnswer> {
@@ -987,8 +1014,16 @@ impl PendingUserInput {
                 let custom = self
                     .custom_answers
                     .get(&question.id)
-                    .map(|answer| answer.trim())
-                    .filter(|answer| !answer.is_empty());
+                    .filter(|answer| !answer.trim().is_empty())
+                    .map(|answer| {
+                        // A prefilled editor dialog carries text being edited,
+                        // so leading indentation and trailing breaks survive.
+                        if question.prefill.is_some() {
+                            answer.as_str()
+                        } else {
+                            answer.trim()
+                        }
+                    });
                 UserInputAnswer {
                     question_id: question.id.clone(),
                     answers: custom.map_or_else(
@@ -2058,8 +2093,16 @@ impl Raku {
             composer.set_placeholder(tr!("side_chat.placeholder"), cx);
             composer
         });
-        let user_input_answer = cx
-            .new(|cx| TextInput::new(window, cx).placeholder(tr!("user_input.other_placeholder")));
+        // Free-text answers can run long, and an extension's editor dialog
+        // brings text with line breaks: the field grows to about five lines,
+        // with Enter answering and Shift+Enter breaking the line.
+        let user_input_answer = cx.new(|cx| {
+            TextInput::new(window, cx)
+                .multi_line()
+                .submit_on_enter()
+                .auto_height_within(px(22.0), px(112.0))
+                .placeholder(tr!("user_input.other_placeholder"))
+        });
         let command_palette_search = cx.new(|cx| {
             TextInput::new(window, cx)
                 .clear_on_escape()

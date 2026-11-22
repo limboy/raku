@@ -562,6 +562,10 @@ composer.edit_in_composer: 在输入框中编辑
 composer.steer: 引导
 composer.remove_followup: 从队列中移除
 user_input.other_placeholder: 输入其他回答
+user_input.text_placeholder: 输入回答
+user_input.confirm_yes: 是
+user_input.confirm_no: 否
+user_input.extension_question: "%{provider} 需要你的输入"
 user_input.back: 上一步
 user_input.next: 下一步
 user_input.submit: 提交

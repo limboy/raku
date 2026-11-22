@@ -2712,6 +2712,9 @@ fn request_user_input(
                     .get("multiSelect")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                fixed_options: false,
+                placeholder: None,
+                prefill: None,
             })
         })
         .collect::<Vec<_>>();

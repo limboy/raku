@@ -342,9 +342,10 @@ impl Raku {
                     }
                 }))
         });
-        // An async question has no provider waiting on it, so it can simply
-        // be closed; a blocking one is only left by answering or stopping.
-        let dismiss = (pending.delivery == UserInputDelivery::Message).then(|| {
+        // Async questions and cancellable extension dialogs can be dismissed
+        // without aborting the turn; other blocking questions are only left by
+        // answering or stopping.
+        let dismiss = pending.delivery.is_dismissible().then(|| {
             let focus =
                 self.transcript_control_focus(format!("user-input-{request_id}-dismiss"), cx);
             div()
@@ -453,7 +454,7 @@ impl Raku {
                 .tab_index(0)
                 .tab_group()
                 .tab_stop(false)
-                .when(pending.delivery == UserInputDelivery::Message, |sheet| {
+                .when(pending.delivery.is_dismissible(), |sheet| {
                     sheet.on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                         if event.keystroke.key == "escape" {
                             this.dismiss_user_input(cx);
@@ -486,15 +487,16 @@ impl Raku {
                         .child(SharedString::from(question.question.clone())),
                 )
                 .children((!question.options.is_empty()).then_some(options))
-                .child(
+                .children((!question.fixed_options || question.options.is_empty()).then(|| {
                     div()
                         .mt(px(if question.options.is_empty() {
                             9.0
                         } else {
                             4.0
                         }))
-                        .h(px(34.0))
+                        .min_h(px(34.0))
                         .px(px(10.0))
+                        .py(px(5.0))
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(if has_custom {
@@ -508,11 +510,9 @@ impl Raku {
                             theme.overlay
                         })
                         .flex()
-                        .items_center()
+                        .items_start()
                         .gap(px(7.0))
-                        .text_size(sp(SMALL_UI_FONT_SIZE))
-                        .line_height(sp(16.0))
-                        .child(icon(
+                        .child(div().h(sp(22.0)).flex().items_center().child(icon(
                             "icons/pencil.svg",
                             11.0,
                             if has_custom {
@@ -520,9 +520,14 @@ impl Raku {
                             } else {
                                 theme.text_ghost
                             },
-                        ))
-                        .child(self.user_input_answer.clone()),
-                )
+                        )))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(self.user_input_answer.clone()),
+                        )
+                }))
                 .child(
                     div()
                         .mt(px(8.0))

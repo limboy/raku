@@ -2677,6 +2677,9 @@ fn codex_user_input_questions(params: &Value) -> Vec<UserInputQuestion> {
                 // this explicit lets the shared UI support providers that do
                 // ask for multiple choices without changing the wire shape.
                 multi_select: false,
+                fixed_options: false,
+                placeholder: None,
+                prefill: None,
             })
         })
         .collect()
@@ -2719,6 +2722,9 @@ fn codex_async_user_input(item: &Value) -> Option<DriverEvent> {
                 question: text.to_owned(),
                 options,
                 multi_select: false,
+                fixed_options: false,
+                placeholder: None,
+                prefill: None,
             })
         })
         .collect();

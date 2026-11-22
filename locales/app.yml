@@ -1152,6 +1152,14 @@ composer.queued_message_actions:
   en: Follow-up actions
 user_input.other_placeholder:
   en: Type another answer
+user_input.text_placeholder:
+  en: Type your answer
+user_input.confirm_yes:
+  en: "Yes"
+user_input.confirm_no:
+  en: "No"
+user_input.extension_question:
+  en: "%{provider} needs your input"
 user_input.back:
   en: Back
 user_input.next:

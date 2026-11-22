@@ -576,17 +576,16 @@ impl Raku {
                 delivery,
             } => {
                 if self.accepts_turn_output(session_id) && !questions.is_empty() {
-                    runtime.pending_user_input =
-                        Some(PendingUserInput::new(request_id, questions, delivery));
+                    let pending = PendingUserInput::new(request_id, questions, delivery);
                     if self.state.selected_session == Some(session_id) {
-                        self.user_input_answer
-                            .update(cx, |input, cx| input.clear(cx));
+                        self.set_user_input_field(Some(pending.answer_field()), cx);
                     }
+                    runtime.pending_user_input = Some(pending);
                     // An async question does not block the provider: its turn
                     // keeps running and the answer becomes the next message.
                     // It still surfaces as the turn-end banner once the turn
                     // settles, so only a blocking question announces itself.
-                    if delivery == UserInputDelivery::Request {
+                    if delivery.is_blocking() {
                         if let Some(session) = self.state.session_mut(session_id) {
                             session.status = SessionStatus::Waiting;
                         }
@@ -596,6 +595,11 @@ impl Raku {
                             cx,
                         );
                     }
+                } else if delivery.is_blocking() {
+                    // A blocking dialog arriving outside an active turn has no
+                    // form to answer it; cancel immediately so the provider
+                    // does not wait forever.
+                    runtime.driver.respond_user_input(request_id, Vec::new());
                 }
             }
             DriverEvent::SteerAccepted { message } => {
@@ -843,7 +847,7 @@ impl Raku {
                 if runtime
                     .pending_user_input
                     .as_ref()
-                    .is_some_and(|pending| pending.delivery == UserInputDelivery::Request)
+                    .is_some_and(|pending| pending.delivery.is_blocking())
                 {
                     runtime.pending_user_input = None;
                 }

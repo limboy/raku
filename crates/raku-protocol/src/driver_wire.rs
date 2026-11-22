@@ -407,17 +407,32 @@ mod tests {
     fn structured_user_input_round_trips_through_the_daemon_wire() {
         let wire = event_to_wire(DriverEvent::UserInputRequested {
             request_id: "request-1".into(),
-            questions: vec![UserInputQuestion {
-                id: "deployment".into(),
-                header: "Environment".into(),
-                question: "Where should this deploy?".into(),
-                options: vec![UserInputOption {
-                    label: "Preview".into(),
-                    description: Some("Create a preview deployment".into()),
-                }],
-                multi_select: false,
-            }],
-            delivery: UserInputDelivery::Message,
+            questions: vec![
+                UserInputQuestion {
+                    id: "deployment".into(),
+                    header: "Environment".into(),
+                    question: "Where should this deploy?".into(),
+                    options: vec![UserInputOption {
+                        label: "Preview".into(),
+                        description: Some("Create a preview deployment".into()),
+                    }],
+                    multi_select: false,
+                    fixed_options: true,
+                    placeholder: None,
+                    prefill: None,
+                },
+                UserInputQuestion {
+                    id: "notes".into(),
+                    header: "Pi".into(),
+                    question: "Edit the message".into(),
+                    options: Vec::new(),
+                    multi_select: false,
+                    fixed_options: false,
+                    placeholder: Some("Type notes".into()),
+                    prefill: Some("Line 1\nLine 2\n".into()),
+                },
+            ],
+            delivery: UserInputDelivery::CancellableRequest,
         })
         .unwrap();
         assert_eq!(wire.kind, "userInputRequested");
@@ -431,8 +446,12 @@ mod tests {
             panic!("the event changed variants during its wire round trip");
         };
         assert_eq!(request_id, "request-1");
-        assert_eq!(delivery, UserInputDelivery::Message);
+        assert_eq!(delivery, UserInputDelivery::CancellableRequest);
         assert_eq!(questions[0].id, "deployment");
         assert_eq!(questions[0].options[0].label, "Preview");
+        assert!(questions[0].fixed_options);
+        assert!(!questions[1].fixed_options);
+        assert_eq!(questions[1].placeholder.as_deref(), Some("Type notes"));
+        assert_eq!(questions[1].prefill.as_deref(), Some("Line 1\nLine 2\n"));
     }
 }

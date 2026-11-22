@@ -43,6 +43,9 @@ fn structured_user_input_preserves_question_order_and_custom_answer_precedence()
                 description: None,
             }],
             multi_select: false,
+            fixed_options: false,
+            placeholder: None,
+            prefill: None,
         },
         UserInputQuestion {
             id: "notes".into(),
@@ -50,6 +53,9 @@ fn structured_user_input_preserves_question_order_and_custom_answer_precedence()
             question: "Anything else?".into(),
             options: Vec::new(),
             multi_select: false,
+            fixed_options: false,
+            placeholder: None,
+            prefill: None,
         },
     ];
     let mut pending =
@@ -79,6 +85,58 @@ fn structured_user_input_preserves_question_order_and_custom_answer_precedence()
         ..pending
     };
     assert_eq!(single.answer_message(), "Preview");
+}
+
+#[test]
+fn a_free_text_question_seeds_its_answer_field() {
+    let question =
+        |id: &str, options, placeholder: Option<&str>, prefill: Option<&str>| UserInputQuestion {
+            id: id.into(),
+            header: "Pi".into(),
+            question: "Edit the message".into(),
+            options,
+            multi_select: false,
+            fixed_options: false,
+            placeholder: placeholder.map(Into::into),
+            prefill: prefill.map(Into::into),
+        };
+    let mut pending = PendingUserInput::new(
+        "request-1".into(),
+        vec![
+            question("0", Vec::new(), None, Some("  Line 1\nLine 2\n")),
+            question("1", Vec::new(), Some("feature/..."), None),
+            question(
+                "2",
+                vec![UserInputOption {
+                    label: "Preview".into(),
+                    description: None,
+                }],
+                None,
+                None,
+            ),
+        ],
+        UserInputDelivery::CancellableRequest,
+    );
+
+    // An editor dialog's text is the answer verbatim until the user changes it.
+    let (content, placeholder) = pending.answer_field();
+    assert_eq!(content, "  Line 1\nLine 2\n");
+    assert_eq!(placeholder, tr!("user_input.text_placeholder"));
+    assert_eq!(pending.answers()[0].answers, ["  Line 1\nLine 2\n"]);
+    assert!(pending.delivery.is_blocking());
+    assert!(pending.delivery.is_dismissible());
+
+    pending.question_index = 1;
+    assert_eq!(
+        pending.answer_field(),
+        (String::new(), "feature/...".into())
+    );
+
+    pending.question_index = 2;
+    assert_eq!(
+        pending.answer_field().1,
+        tr!("user_input.other_placeholder").to_string()
+    );
 }
 use gpui::{ListAlignment, ListState, Pixels, px};
 use std::{

@@ -42,13 +42,14 @@ export default function (pi: ExtensionAPI) {
     name: "ask_user_question",
     label: "Ask questions",
     description: [
-      "Ask the user one to four multiple-choice questions and wait for their answers.",
+      "Ask the user one to four questions and wait for their answers.",
       "Use it when you need the user to make a decision, clarify an ambiguous request, or choose between approaches before you continue.",
-      "Raku shows the questions as a form; the user picks an option or types their own answer, so do not add an \"Other\" option.",
+      "Give two to four options when the answer is a choice. Raku shows the questions as a form; the user picks an option or types their own answer, so do not add an \"Other\" option.",
+      "Omit options when the answer is open-ended text only the user knows, such as a name, a URL, or a description; the user then types the answer.",
       "If you recommend an option, list it first and add \"(Recommended)\" to its label.",
       "Do not use it for questions you can answer yourself from the code or the conversation.",
     ].join("\n"),
-    promptSnippet: "Ask the user multiple-choice questions and wait for their answers",
+    promptSnippet: "Ask the user multiple-choice or free-text questions and wait for their answers",
     parameters: Type.Object({
       questions: Type.Array(
         Type.Object({
@@ -58,19 +59,25 @@ export default function (pi: ExtensionAPI) {
           header: Type.String({
             description: "A very short label for the question, at most 12 characters.",
           }),
-          options: Type.Array(
-            Type.Object({
-              label: Type.String({
-                description: "The choice as the user would say it, 1-5 words.",
+          options: Type.Optional(
+            Type.Array(
+              Type.Object({
+                label: Type.String({
+                  description: "The choice as the user would say it, 1-5 words.",
+                }),
+                description: Type.Optional(
+                  Type.String({ description: "What choosing this option means." }),
+                ),
               }),
-              description: Type.Optional(
-                Type.String({ description: "What choosing this option means." }),
-              ),
-            }),
-            { minItems: 2, maxItems: 4, description: "The available choices." },
+              {
+                maxItems: 4,
+                description:
+                  "Two to four choices. Omit them for a free-text question the user answers by typing.",
+              },
+            ),
           ),
           multiSelect: Type.Optional(
-            Type.Boolean({ description: "Allow more than one option to be chosen." }),
+            Type.Boolean({ description: "Allow more than one option to be chosen. Ignored without options." }),
           ),
         }),
         { minItems: 1, maxItems: 4 },
