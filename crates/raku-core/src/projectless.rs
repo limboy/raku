@@ -66,9 +66,10 @@ pub fn needs_migration(path: &Path) -> bool {
         return false;
     };
     !path.starts_with(&root)
-        && root
+        && (root
             .parent()
             .is_some_and(|legacy_root| is_legacy_workspace_path(path, legacy_root))
+            || raku_protocol::projectless::pre_rename_workspace_relative(path, &root).is_some())
 }
 
 fn is_legacy_workspace_path(path: &Path, legacy_root: &Path) -> bool {
@@ -89,6 +90,53 @@ fn is_legacy_workspace_path(path: &Path, legacy_root: &Path) -> bool {
 pub fn is_legacy_root_path(path: &Path) -> bool {
     workspace_root()
         .is_some_and(|root| root.parent().is_some_and(|legacy_root| path == legacy_root))
+}
+
+/// Raku no longer keeps `~/.waku` as a link to `~/.raku`. Remove one an
+/// earlier build left, but only when it is a symlink that resolves to the
+/// current data directory and none of `recorded_paths` still lives under it.
+/// Returns whether a link was removed.
+pub fn remove_pre_rename_link<'a>(
+    recorded_paths: impl IntoIterator<Item = &'a Path>,
+) -> io::Result<bool> {
+    let Some(root) = workspace_root() else {
+        return Ok(false);
+    };
+    let Some(data_directory) = root.parent() else {
+        return Ok(false);
+    };
+    let Some(home) = data_directory.parent() else {
+        return Ok(false);
+    };
+    remove_pre_rename_link_in(
+        &home.join(raku_protocol::projectless::PRE_RENAME_DATA_DIRECTORY),
+        data_directory,
+        recorded_paths,
+    )
+}
+
+fn remove_pre_rename_link_in<'a>(
+    link: &Path,
+    data_directory: &Path,
+    recorded_paths: impl IntoIterator<Item = &'a Path>,
+) -> io::Result<bool> {
+    match fs::symlink_metadata(link) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    if fs::canonicalize(link)? != fs::canonicalize(data_directory)? {
+        return Ok(false);
+    }
+    if recorded_paths
+        .into_iter()
+        .any(|path| path.starts_with(link))
+    {
+        return Ok(false);
+    }
+    fs::remove_file(link)?;
+    Ok(true)
 }
 
 pub fn create_workspace(prompt: Option<&str>) -> io::Result<Workspace> {
@@ -124,6 +172,9 @@ fn migrate_workspace_in(root: &Path, path: &Path) -> io::Result<Workspace> {
             workspace_root: root.to_owned(),
         });
     }
+    if let Some(relative) = raku_protocol::projectless::pre_rename_workspace_relative(path, root) {
+        return migrate_pre_rename_workspace(root, path, relative);
+    }
     let legacy_root = root.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -140,6 +191,38 @@ fn migrate_workspace_in(root: &Path, path: &Path) -> io::Result<Workspace> {
             "path is not a legacy projectless workspace",
         )
     })?;
+    move_dated_workspace(root, path, relative)
+}
+
+/// The rename moved `~/.waku` to `~/.raku` wholesale, so a recorded
+/// `~/.waku/projects/<date>/<slug>` normally names a directory that already
+/// sits at the same place under the current root and only the record changes.
+/// That holds whether the old path still resolves through a leftover link or
+/// no longer exists. A real old directory that the rename never moved, because
+/// `~/.raku` already existed, is moved like any other legacy workspace.
+fn migrate_pre_rename_workspace(
+    root: &Path,
+    path: &Path,
+    relative: &Path,
+) -> io::Result<Workspace> {
+    let destination = root.join(relative);
+    let already_moved = match fs::canonicalize(path) {
+        Ok(resolved) => fs::canonicalize(&destination).is_ok_and(|moved| moved == resolved),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error),
+    };
+    if already_moved {
+        return Ok(Workspace {
+            cwd: destination,
+            workspace_root: root.to_owned(),
+        });
+    }
+    move_dated_workspace(root, path, relative)
+}
+
+/// Move `<old root>/<date>/<slug>` to `<root>/<date>/<slug>`, adding a numeric
+/// suffix when that name is taken.
+fn move_dated_workspace(root: &Path, path: &Path, relative: &Path) -> io::Result<Workspace> {
     let components = relative.components().collect::<Vec<_>>();
     if components.len() != 2
         || components
@@ -371,6 +454,80 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 
         fs::remove_dir_all(&parent).ok();
+    }
+
+    #[test]
+    fn rewrites_pre_rename_workspaces_that_the_rename_already_moved() {
+        let home = test_root();
+        let root = home.join(".raku/projects");
+        let moved = root.join("2026-10-25/new-chat-4");
+        fs::create_dir_all(&moved).unwrap();
+        fs::write(moved.join("notes.txt"), "kept").unwrap();
+        let recorded = home.join(".waku/projects/2026-10-25/new-chat-4");
+
+        // The old path no longer exists.
+        let migrated = migrate_workspace_in(&root, &recorded).unwrap();
+        assert_eq!(migrated.cwd, moved);
+
+        // The old path resolves through a leftover link to the same place.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(home.join(".raku"), home.join(".waku")).unwrap();
+            let migrated = migrate_workspace_in(&root, &recorded).unwrap();
+            assert_eq!(migrated.cwd, moved);
+        }
+        assert_eq!(fs::read_to_string(moved.join("notes.txt")).unwrap(), "kept");
+        fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn moves_a_pre_rename_workspace_the_rename_left_behind() {
+        let home = test_root();
+        let root = home.join(".raku/projects");
+        fs::create_dir_all(root.join("2026-10-25/new-chat")).unwrap();
+        let recorded = home.join(".waku/projects/2026-10-25/new-chat");
+        fs::create_dir_all(&recorded).unwrap();
+        fs::write(recorded.join("notes.txt"), "old").unwrap();
+
+        let migrated = migrate_workspace_in(&root, &recorded).unwrap();
+
+        assert_eq!(migrated.cwd, root.join("2026-10-25/new-chat-2"));
+        assert_eq!(
+            fs::read_to_string(migrated.cwd.join("notes.txt")).unwrap(),
+            "old"
+        );
+        assert!(!recorded.exists());
+        fs::remove_dir_all(&home).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removes_the_pre_rename_link_only_when_nothing_recorded_uses_it() {
+        let home = test_root();
+        let data_directory = home.join(".raku");
+        let link = home.join(".waku");
+        fs::create_dir_all(data_directory.join("projects/2026-10-25/new-chat")).unwrap();
+        std::os::unix::fs::symlink(&data_directory, &link).unwrap();
+        let old = link.join("projects/2026-10-25/new-chat");
+        let current = data_directory.join("projects/2026-10-25/new-chat");
+
+        assert!(!remove_pre_rename_link_in(&link, &data_directory, [old.as_path()]).unwrap());
+        assert!(fs::symlink_metadata(&link).is_ok());
+
+        assert!(remove_pre_rename_link_in(&link, &data_directory, [current.as_path()]).unwrap());
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert!(current.is_dir());
+
+        // A link elsewhere and a real directory are both left alone.
+        let elsewhere = home.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        assert!(!remove_pre_rename_link_in(&link, &data_directory, []).unwrap());
+        fs::remove_file(&link).unwrap();
+        fs::create_dir_all(&link).unwrap();
+        assert!(!remove_pre_rename_link_in(&link, &data_directory, []).unwrap());
+        assert!(link.is_dir());
+        fs::remove_dir_all(&home).ok();
     }
 
     #[test]

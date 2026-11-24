@@ -61,6 +61,7 @@ impl RakuBackend {
             .load()
             .context("could not load Raku task database")?;
         migrate_projectless_state(&task_store, &mut task_state)?;
+        remove_pre_rename_link(&task_state);
         let composer_drafts = ComposerDraftStore::for_state_path(task_store.path());
         let attachments = AttachmentStore::new(
             task_store
@@ -187,6 +188,29 @@ fn migrate_projectless_state(
             .context("could not persist migrated projectless workspace")?;
     }
     Ok(())
+}
+
+/// Startup migration has just rewritten every recorded projectless path, so
+/// the `~/.waku` link an earlier build left is no longer needed. Debug shares
+/// the home directory with an installed Release whose daemon may still record
+/// old paths, so only Release removes it. Failure only leaves the link.
+fn remove_pre_rename_link(task_state: &PersistedState) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let recorded_paths = task_state
+        .projects
+        .iter()
+        .map(|project| project.path.as_path())
+        .chain(
+            task_state
+                .sessions
+                .iter()
+                .filter_map(|session| session.workspace.path()),
+        );
+    if let Err(error) = crate::projectless::remove_pre_rename_link(recorded_paths) {
+        eprintln!("could not remove the old ~/.waku link: {error}");
+    }
 }
 
 impl Backend for RakuBackend {

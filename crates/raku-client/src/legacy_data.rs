@@ -1,9 +1,9 @@
 //! One-time move of data written before the app was renamed from Waku.
 //!
 //! The old directories are renamed in place, so the move is instant and never
-//! copies transcripts or attachments. A symlink is left at each old path:
-//! the database, provider sessions, and Git worktrees store absolute paths
-//! such as `~/.waku/projects/...`, and those must keep resolving.
+//! copies transcripts or attachments. No link is left at the old paths: the
+//! daemon rewrites recorded `~/.waku/projects/...` workspaces under
+//! `~/.raku/projects` on startup instead.
 
 use std::fs;
 use std::path::Path;
@@ -30,8 +30,8 @@ fn migrate_directory(old: &Path, new: &Path) {
     if fs::symlink_metadata(new).is_ok() {
         return;
     }
-    // `symlink_metadata` reports a symlink as a non-directory, so an old path
-    // that is already the compatibility link is left alone.
+    // `symlink_metadata` reports a symlink as a non-directory, so a
+    // compatibility link an earlier build left is never followed here.
     let Ok(metadata) = fs::symlink_metadata(old) else {
         return;
     };
@@ -44,15 +44,6 @@ fn migrate_directory(old: &Path, new: &Path) {
             old.display(),
             new.display()
         );
-        return;
-    }
-    #[cfg(unix)]
-    if let Err(error) = std::os::unix::fs::symlink(new, old) {
-        eprintln!(
-            "could not link {} to {}: {error}",
-            old.display(),
-            new.display()
-        );
     }
 }
 
@@ -61,7 +52,7 @@ mod tests {
     use super::migrate_directory;
 
     #[test]
-    fn moves_old_directory_and_leaves_a_link() {
+    fn moves_old_directory_without_leaving_a_link() {
         let root = std::env::temp_dir().join(format!("raku-legacy-{}", uuid::Uuid::new_v4()));
         let old = root.join(".waku");
         let new = root.join(".raku");
@@ -71,13 +62,7 @@ mod tests {
         migrate_directory(&old, &new);
 
         assert!(new.join("app.json").is_file());
-        assert!(
-            std::fs::symlink_metadata(&old)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert!(old.join("projects").is_dir());
+        assert!(std::fs::symlink_metadata(&old).is_err());
 
         // A second launch leaves both paths as they are.
         migrate_directory(&old, &new);

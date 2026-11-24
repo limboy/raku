@@ -33,49 +33,48 @@ pub fn is_projectless_path(path: &Path) -> bool {
 /// Pure classification against an explicit workspace root, for callers that
 /// resolve the root once per pass. Covers the current `<root>/<date>/<slug>`
 /// layout, the older dated layout directly under the data directory, and
-/// workspaces stored before the Waku → Raku rename.
+/// workspaces recorded before the Waku → Raku rename.
 pub fn is_projectless_path_in(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
         || root
             .parent()
             .is_some_and(|legacy_root| is_legacy_workspace_path(path, legacy_root))
-        || is_pre_rename_workspace_path(path, root)
+        || pre_rename_workspace_relative(path, root).is_some()
 }
 
-/// The rename moved `~/.waku` to `~/.raku` and left a symlink at the old path
-/// so stored absolute paths keep resolving. Projects created before it still
-/// record `~/.waku/projects/<date>/<slug>`; they are the same workspaces and
-/// must classify as projectless. This compares path components only, so it
-/// stays safe on render paths.
-fn is_pre_rename_workspace_path(path: &Path, root: &Path) -> bool {
-    let (Some(data_directory), Some(projects)) = (root.parent(), root.file_name()) else {
-        return false;
-    };
+/// Projects created before the rename recorded
+/// `~/.waku/projects/<date>/<slug>`. The daemon rewrites them under the
+/// current root on startup; until then they still classify as projectless.
+/// Returns the part below `~/.waku/projects`. This compares path components
+/// only, so it stays safe on render paths.
+pub fn pre_rename_workspace_relative<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
+    let data_directory = root.parent()?;
     if data_directory.file_name() != Some(OsStr::new(CURRENT_DATA_DIRECTORY)) {
-        return false;
+        return None;
     }
-    let Some(relative) = data_directory
-        .parent()
-        .and_then(|home| path.strip_prefix(home).ok())
-    else {
-        return false;
-    };
-    let mut components = relative.components();
-    components.next() == Some(Component::Normal(OsStr::new(PRE_RENAME_DATA_DIRECTORY)))
-        && components.next() == Some(Component::Normal(projects))
+    let mut components = path
+        .strip_prefix(data_directory.parent()?)
+        .ok()?
+        .components();
+    (components.next()? == Component::Normal(OsStr::new(PRE_RENAME_DATA_DIRECTORY))
+        && components.next()? == Component::Normal(root.file_name()?))
+    .then_some(components.as_path())
 }
 
+/// The home-relative data directory before the rename, for the daemon's
+/// one-time cleanup of the old compatibility link.
+pub const PRE_RENAME_DATA_DIRECTORY: &str = ".waku";
 const CURRENT_DATA_DIRECTORY: &str = ".raku";
-const PRE_RENAME_DATA_DIRECTORY: &str = ".waku";
 
 pub fn needs_migration(path: &Path) -> bool {
     let Some(root) = workspace_root() else {
         return false;
     };
     !path.starts_with(&root)
-        && root
+        && (root
             .parent()
             .is_some_and(|legacy_root| is_legacy_workspace_path(path, legacy_root))
+            || pre_rename_workspace_relative(path, &root).is_some())
 }
 
 pub fn is_legacy_root_path(path: &Path) -> bool {
