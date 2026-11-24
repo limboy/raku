@@ -1,6 +1,7 @@
 //! Pure daemon-path classification shared by clients and the daemon.
 
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
 fn workspace_root_slot() -> &'static RwLock<Option<PathBuf>> {
@@ -26,13 +27,46 @@ pub fn home_directory() -> Option<PathBuf> {
 }
 
 pub fn is_projectless_path(path: &Path) -> bool {
-    workspace_root().is_some_and(|root| {
-        path.starts_with(&root)
-            || root
-                .parent()
-                .is_some_and(|legacy_root| is_legacy_workspace_path(path, legacy_root))
-    })
+    workspace_root().is_some_and(|root| is_projectless_path_in(path, &root))
 }
+
+/// Pure classification against an explicit workspace root, for callers that
+/// resolve the root once per pass. Covers the current `<root>/<date>/<slug>`
+/// layout, the older dated layout directly under the data directory, and
+/// workspaces stored before the Waku → Raku rename.
+pub fn is_projectless_path_in(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+        || root
+            .parent()
+            .is_some_and(|legacy_root| is_legacy_workspace_path(path, legacy_root))
+        || is_pre_rename_workspace_path(path, root)
+}
+
+/// The rename moved `~/.waku` to `~/.raku` and left a symlink at the old path
+/// so stored absolute paths keep resolving. Projects created before it still
+/// record `~/.waku/projects/<date>/<slug>`; they are the same workspaces and
+/// must classify as projectless. This compares path components only, so it
+/// stays safe on render paths.
+fn is_pre_rename_workspace_path(path: &Path, root: &Path) -> bool {
+    let (Some(data_directory), Some(projects)) = (root.parent(), root.file_name()) else {
+        return false;
+    };
+    if data_directory.file_name() != Some(OsStr::new(CURRENT_DATA_DIRECTORY)) {
+        return false;
+    }
+    let Some(relative) = data_directory
+        .parent()
+        .and_then(|home| path.strip_prefix(home).ok())
+    else {
+        return false;
+    };
+    let mut components = relative.components();
+    components.next() == Some(Component::Normal(OsStr::new(PRE_RENAME_DATA_DIRECTORY)))
+        && components.next() == Some(Component::Normal(projects))
+}
+
+const CURRENT_DATA_DIRECTORY: &str = ".raku";
+const PRE_RENAME_DATA_DIRECTORY: &str = ".waku";
 
 pub fn needs_migration(path: &Path) -> bool {
     let Some(root) = workspace_root() else {
@@ -73,4 +107,43 @@ fn is_date_component(value: &str) -> bool {
             .iter()
             .enumerate()
             .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pre_rename_workspaces_classify_as_projectless() {
+        let root = Path::new("/Users/me/.raku/projects");
+        assert!(is_projectless_path_in(
+            Path::new("/Users/me/.raku/projects/2026-11-24/new-chat"),
+            root
+        ));
+        assert!(is_projectless_path_in(
+            Path::new("/Users/me/.waku/projects/2026-10-25/new-chat-4"),
+            root
+        ));
+        assert!(is_projectless_path_in(
+            Path::new("/Users/me/.raku/2026-08-23/task"),
+            root
+        ));
+        assert!(!is_projectless_path_in(
+            Path::new("/Users/me/.waku/settings.json"),
+            root
+        ));
+        assert!(!is_projectless_path_in(
+            Path::new("/Users/other/.waku/projects/2026-10-25/new-chat"),
+            root
+        ));
+        assert!(!is_projectless_path_in(
+            Path::new("/Users/me/Projects/waku"),
+            root
+        ));
+        // A custom root outside the default data directory has no alias.
+        assert!(!is_projectless_path_in(
+            Path::new("/srv/.waku/projects/2026-10-25/new-chat"),
+            Path::new("/srv/workspaces/projects")
+        ));
+    }
 }

@@ -200,8 +200,12 @@ fn selected_sidebar_sessions<'a>(
     sessions
 }
 
+/// Same classification as `Project::is_projectless`, against a root resolved
+/// once per pass. Pre-rename `~/.waku/projects` workspaces count too, so a
+/// task in one is never hidden as a removed ordinary project.
 fn sidebar_project_is_projectless(project: &Project, projectless_root: Option<&Path>) -> bool {
-    projectless_root.is_some_and(|root| project.path.starts_with(root))
+    projectless_root
+        .is_some_and(|root| raku_protocol::projectless::is_projectless_path_in(&project.path, root))
 }
 
 /// Compact "how long ago" for the sidebar: "just now", then one coarse unit —
@@ -2590,6 +2594,32 @@ mod tests {
         assert!(sidebar_project_is_projectless(&projectless, Some(root)));
         assert!(!sidebar_project_is_projectless(&ordinary, Some(root)));
         assert!(!sidebar_project_is_projectless(&projectless, None));
+    }
+
+    #[test]
+    fn pre_rename_projectless_tasks_stay_listed_after_their_project_is_removed() {
+        let root = Path::new("/Users/me/.raku/projects");
+        let mut project = Project::from_path(PathBuf::from(
+            "/Users/me/.waku/projects/2026-10-25/new-chat-4",
+        ));
+        project.name = Project::PROJECTLESS_NAME.to_owned();
+        let mut session = AgentSession::new(project.id, ProviderKind::Pi);
+        session.push_message(MessageRole::User, "Started task");
+        let removed = HashSet::from([project.id]);
+        let projects = [project];
+        let sessions = [session];
+
+        for filter in [None, Some(SidebarProjectFilter::NoProject)] {
+            let listed = selected_sidebar_sessions(
+                &sessions,
+                &projects,
+                &removed,
+                filter,
+                Some(root),
+                SidebarOrdering::Newest,
+            );
+            assert_eq!(listed.len(), 1, "{filter:?}");
+        }
     }
 
     #[test]

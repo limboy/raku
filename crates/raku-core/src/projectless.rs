@@ -55,12 +55,8 @@ pub fn home_directory() -> Option<PathBuf> {
 /// Existing builds created dated workspaces directly under `~/.raku`; keep
 /// recognizing those paths while all new workspaces live under `projects/`.
 pub fn is_projectless_path(path: &Path) -> bool {
-    workspace_root().is_some_and(|root| {
-        path.starts_with(&root)
-            || root
-                .parent()
-                .is_some_and(|legacy_root| is_legacy_workspace_path(path, legacy_root))
-    })
+    workspace_root()
+        .is_some_and(|root| raku_protocol::projectless::is_projectless_path_in(path, &root))
 }
 
 /// Whether an existing projectless workspace still uses the pre-`projects/`
