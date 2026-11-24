@@ -16,6 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.6.10] - 2026-11-24
+
+- Fix No project tasks from before the rename to Raku missing from the sidebar while still showing in search
+- Remove the leftover `~/.waku` link to `~/.raku` once saved task workspaces point at `~/.raku`
+
 ## [2.6.9] - 2026-11-22
 
 - Show dialogs from Pi extensions (choices, confirmations, text input, and text editing) in Raku's question form, and let you dismiss them without stopping the turn
