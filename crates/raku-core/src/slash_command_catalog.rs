@@ -33,6 +33,9 @@ pub(crate) fn discover(
         ProviderKind::Claude => discover_claude(binary, project_root),
         ProviderKind::Codex => discover_codex(binary, project_root),
         ProviderKind::Pi => discover_pi(binary, project_root),
+        // Antigravity publishes its session-scoped slash commands on connect
+        // via `available_commands_update`.
+        ProviderKind::Antigravity => None,
     }
 }
 

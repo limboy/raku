@@ -1,0 +1,297 @@
+{
+  "initialize_result": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "load_session": true,
+      "promptCapabilities": {
+        "image": true,
+        "audio": false,
+        "embeddedContext": true
+      },
+      "sessionCapabilities": {
+        "resume": {},
+        "close": {},
+        "load": {},
+        "list": {},
+        "additionalDirectories": {}
+      },
+      "session_capabilities": {
+        "resume": {},
+        "close": {},
+        "load": {},
+        "list": {},
+        "additionalDirectories": {}
+      },
+      "auth": {
+        "logout": {}
+      },
+      "_meta": {
+        "antigravity": {
+          "tier": true,
+          "systemPrompt": {
+            "append": true
+          }
+        }
+      }
+    },
+    "agentInfo": {
+      "name": "Antigravity ACP Server",
+      "version": "1.5.18"
+    },
+    "authMethods": [
+      {
+        "id": "oauth-personal",
+        "name": "Log in with Google",
+        "description": "Log in with your Google account"
+      }
+    ]
+  },
+  "session_new_result": {
+    "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+    "modes": {
+      "currentModeId": "default",
+      "availableModes": [
+        {
+          "id": "default",
+          "name": "Default",
+          "description": "Ask before edits and commands, per your permission settings."
+        },
+        {
+          "id": "accept-edits",
+          "name": "Accept edits",
+          "description": "Approve file edits in the workspace without asking."
+        },
+        {
+          "id": "auto",
+          "name": "Auto",
+          "description": "Approve edits and safe commands; ask before irreversible actions."
+        },
+        {
+          "id": "plan",
+          "name": "Plan",
+          "description": "Plan carefully before executing a task."
+        }
+      ]
+    },
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "gemini-4-neon",
+        "options": [
+          { "value": "gemini-4-neon", "name": "Gemini 4 Neon" },
+          { "value": "gemini-3.8-flash", "name": "Gemini 3.8 Flash" },
+          { "value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)" }
+        ]
+      },
+      {
+        "id": "thought_level",
+        "name": "Thinking Level",
+        "category": "thought_level",
+        "type": "select",
+        "currentValue": "high",
+        "options": [
+          { "value": "low", "name": "Low" },
+          { "value": "medium", "name": "Medium" },
+          { "value": "high", "name": "High" },
+          { "value": "xhigh", "name": "Extra" }
+        ]
+      },
+      {
+        "id": "mode",
+        "name": "Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+          { "value": "default", "name": "Default" },
+          { "value": "accept-edits", "name": "Accept edits" },
+          { "value": "auto", "name": "Auto" },
+          { "value": "plan", "name": "Plan" }
+        ]
+      }
+    ]
+  },
+  "available_commands_update": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+      "update": {
+        "sessionUpdate": "available_commands_update",
+        "availableCommands": [
+          { "name": "goal", "description": "Run until the specified goal is completely finished." },
+          { "name": "compact", "description": "Compact the conversation now." }
+        ]
+      }
+    }
+  },
+  "usage_update": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "used": 10538,
+        "size": 1048576
+      }
+    }
+  },
+  "session_info_update": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+      "update": {
+        "sessionUpdate": "session_info_update",
+        "title": "Shell Command Execution Test"
+      }
+    }
+  },
+  "agent_thought_chunk": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+      "update": {
+        "sessionUpdate": "agent_thought_chunk",
+        "content": { "type": "text", "text": "Checking workspace state." }
+      }
+    }
+  },
+  "agent_message_chunk": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": { "type": "text", "text": "BANANA" }
+      }
+    }
+  },
+  "tool_call": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call_5190404195703349028",
+        "name": "run_command",
+        "args": {
+          "CommandLine": "echo probe-ok",
+          "WaitMsBeforeAsync": 5000,
+          "toolSummary": "Echo probe-ok"
+        },
+        "status": "in_progress",
+        "kind": "execute",
+        "title": "echo probe-ok",
+        "rawInput": {
+          "CommandLine": "echo probe-ok",
+          "WaitMsBeforeAsync": 5000,
+          "toolSummary": "Echo probe-ok"
+        }
+      }
+    }
+  },
+  "tool_call_completed": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_5190404195703349028",
+        "name": "run_command",
+        "args": {
+          "CommandLine": "echo probe-ok",
+          "WaitMsBeforeAsync": 5000,
+          "toolSummary": "Echo probe-ok"
+        },
+        "status": "completed",
+        "kind": "execute",
+        "title": "echo probe-ok",
+        "rawInput": {
+          "CommandLine": "echo probe-ok",
+          "WaitMsBeforeAsync": 5000,
+          "toolSummary": "Echo probe-ok"
+        },
+        "rawOutput": {
+          "output": "Command exited with code 0.\n\nCommand output:\nprobe-ok\r\n",
+          "exit_code": 0
+        },
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "Command exited with code 0.\n\nCommand output:\nprobe-ok\r\n"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "request_permission": {
+    "jsonrpc": "2.0",
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "56f5ef45-b23a-4ac2-9087-3b97722da985",
+      "toolCall": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call_5190404195703349028",
+        "name": "run_command",
+        "args": {
+          "CommandLine": "echo probe-ok",
+          "WaitMsBeforeAsync": 5000,
+          "toolSummary": "Echo probe-ok"
+        },
+        "status": "pending",
+        "kind": "execute",
+        "title": "echo probe-ok",
+        "rawInput": {
+          "CommandLine": "echo probe-ok",
+          "WaitMsBeforeAsync": 5000,
+          "toolSummary": "Echo probe-ok"
+        }
+      },
+      "options": [
+        { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
+        { "optionId": "deny", "name": "Deny", "kind": "reject_once" }
+      ]
+    },
+    "id": "1"
+  },
+  "prompt_end_turn": {
+    "jsonrpc": "2.0",
+    "result": {
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 20944,
+        "outputTokens": 41,
+        "totalTokens": 20985
+      }
+    },
+    "id": 10
+  },
+  "prompt_cancelled": {
+    "jsonrpc": "2.0",
+    "result": {
+      "stopReason": "cancelled"
+    },
+    "id": 11
+  },
+  "auth_error": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32000,
+      "message": "Authentication required"
+    },
+    "id": 2
+  }
+}

@@ -130,9 +130,8 @@ pub(super) fn side_chat_link_target(target: &str) -> Option<Uuid> {
     Uuid::parse_str(target.strip_prefix(SIDE_CHAT_LINK_PREFIX)?).ok()
 }
 
-/// Side chats stay on the selected provider. Pi defaults to a discovered
-/// DeepSeek model, preferring Pi's default when it is itself DeepSeek.
-pub(super) fn resolve_side_chat_target(
+/// Resolve an installed, enabled provider and model without capability gating.
+pub(super) fn resolve_provider_target(
     probes: &[ProviderProbe],
     disabled: &[ProviderKind],
     provider: ProviderKind,
@@ -160,6 +159,21 @@ pub(super) fn resolve_side_chat_target(
         probe.preferred_model()
     };
     Some((provider, model.map(|model| model.id.clone())))
+}
+
+/// Side chats stay on the selected provider when it enforces read-only mode.
+/// Pi defaults to a discovered DeepSeek model, preferring Pi's default when it
+/// is itself DeepSeek.
+pub(super) fn resolve_side_chat_target(
+    probes: &[ProviderProbe],
+    disabled: &[ProviderKind],
+    provider: ProviderKind,
+    setting_model: Option<&str>,
+) -> Option<(ProviderKind, Option<String>)> {
+    if !provider.capabilities().side_chat {
+        return None;
+    }
+    resolve_provider_target(probes, disabled, provider, setting_model)
 }
 
 /// Keep side questions quick by default, while honoring a supported explicit
@@ -1706,6 +1720,7 @@ impl Raku {
         let resolved = self.side_chat_target();
         let providers = ProviderKind::ALL
             .into_iter()
+            .filter(|provider| provider.capabilities().side_chat)
             .filter(|provider| !self.state.disabled_providers.contains(provider))
             .filter(|provider| {
                 self.provider_probe(*provider)
@@ -2191,6 +2206,11 @@ mod tests {
         assert_eq!(
             resolve_side_chat_target(&probes, &[], ProviderKind::Codex, None),
             Some((ProviderKind::Codex, Some("gpt-5.6".into())))
+        );
+        let agy_probes = [probe(ProviderKind::Antigravity, &[("gemini-4-neon", true)])];
+        assert_eq!(
+            resolve_side_chat_target(&agy_probes, &[], ProviderKind::Antigravity, None),
+            None
         );
     }
 

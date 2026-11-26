@@ -18,6 +18,7 @@ session that spans the whole conversation**:
 | Codex app-server (JSON-RPC over stdio) | [driver/codex.rs](../crates/raku-core/src/driver/codex.rs) | Codex CLI |
 | Pi RPC mode (NDJSON request/response over stdio) | [driver/pi.rs](../crates/raku-core/src/driver/pi.rs) | Pi |
 | Claude streaming-input session (NDJSON over stdio) | [driver/claude.rs](../crates/raku-core/src/driver/claude.rs) | Claude Code |
+| Antigravity ACP (JSON-RPC over stdio) | [driver/agy.rs](../crates/raku-core/src/driver/agy.rs) | Antigravity |
 
 ## The driver contract
 
@@ -62,7 +63,8 @@ sources of truth:
 
 - `ProviderKind::capabilities()` is the exhaustive declaration of Raku's
   provider-level support: interactive access modes, conversation actions,
-  compaction, model discovery, goals and plan mode.
+  compaction, model discovery, goals, plan mode, read-only side chats (`side_chat`),
+  and subagent child execution (`subagent_target`).
   UI visibility, command discovery and daemon validation read this declaration.
 - `ProviderModel` describes model-specific reasoning efforts, service tiers and
   context windows discovered from the provider. An empty option list hides its
@@ -155,12 +157,12 @@ provider has a protocol interrupt and keeps its runtime
 Option changes go through `DriverControl::apply_options`, which returns whether
 the transport absorbed the change or wants to be restarted:
 
-| Change | Codex | Pi | Claude |
-| --- | --- | --- | --- |
-| Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — a `set_model` control request |
-| Plan mode | in session — `collaborationMode` rides on every `turn/start` | not offered | in session — a `set_permission_mode` control request |
-| Access mode | restart | restart | restart |
-| Provider | restart | restart | restart |
+| Change | Codex | Pi | Claude | Antigravity |
+| --- | --- | --- | --- | --- |
+| Model, reasoning effort, service tier | in session — they ride on every `turn/start` | in session — `set_model`, `set_thinking_level` | in session — a `set_model` control request | in session — `session/set_config_option` (`model`, `thought_level`) |
+| Plan mode | in session — `collaborationMode` rides on every `turn/start` | not offered | in session — a `set_permission_mode` control request | in session — `session/set_config_option` (`mode`) |
+| Access mode | restart | restart | restart | restart |
+| Provider | restart | restart | restart | restart |
 
 The permission policy is deliberately excluded even for Codex, which does carry
 `approvalPolicy` and `sandboxPolicy` on every `turn/start`: loosening or
@@ -204,19 +206,19 @@ of the app — which Pi did until it was given one.
 
 ## At a glance
 
-| | Codex CLI | Pi | Claude Code |
-| --- | --- | --- | --- |
-| Binary | `codex` | `pi` | `claude` |
-| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | stream-json over stdio |
-| Process spans the whole session | yes | yes | yes |
-| Process spawned per turn | no | no | no |
-| Bidirectional | yes | yes | yes |
-| Reasoning stream | yes | yes | yes |
-| Interactive approvals | yes | no | yes |
-| Mid-turn steering | yes | yes | yes |
-| Model discovery | yes | yes | yes |
-| Restricted to Full access | no | yes | no |
-| Rewind and branch at a turn | yes | yes | yes |
+| | Codex CLI | Pi | Claude Code | Antigravity |
+| --- | --- | --- | --- | --- |
+| Binary | `codex` | `pi` | `claude` | `agy` |
+| Wire protocol | JSON-RPC over stdio | NDJSON RPC over stdio | stream-json over stdio | ACP JSON-RPC over stdio |
+| Process spans the whole session | yes | yes | yes | yes |
+| Process spawned per turn | no | no | no | no |
+| Bidirectional | yes | yes | yes | yes |
+| Reasoning stream | yes | yes | yes | yes |
+| Interactive approvals | yes | no | yes | yes |
+| Mid-turn steering | yes | yes | yes | no |
+| Model discovery | yes | yes | yes | yes |
+| Restricted to Full access | no | yes | no | no |
+| Rewind and branch at a turn | yes | yes | yes | no (MVP) |
 
 Every provider now holds a session across turns. That was not true when this
 document was first written: five of the seven spawned a process per prompt, and
@@ -462,12 +464,12 @@ fallback ([model_catalog.rs](../crates/raku-core/src/model_catalog.rs)).
 Raku's `RuntimeMode` (Supervised / Auto-accept edits / Auto / Full access)
 maps into each CLI's own vocabulary.
 
-| Raku | Codex (`approvalPolicy` / `sandbox` / reviewer) | Claude `--permission-mode` |
-| --- | --- | --- |
-| Supervised | `untrusted` / `read-only` / `user` | `default` + `can_use_tool` reaches the user |
-| Auto-accept edits | `on-request` / `workspace-write` / `user` | `acceptEdits` |
-| Auto | `on-request` / `workspace-write` / `auto_review` | `auto` |
-| Full access | `never` / `danger-full-access` / `user` | `bypassPermissions` + `--dangerously-skip-permissions` |
+| Raku | Codex (`approvalPolicy` / `sandbox` / reviewer) | Claude `--permission-mode` | Antigravity ACP `mode` |
+| --- | --- | --- | --- |
+| Supervised | `untrusted` / `read-only` / `user` | `default` + `can_use_tool` reaches the user | `default` + `session/request_permission` |
+| Auto-accept edits | `on-request` / `workspace-write` / `user` | `acceptEdits` | `accept-edits` |
+| Auto | `on-request` / `workspace-write` / `auto_review` | `auto` | `auto` |
+| Full access | `never` / `danger-full-access` / `user` | `bypassPermissions` + `--dangerously-skip-permissions` | `auto` + driver auto-approves permissions |
 
 Pi accepts Full access only and always runs wide open (`--approve`).
 
@@ -487,12 +489,12 @@ it implements under once the user approves. Only providers with a native plan
 mode offer it (`ProviderCapabilities::plan_mode`); both switch it inside the
 live session.
 
-| | Codex | Claude |
-| --- | --- | --- |
-| Enter / leave | `collaborationMode: {mode: "plan" \| "default", settings: {model, reasoning_effort, developer_instructions: null}}` on `turn/start` (experimental API). The mode sticks to the thread, so the first default turn after a plan turn — or on a resumed thread — names `default` explicitly | `--permission-mode plan` at launch, `set_permission_mode` mid-session. A Full access launch uses `--allow-dangerously-skip-permissions`, because `--dangerously-skip-permissions` overrides `plan` |
-| The plan | a `plan` item streamed with `item/plan/delta`, ending the turn | `ExitPlanMode` input `plan`, raised as a `can_use_tool` request that blocks the turn |
-| Approve | Raku leaves plan mode, then sends "Implement the plan." as the next turn | allow with `updatedPermissions: [{type: "setMode", mode: <access mode>, destination: "session"}]` — the agent continues in the same turn |
-| Revise | the user's reply is a new planning turn | deny with the reply as `message`; the agent replans in the same turn |
+| | Codex | Claude | Antigravity |
+| --- | --- | --- | --- |
+| Enter / leave | `collaborationMode: {mode: "plan" \| "default", settings: {model, reasoning_effort, developer_instructions: null}}` on `turn/start` (experimental API). The mode sticks to the thread, so the first default turn after a plan turn — or on a resumed thread — names `default` explicitly | `--permission-mode plan` at launch, `set_permission_mode` mid-session. A Full access launch uses `--allow-dangerously-skip-permissions`, because `--dangerously-skip-permissions` overrides `plan` | `session/set_config_option` with `configId: "mode"`, `value: "plan"` vs base mode. `FullAccess` auto-approves in the driver instead of passing `--dangerously-skip-permissions`, keeping plan mode independent |
+| The plan | a `plan` item streamed with `item/plan/delta`, ending the turn | `ExitPlanMode` input `plan`, raised as a `can_use_tool` request that blocks the turn | assistant text / plan artifact ending with `stopReason: "end_turn"`, emitting `PlanProposed { request_id: None }` |
+| Approve | Raku leaves plan mode, then sends "Implement the plan." as the next turn | allow with `updatedPermissions: [{type: "setMode", mode: <access mode>, destination: "session"}]` — the agent continues in the same turn | Raku leaves plan mode, then sends "Implement the plan." as the next turn |
+| Revise | the user's reply is a new planning turn | deny with the reply as `message`; the agent replans in the same turn | the user's reply is a new planning turn |
 
 Both plans reach the transcript as assistant text and raise
 `DriverEvent::PlanProposed`, whose `request_id` says whether the provider is
@@ -510,9 +512,26 @@ persisted with the session and is what makes a Raku task outlive its process:
 | Codex | `thread_id` | `thread/resume` |
 | Pi | `session_id`, `session_file` | `switch_session` needs the path |
 | Claude | `session_id`, `resume_at` | `resume_at` is the transcript message uuid used for forking |
+| Antigravity | `session_id` | `session/resume` (with `session/load` fallback) |
 
 A cursor from the wrong provider is rejected at driver start rather than
 silently ignored.
+
+## Antigravity CLI
+
+**Launch** — `agy acp` ([driver/agy.rs](../crates/raku-core/src/driver/agy.rs)), without `--dangerously-skip-permissions` so `FullAccess` never overrides `plan_mode`.
+
+**Protocol** — Agent Client Protocol (ACP) JSON-RPC over stdio. Bidirectional: `agy` sends `session/request_permission` server→client requests (preserving string or numeric JSON-RPC `id`s) and Raku answers asynchronously via the writer thread.
+
+**Handshake** — `initialize` (`protocolVersion: 1`) → `session/new` (carrying `_meta.antigravity.systemPrompt.append`) or `session/resume` (falling back to `session/load` with replay suppression for `user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, and `plan`) → `session/set_config_option` (`model`, clamped `thought_level`, `mode`). Unauthenticated `-32000` errors surface localized login guidance (`agy` / `agy acp --login`).
+
+**Streaming & titles** — `agent_thought_chunk` maps to `ReasoningStarted` / `ReasoningBlockDelta` / `ReasoningCompleted`; `agent_message_chunk` to `TextDelta`; `tool_call` / `tool_call_update` / `plan` to `RichActivity`; `available_commands_update` to `AvailableCommands`; `usage_update` to `UsageUpdated`; and `session_info_update` to `AutoTitleUpdated`.
+
+**Models** — `agy models` (tab-delimited stdout, collapsing effort suffixes `-low`..`-max` only when 2+ rows share a stem so standalone IDs like `gpt-oss-120b-medium` and tier suffixes stay intact), with an ACP `initialize` → `session/new` → `session/close` fallback.
+
+**MVP limits** — `side_chat`, `subagent_target`, `conversation.rollback` / `fork`, `compaction`, `steer`, and external session import (`session/list` stamps all sessions with the ACP process's cwd) are currently disabled for Antigravity. One-shot `agy -p` runs for commit messages and reasoning headlines pass `--sandbox --disable-slash-commands -p <prompt>` because `agy` lacks `--no-session`.
+
+---
 
 ## Compared with T3 Code
 

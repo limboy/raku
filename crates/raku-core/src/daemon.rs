@@ -531,6 +531,7 @@ impl Backend for RakuBackend {
                         crate::codex_session::list_provider_sessions(&binary, limit)?
                     }
                     ProviderKind::Pi => crate::pi_session::list_provider_sessions(provider, limit)?,
+                    ProviderKind::Antigravity => Vec::new(),
                 };
                 sessions.sort_by(|a, b| {
                     b.updated_at
@@ -589,6 +590,12 @@ impl Backend for RakuBackend {
                             session_file,
                             VISIBLE_TURN_LIMIT,
                         )?
+                    }
+                    ProviderResumeCursor::Antigravity { .. } => {
+                        bail!(tr!(
+                            "errors.provider_session_import_unsupported",
+                            provider = cursor.provider().display_name()
+                        ))
                     }
                 };
                 crate::driver::hide_title_language_context(&mut history);
@@ -688,6 +695,18 @@ impl Backend for RakuBackend {
                 let provider: ProviderKind = decode_enum(&options.provider)?;
                 let mode = decode_enum(&options.mode)?;
                 provider.validate_access_mode(mode)?;
+                if options.read_only && !provider.capabilities().side_chat {
+                    bail!(tr!(
+                        "errors.provider_side_chat_unsupported",
+                        provider = provider.display_name()
+                    ));
+                }
+                if options.subagent.child && !provider.capabilities().subagent_target {
+                    bail!(tr!(
+                        "errors.provider_subagent_unsupported",
+                        provider = provider.display_name()
+                    ));
+                }
                 let previous = self.sessions.lock().remove(&session_id);
                 drop(previous);
                 let options = DriverStartOptions {
@@ -1138,6 +1157,10 @@ impl RakuBackend {
                 self.fork_response_with_driver(source, cwd, turns_to_remove)?,
                 HashMap::new(),
             )),
+            ProviderKind::Antigravity => bail!(tr!(
+                "errors.provider_turn_branching_unsupported",
+                provider = source.provider.display_name()
+            )),
         }
     }
 
@@ -1246,6 +1269,10 @@ impl RakuBackend {
                 self.rollback_response_with_driver(source, cwd, binary, rollback_turns)?,
                 HashMap::new(),
                 false,
+            )),
+            ProviderKind::Antigravity => bail!(tr!(
+                "errors.provider_turn_branching_unsupported",
+                provider = source.provider.display_name()
             )),
         }
     }
@@ -1712,6 +1739,15 @@ mod capability_tests {
             assert_eq!(result.is_ok(), accepted, "{provider:?}: {result:?}");
             assert_eq!(calls.load(Ordering::Relaxed), usize::from(accepted));
         }
+    }
+
+    #[test]
+    fn antigravity_capabilities_reject_side_chat_and_subagent_child() {
+        let caps = ProviderKind::Antigravity.capabilities();
+        assert!(!caps.side_chat);
+        assert!(!caps.subagent_target);
+        assert!(!caps.conversation.fork);
+        assert!(!caps.conversation.rollback);
     }
 }
 

@@ -1,6 +1,7 @@
 //! Local provider runtime owned by `raku-daemon`.
 
 mod activity;
+mod agy;
 mod claude;
 mod codex;
 mod compaction;
@@ -347,6 +348,7 @@ pub(crate) fn start_local(
         // transport the Agent SDK drives — which is what lets its Supervised
         // mode ask rather than decide alone.
         ProviderKind::Claude => Arc::new(claude::ClaudeDriver::start(options, events)?),
+        ProviderKind::Antigravity => Arc::new(agy::AgyDriver::start(options, events)?),
     };
     Ok(DriverHandle {
         inner,

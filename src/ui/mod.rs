@@ -171,6 +171,13 @@ pub fn provider_color(theme: &Theme, provider: ProviderKind) -> Hsla {
                 rgb(0x34363B).into()
             }
         }
+        ProviderKind::Antigravity => {
+            if theme.is_dark {
+                rgb(0x669DF6).into()
+            } else {
+                rgb(0x4285F4).into()
+            }
+        }
     }
 }
 
@@ -180,6 +187,7 @@ pub fn provider_icon(provider: ProviderKind) -> &'static str {
         ProviderKind::Claude => "icons/provider-claude.svg",
         ProviderKind::Codex => "icons/provider-openai.svg",
         ProviderKind::Pi => "icons/provider-pi.svg",
+        ProviderKind::Antigravity => "icons/provider-agy.svg",
     }
 }
 

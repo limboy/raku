@@ -13,16 +13,18 @@ pub enum ProviderKind {
     #[default]
     Codex,
     Pi,
+    Antigravity,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Pi];
+    pub const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::Pi, Self::Antigravity];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Antigravity => "agy",
         }
     }
 
@@ -31,6 +33,7 @@ impl ProviderKind {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex CLI",
             Self::Pi => "Pi",
+            Self::Antigravity => "Antigravity",
         }
     }
 
@@ -39,6 +42,7 @@ impl ProviderKind {
             Self::Claude => "Claude",
             Self::Codex => "Codex",
             Self::Pi => "Pi",
+            Self::Antigravity => "Agy",
         }
     }
 
@@ -47,6 +51,7 @@ impl ProviderKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Antigravity => "agy",
         }
     }
 }
@@ -71,6 +76,9 @@ pub enum ProviderResumeCursor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_file: Option<PathBuf>,
     },
+    Antigravity {
+        session_id: String,
+    },
 }
 
 impl ProviderResumeCursor {
@@ -85,6 +93,7 @@ impl ProviderResumeCursor {
                 session_id: id,
                 session_file: None,
             },
+            ProviderKind::Antigravity => Self::Antigravity { session_id: id },
         }
     }
 
@@ -93,12 +102,15 @@ impl ProviderResumeCursor {
             Self::Claude { .. } => ProviderKind::Claude,
             Self::Codex { .. } => ProviderKind::Codex,
             Self::Pi { .. } => ProviderKind::Pi,
+            Self::Antigravity { .. } => ProviderKind::Antigravity,
         }
     }
 
     pub fn native_id(&self) -> &str {
         match self {
-            Self::Claude { session_id, .. } | Self::Pi { session_id, .. } => session_id,
+            Self::Claude { session_id, .. }
+            | Self::Pi { session_id, .. }
+            | Self::Antigravity { session_id } => session_id,
             Self::Codex { thread_id } => thread_id,
         }
     }
@@ -5704,6 +5716,10 @@ mod tests {
         assert_eq!(ProviderKind::Claude.id(), "claude");
         assert_eq!(ProviderKind::Codex.command(), "codex");
         assert_eq!(ProviderKind::Pi.command(), "pi");
+        assert_eq!(ProviderKind::Antigravity.id(), "agy");
+        assert_eq!(ProviderKind::Antigravity.command(), "agy");
+        assert_eq!(ProviderKind::Antigravity.display_name(), "Antigravity");
+        assert_eq!(ProviderKind::Antigravity.short_name(), "Agy");
     }
 
     #[test]
@@ -5712,6 +5728,8 @@ mod tests {
             assert!(provider.capabilities().conversation.fork);
             assert!(provider.capabilities().conversation.rollback);
         }
+        assert!(!ProviderKind::Antigravity.capabilities().conversation.fork);
+        assert!(!ProviderKind::Antigravity.capabilities().conversation.rollback);
     }
 
     #[test]
@@ -5719,11 +5737,31 @@ mod tests {
         assert!(ProviderKind::Claude.capabilities().model_discovery);
         assert!(ProviderKind::Codex.capabilities().model_discovery);
         assert!(ProviderKind::Pi.capabilities().model_discovery);
+        assert!(ProviderKind::Antigravity.capabilities().model_discovery);
+    }
+
+    #[test]
+    fn earlier_antigravity_tags_and_cursors_decode_as_the_current_provider() {
+        // The first integration wrote the same `antigravity` tag and cursor shape.
+        let provider: ProviderKind = serde_json::from_str(r#""antigravity""#).unwrap();
+        assert_eq!(provider, ProviderKind::Antigravity);
+        let cursor: ProviderResumeCursor =
+            serde_json::from_str(r#"{"provider":"antigravity","sessionId":"old-1"}"#).unwrap();
+        assert_eq!(
+            cursor,
+            ProviderResumeCursor::Antigravity {
+                session_id: "old-1".into()
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&cursor).unwrap(),
+            r#"{"provider":"antigravity","sessionId":"old-1"}"#
+        );
     }
 
     #[test]
     fn all_contains_every_provider_kind() {
-        assert_eq!(ProviderKind::ALL.len(), 3);
+        assert_eq!(ProviderKind::ALL.len(), 4);
         let ids: std::collections::HashSet<_> =
             ProviderKind::ALL.iter().map(|kind| kind.id()).collect();
         assert_eq!(

@@ -475,6 +475,12 @@ fn perform_provider_rewind(
             let cursor = driver.rollback(request.rollback_turns)?;
             Ok((cursor, None, prepared_driver))
         }
+        ProviderKind::Antigravity => {
+            anyhow::bail!(tr!(
+                "errors.provider_turn_branching_unsupported",
+                provider = provider.display_name()
+            ));
+        }
     }
 }
 
@@ -623,6 +629,12 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                     ));
                 }
                 Ok((fork_response_with_driver(&mut request)?, None))
+            }
+            ProviderKind::Antigravity => {
+                anyhow::bail!(tr!(
+                    "errors.provider_turn_branching_unsupported",
+                    provider = provider.display_name()
+                ));
             }
         }
     })();

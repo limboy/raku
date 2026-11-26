@@ -151,6 +151,25 @@ fn arguments(
                 push(effort);
             }
         }
+        ProviderKind::Antigravity => {
+            for arg in [
+                "--output-format",
+                "text",
+                "--disable-slash-commands",
+                "--sandbox",
+            ] {
+                push(arg);
+            }
+            if let Some(model) = model {
+                push("--model");
+                push(model);
+            }
+            if let Some(effort) = reasoning_effort {
+                push("--effort");
+                push(effort);
+            }
+            push("-p");
+        }
     }
     push(prompt);
     args
@@ -215,6 +234,19 @@ mod tests {
         assert!(pi.contains(&OsString::from("--no-tools")));
         assert_eq!(pi.last(), Some(&OsString::from("p")));
 
+        let agy = arguments(
+            ProviderKind::Antigravity,
+            Some("gemini-3.8-flash"),
+            Some("low"),
+            "p",
+        );
+        assert!(has_pair(&agy, "--output-format", "text"));
+        assert!(agy.contains(&OsString::from("--disable-slash-commands")));
+        assert!(agy.contains(&OsString::from("--sandbox")));
+        assert!(has_pair(&agy, "--model", "gemini-3.8-flash"));
+        assert!(has_pair(&agy, "--effort", "low"));
+        assert!(has_pair(&agy, "-p", "p"));
+
         let unset = arguments(ProviderKind::Claude, None, None, "p");
         assert!(!unset.contains(&OsString::from("--model")));
         assert!(!unset.contains(&OsString::from("--effort")));
@@ -245,6 +277,7 @@ mod tests {
             provider: match std::env::var("RAKU_LIVE_HEADLINE_PROVIDER").as_deref() {
                 Ok("claude") => ProviderKind::Claude,
                 Ok("codex") => ProviderKind::Codex,
+                Ok("agy") => ProviderKind::Antigravity,
                 _ => ProviderKind::Pi,
             },
             binary: std::env::var("RAKU_LIVE_HEADLINE_BINARY").unwrap().into(),

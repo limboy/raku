@@ -2075,7 +2075,7 @@ mod tests {
 
     #[test]
     fn retired_provider_sessions_stay_on_disk_without_blocking_active_sessions() {
-        for provider in ["deepSeek", "antigravity", "agy"] {
+        for provider in ["deepSeek", "ohMyPi", "agy"] {
             let directory = temporary_directory();
             let store = store_in(&directory);
             let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
@@ -2144,6 +2144,54 @@ mod tests {
             assert_eq!(stored_provider, provider);
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn sessions_from_the_earlier_antigravity_provider_load_again() {
+        // Raku's first Antigravity integration stored the same `antigravity`
+        // tag before it was removed. With the provider back, those rows are
+        // ordinary sessions again rather than hidden retired ones.
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        state.sessions[0].begin_turn("Keep this supported task");
+        state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
+        let active_id = state.sessions[0].id;
+        let mut earlier = state.new_session(state.projects[0].id, ProviderKind::Codex);
+        earlier.begin_turn("Earlier Antigravity task");
+        earlier.finish_active_turn(crate::model::TurnStatus::Completed);
+        let earlier_id = earlier.id;
+        state.sessions.push(earlier);
+        store.save(&mut state).unwrap();
+        let connection = Connection::open(directory.join("app.db")).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET provider = 'antigravity' WHERE id = ?1",
+                params![earlier_id.to_string()],
+            )
+            .unwrap();
+
+        let reopened = store_in(&directory);
+        let restored = reopened.load().unwrap();
+        let mut ids = restored
+            .sessions
+            .iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>();
+        ids.sort();
+        let mut expected = vec![active_id, earlier_id];
+        expected.sort();
+        assert_eq!(ids, expected);
+        assert_eq!(
+            restored
+                .sessions
+                .iter()
+                .find(|session| session.id == earlier_id)
+                .unwrap()
+                .provider,
+            ProviderKind::Antigravity
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

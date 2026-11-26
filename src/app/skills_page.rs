@@ -543,6 +543,7 @@ impl Raku {
             SkillSource::Provider(ProviderKind::Claude),
             SkillSource::Provider(ProviderKind::Codex),
             SkillSource::Provider(ProviderKind::Pi),
+            SkillSource::Provider(ProviderKind::Antigravity),
         ];
         dropdown_menu(
             MenuChip::new("skills-source-filter")

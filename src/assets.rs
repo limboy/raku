@@ -188,6 +188,7 @@ const ICONS: &[(&str, &[u8])] = icons![
     "play" => "ant/play",
     "play-bold",
     "plus" => "ant/plus",
+    "provider-agy",
     "provider-claude",
     "provider-openai",
     "provider-pi",

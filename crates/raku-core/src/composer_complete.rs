@@ -144,6 +144,15 @@ fn assemble_slash_commands(
                 scan_skill_files(provider, &home.join(".pi/agent/skills"), &mut commands);
             }
         }
+        ProviderKind::Antigravity => {
+            if let Some(home) = home.as_deref() {
+                scan_skill_files(
+                    provider,
+                    &home.join(".gemini/antigravity-cli/skills"),
+                    &mut commands,
+                );
+            }
+        }
     }
     // The cross-tool skill standard;
     // Raku lists it for every provider.

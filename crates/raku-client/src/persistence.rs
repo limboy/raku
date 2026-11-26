@@ -1737,7 +1737,6 @@ mod tests {
             "ohMyPi",
             "openCode",
             "openCode2",
-            "antigravity",
             "agy",
         ] {
             let document = serde_json::to_vec(&serde_json::json!({
@@ -1825,7 +1824,6 @@ mod tests {
             "ohMyPi",
             "openCode",
             "openCode2",
-            "antigravity",
             "agy",
         ] {
             let document = serde_json::to_vec(&serde_json::json!({
@@ -1871,7 +1869,7 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("state.json");
         let project_id = Uuid::new_v4();
-        for provider in ["ohMyPi", "antigravity", "agy"] {
+        for provider in ["ohMyPi", "agy"] {
             fs::write(
                 &path,
                 serde_json::to_vec(&serde_json::json!({

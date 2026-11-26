@@ -25,6 +25,10 @@ pub struct ProviderCapabilities {
     /// A native plan mode Raku can toggle within a session (Claude's `plan`
     /// permission mode, Codex's `plan` collaboration mode).
     pub plan_mode: bool,
+    /// The transport enforces the read-only side-chat execution policy.
+    pub side_chat: bool,
+    /// The transport can run as a `subagent.child` without asking the user.
+    pub subagent_target: bool,
 }
 
 impl ProviderCapabilities {
@@ -76,6 +80,8 @@ impl ProviderKind {
                 model_discovery: true,
                 goals: false,
                 plan_mode: true,
+                side_chat: true,
+                subagent_target: true,
             },
             Self::Codex => ProviderCapabilities {
                 access_modes: &RuntimeMode::ACCESS_OPTIONS,
@@ -89,6 +95,8 @@ impl ProviderKind {
                 model_discovery: true,
                 goals: true,
                 plan_mode: true,
+                side_chat: true,
+                subagent_target: true,
             },
             Self::Pi => ProviderCapabilities {
                 access_modes: &[RuntimeMode::FullAccess],
@@ -102,6 +110,26 @@ impl ProviderKind {
                 model_discovery: true,
                 goals: false,
                 plan_mode: false,
+                side_chat: true,
+                subagent_target: true,
+            },
+            Self::Antigravity => ProviderCapabilities {
+                access_modes: &RuntimeMode::ACCESS_OPTIONS,
+                conversation: ConversationCapabilities {
+                    rollback: false,
+                    fork: false,
+                },
+                compaction: CompactionCapabilities {
+                    manual: false,
+                    instructions: false,
+                    lifecycle: false,
+                    summary: false,
+                },
+                model_discovery: true,
+                goals: false,
+                plan_mode: true,
+                side_chat: false,
+                subagent_target: false,
             },
         }
     }
@@ -170,6 +198,21 @@ mod tests {
             assert_eq!(error.mode, RuntimeMode::Ask);
             assert!(error.to_string().contains(provider.display_name()));
             assert!(error.to_string().contains(&RuntimeMode::FullAccess.label()));
+        }
+
+        let agy = ProviderKind::Antigravity.capabilities();
+        assert_eq!(agy.access_modes, &RuntimeMode::ACCESS_OPTIONS);
+        assert!(!agy.conversation.rollback);
+        assert!(!agy.conversation.fork);
+        assert!(!agy.compaction.manual);
+        assert!(agy.model_discovery);
+        assert!(!agy.goals);
+        assert!(agy.plan_mode);
+        assert!(!agy.side_chat);
+        assert!(!agy.subagent_target);
+        for provider in [ProviderKind::Claude, ProviderKind::Codex, ProviderKind::Pi] {
+            assert!(provider.capabilities().side_chat);
+            assert!(provider.capabilities().subagent_target);
         }
     }
 

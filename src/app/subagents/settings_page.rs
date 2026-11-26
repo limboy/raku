@@ -277,6 +277,7 @@ impl Raku {
         // the task's provider needs any.
         let any_provider_available = ProviderKind::ALL
             .into_iter()
+            .filter(|provider| provider.capabilities().subagent_target)
             .any(|provider| self.provider_is_available(provider));
 
         let mut card = div()
@@ -536,6 +537,7 @@ impl Raku {
         // Provider: the task's own, or a fixed one.
         let providers = ProviderKind::ALL
             .into_iter()
+            .filter(|provider| provider.capabilities().subagent_target)
             .filter(|provider| !self.state.disabled_providers.contains(provider))
             .filter(|provider| {
                 self.provider_probe(*provider)

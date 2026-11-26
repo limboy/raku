@@ -16,6 +16,7 @@ const CODEX_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 /// The probe answers only after the agent has finished loading its extensions,
 /// resources and model catalog, which can outlast a live request's budget.
 const PI_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const AGY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
     match provider {
@@ -81,7 +82,7 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         ],
         // Pi takes its catalog from the user's configured LLM providers.
         // A fabricated fallback would make unavailable models look selectable.
-        ProviderKind::Pi => Vec::new(),
+        ProviderKind::Pi | ProviderKind::Antigravity => Vec::new(),
     }
 }
 
@@ -100,6 +101,7 @@ pub fn discover_catalog(
             let models = discover_pi_models(binary);
             (models, None, enabled.join().unwrap_or_default())
         }),
+        ProviderKind::Antigravity => (discover_agy_models(binary), None, HashMap::new()),
     };
     let refresh_cache = !discovered.is_empty() || !enabled_models.is_empty();
     let models = resolve_catalog_models(discovered, &enabled_models, || {
@@ -803,6 +805,312 @@ fn deduplicate(models: Vec<ProviderModel>) -> Vec<ProviderModel> {
         .collect()
 }
 
+const AGY_EFFORT_SUFFIXES: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+fn discover_agy_models(binary: &Path) -> Vec<ProviderModel> {
+    let cwd = crate::session_catalog::catalog_working_directory()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let mut command = crate::command_env::command(binary);
+    command
+        .arg("models")
+        .current_dir(&cwd)
+        .env("NO_COLOR", "1")
+        .env("CI", "1");
+    if let Ok(output) = crate::git_commit::run_capture(&mut command, AGY_DISCOVERY_TIMEOUT)
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed = parse_agy_models_output(&stdout);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+    discover_agy_models_via_acp(binary, &cwd)
+}
+
+fn parse_agy_models_output(stdout: &str) -> Vec<ProviderModel> {
+    let mut rows = Vec::<(String, String)>::new();
+    for raw_line in stdout.lines() {
+        let clean = crate::model::strip_ansi(raw_line);
+        let line = clean.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((id, name)) = line
+            .split_once('\t')
+            .or_else(|| line.split_once(char::is_whitespace))
+        else {
+            continue;
+        };
+        let id = id.trim();
+        let name = name.trim();
+        if id.is_empty() || name.is_empty() {
+            continue;
+        }
+        rows.push((id.to_owned(), name.to_owned()));
+    }
+    group_agy_model_rows(&rows, None, None)
+}
+
+fn split_agy_effort_suffix(id: &str) -> Option<(&str, &str)> {
+    for suffix in AGY_EFFORT_SUFFIXES {
+        if let Some(stem) = id.strip_suffix(&format!("-{suffix}"))
+            && !stem.is_empty()
+        {
+            return Some((stem, suffix));
+        }
+    }
+    None
+}
+
+fn strip_trailing_effort_label(name: &str, effort: &str) -> String {
+    let suffix = format!(" ({effort})");
+    if name.len() > suffix.len() {
+        let tail_start = name.len() - suffix.len();
+        if name.is_char_boundary(tail_start)
+            && name[tail_start..].eq_ignore_ascii_case(&suffix)
+        {
+            return name[..tail_start].trim_end().to_owned();
+        }
+    }
+    name.to_owned()
+}
+
+fn group_agy_model_rows(
+    rows: &[(String, String)],
+    default_model: Option<&str>,
+    default_effort: Option<&str>,
+) -> Vec<ProviderModel> {
+    let mut stem_counts = HashMap::<&str, usize>::new();
+    for (id, _) in rows {
+        if let Some((stem, _)) = split_agy_effort_suffix(id) {
+            *stem_counts.entry(stem).or_default() += 1;
+        }
+    }
+
+    let mut order = Vec::<String>::new();
+    let mut grouped = HashMap::<String, (String, Vec<String>)>::new();
+    for (id, name) in rows {
+        if let Some((stem, effort)) = split_agy_effort_suffix(id)
+            && stem_counts.get(stem).copied().unwrap_or(0) >= 2
+        {
+            let entry = grouped.entry(stem.to_owned()).or_insert_with(|| {
+                order.push(stem.to_owned());
+                (strip_trailing_effort_label(name, effort), Vec::new())
+            });
+            if !entry.1.iter().any(|existing| existing == effort) {
+                entry.1.push(effort.to_owned());
+            }
+        } else if !grouped.contains_key(id) {
+            order.push(id.clone());
+            grouped.insert(id.clone(), (name.clone(), Vec::new()));
+        }
+    }
+
+    let mut models: Vec<ProviderModel> = order
+        .into_iter()
+        .filter_map(|id| {
+            let (name, mut efforts) = grouped.remove(&id)?;
+            efforts.sort_by_key(|effort| {
+                AGY_EFFORT_SUFFIXES
+                    .iter()
+                    .position(|candidate| candidate == effort)
+                    .unwrap_or(usize::MAX)
+            });
+            let mut model = ProviderModel::new(id.clone(), name);
+            if !efforts.is_empty() {
+                let options: Vec<ProviderModelOption> = efforts
+                    .iter()
+                    .map(|effort| ProviderModelOption::new(effort.clone(), reasoning_effort_label(effort)))
+                    .collect();
+                let preferred = default_effort
+                    .filter(|eff| options.iter().any(|opt| opt.id == *eff))
+                    .or_else(|| {
+                        ["high", "medium"]
+                            .into_iter()
+                            .find(|pref| options.iter().any(|opt| opt.id == *pref))
+                    })
+                    .or_else(|| options.first().map(|opt| opt.id.as_str()))
+                    .map(str::to_owned);
+                model.reasoning_efforts = options;
+                model.default_reasoning_effort = preferred;
+            }
+            if default_model == Some(id.as_str()) {
+                model.is_default = true;
+            }
+            Some(model)
+        })
+        .collect();
+
+    if !models.is_empty() && !models.iter().any(|m| m.is_default) {
+        models[0].is_default = true;
+    }
+    models
+}
+
+fn discover_agy_models_via_acp(binary: &Path, cwd: &Path) -> Vec<ProviderModel> {
+    let mut command = crate::command_env::command(binary);
+    let command = command
+        .arg("acp")
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let Ok(mut child) = crate::command_env::spawn(command) else {
+        return Vec::new();
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Vec::new();
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Vec::new();
+    };
+    let (tx, rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                let _ = tx.send(value);
+            }
+        }
+    });
+
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": 1,
+            "clientCapabilities": {
+                "fs": { "readTextFile": false, "writeTextFile": false },
+                "terminal": false
+            },
+            "clientInfo": { "name": "raku", "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+    let mut models = Vec::new();
+    if write_json_line(&mut stdin, &init).is_ok()
+        && recv_rpc_response(&rx, 1, AGY_DISCOVERY_TIMEOUT).is_some()
+    {
+        let new_session = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/new",
+            "params": { "cwd": cwd.display().to_string(), "mcpServers": [] }
+        });
+        if write_json_line(&mut stdin, &new_session).is_ok()
+            && let Some(resp) = recv_rpc_response(&rx, 2, AGY_DISCOVERY_TIMEOUT)
+            && let Some(result) = resp.get("result")
+        {
+            models = parse_agy_acp_models(result);
+            if let Some(session_id) = result.get("sessionId").and_then(Value::as_str) {
+                let close = json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "session/close",
+                    "params": { "sessionId": session_id }
+                });
+                if write_json_line(&mut stdin, &close).is_ok() {
+                    let _ = recv_rpc_response(&rx, 3, Duration::from_secs(5));
+                }
+            }
+        }
+    }
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+    models
+}
+
+fn parse_agy_acp_models(result: &Value) -> Vec<ProviderModel> {
+    let config_options = result
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut default_model = None;
+    let mut default_effort = None;
+    let mut base_options = Vec::<(String, String)>::new();
+
+    for entry in config_options {
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
+        let category = entry.get("category").and_then(Value::as_str).unwrap_or(id);
+        let current = entry
+            .get("currentValue")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        if category == "model" || id == "model" {
+            default_model = current;
+            if let Some(opts) = entry.get("options").and_then(Value::as_array) {
+                for opt in opts {
+                    if let (Some(val), Some(name)) = (
+                        opt.get("value").and_then(Value::as_str),
+                        opt.get("name").and_then(Value::as_str),
+                    ) {
+                        base_options.push((val.trim().to_owned(), name.trim().to_owned()));
+                    }
+                }
+            }
+        } else if category == "thought_level" || id == "thought_level" {
+            default_effort = current;
+        }
+    }
+
+    let available_rows: Vec<(String, String)> = result
+        .pointer("/models/availableModels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry.get("modelId")?.as_str()?.trim();
+            let name = entry.get("name").and_then(Value::as_str).unwrap_or(id).trim();
+            (!id.is_empty()).then(|| (id.to_owned(), name.to_owned()))
+        })
+        .collect();
+
+    if available_rows.is_empty() {
+        let mut models: Vec<ProviderModel> = base_options
+            .into_iter()
+            .map(|(id, name)| {
+                let mut model = ProviderModel::new(id.clone(), name);
+                if default_model == Some(id.as_str()) {
+                    model.is_default = true;
+                }
+                model
+            })
+            .collect();
+        if !models.is_empty() && !models.iter().any(|m| m.is_default) {
+            models[0].is_default = true;
+        }
+        return models;
+    }
+
+    let grouped = group_agy_model_rows(&available_rows, default_model, default_effort);
+    if base_options.is_empty() {
+        return grouped;
+    }
+
+    let mut by_id: HashMap<String, ProviderModel> =
+        grouped.into_iter().map(|m| (m.id.clone(), m)).collect();
+    let mut ordered = Vec::new();
+    for (base_id, base_name) in base_options {
+        let mut model = by_id
+            .remove(&base_id)
+            .unwrap_or_else(|| ProviderModel::new(base_id.clone(), base_name));
+        model.is_default = default_model == Some(base_id.as_str());
+        ordered.push(model);
+    }
+    if !ordered.is_empty() && !ordered.iter().any(|m| m.is_default) {
+        ordered[0].is_default = true;
+    }
+    ordered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1228,5 +1536,148 @@ done
         assert_eq!(models[0].name, "Extension Model");
         assert!(models[0].is_default);
         let _ = std::fs::remove_file(binary);
+    }
+
+    #[test]
+    fn parses_piped_agy_models_without_collapsing_standalone_or_tier_suffixes() {
+        let sample = "\
+gemini-4-neon-high\tGemini 4 Neon (High)
+gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)
+gemini-4-neon-medium\tGemini 4 Neon (Medium)
+gemini-4-neon-low\tGemini 4 Neon (Low)
+gemini-4-carbon-medium\tGemini 4 Carbon (Medium)
+gemini-4-carbon-high\tGemini 4 Carbon (High)
+gemini-4-carbon-low\tGemini 4 Carbon (Low)
+gemini-pro-orchestrator-neon\tOrchestrator (Neon)
+gemini-pro-orchestrator\tOrchestrator (Carbon)
+gemini-pro-orchestrator-argon\tOrchestrator (Argon)
+gemini-3.8-flash-high\tGemini 3.8 Flash (High)
+gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
+gemini-3.8-flash-low\tGemini 3.8 Flash (Low)
+gpt-oss-120b-medium\tGPT-OSS 120B (Medium)
+";
+        let models = parse_agy_models_output(sample);
+        let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "gemini-4-neon",
+                "gemini-4-carbon",
+                "gemini-pro-orchestrator-neon",
+                "gemini-pro-orchestrator",
+                "gemini-pro-orchestrator-argon",
+                "gemini-3.8-flash",
+                "gpt-oss-120b-medium",
+            ]
+        );
+        assert!(models[0].is_default);
+        assert_eq!(models[0].name, "Gemini 4 Neon");
+        assert_eq!(
+            models[0]
+                .reasoning_efforts
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
+
+        let flash = models.iter().find(|m| m.id == "gemini-3.8-flash").unwrap();
+        assert_eq!(
+            flash
+                .reasoning_efforts
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high"]
+        );
+
+        let gpt_oss = models
+            .iter()
+            .find(|m| m.id == "gpt-oss-120b-medium")
+            .unwrap();
+        assert!(gpt_oss.reasoning_efforts.is_empty());
+        assert_eq!(gpt_oss.name, "GPT-OSS 120B (Medium)");
+
+        let orch = models
+            .iter()
+            .find(|m| m.id == "gemini-pro-orchestrator-neon")
+            .unwrap();
+        assert!(orch.reasoning_efforts.is_empty());
+    }
+
+    #[test]
+    fn parses_agy_models_tty_whitespace_and_ansi_fallback() {
+        let sample = "\r\x1b[2K\x1b[32mgemini-3.8-flash-low   Gemini 3.8 Flash (Low)\x1b[0m\n\
+                      gemini-3.8-flash-high  Gemini 3.8 Flash (High)\n";
+        let models = parse_agy_models_output(sample);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gemini-3.8-flash");
+        assert_eq!(models[0].name, "Gemini 3.8 Flash");
+        assert_eq!(models[0].reasoning_efforts.len(), 2);
+    }
+
+    #[test]
+    fn parses_agy_acp_session_new_models_fallback() {
+        let result = json!({
+            "sessionId": "s1",
+            "configOptions": [
+                {
+                    "id": "model",
+                    "category": "model",
+                    "currentValue": "gemini-3.8-flash",
+                    "options": [
+                        { "value": "gemini-4-neon", "name": "Gemini 4 Neon" },
+                        { "value": "gemini-3.8-flash", "name": "Gemini 3.8 Flash" },
+                        { "value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)" }
+                    ]
+                },
+                {
+                    "id": "thought_level",
+                    "category": "thought_level",
+                    "currentValue": "medium",
+                    "options": [
+                        { "value": "low", "name": "Low" },
+                        { "value": "medium", "name": "Medium" },
+                        { "value": "high", "name": "High" },
+                        { "value": "xhigh", "name": "Extra" }
+                    ]
+                }
+            ],
+            "models": {
+                "availableModels": [
+                    { "modelId": "gemini-4-neon-low", "name": "Gemini 4 Neon (Low)" },
+                    { "modelId": "gemini-4-neon-xhigh", "name": "Gemini 4 Neon (XHigh)" },
+                    { "modelId": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)" },
+                    { "modelId": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)" },
+                    { "modelId": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)" }
+                ]
+            }
+        });
+        let models = parse_agy_acp_models(&result);
+        assert_eq!(models.len(), 3);
+        assert!(!models[0].is_default);
+        assert!(models[1].is_default);
+        assert_eq!(
+            models[0]
+                .reasoning_efforts
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "xhigh"]
+        );
+        assert_eq!(
+            models[1]
+                .reasoning_efforts
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high"]
+        );
+        // The session's current effort is the default only where the model
+        // offers it; Gemini 4 Neon has no `medium`, so it keeps its own.
+        assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("medium"));
+        assert_ne!(models[0].default_reasoning_effort.as_deref(), Some("medium"));
+        assert!(models[2].reasoning_efforts.is_empty());
     }
 }

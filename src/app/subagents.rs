@@ -318,7 +318,8 @@ impl Raku {
     }
 
     fn provider_is_available(&self, provider: ProviderKind) -> bool {
-        !self.state.disabled_providers.contains(&provider)
+        provider.capabilities().subagent_target
+            && !self.state.disabled_providers.contains(&provider)
             && self
                 .provider_probe(provider)
                 .is_some_and(|probe| probe.path.is_some())
@@ -338,6 +339,9 @@ impl Raku {
     /// tool: Pi through its extension, Claude Code through an in-process MCP
     /// server, Codex as a dynamic tool.
     pub(super) fn subagent_tool_agents(&self, provider: ProviderKind) -> Vec<SubagentToolAgent> {
+        if provider == ProviderKind::Antigravity {
+            return Vec::new();
+        }
         self.state
             .subagents
             .iter()
@@ -361,10 +365,15 @@ impl Raku {
         if session.is_side_chat() {
             return SubagentLaunch::default();
         }
+        let agents = self.subagent_tool_agents(session.provider);
         SubagentLaunch {
-            agents: self.subagent_tool_agents(session.provider),
+            // A task's own agent may delegate even while no agent is enabled:
+            // Codex fixes a thread's tools at start, so later-enabled agents
+            // only reach it through the tool declared now. Antigravity has no
+            // `subagent` tool yet.
+            delegates: session.provider != ProviderKind::Antigravity,
+            agents,
             child: false,
-            delegates: true,
         }
     }
 

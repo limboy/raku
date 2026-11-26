@@ -13,7 +13,6 @@ const RETIRED_PROVIDERS: &[&str] = &[
     "ohMyPi",
     "openCode",
     "openCode2",
-    "antigravity",
     "agy",
 ];
 

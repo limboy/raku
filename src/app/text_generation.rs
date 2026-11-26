@@ -7,7 +7,7 @@
 //! stored on the block and persisted with the transcript. Older reasoning is
 //! never backfilled, and its row keeps the opening-line fallback.
 
-use super::side_chat::{resolve_side_chat_reasoning_effort, resolve_side_chat_target};
+use super::side_chat::{resolve_provider_target, resolve_side_chat_reasoning_effort};
 use super::*;
 
 /// Concurrent headline requests across all sessions. Thinking blocks can end
@@ -42,7 +42,7 @@ impl Raku {
     /// The provider and model that write labels, or `None` while generation
     /// is off or the chosen provider is unavailable.
     pub(super) fn text_generation_target(&self) -> Option<(ProviderKind, Option<String>)> {
-        resolve_side_chat_target(
+        resolve_provider_target(
             &self.probes,
             &self.state.disabled_providers,
             self.state.text_generation_provider?,

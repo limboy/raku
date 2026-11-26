@@ -286,7 +286,7 @@ pub fn resolved_skill_submission(
     };
     let resolved = match provider {
         ProviderKind::Codex => rewrite(&|name| format!("${name}"), None),
-        ProviderKind::Claude | ProviderKind::Pi => {
+        ProviderKind::Claude | ProviderKind::Pi | ProviderKind::Antigravity => {
             let invoke = |name: &str| match provider {
                 ProviderKind::Pi => format!("/skill:{name}"),
                 _ => format!("/{name}"),
@@ -716,6 +716,11 @@ mod tests {
         assert_eq!(prompt_tokens(text, &tokens, &[]).len(), 1);
         assert_eq!(
             resolved_skill_submission(Claude, text, &tokens, &[]).as_deref(),
+            Some("/deploy 部署 `deploy`")
+        );
+        assert_eq!(
+            resolved_skill_submission(crate::model::ProviderKind::Antigravity, text, &tokens, &[])
+                .as_deref(),
             Some("/deploy 部署 `deploy`")
         );
     }

@@ -35,6 +35,8 @@ const CODEX_COMMIT_MODEL: &str = "gpt-5.6-luna";
 // `none` is the floor: `minimal` is rejected by the API for this model with
 // `unsupported_value`, listing `none` as the lowest it accepts.
 const CODEX_COMMIT_EFFORT: &str = r#"model_reasoning_effort="none""#;
+const AGY_COMMIT_MODEL: &str = "gemini-3.8-flash";
+const AGY_COMMIT_EFFORT: &str = "low";
 
 pub(crate) struct CapturedOutput {
     pub(crate) status: ExitStatus,
@@ -247,6 +249,17 @@ fn agent_arguments(
                 push(&mut args, "--thinking");
                 push(&mut args, effort);
             }
+        }
+        ProviderKind::Antigravity => {
+            push(&mut args, "--output-format");
+            push(&mut args, "text");
+            push(&mut args, "--disable-slash-commands");
+            push(&mut args, "--sandbox");
+            push(&mut args, "--model");
+            push(&mut args, AGY_COMMIT_MODEL);
+            push(&mut args, "--effort");
+            push(&mut args, AGY_COMMIT_EFFORT);
+            push(&mut args, "-p");
         }
     }
     push(&mut args, prompt);
@@ -605,6 +618,14 @@ mod tests {
                     assert!(has(&args, "--no-session"));
                     assert!(has(&args, "--no-tools"));
                     assert!(has_pair(&args, "--thinking", "low"));
+                }
+                ProviderKind::Antigravity => {
+                    assert!(has_pair(&args, "--output-format", "text"));
+                    assert!(has(&args, "--disable-slash-commands"));
+                    assert!(has(&args, "--sandbox"));
+                    assert!(has_pair(&args, "--model", AGY_COMMIT_MODEL));
+                    assert!(has_pair(&args, "--effort", AGY_COMMIT_EFFORT));
+                    assert!(has_pair(&args, "-p", prompt));
                 }
             }
         }
