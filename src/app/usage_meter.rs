@@ -3,9 +3,10 @@
 //! rate-limit lanes, mirroring Claude Code's `/usage` rows. Context numbers
 //! stream in from every provider transport that reports them; plan lanes come
 //! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`]),
-//! Codex's own rate-limit notifications, and OpenCode Go's usage endpoint for
-//! Pi tasks on an `opencode-go/*` model. Frames read only snapshots stored on
-//! the entity.
+//! Codex's own rate-limit notifications, OpenCode Go's usage endpoint for
+//! Pi tasks on an `opencode-go/*` model, and `agy /usage` for the selected
+//! Antigravity task's model group. Frames read only snapshots stored on the
+//! entity.
 
 use gpui::{PathBuilder, relative};
 
@@ -26,6 +27,10 @@ pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 2] =
 pub(super) enum PlanUsageKey {
     Provider(ProviderKind),
     PiOpenCodeGo,
+    /// Antigravity's quota is split by model group (Gemini models; Claude and
+    /// GPT models), so its snapshot is keyed by the model whose group it
+    /// shows. `None` is agy's own default model, which shows every group.
+    Antigravity(Option<String>),
 }
 
 impl PlanUsageKey {
@@ -33,6 +38,7 @@ impl PlanUsageKey {
         match self {
             Self::Provider(provider) => *provider,
             Self::PiOpenCodeGo => ProviderKind::Pi,
+            Self::Antigravity(_) => ProviderKind::Antigravity,
         }
     }
 }
@@ -68,6 +74,9 @@ impl Raku {
             {
                 Some(PlanUsageKey::PiOpenCodeGo)
             }
+            ProviderKind::Antigravity => Some(PlanUsageKey::Antigravity(
+                self.model_for_session(session).map(str::to_owned),
+            )),
             _ => None,
         }
     }
@@ -88,9 +97,9 @@ impl Raku {
                 keys.push(PlanUsageKey::Provider(provider));
             }
         }
-        // Pi's upstream is per task, so its quota is fetched only while a task
-        // that spends it is selected.
-        if let Some(key @ PlanUsageKey::PiOpenCodeGo) = self
+        // Pi's upstream and Antigravity's model group are per task, so their
+        // quota is fetched only while a task that spends it is selected.
+        if let Some(key @ (PlanUsageKey::PiOpenCodeGo | PlanUsageKey::Antigravity(_))) = self
             .selected_session()
             .and_then(|session| self.plan_usage_key_for_session(session))
         {
@@ -133,11 +142,13 @@ impl Raku {
                 .flatten();
             let binary_override = self.state.provider_binary_overrides.get(&provider).cloned();
             // The daemon routes Pi by upstream; any Go model id selects it.
-            let model = match key {
+            let model = match &key {
                 PlanUsageKey::Provider(_) => None,
                 PlanUsageKey::PiOpenCodeGo => {
                     Some(format!("{}/", crate::usage::PI_OPENCODE_GO_PROVIDER))
                 }
+                // The daemon keeps only this model's quota group.
+                PlanUsageKey::Antigravity(model) => model.clone(),
             };
             let daemon = self.daemon.client();
             cx.background_executor()

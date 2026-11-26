@@ -201,6 +201,202 @@ pub fn fetch_pi_opencode_go_plan_usage() -> anyhow::Result<Option<PlanUsage>> {
         .ok_or_else(|| anyhow!(tr!("usage_error.no_rate_limit_windows")))
 }
 
+/// How long `agy /usage` may take: a Go cold start plus one quota round trip.
+const AGY_USAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Fetch Antigravity's account quota with `agy --output-format json --print
+/// /usage`. The read-only slash command answers in print mode without
+/// starting an agent turn, spending quota, or creating a conversation
+/// (verified against agy 1.5.18: empty `conversation_id`, zero turns and
+/// tokens). Blocking: one subprocess plus its network call.
+///
+/// Quota is per model group (Gemini models; Claude and GPT models), so the
+/// result keeps only `model`'s group. Without a model, every group is shown
+/// with its name.
+pub fn fetch_antigravity_plan_usage(
+    binary: &std::path::Path,
+    model: Option<&str>,
+) -> anyhow::Result<Option<PlanUsage>> {
+    let cwd = crate::session_catalog::catalog_working_directory()?;
+    let mut command = crate::command_env::command(binary);
+    command
+        .args(["--output-format", "json", "--print", "/usage"])
+        .current_dir(cwd)
+        .env("NO_COLOR", "1");
+    let output = crate::git_commit::run_capture(&mut command, AGY_USAGE_TIMEOUT)
+        .context("could not run agy /usage")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = stdout
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .ok_or_else(|| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            match stderr.lines().map(str::trim).find(|line| !line.is_empty()) {
+                Some(line) => anyhow!("agy /usage failed: {line}"),
+                None => anyhow!("agy /usage returned no JSON output"),
+            }
+        })?;
+    if envelope.get("status").and_then(Value::as_str) != Some("SUCCESS") {
+        let detail = envelope
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "agy /usage failed ({})",
+                    output.status.code().unwrap_or(1)
+                )
+            });
+        return Err(anyhow!(detail));
+    }
+    let names = antigravity_model_names(model);
+    Ok(parse_antigravity_plan_usage(&envelope, model, &names))
+}
+
+/// Display names that identify `model` in a quota group's description: the
+/// cached catalog's name (`Orchestrator (Neon)` for
+/// `gemini-pro-orchestrator-neon`). Reads the model cache file, which is fine
+/// on this background path.
+fn antigravity_model_names(model: Option<&str>) -> Vec<String> {
+    let Some(model) = model else {
+        return Vec::new();
+    };
+    crate::model_catalog::cached_models(crate::model::ProviderKind::Antigravity)
+        .into_iter()
+        .flatten()
+        .filter(|candidate| candidate.id == model)
+        .map(|candidate| candidate.name)
+        .collect()
+}
+
+/// `Gemini 3.8 Flash` and `gemini-3.8-flash` both become `gemini-3-8-flash`,
+/// so a group's listed display names can be compared with model ids.
+fn antigravity_slug(text: &str) -> String {
+    let mut slug = String::new();
+    for ch in text.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_owned()
+}
+
+/// The models a group's description lists after `Models within this group:`.
+fn antigravity_group_models(group: &Value) -> Vec<String> {
+    let description = group
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let list = description
+        .split_once(':')
+        .map_or(description, |(_, list)| list);
+    list.split(',')
+        .map(|name| name.trim().trim_end_matches('.').trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// Whether a group covers `model`: its listed names match the model's
+/// catalog name, or its id (`claude-opus-5-5` for `Claude Opus 5.5`,
+/// `gpt-oss-120b-medium` for `GPT-OSS 120B`).
+fn antigravity_group_matches(group: &Value, model: &str, names: &[String]) -> bool {
+    let model_slug = antigravity_slug(model);
+    antigravity_group_models(group).iter().any(|listed| {
+        let listed_slug = antigravity_slug(listed);
+        !listed_slug.is_empty()
+            && (names.iter().any(|name| antigravity_slug(name) == listed_slug)
+                || model_slug == listed_slug
+                || model_slug.starts_with(&format!("{listed_slug}-")))
+    })
+}
+
+fn parse_antigravity_plan_usage(
+    envelope: &Value,
+    model: Option<&str>,
+    names: &[String],
+) -> Option<PlanUsage> {
+    let groups = envelope
+        .pointer("/command/data/groups")
+        .and_then(Value::as_array)?;
+    let selected = model
+        .map(|model| {
+            groups
+                .iter()
+                .filter(|group| antigravity_group_matches(group, model, names))
+                .collect::<Vec<_>>()
+        })
+        .filter(|matched| !matched.is_empty());
+    // An unknown or unset model shows every group, each scoped by name, so
+    // nothing is attributed to the wrong models.
+    let (groups, scoped) = match selected {
+        Some(matched) => (matched, false),
+        None => (groups.iter().collect(), true),
+    };
+
+    let mut windows = Vec::new();
+    for group in groups {
+        let group_name = group
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let mut buckets = group
+            .get("buckets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|bucket| {
+                let remaining = bucket.get("remaining_fraction").and_then(Value::as_f64)?;
+                let percent = ((1.0 - remaining).clamp(0.0, 1.0) * 1000.0).round() / 10.0;
+                let window = bucket
+                    .get("window")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let (period, rank) = match window.as_str() {
+                    "5h" => (tr!("usage.hour_limit", count = 5), 0),
+                    "weekly" => (tr!("usage.weekly_limit"), 1),
+                    "monthly" => (tr!("usage.monthly_limit"), 2),
+                    _ => (
+                        bucket
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| tr!("usage.usage_limit")),
+                        3,
+                    ),
+                };
+                let label = if scoped && !group_name.is_empty() {
+                    tr!("usage.scoped_limit", period = period, name = group_name)
+                } else {
+                    period
+                };
+                // An untouched bucket reports the Unix epoch as its reset.
+                let resets_at = parse_reset(bucket.get("reset_time")).filter(|reset| *reset > 0);
+                Some((
+                    rank,
+                    PlanWindow {
+                        label,
+                        percent,
+                        resets_at,
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        buckets.sort_by_key(|(rank, _)| *rank);
+        windows.extend(buckets.into_iter().map(|(_, window)| window));
+    }
+    (!windows.is_empty()).then(|| PlanUsage {
+        plan_label: None,
+        windows,
+    })
+}
+
 /// The endpoint's own sentence, when it sent one: bodies are
 /// `{"type":"error","error":{"type":..,"message":..}}`, and the message is
 /// the only part that tells an `EntitlementError` from a revoked key.
@@ -737,6 +933,74 @@ fn plan_label(subscription_type: Option<&str>, rate_limit_tier: Option<&str>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `agy --output-format json --print /usage` from agy 1.5.18, 2026-11-26,
+    /// trimmed of descriptions the parser does not read.
+    const AGY_USAGE: &str = r#"{"conversation_id":"","status":"SUCCESS","num_turns":0,
+        "command":{"name":"usage","data":{"groups":[
+            {"name":"Gemini Models",
+             "description":"Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Carbon), Orchestrator (Argon), Gemini 3.8 Flash",
+             "buckets":[
+                {"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.9216885566711426,"reset_time":"2026-12-03T08:14:22Z"},
+                {"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.7185161709785461,"reset_time":"2026-11-26T13:14:22Z"}]},
+            {"name":"Claude and GPT models",
+             "description":"Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+             "buckets":[
+                {"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":1,"reset_time":"1970-01-01T00:00:00Z"},
+                {"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"1970-01-01T00:00:00Z"}]}
+        ]}}}"#;
+
+    /// Reads the signed-in account's real quota. Run with
+    /// `RAKU_LIVE_AGY_BINARY=$(which agy) cargo test -p raku-core live_agy_usage -- --ignored`.
+    #[test]
+    #[ignore]
+    fn live_agy_usage() {
+        let binary = std::env::var("RAKU_LIVE_AGY_BINARY").unwrap_or_else(|_| "agy".into());
+        let usage = fetch_antigravity_plan_usage(binary.as_ref(), Some("gemini-3.8-flash"))
+            .unwrap()
+            .expect("agy reported no quota buckets");
+        assert_eq!(usage.windows.len(), 2, "{usage:?}");
+        assert!(usage.windows.iter().all(|window| (0.0..=100.0).contains(&window.percent)));
+    }
+
+    #[test]
+    fn antigravity_usage_shows_the_models_group_five_hour_first() {
+        let envelope: Value = serde_json::from_str(AGY_USAGE).unwrap();
+
+        let gemini = parse_antigravity_plan_usage(&envelope, Some("gemini-3.8-flash"), &[]).unwrap();
+        assert_eq!(gemini.windows.len(), 2);
+        assert_eq!(gemini.windows[0].label, tr!("usage.hour_limit", count = 5));
+        assert_eq!(gemini.windows[0].percent, 28.1);
+        assert_eq!(gemini.windows[1].label, tr!("usage.weekly_limit"));
+        assert_eq!(gemini.windows[1].percent, 7.8);
+        assert!(gemini.windows[0].resets_at.is_some());
+
+        // Ids that differ from the listed name only in punctuation still match,
+        // and an untouched bucket's epoch reset is no reset at all.
+        for model in ["claude-opus-5-5", "gpt-oss-120b-medium"] {
+            let third_party = parse_antigravity_plan_usage(&envelope, Some(model), &[]).unwrap();
+            assert_eq!(third_party.windows.len(), 2, "{model}");
+            assert_eq!(third_party.windows[0].percent, 0.0);
+            assert_eq!(third_party.windows[0].resets_at, None);
+        }
+
+        // The catalog name places an id whose slug is not listed.
+        let orchestrator = parse_antigravity_plan_usage(
+            &envelope,
+            Some("gemini-pro-orchestrator-neon"),
+            &["Orchestrator (Neon)".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(orchestrator.windows[1].percent, 7.8);
+
+        // An unknown or unset model shows every group, scoped by name.
+        for model in [None, Some("mystery-model")] {
+            let all = parse_antigravity_plan_usage(&envelope, model, &[]).unwrap();
+            assert_eq!(all.windows.len(), 4);
+            assert!(all.windows[0].label.contains("Gemini Models"));
+            assert!(all.windows[2].label.contains("Claude and GPT models"));
+        }
+    }
 
     /// Trimmed from a live response captured on 2026-08-07.
     const LIVE_BODY: &str = r#"{

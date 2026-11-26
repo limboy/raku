@@ -326,6 +326,10 @@ impl Backend for RakuBackend {
                     crate::model::ProviderKind::Codex => {
                         Some(crate::usage::fetch_codex_plan_usage()?)
                     }
+                    crate::model::ProviderKind::Antigravity => {
+                        let binary = self.provider_binary(provider)?;
+                        crate::usage::fetch_antigravity_plan_usage(&binary, model.as_deref())?
+                    }
                     _ => bail!("provider has no plan usage fetcher"),
                 };
                 Ok(ResponsePayload::PlanUsage { usage })
