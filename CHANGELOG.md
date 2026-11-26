@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.7.0] - 2026-11-26
+
+- Add Antigravity CLI as a provider, with streamed reasoning and tool activity, permission requests, plan mode, model and thinking-level switching, and its skills in the slash command list
+- Show Antigravity's 5-hour and weekly quota for the selected task's model group in the usage meter
+- Restore tasks from Raku's earlier Antigravity integration
+
 ## [2.6.10] - 2026-11-24
 
 - Fix No project tasks from before the rename to Raku missing from the sidebar while still showing in search
