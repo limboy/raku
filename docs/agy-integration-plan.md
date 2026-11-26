@@ -95,7 +95,7 @@ The following payloads were verified directly against the installed `agy acp` bi
 
 ### 2.3 Sessionless CLI Surface
 
-- `agy models` lists the account's models without opening a session (`Fetching available models...` on the first line, then `<id>\t<name>` rows, about 1 s). Observed effort sets differ per model: Gemini 4 Neon and Hydrogen have `low`–`xhigh`, Carbon, Argon, Gemini 3.8 Flash and the Claude models have `low`–`high`, `gpt-oss-120b-medium` has none, and `gemini-pro-orchestrator{,-neon,-argon}` suffixes are tiers, not efforts.
+- `agy models` lists the account's models without opening a session (~1–3 s on cold start). With piped stdio, as Raku runs it, stdout carries only `<id>\t<name>` rows (tab-separated, no ANSI or CR) and `Fetching available models...` goes to stderr as a single line. In an interactive terminal it instead draws ANSI/CR spinner frames and space-padded columns, so fixtures must be captured piped, not copied from a terminal. Observed effort sets differ per model: Gemini 4 Neon and Hydrogen have `low`–`xhigh`, Carbon, Argon, Gemini 3.8 Flash and the Claude models have `low`–`high`, `gpt-oss-120b-medium` is a single standalone model whose base ID itself ends in `-medium` (no effort variants), and `gemini-pro-orchestrator{,-neon,-argon}` suffixes are tiers, not efforts.
 - Print mode: `-p`, `--output-format text|json|stream-json`, `--disable-slash-commands`, `--mode accept-edits|auto|plan` (no `default`), `--model`, `--effort low|medium|high|xhigh|max`, `--print-timeout`, `--settings <json|path>`, `--sandbox`. There is no equivalent of Pi's `--no-session` / `--no-tools`.
 - `agy acp` flags of interest: `--dangerously-skip-permissions`, `--sandbox` ("terminal restrictions"), `--disable-telemetry`, `--login` (interactive Google login, then exit), `--process-per-session`, `--add-dir`. `--stdio` is the default transport.
 
@@ -112,16 +112,17 @@ The following payloads were verified directly against the installed `agy acp` bi
 | `plan_mode: true` (any mode) | *(none)* | `"plan"` (toggled in-session via `session/set_config_option`) | As for the access mode |
 
 - **Full access without `--dangerously-skip-permissions`**: Claude's `--dangerously-skip-permissions` overrides its plan mode (`docs/providers.md`, Plan mode). Until Phase 0 proves agy's flag leaves `plan` intact, Full access is implemented in the driver by answering every `session/request_permission` with its `allow_always` / `allow_once` option. That keeps plan mode and the access mode independent. If the flag is proven safe, it may replace the auto-answer.
-- **Supervised must mean "ask"**: ACP's `default` mode asks "per your permission settings", so a user's agy allowlist could skip prompts. Phase 0 checks whether it does; if so, pin the policy for Raku sessions with `--settings` so Supervised routes every edit and command to Raku.
+- **Supervised must mean "ask"**: ACP's `default` mode asks "per your permission settings", so a user's agy allowlist could skip prompts. Note that `--settings` is a top-level `agy` flag and is not listed in `agy acp --help`. Phase 0 checks whether a user allowlist actually bypasses `session/request_permission` in `default` mode and whether `agy acp` accepts `--settings` or another override; if it cannot be overridden per-process, document the limitation explicitly.
 - **Plan approval**: Raku's plan flow ends in `DriverEvent::PlanProposed`. What agy emits when a plan is ready (a permission request, a `current_mode_update`, or only the end of the turn) is **unverified**. Antigravity declares `plan_mode: true` only once that mapping is known; otherwise it ships with `plan_mode: false`.
 
 > Note: Per Raku's policy in `docs/providers.md`, changing `RuntimeMode` restarts the driver (`apply_options` returns `false`), whereas changing `model`, `reasoning_effort` (`thought_level`), or `plan_mode` applies in-session via `session/set_config_option`.
 
 #### Model & Thinking-Level Discovery
 
-- Primary source: `agy models` (sessionless). Derive each base model by stripping a known effort suffix (`-low`, `-medium`, `-high`, `-xhigh`, `-max`) and collect the stripped suffixes as that model's `ProviderModel::reasoning_efforts`. Display names drop the trailing `(Effort)`.
+- Primary source: `agy models` (sessionless). Read stdout only. Split each row on its first tab; as defense against a future TTY-style format, strip ANSI/CR and fall back to the first whitespace run (`split_once(char::is_whitespace)` + `.trim()`). Group candidate base models by stripping a known effort suffix (`-low`, `-medium`, `-high`, `-xhigh`, `-max`), **only collapsing a group into a base model with `ProviderModel::reasoning_efforts` when 2+ rows share that stem** (so standalone IDs like `gpt-oss-120b-medium` are preserved verbatim with an empty effort list instead of being mangled into a non-existent `gpt-oss-120b`). Collapsed display names drop the trailing `(Effort)`.
 - Fallback source: an ACP `initialize` → `session/new` → `session/close` probe, combining `configOptions[category == "model"]` with `models.availableModels`. Use it only if `agy models` fails, and only after Phase 0 confirms `session/close` leaves no empty session behind.
 - Models without suffixed variants (e.g. `gemini-pro-orchestrator`, `gpt-oss-120b-medium`) get an empty `reasoning_efforts` list, which automatically hides the effort picker in Raku's UI.
+- The 2+-rows grouping is a heuristic: an account offering a single effort for a model would list it as a standalone ID. The live session's `configOptions[category == "model"].options` is authoritative for base IDs, so on `Connected` the driver reconciles the catalog with it (re-grouping suffixed IDs whose stem is a listed base) and refreshes `model-cache/agy.json`.
 - Default model/effort comes from `configOptions[category == "model"].currentValue` and `configOptions[category == "thought_level"].currentValue` of the live session.
 - Because `thought_level` is session-wide, a model change clamps the effort to the new model's set (nearest lower level, else the model's default), and the driver sends `model` before `thought_level`. Whether `model` takes the base ID or the suffixed ID is **unverified**.
 
@@ -227,12 +228,13 @@ Before writing Rust code, run a short Python probe script against `agy acp` (out
 6. One-shot `agy -p --output-format text --disable-slash-commands --mode plan` behavior for commit messages and reasoning headlines: whether each run creates a conversation in agy's history, whether it can still read files, and which `--model` ID form it takes.
 7. **Auth**: with credentials removed (or a fresh `--app-data-dir`), capture the error code and message from `session/new` and `session/prompt`, and what `agy acp --login` does.
 8. **Failed turns**: an exhausted quota or invalid key mid-session. Confirm the `stopReason` is not `end_turn` with empty output (`docs/providers.md` step 8).
-9. **Supervised semantics**: in `default` mode with an agy permission allowlist present, does every edit and command still raise `session/request_permission`? If not, find the `--settings` keys that force asking.
+9. **Supervised semantics**: in `default` mode with an agy permission allowlist present, does every edit and command still raise `session/request_permission`? If not, verify whether `agy acp` accepts `--settings` (absent from `agy acp --help`) or another per-process override.
 10. **Full access vs plan mode**: does `--dangerously-skip-permissions` override `plan`? Does auto-answering permissions under `auto` cover everything the flag does?
 11. **Plan approval**: what agy emits when a plan-mode turn finishes its plan, and how leaving plan mode resumes implementation.
 12. **Titles**: whether `session_info_update` ever carries a title, and when.
 13. **Cancel**: `session/cancel` with a permission request open; the resulting `stopReason`.
-14. **Read-only candidates** (for Phase 5): what `--sandbox`, `plan` mode, and `--settings` tool restrictions actually block; whether stdio entries in `mcpServers` are honored.
+14. **Read-only candidates** (for Phase 5): what `--sandbox`, `plan` mode, and (only if #9 finds `agy acp` accepts a per-process override) settings-based tool restrictions actually block; whether stdio entries in `mcpServers` are honored.
+15. **Skill invocation syntax**: `available_commands_update` lists skills as bare names while some skill descriptions reference `/skill:<name>`. Confirm whether `session/prompt` expands `/<name>` or `/skill:<name>` (needed for `crates/raku-protocol/src/composer.rs`).
 
 Save sanitized sample fixtures for unit tests in `crates/raku-core/src/driver/fixtures/` (alongside the existing driver fixtures).
 
@@ -265,14 +267,14 @@ Save sanitized sample fixtures for unit tests in `crates/raku-core/src/driver/fi
      - **Stderr thread**: collects bounded stderr for diagnostics on failure.
      - **Reaper thread**: blocks on `child.wait()`, emits `Error` on unexpected non-zero exit, and always emits `ProcessExited`.
    - **Startup**:
-     - Spawn `agy acp` (no `--dangerously-skip-permissions`; see §2.4), plus any `--settings` policy Phase 0 requires for Supervised.
+     - Spawn `agy acp` (no `--dangerously-skip-permissions`; see §2.4), plus any Supervised override confirmed in Phase 0 #9.
      - Emit `LaunchManifest` via `context_inspection::launch_manifest`.
      - Send `initialize` (with 30 s startup timeout, matching `pi.rs` headroom for language server startup).
-     - Send `session/resume` (if `provider_cursor` is present) or `session/new` with `cwd`, `mcpServers: []`, and `_meta.antigravity.systemPrompt.append` carrying `system_instructions(read_only, &subagent)`. If resume falls back to `session/load`, drop every `session/update` until the `session/load` response arrives, so the replayed history never reaches the transcript twice.
+     - Send `session/resume` (if `provider_cursor` is present) or `session/new` with `cwd`, `mcpServers: []`, and `_meta.antigravity.systemPrompt.append` carrying `system_instructions(read_only, &subagent)`. If resume falls back to `session/load`, drop the transcript-replaying `session/update` kinds (`user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `plan`) until the `session/load` response arrives so replayed history never duplicates, and forward every other kind as usual (`available_commands_update`, `usage_update`, `current_mode_update`, `config_option_update`, `session_info_update`, and any kind added later).
      - Reject a cursor from another provider at start, like the other drivers.
      - Apply requested `model`, then `reasoning_effort` (clamped to the model's set), then `mode` (`plan` if `options.plan_mode`, else mapped `options.mode`) via `session/set_config_option`.
      - Emit `Connected { provider_cursor }`.
-   - **Auth**: when `session/new` or `session/prompt` fails with the auth error captured in Phase 0, emit `Error` with localized guidance to log in (`agy`, or `agy acp --login`, offered as a `sh run` block), never a generic failure. Leave the runtime closed so the next prompt retries after login.
+   - **Auth**: when `session/new` or `session/prompt` fails with the auth error captured in Phase 0, emit `Error` with plain localized guidance to sign in (e.g. `"Run agy or agy acp --login in your terminal to sign in."` — not a `sh run` fence, since `DriverEvent::Error` renders as a toast/error banner, not assistant markdown). Leave the runtime closed so the next prompt retries after login.
    - **Turn Execution & Streaming**:
      - `prompt(text)`: parse Raku's inline attachment markers (if any) into ACP `text` + `image` content blocks, send `session/prompt`, emit `TurnStarted`, stream updates, emit `TurnFinished` on response, mapping `stopReason` per §2.4.
      - Normalize `tool_call` / `tool_call_update` into `ActivityItem` (`Command`, `FileChange`, `Search`, `Plan`, `Tool`) via `driver/activity.rs`.
@@ -303,7 +305,7 @@ Save sanitized sample fixtures for unit tests in `crates/raku-core/src/driver/fi
 
 1. **Model Discovery (`crates/raku-core/src/model_catalog.rs`)**:
    - Add the `ProviderKind::Antigravity` arm to `discover_catalog`, calling `discover_agy_models(binary: &Path) -> Vec<ProviderModel>`:
-     - Run `agy models` with `current_dir(catalog_working_directory())` and a bounded timeout, and parse it per §2.4.
+     - Run `agy models` with `current_dir(catalog_working_directory())` and a generous timeout (15–30 s, closer to `PI_RPC_TIMEOUT` than Codex's 5 s, to cover Go language-server cold start), and parse it per §2.4.
      - Fall back to the ACP `session/new` probe only under the condition in §2.4.
    - Add `fallback_models(ProviderKind::Antigravity)` returning `Vec::new()` (same as `Pi`, relying on live discovery + on-disk cache in `model-cache/agy.json` so unavailable account models aren't fabricated).
 2. **Slash Commands (`crates/raku-core/src/slash_command_catalog.rs`)**:
@@ -316,9 +318,7 @@ Save sanitized sample fixtures for unit tests in `crates/raku-core/src/driver/fi
    - `crates/raku-core/src/git_commit.rs`: add `ProviderKind::Antigravity` arms (near lines 233 and 603) using the same print-mode flags, pinned to a fast model/low effort when available.
    - Pi's arm passes `--no-session --no-tools`; agy has neither. If Phase 0 shows each run lands in agy's history or can read files, restrict it with `--settings` / `--sandbox`, or leave Antigravity out of commit and headline generation until it can run clean.
 5. **External Session Listing & Cold Import (`crates/raku-core/src/agy_session.rs` + `daemon.rs`)**:
-   - The `match provider` arms in `daemon.rs` for listing (near line 529) and history (near line 586) need Antigravity arms in the MVP even if import is deferred; a deferred arm returns an empty list.
-   - Implement `list_provider_sessions` using `agy acp` `session/list` (scoped per Phase 0's cwd finding), mapping into `ProviderSessionSummary`.
-   - Implement cold history load via `session/load` (capturing replayed `session/update` notifications) or defer cold import to Phase 5 if `session/load` replay needs extra mapping.
+   - The `match provider` arms in `daemon.rs` for listing (near line 529) and history (near line 586) need Antigravity arms in the MVP. Keep listing and history loading paired so the import picker never shows sessions that fail to open: either implement both together in Phase 3 (`session/list` → `ProviderSessionSummary` and `session/load` replay → `ProviderSessionHistory`), or return an empty list / unsupported in MVP and ship both together in Phase 5.
 6. **Daemon conversation arms (`crates/raku-core/src/daemon.rs`)**: the fork (near line 1137) and rollback (near line 1245) paths are `match provider`, not capability-driven. Add explicit unsupported arms.
 7. **Session Titles**:
    - `crates/raku-core/src/driver/title_language.rs`: handle `ProviderKind::Antigravity` in title-language context injection / stripping.
