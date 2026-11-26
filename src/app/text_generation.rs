@@ -42,15 +42,19 @@ impl Raku {
     /// The provider and model that write labels, or `None` while generation
     /// is off or the chosen provider is unavailable.
     pub(super) fn text_generation_target(&self) -> Option<(ProviderKind, Option<String>)> {
+        let provider = self.state.text_generation_provider?;
+        if !provider.capabilities().text_generation {
+            return None;
+        }
         resolve_provider_target(
             &self.probes,
             &self.state.disabled_providers,
-            self.state.text_generation_provider?,
+            provider,
             self.state.text_generation_model.as_deref(),
         )
     }
 
-    fn text_generation_invocation(&self) -> Option<crate::git_commit::AgentInvocation> {
+    pub(super) fn text_generation_invocation(&self) -> Option<crate::git_commit::AgentInvocation> {
         let (provider, model) = self.text_generation_target()?;
         let probe = self.provider_probe(provider)?;
         let reasoning_effort = model
@@ -187,6 +191,7 @@ impl Raku {
         let resolved = self.text_generation_target();
         let providers = ProviderKind::ALL
             .into_iter()
+            .filter(|provider| provider.capabilities().text_generation)
             .filter(|provider| !self.state.disabled_providers.contains(provider))
             .filter(|provider| {
                 self.provider_probe(*provider)

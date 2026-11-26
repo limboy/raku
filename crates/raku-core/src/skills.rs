@@ -77,6 +77,10 @@ pub fn user_skill_locations() -> Vec<SkillLocation> {
     );
     push(
         SkillSource::Provider(ProviderKind::Antigravity),
+        home_join(".gemini/config/skills"),
+    );
+    push(
+        SkillSource::Provider(ProviderKind::Antigravity),
         home_join(".gemini/antigravity-cli/skills"),
     );
     locations

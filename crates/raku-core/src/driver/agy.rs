@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
 use base64::Engine as _;
-use crossbeam_channel::{Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
 use parking_lot::Mutex;
 use raku_protocol::capabilities::RuntimeCapabilities;
 use raku_protocol::context_inspection::ContextDetail;
@@ -41,8 +41,13 @@ enum CommandMessage {
         raw_id: Value,
         result: Value,
     },
+    RespondErrorRaw {
+        raw_id: Value,
+        code: i64,
+        message: String,
+    },
     Options(SessionOptions),
-    ContextBreakdown,
+    ContextBreakdown(ContextDetail),
     Shutdown,
 }
 
@@ -59,16 +64,32 @@ impl RpcErrorKey {
         let provider = ProviderKind::Antigravity.display_name();
         match self {
             Self::Initialize => {
-                tr!("errors.initialize_provider", provider = provider, error = message)
+                tr!(
+                    "errors.initialize_provider",
+                    provider = provider,
+                    error = message
+                )
             }
             Self::OpenSession => {
-                tr!("errors.open_provider_session", provider = provider, error = message)
+                tr!(
+                    "errors.open_provider_session",
+                    provider = provider,
+                    error = message
+                )
             }
             Self::SwitchModel => {
-                tr!("errors.switch_provider_model", provider = provider, error = message)
+                tr!(
+                    "errors.switch_provider_model",
+                    provider = provider,
+                    error = message
+                )
             }
             Self::ChangeThinking => {
-                tr!("errors.change_provider_thinking", provider = provider, error = message)
+                tr!(
+                    "errors.change_provider_thinking",
+                    provider = provider,
+                    error = message
+                )
             }
         }
     }
@@ -106,6 +127,7 @@ struct AgyRuntimeState {
     pending_rpc: HashMap<u64, Sender<Value>>,
     pending_permissions: HashMap<String, (Value, Vec<AcpPermissionOption>)>,
     last_usage: Option<(u64, u64)>,
+    last_turn_usage: Option<Value>,
 }
 
 #[derive(Default)]
@@ -162,6 +184,7 @@ impl AgyStreamState {
 
 pub struct AgyDriver {
     commands: Sender<CommandMessage>,
+    shutdown: Sender<()>,
     mode: RuntimeMode,
 }
 
@@ -239,6 +262,7 @@ impl AgyDriver {
             .ok_or_else(|| anyhow!("Antigravity stderr unavailable"))?;
 
         let (commands, command_rx) = unbounded::<CommandMessage>();
+        let (shutdown, shutdown_rx) = bounded::<()>(1);
         let state = Arc::new(Mutex::new(AgyRuntimeState {
             base_mode: mode,
             plan_mode,
@@ -289,6 +313,10 @@ impl AgyDriver {
                         }
                     }
                 }
+                // Drop every pending RPC sender so an in-flight handshake or
+                // config call wakes immediately on stdout EOF instead of
+                // sleeping out its timeout after the child has exited.
+                reader_state.lock().pending_rpc.clear();
                 stream.reset_turn(&reader_events);
             })?;
 
@@ -308,6 +336,7 @@ impl AgyDriver {
                     &mut next_request_id,
                     &writer_state,
                     &writer_suppress_replay,
+                    &shutdown_rx,
                     &writer_events,
                     &cwd_string,
                     &instructions_owned,
@@ -437,19 +466,60 @@ impl AgyDriver {
                                 break;
                             }
                         }
+                        CommandMessage::RespondErrorRaw {
+                            raw_id,
+                            code,
+                            message,
+                        } => {
+                            let reply = json!({
+                                "jsonrpc": "2.0",
+                                "id": raw_id,
+                                "error": {
+                                    "code": code,
+                                    "message": message,
+                                }
+                            });
+                            if write_json_line(&mut stdin, &reply).is_err() {
+                                break;
+                            }
+                        }
                         CommandMessage::Options(options) => {
                             apply_session_options_rpc(
                                 &mut stdin,
                                 &mut next_request_id,
                                 &writer_state,
+                                &shutdown_rx,
                                 &writer_events,
                                 &options,
                             );
                         }
-                        CommandMessage::ContextBreakdown => {
-                            let _ = writer_events.send(DriverEvent::ContextBreakdownFailed(tr!(
-                                "context_inspector.fetch_failed"
-                            )));
+                        CommandMessage::ContextBreakdown(detail) => {
+                            let (model, last_usage, turn_usage) = {
+                                let guard = writer_state.lock();
+                                (
+                                    guard.current_model.clone(),
+                                    guard.last_usage,
+                                    guard.last_turn_usage.clone(),
+                                )
+                            };
+                            match super::context_inspection::agy_breakdown(
+                                detail,
+                                model.as_deref(),
+                                last_usage,
+                                turn_usage.as_ref(),
+                            ) {
+                                Some(breakdown) => {
+                                    let _ = writer_events.send(
+                                        DriverEvent::ContextBreakdownUpdated(Box::new(breakdown)),
+                                    );
+                                }
+                                None => {
+                                    let _ =
+                                        writer_events.send(DriverEvent::ContextBreakdownFailed(
+                                            tr!("context_inspector.fetch_failed"),
+                                        ));
+                                }
+                            }
                         }
                         CommandMessage::Shutdown => break,
                     }
@@ -479,15 +549,14 @@ impl AgyDriver {
                 match status {
                     Ok(status) if !status.success() => {
                         let lines = stderr_lines.lock().clone();
-                        let message = super::support::provider_stderr_error(lines).unwrap_or_else(
-                            || {
+                        let message =
+                            super::support::provider_stderr_error(lines).unwrap_or_else(|| {
                                 tr!(
                                     "errors.provider_exited",
                                     provider = ProviderKind::Antigravity.display_name(),
                                     status = status
                                 )
-                            },
-                        );
+                            });
                         let _ = events.send(DriverEvent::Error(message));
                     }
                     Err(error) => {
@@ -502,12 +571,17 @@ impl AgyDriver {
                 let _ = events.send(DriverEvent::ProcessExited);
             })?;
 
-        Ok(Self { commands, mode })
+        Ok(Self {
+            commands,
+            shutdown,
+            mode,
+        })
     }
 }
 
 impl Drop for AgyDriver {
     fn drop(&mut self) {
+        let _ = self.shutdown.try_send(());
         let _ = self.commands.send(CommandMessage::Shutdown);
     }
 }
@@ -536,8 +610,8 @@ impl DriverControl for AgyDriver {
         });
     }
 
-    fn context_breakdown(&self, _detail: ContextDetail) {
-        let _ = self.commands.send(CommandMessage::ContextBreakdown);
+    fn context_breakdown(&self, detail: ContextDetail) {
+        let _ = self.commands.send(CommandMessage::ContextBreakdown(detail));
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {
@@ -556,12 +630,20 @@ impl DriverControl for AgyDriver {
     }
 }
 
+enum RpcCallError {
+    /// Reader exited (stdout EOF) or driver was dropped; the reaper thread
+    /// owns exit diagnostics.
+    Disconnected,
+    Failed(String),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_handshake(
     stdin: &mut impl Write,
     next_request_id: &mut u64,
     state: &Mutex<AgyRuntimeState>,
     suppress_replay: &AtomicBool,
+    shutdown_rx: &Receiver<()>,
     events: &impl DriverEventSink,
     cwd: &str,
     instructions: &str,
@@ -586,12 +668,14 @@ fn run_handshake(
         stdin,
         next_request_id,
         state,
+        shutdown_rx,
         "initialize",
         init_params,
         HANDSHAKE_TIMEOUT,
     ) {
         Ok(resp) => resp,
-        Err(error) => {
+        Err(RpcCallError::Disconnected) => return false,
+        Err(RpcCallError::Failed(error)) => {
             let _ = events.send(DriverEvent::Error(tr!(
                 "errors.initialize_provider",
                 provider = ProviderKind::Antigravity.display_name(),
@@ -626,6 +710,7 @@ fn run_handshake(
             stdin,
             next_request_id,
             state,
+            shutdown_rx,
             "session/resume",
             resume_params,
             HANDSHAKE_TIMEOUT,
@@ -635,6 +720,7 @@ fn run_handshake(
                 let _ = events.send(DriverEvent::Error(tr!("errors.agy_auth_required")));
                 return false;
             }
+            Err(RpcCallError::Disconnected) => return false,
             _ => {
                 suppress_replay.store(true, Ordering::Release);
                 let load_params = json!({
@@ -647,6 +733,7 @@ fn run_handshake(
                     stdin,
                     next_request_id,
                     state,
+                    shutdown_rx,
                     "session/load",
                     load_params,
                     HANDSHAKE_TIMEOUT,
@@ -654,7 +741,8 @@ fn run_handshake(
                 suppress_replay.store(false, Ordering::Release);
                 match loaded {
                     Ok(resp) => resp,
-                    Err(error) => {
+                    Err(RpcCallError::Disconnected) => return false,
+                    Err(RpcCallError::Failed(error)) => {
                         let _ = events.send(DriverEvent::Error(tr!(
                             "errors.open_provider_session",
                             provider = ProviderKind::Antigravity.display_name(),
@@ -675,12 +763,14 @@ fn run_handshake(
             stdin,
             next_request_id,
             state,
+            shutdown_rx,
             "session/new",
             new_params,
             HANDSHAKE_TIMEOUT,
         ) {
             Ok(resp) => resp,
-            Err(error) => {
+            Err(RpcCallError::Disconnected) => return false,
+            Err(RpcCallError::Failed(error)) => {
                 let _ = events.send(DriverEvent::Error(tr!(
                     "errors.open_provider_session",
                     provider = ProviderKind::Antigravity.display_name(),
@@ -716,13 +806,14 @@ fn run_handshake(
         return false;
     };
 
-    let (current_model, current_effort, thought_levels) = extract_config_state(result);
+    #[cfg(not(test))]
+    crate::model_catalog::reconcile_agy_session_models(result);
+
+    let extracted = extract_config_state(result);
     {
         let mut guard = state.lock();
         guard.session_id = Some(session_id.clone());
-        guard.current_model = current_model;
-        guard.current_effort = current_effort;
-        guard.thought_levels = thought_levels;
+        apply_extracted_config(&mut guard, extracted);
         guard.base_mode = mode;
         guard.plan_mode = plan_mode;
     }
@@ -730,17 +821,20 @@ fn run_handshake(
     // Apply requested model -> clamped effort -> effective mode.
     if let Some(requested_model) = requested_model
         && state.lock().current_model.as_deref() != Some(requested_model)
-    {
-        set_config_option_sync(
+        && !set_config_option_sync(
             stdin,
             next_request_id,
             state,
+            shutdown_rx,
             events,
             &session_id,
             "model",
             requested_model,
             RpcErrorKey::SwitchModel,
-        );
+            true,
+        )
+    {
+        return false;
     }
 
     let target_effort = {
@@ -754,15 +848,19 @@ fn run_handshake(
     if let Some(effort) = target_effort
         && state.lock().current_effort.as_deref() != Some(effort.as_str())
     {
-        set_config_option_sync(
+        // A rejected clamped effort falls back to the model's own default
+        // without poisoning the connecting turn with a pre-connect error.
+        let _ = set_config_option_sync(
             stdin,
             next_request_id,
             state,
+            shutdown_rx,
             events,
             &session_id,
             "thought_level",
             &effort,
             RpcErrorKey::ChangeThinking,
+            false,
         );
     }
 
@@ -776,11 +874,13 @@ fn run_handshake(
             stdin,
             next_request_id,
             state,
+            shutdown_rx,
             events,
             &session_id,
             "mode",
             target_mode,
             RpcErrorKey::OpenSession,
+            true,
         )
     {
         return false;
@@ -796,6 +896,7 @@ fn apply_session_options_rpc(
     stdin: &mut impl Write,
     next_request_id: &mut u64,
     state: &Mutex<AgyRuntimeState>,
+    shutdown_rx: &Receiver<()>,
     events: &impl DriverEventSink,
     options: &SessionOptions,
 ) {
@@ -819,11 +920,13 @@ fn apply_session_options_rpc(
             stdin,
             next_request_id,
             state,
+            shutdown_rx,
             events,
             &session_id,
             "model",
             model,
             RpcErrorKey::SwitchModel,
+            true,
         );
     }
 
@@ -843,11 +946,13 @@ fn apply_session_options_rpc(
             stdin,
             next_request_id,
             state,
+            shutdown_rx,
             events,
             &session_id,
             "thought_level",
             &effort,
             RpcErrorKey::ChangeThinking,
+            true,
         );
     }
 
@@ -857,11 +962,13 @@ fn apply_session_options_rpc(
             stdin,
             next_request_id,
             state,
+            shutdown_rx,
             events,
             &session_id,
             "mode",
             target_mode,
             RpcErrorKey::OpenSession,
+            true,
         ) {
             state.lock().plan_mode = options.plan_mode;
         }
@@ -873,11 +980,13 @@ fn set_config_option_sync(
     stdin: &mut impl Write,
     next_request_id: &mut u64,
     state: &Mutex<AgyRuntimeState>,
+    shutdown_rx: &Receiver<()>,
     events: &impl DriverEventSink,
     session_id: &str,
     config_id: &str,
     value: &str,
     error_key: RpcErrorKey,
+    emit_error: bool,
 ) -> bool {
     let params = json!({
         "sessionId": session_id,
@@ -888,32 +997,34 @@ fn set_config_option_sync(
         stdin,
         next_request_id,
         state,
+        shutdown_rx,
         "session/set_config_option",
         params,
         CONFIG_TIMEOUT,
     ) {
         Ok(resp) => resp,
-        Err(error) => {
-            let _ = events.send(DriverEvent::Error(error_key.format(&error)));
+        Err(RpcCallError::Disconnected) => return false,
+        Err(RpcCallError::Failed(error)) => {
+            if emit_error {
+                let _ = events.send(DriverEvent::Error(error_key.format(&error)));
+            }
             return false;
         }
     };
     if let Some(error) = resp.get("error") {
-        emit_rpc_error(error, error_key, events);
+        if emit_error {
+            if is_auth_error(error) {
+                let _ = events.send(DriverEvent::Error(tr!("errors.agy_auth_required")));
+            } else {
+                emit_rpc_error(error, error_key, events);
+            }
+        }
         return false;
     }
     if let Some(result) = resp.get("result") {
-        let (model, effort, thought_levels) = extract_config_state(result);
+        let extracted = extract_config_state(result);
         let mut guard = state.lock();
-        if model.is_some() {
-            guard.current_model = model;
-        }
-        if effort.is_some() {
-            guard.current_effort = effort;
-        }
-        if !thought_levels.is_empty() || config_id == "model" {
-            guard.thought_levels = thought_levels;
-        }
+        apply_extracted_config(&mut guard, extracted);
     }
     true
 }
@@ -922,10 +1033,11 @@ fn call_rpc_sync(
     stdin: &mut impl Write,
     next_request_id: &mut u64,
     state: &Mutex<AgyRuntimeState>,
+    shutdown_rx: &Receiver<()>,
     method: &str,
     params: Value,
     timeout: Duration,
-) -> Result<Value, String> {
+) -> Result<Value, RpcCallError> {
     *next_request_id += 1;
     let id = *next_request_id;
     let (tx, rx) = bounded(1);
@@ -938,12 +1050,19 @@ fn call_rpc_sync(
     });
     if let Err(error) = write_json_line(stdin, &payload) {
         state.lock().pending_rpc.remove(&id);
-        return Err(error.to_string());
+        return Err(RpcCallError::Failed(error.to_string()));
     }
-    rx.recv_timeout(timeout).map_err(|_| {
-        state.lock().pending_rpc.remove(&id);
-        format!("{method} timed out")
-    })
+    select! {
+        recv(rx) -> msg => msg.map_err(|_| RpcCallError::Disconnected),
+        recv(shutdown_rx) -> _ => {
+            state.lock().pending_rpc.remove(&id);
+            Err(RpcCallError::Disconnected)
+        }
+        default(timeout) => {
+            state.lock().pending_rpc.remove(&id);
+            Err(RpcCallError::Failed(format!("{method} timed out")))
+        }
+    }
 }
 
 fn emit_rpc_error(error: &Value, key: RpcErrorKey, events: &impl DriverEventSink) {
@@ -1009,6 +1128,15 @@ fn handle_acp_message(
                     mode,
                     subagent_child,
                 );
+            } else {
+                // Every JSON-RPC request carrying an `id` requires a reply so
+                // the ACP server never blocks indefinitely on an unsupported
+                // client callback.
+                let _ = commands.send(CommandMessage::RespondErrorRaw {
+                    raw_id: raw_id.clone(),
+                    code: -32601,
+                    message: format!("Method not found: {method}"),
+                });
             }
         }
         // JSON-RPC notification (`session/update`).
@@ -1045,7 +1173,7 @@ fn handle_prompt_response(
             let _ = commands.send(CommandMessage::Shutdown);
             let _ = events.send(DriverEvent::TurnFinished {
                 success: false,
-                summary: Some(tr!("errors.agy_auth_required")),
+                summary: None,
             });
             return;
         }
@@ -1060,9 +1188,16 @@ fn handle_prompt_response(
         )));
         let _ = events.send(DriverEvent::TurnFinished {
             success: false,
-            summary: Some(message.to_owned()),
+            summary: None,
         });
         return;
+    }
+
+    if let Some(usage) = value
+        .pointer("/result/usage")
+        .filter(|usage| !usage.is_null())
+    {
+        state.lock().last_turn_usage = Some(usage.clone());
     }
 
     let stop_reason = value
@@ -1084,7 +1219,7 @@ fn handle_prompt_response(
                 provider = ProviderKind::Antigravity.display_name()
             )
         } else {
-            format!("Antigravity stopped: {stop_reason}")
+            tr!("session.agent_stopped_reason", reason = stop_reason)
         };
         let _ = events.send(DriverEvent::TurnFinished {
             success: false,
@@ -1133,7 +1268,9 @@ fn handle_permission_request(
             .find(|opt| matches!(opt.kind.as_str(), "reject_once" | "reject_always"))
             .map(|opt| opt.option_id.as_str());
         let result = match reject_id {
-            Some(option_id) => json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
+            Some(option_id) => {
+                json!({ "outcome": { "outcome": "selected", "optionId": option_id } })
+            }
             None => json!({ "outcome": { "outcome": "cancelled" } }),
         };
         let _ = commands.send(CommandMessage::RespondPermissionRaw { raw_id, result });
@@ -1148,7 +1285,9 @@ fn handle_permission_request(
             .or_else(|| options.first())
             .map(|opt| opt.option_id.as_str());
         let result = match allow_id {
-            Some(option_id) => json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
+            Some(option_id) => {
+                json!({ "outcome": { "outcome": "selected", "optionId": option_id } })
+            }
             None => json!({ "outcome": { "outcome": "cancelled" } }),
         };
         let _ = commands.send(CommandMessage::RespondPermissionRaw { raw_id, result });
@@ -1265,17 +1404,9 @@ fn handle_session_update(
             }
         }
         "config_option_update" => {
-            let (model, effort, thought_levels) = extract_config_state(update);
+            let extracted = extract_config_state(update);
             let mut guard = state.lock();
-            if model.is_some() {
-                guard.current_model = model;
-            }
-            if effort.is_some() {
-                guard.current_effort = effort;
-            }
-            if !thought_levels.is_empty() {
-                guard.thought_levels = thought_levels;
-            }
+            apply_extracted_config(&mut guard, extracted);
         }
         "current_mode_update" => {
             if let Some(mode_id) = update.get("currentModeId").and_then(Value::as_str) {
@@ -1422,7 +1553,8 @@ fn normalize_tool_call(state: &AcpToolCallState) -> ActivityItem {
         .or_else(|| (!state.name.is_empty()).then(|| state.name.clone()))
         .unwrap_or_else(|| "Tool".to_owned());
 
-    let unwrapped_output = unwrap_acp_output(state.raw_output.as_ref(), state.content.as_ref());
+    let unwrapped_output =
+        unwrap_acp_output(kind, state.raw_output.as_ref(), state.content.as_ref());
     let exit_code_failed = state
         .raw_output
         .as_ref()
@@ -1447,12 +1579,23 @@ fn normalize_tool_call(state: &AcpToolCallState) -> ActivityItem {
     .with_tool_name((!state.name.is_empty()).then_some(state.name.as_str()))
 }
 
-fn unwrap_acp_output(raw_output: Option<&Value>, content: Option<&Value>) -> Option<Value> {
+fn unwrap_acp_output(
+    kind: ActivityKind,
+    raw_output: Option<&Value>,
+    content: Option<&Value>,
+) -> Option<Value> {
+    let normalize = |value: Value| -> Value {
+        if kind == ActivityKind::FileRead {
+            normalize_agy_read_value(value)
+        } else {
+            value
+        }
+    };
     if let Some(raw_output) = raw_output {
         if let Some(text) = raw_output.get("output").and_then(Value::as_str) {
-            return Some(Value::String(text.to_owned()));
+            return Some(normalize(Value::String(text.to_owned())));
         }
-        return Some(raw_output.clone());
+        return Some(normalize(raw_output.clone()));
     }
     let content = content?;
     if let Some(items) = content.as_array() {
@@ -1466,9 +1609,89 @@ fn unwrap_acp_output(raw_output: Option<&Value>, content: Option<&Value>) -> Opt
                 }
             })
             .collect();
-        return Some(Value::Array(unwrapped));
+        return Some(normalize(Value::Array(unwrapped)));
     }
-    Some(content.clone())
+    Some(normalize(content.clone()))
+}
+
+/// Strips Antigravity's `Created At` / `Completed At` / `Showing lines` header
+/// and converts `<line>: <code>` gutters into Raku's `<line>\t<code>` form so
+/// `read_range` and the syntax-highlighted file preview recognize them.
+fn normalize_agy_read_value(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(normalize_agy_read_text(&text)),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| {
+                    if item.get("type").and_then(Value::as_str) == Some("text")
+                        && let Some(text) = item.get("text").and_then(Value::as_str)
+                    {
+                        let mut clone = item.clone();
+                        clone["text"] = Value::String(normalize_agy_read_text(text));
+                        clone
+                    } else {
+                        item
+                    }
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn normalize_agy_read_text(text: &str) -> String {
+    let mut lines = text.lines().peekable();
+    if lines
+        .peek()
+        .is_some_and(|line| line.starts_with("Created At: "))
+    {
+        lines.next();
+        if lines
+            .peek()
+            .is_some_and(|line| line.starts_with("Completed At: "))
+        {
+            lines.next();
+        }
+    }
+    let had_showing_header = lines
+        .peek()
+        .is_some_and(|line| line.starts_with("Showing lines "));
+    if had_showing_header {
+        lines.next();
+    }
+    let remaining: Vec<&str> = lines.collect();
+    if remaining.is_empty() {
+        return text.to_owned();
+    }
+    fn parse_colon_gutter(line: &str) -> Option<(u32, &str)> {
+        let trimmed = line.trim_start_matches(' ');
+        let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 || digits > 7 {
+            return None;
+        }
+        let rest = trimmed.get(digits..)?;
+        let code = rest
+            .strip_prefix(": ")
+            .or_else(|| (rest == ":").then_some(""))?;
+        Some((trimmed.get(..digits)?.parse().ok()?, code))
+    }
+    let non_empty = remaining.iter().filter(|l| !l.trim().is_empty()).count();
+    let numbered = remaining
+        .iter()
+        .filter(|l| !l.trim().is_empty() && parse_colon_gutter(l).is_some())
+        .count();
+    if non_empty == 0 || (!had_showing_header && numbered * 4 < non_empty * 3) {
+        return text.to_owned();
+    }
+    remaining
+        .into_iter()
+        .map(|line| match parse_colon_gutter(line) {
+            Some((num, code)) => format!("{num}\t{code}"),
+            None => line.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn normalize_plan_update(update: &Value) -> Option<ActivityItem> {
@@ -1476,7 +1699,7 @@ fn normalize_plan_update(update: &Value) -> Option<ActivityItem> {
     let steps: Vec<PlanStep> = entries
         .iter()
         .filter_map(|entry| {
-            let text = ["content", "step", "subject", "text"]
+            let text = ["content", "step", "subject", "title", "text"]
                 .iter()
                 .find_map(|key| entry.get(key).and_then(Value::as_str))?
                 .trim();
@@ -1526,21 +1749,42 @@ fn extract_current_mode(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn extract_config_state(value: &Value) -> (Option<String>, Option<String>, Vec<String>) {
+struct ExtractedConfig {
+    current_model: Option<String>,
+    has_thought_level: bool,
+    current_effort: Option<String>,
+    thought_levels: Vec<String>,
+}
+
+fn apply_extracted_config(state: &mut AgyRuntimeState, cfg: ExtractedConfig) {
+    let saw_model = cfg.current_model.is_some();
+    if let Some(model) = cfg.current_model {
+        state.current_model = Some(model);
+    }
+    if cfg.has_thought_level {
+        state.current_effort = cfg.current_effort;
+        state.thought_levels = cfg.thought_levels;
+    } else if saw_model {
+        // Standalone models (e.g. `gpt-oss-120b-medium`) omit `thought_level`
+        // from `configOptions` altogether; clear stale state from a prior model.
+        state.current_effort = None;
+        state.thought_levels.clear();
+    }
+}
+
+fn extract_config_state(value: &Value) -> ExtractedConfig {
     let options = value
         .get("configOptions")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default();
     let mut current_model = None;
+    let mut has_thought_level = false;
     let mut current_effort = None;
     let mut thought_levels = Vec::new();
     for entry in options {
         let id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
-        let category = entry
-            .get("category")
-            .and_then(Value::as_str)
-            .unwrap_or(id);
+        let category = entry.get("category").and_then(Value::as_str).unwrap_or(id);
         let current = entry
             .get("currentValue")
             .and_then(Value::as_str)
@@ -1550,6 +1794,7 @@ fn extract_config_state(value: &Value) -> (Option<String>, Option<String>, Vec<S
         if category == "model" || id == "model" {
             current_model = current;
         } else if category == "thought_level" || id == "thought_level" {
+            has_thought_level = true;
             current_effort = current;
             thought_levels = entry
                 .get("options")
@@ -1566,7 +1811,12 @@ fn extract_config_state(value: &Value) -> (Option<String>, Option<String>, Vec<S
                 .collect();
         }
     }
-    (current_model, current_effort, thought_levels)
+    ExtractedConfig {
+        current_model,
+        has_thought_level,
+        current_effort,
+        thought_levels,
+    }
 }
 
 fn clamp_thought_level(
@@ -1674,9 +1924,7 @@ fn image_mentions(text: &str, cwd: &Path) -> Vec<(std::path::PathBuf, &'static s
     let mut found = Vec::new();
     for (position, &start) in starts.iter().enumerate() {
         // A mention never reaches into the next one.
-        let limit = starts
-            .get(position + 1)
-            .map_or(text.len(), |next| next - 1);
+        let limit = starts.get(position + 1).map_or(text.len(), |next| next - 1);
         let rest = &text[start..limit];
         let ends = rest
             .char_indices()
@@ -1758,10 +2006,102 @@ mod tests {
     #[test]
     fn parses_session_new_config_options_camel_case_only() {
         let fixtures = samples();
-        let (model, effort, levels) = extract_config_state(&fixtures["session_new_result"]);
-        assert_eq!(model.as_deref(), Some("gemini-4-neon"));
-        assert_eq!(effort.as_deref(), Some("high"));
-        assert_eq!(levels, ["low", "medium", "high", "xhigh"]);
+        let cfg = extract_config_state(&fixtures["session_new_result"]);
+        assert_eq!(cfg.current_model.as_deref(), Some("gemini-4-neon"));
+        assert_eq!(cfg.current_effort.as_deref(), Some("high"));
+        assert_eq!(cfg.thought_levels, ["low", "medium", "high", "xhigh"]);
+
+        let mut runtime = AgyRuntimeState::default();
+        apply_extracted_config(&mut runtime, cfg);
+        // Switching to a standalone model without `thought_level` clears stale
+        // effort state from the previous model.
+        let standalone = extract_config_state(&json!({
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "currentValue": "gpt-oss-120b-medium",
+                "options": []
+            }]
+        }));
+        apply_extracted_config(&mut runtime, standalone);
+        assert_eq!(
+            runtime.current_model.as_deref(),
+            Some("gpt-oss-120b-medium")
+        );
+        assert_eq!(runtime.current_effort, None);
+        assert!(runtime.thought_levels.is_empty());
+    }
+
+    #[test]
+    fn unknown_server_request_replies_with_method_not_found_and_read_output_normalizes() {
+        let state = Mutex::new(AgyRuntimeState::default());
+        let suppress = AtomicBool::new(false);
+        let (commands, cmd_rx) = unbounded();
+        let (events, rx) = test_event_channel();
+        let mut stream = AgyStreamState::default();
+
+        handle_acp_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "req-99",
+                "method": "fs/read_text_file",
+                "params": { "path": "/tmp/x" }
+            }),
+            &state,
+            &suppress,
+            &commands,
+            &events,
+            &mut stream,
+            RuntimeMode::Ask,
+            false,
+        );
+        let cmd = cmd_rx.try_recv().expect("method-not-found reply");
+        assert!(matches!(
+            cmd,
+            CommandMessage::RespondErrorRaw { raw_id, code: -32601, .. }
+                if raw_id == json!("req-99")
+        ));
+
+        handle_acp_message(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "s1",
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "read-1",
+                        "name": "read_file",
+                        "kind": "read",
+                        "status": "completed",
+                        "rawInput": { "Path": "/work/src/lib.rs", "StartLine": 10, "EndLine": 12 },
+                        "rawOutput": {
+                            "output": "Created At: 2026-11-26T20:00:00+09:00\nCompleted At: 2026-11-26T20:00:01+09:00\nShowing lines 10-12 of 90\n10: fn a() {}\n11: \n12: fn b() {}\n"
+                        }
+                    }
+                }
+            }),
+            &state,
+            &suppress,
+            &commands,
+            &events,
+            &mut stream,
+            RuntimeMode::Ask,
+            false,
+        );
+        let ev = rx.try_recv().expect("rich activity");
+        let DriverEvent::RichActivity(item) = ev else {
+            panic!("expected RichActivity, got {ev:?}");
+        };
+        assert_eq!(item.kind, ActivityKind::FileRead);
+        assert_eq!(
+            item.read_range,
+            Some(raku_protocol::model::ActivityReadRange { start: 10, end: 12 })
+        );
+        assert_eq!(
+            item.output.as_deref(),
+            Some("10\tfn a() {}\n11\t\n12\tfn b() {}")
+        );
     }
 
     #[test]
@@ -1814,18 +2154,20 @@ mod tests {
             e,
             DriverEvent::AutoTitleUpdated(Some(title)) if title == "Shell Command Execution Test"
         )));
-        assert!(emitted.iter().any(|e| matches!(
-            e,
-            DriverEvent::ReasoningStarted { .. }
-        )));
+        assert!(
+            emitted
+                .iter()
+                .any(|e| matches!(e, DriverEvent::ReasoningStarted { .. }))
+        );
         assert!(emitted.iter().any(|e| matches!(
             e,
             DriverEvent::ReasoningBlockDelta { delta, .. } if delta == "Checking workspace state."
         )));
-        assert!(emitted.iter().any(|e| matches!(
-            e,
-            DriverEvent::ReasoningCompleted { .. }
-        )));
+        assert!(
+            emitted
+                .iter()
+                .any(|e| matches!(e, DriverEvent::ReasoningCompleted { .. }))
+        );
         assert!(emitted.iter().any(|e| matches!(
             e,
             DriverEvent::RichActivity(item) if item.complete && !item.failed && item.kind == ActivityKind::Command
@@ -1836,7 +2178,10 @@ mod tests {
         )));
         assert!(emitted.iter().any(|e| matches!(
             e,
-            DriverEvent::TurnFinished { success: true, summary: None }
+            DriverEvent::TurnFinished {
+                success: true,
+                summary: None
+            }
         )));
     }
 
@@ -2053,7 +2398,9 @@ mod tests {
     fn clamps_thought_level_and_detects_auth_error() {
         let fixtures = samples();
         assert!(is_auth_error(&fixtures["auth_error"]["error"]));
-        assert!(!is_auth_error(&json!({"code": -32602, "message": "Invalid params"})));
+        assert!(!is_auth_error(
+            &json!({"code": -32602, "message": "Invalid params"})
+        ));
 
         let flash_levels = vec!["low".into(), "medium".into(), "high".into()];
         assert_eq!(
@@ -2064,10 +2411,7 @@ mod tests {
             clamp_thought_level(Some("medium"), &flash_levels, Some("high")).as_deref(),
             Some("medium")
         );
-        assert_eq!(
-            clamp_thought_level(Some("high"), &[], Some("high")),
-            None
-        );
+        assert_eq!(clamp_thought_level(Some("high"), &[], Some("high")), None);
     }
 
     #[test]
@@ -2242,6 +2586,58 @@ done
             }
         }
         assert!(exited, "expected ProcessExited on drop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn early_exit_during_handshake_unblocks_immediately_without_waiting_for_timeout() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!("raku-agy-crash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("crash-agy");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'error: fatal boot failure' >&2\nexit 1\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let started = std::time::Instant::now();
+        let (events, rx) = test_event_channel();
+        let _driver = AgyDriver::start(
+            DriverStartOptions {
+                binary: script,
+                cwd: dir.clone(),
+                mode: RuntimeMode::Ask,
+                plan_mode: false,
+                model: None,
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                provider_cursor: None,
+                read_only: false,
+                subagent: Default::default(),
+            },
+            events,
+        )
+        .unwrap();
+
+        let mut saw_exit = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if let Ok(DriverEvent::ProcessExited) = rx.recv_timeout(Duration::from_millis(100)) {
+                saw_exit = true;
+                break;
+            }
+        }
+        assert!(saw_exit, "expected ProcessExited quickly after early crash");
+        assert!(started.elapsed() < Duration::from_secs(3));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

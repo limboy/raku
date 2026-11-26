@@ -203,6 +203,14 @@ pub fn fetch_pi_opencode_go_plan_usage() -> anyhow::Result<Option<PlanUsage>> {
 
 /// How long `agy /usage` may take: a Go cold start plus one quota round trip.
 const AGY_USAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Reuse a recent `/usage` envelope when switching between Antigravity model
+/// groups so one subprocess serves every group; shorter than the UI's 30 s
+/// stale-refresh cadence so a settled turn always reads fresh numbers.
+const AGY_USAGE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(25);
+
+static AGY_USAGE_ENVELOPE_CACHE: std::sync::Mutex<
+    Option<(std::time::Instant, std::path::PathBuf, Value)>,
+> = std::sync::Mutex::new(None);
 
 /// Fetch Antigravity's account quota with `agy --output-format json --print
 /// /usage`. The read-only slash command answers in print mode without
@@ -217,6 +225,33 @@ pub fn fetch_antigravity_plan_usage(
     binary: &std::path::Path,
     model: Option<&str>,
 ) -> anyhow::Result<Option<PlanUsage>> {
+    let cached = AGY_USAGE_ENVELOPE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .filter(|(fetched_at, cached_bin, _)| {
+            cached_bin == binary && fetched_at.elapsed() < AGY_USAGE_CACHE_TTL
+        })
+        .map(|(_, _, envelope)| envelope.clone());
+    let envelope = match cached {
+        Some(envelope) => envelope,
+        None => {
+            let fetched = run_antigravity_usage_command(binary)?;
+            *AGY_USAGE_ENVELOPE_CACHE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((
+                std::time::Instant::now(),
+                binary.to_path_buf(),
+                fetched.clone(),
+            ));
+            fetched
+        }
+    };
+    let names = antigravity_model_names(model);
+    Ok(parse_antigravity_plan_usage(&envelope, model, &names))
+}
+
+fn run_antigravity_usage_command(binary: &std::path::Path) -> anyhow::Result<Value> {
     let cwd = crate::session_catalog::catalog_working_directory()?;
     let mut command = crate::command_env::command(binary);
     command
@@ -245,15 +280,11 @@ pub fn fetch_antigravity_plan_usage(
             .filter(|message| !message.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| {
-                format!(
-                    "agy /usage failed ({})",
-                    output.status.code().unwrap_or(1)
-                )
+                format!("agy /usage failed ({})", output.status.code().unwrap_or(1))
             });
         return Err(anyhow!(detail));
     }
-    let names = antigravity_model_names(model);
-    Ok(parse_antigravity_plan_usage(&envelope, model, &names))
+    Ok(envelope)
 }
 
 /// Display names that identify `model` in a quota group's description: the
@@ -309,7 +340,9 @@ fn antigravity_group_matches(group: &Value, model: &str, names: &[String]) -> bo
     antigravity_group_models(group).iter().any(|listed| {
         let listed_slug = antigravity_slug(listed);
         !listed_slug.is_empty()
-            && (names.iter().any(|name| antigravity_slug(name) == listed_slug)
+            && (names
+                .iter()
+                .any(|name| antigravity_slug(name) == listed_slug)
                 || model_slug == listed_slug
                 || model_slug.starts_with(&format!("{listed_slug}-")))
     })
@@ -960,14 +993,20 @@ mod tests {
             .unwrap()
             .expect("agy reported no quota buckets");
         assert_eq!(usage.windows.len(), 2, "{usage:?}");
-        assert!(usage.windows.iter().all(|window| (0.0..=100.0).contains(&window.percent)));
+        assert!(
+            usage
+                .windows
+                .iter()
+                .all(|window| (0.0..=100.0).contains(&window.percent))
+        );
     }
 
     #[test]
     fn antigravity_usage_shows_the_models_group_five_hour_first() {
         let envelope: Value = serde_json::from_str(AGY_USAGE).unwrap();
 
-        let gemini = parse_antigravity_plan_usage(&envelope, Some("gemini-3.8-flash"), &[]).unwrap();
+        let gemini =
+            parse_antigravity_plan_usage(&envelope, Some("gemini-3.8-flash"), &[]).unwrap();
         assert_eq!(gemini.windows.len(), 2);
         assert_eq!(gemini.windows[0].label, tr!("usage.hour_limit", count = 5));
         assert_eq!(gemini.windows[0].percent, 28.1);

@@ -2432,8 +2432,8 @@ impl ActivityKind {
             "todo"
                 | "todowrite"
                 | "updateplan"
+                | "updatesteps"
                 | "plan"
-                | "managetask"
                 | "taskcreate"
                 | "taskupdate"
         ) {
@@ -3165,7 +3165,7 @@ impl PlanStep {
         entries
             .iter()
             .filter_map(|entry| {
-                let text = ["content", "step", "subject", "text"]
+                let text = ["content", "step", "subject", "title", "text"]
                     .iter()
                     .find_map(|key| entry.get(key).and_then(serde_json::Value::as_str))?
                     .trim();
@@ -3670,11 +3670,18 @@ fn read_arguments_line_range(arguments: &str) -> Option<ActivityReadRange> {
             .find_map(|key| value.get(*key).and_then(serde_json::Value::as_u64))
     };
     // Line numbers start at 1; an `offset: 0` means the top of the file.
-    let start = number(&["offset", "start_line", "startLine", "line", "start"])
-        .unwrap_or(1)
-        .max(1);
+    let start = number(&[
+        "offset",
+        "start_line",
+        "startLine",
+        "StartLine",
+        "line",
+        "start",
+    ])
+    .unwrap_or(1)
+    .max(1);
     let start = u32::try_from(start).ok()?;
-    let end = number(&["end_line", "endLine", "end"])
+    let end = number(&["end_line", "endLine", "EndLine", "end"])
         .and_then(|end| u32::try_from(end).ok())
         .or_else(|| {
             number(&["limit"])
@@ -5137,17 +5144,52 @@ mod tests {
                 "{name}"
             );
         }
-        for name in ["create_thread", "read_mcp_resource", "list_threads"] {
+        for name in [
+            "create_thread",
+            "read_mcp_resource",
+            "list_threads",
+            "manage_task",
+        ] {
             assert_eq!(
                 ActivityKind::from_tool_name(name),
                 ActivityKind::Tool,
                 "{name}"
             );
         }
+        assert_eq!(
+            ActivityKind::from_tool_name("update_steps"),
+            ActivityKind::Plan
+        );
+        let steps = PlanStep::list_from_value(&serde_json::json!({
+            "steps": [
+                { "title": "Inspect ACP stream", "status": "done" },
+                { "title": "Update capabilities", "status": "in_progress" }
+            ]
+        }));
+        assert_eq!(
+            steps,
+            vec![
+                PlanStep {
+                    text: "Inspect ACP stream".into(),
+                    status: PlanStepStatus::Completed,
+                },
+                PlanStep {
+                    text: "Update capabilities".into(),
+                    status: PlanStepStatus::InProgress,
+                },
+            ]
+        );
     }
 
     #[test]
     fn read_ranges_prefer_numbered_output_then_arguments() {
+        let agy_args = serde_json::json!({"Path": "/tmp/a.rs", "StartLine": 10, "EndLine": 45});
+        let agy_read = ActivityItem::new(None, ActivityKind::FileRead, "Read", None, false)
+            .with_arguments(Some(agy_args.to_string()));
+        assert_eq!(
+            agy_read.read_range,
+            Some(ActivityReadRange { start: 10, end: 45 })
+        );
         let arguments =
             serde_json::json!({"file_path": "/tmp/a.swift", "offset": 18, "limit": 100});
         let mut item = ActivityItem::new(None, ActivityKind::FileRead, "Read", None, false)
@@ -5729,7 +5771,12 @@ mod tests {
             assert!(provider.capabilities().conversation.rollback);
         }
         assert!(!ProviderKind::Antigravity.capabilities().conversation.fork);
-        assert!(!ProviderKind::Antigravity.capabilities().conversation.rollback);
+        assert!(
+            !ProviderKind::Antigravity
+                .capabilities()
+                .conversation
+                .rollback
+        );
     }
 
     #[test]

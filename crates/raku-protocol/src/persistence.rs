@@ -8,13 +8,7 @@ use crate::model::{AgentSession, MessageRole};
 
 // Persisted provider tags (including OpenCode's old beta alias) must stay
 // recognizable after their variants are removed from ProviderKind.
-const RETIRED_PROVIDERS: &[&str] = &[
-    "deepSeek",
-    "ohMyPi",
-    "openCode",
-    "openCode2",
-    "agy",
-];
+const RETIRED_PROVIDERS: &[&str] = &["deepSeek", "ohMyPi", "openCode", "openCode2", "agy"];
 
 fn is_retired_provider(value: &serde_json::Value) -> bool {
     value

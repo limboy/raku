@@ -1313,6 +1313,8 @@ errors.provider_subagent_unsupported:
   en: "%{provider} cannot run as a subagent yet"
 errors.provider_session_import_unsupported:
   en: "Importing sessions from %{provider} is not supported yet"
+errors.provider_text_generation_unsupported:
+  en: "%{provider} does not support sessionless text generation yet"
 errors.agy_auth_required:
   en: "Antigravity is not signed in. Run agy or agy acp --login in your terminal to sign in."
 errors.fork_task:

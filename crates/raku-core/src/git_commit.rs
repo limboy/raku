@@ -86,6 +86,12 @@ pub fn generate_message(
     include_unstaged: bool,
     invocation: &AgentInvocation,
 ) -> anyhow::Result<String> {
+    if !invocation.provider.capabilities().text_generation {
+        bail!(tr!(
+            "errors.provider_text_generation_unsupported",
+            provider = invocation.provider.display_name()
+        ));
+    }
     let prompt = commit_prompt(cwd, include_unstaged)?;
     let args = agent_arguments(
         invocation.provider,
@@ -254,6 +260,8 @@ fn agent_arguments(
             push(&mut args, "--output-format");
             push(&mut args, "text");
             push(&mut args, "--disable-slash-commands");
+            push(&mut args, "--mode");
+            push(&mut args, "plan");
             push(&mut args, "--sandbox");
             push(&mut args, "--model");
             push(&mut args, AGY_COMMIT_MODEL);
@@ -622,6 +630,7 @@ mod tests {
                 ProviderKind::Antigravity => {
                     assert!(has_pair(&args, "--output-format", "text"));
                     assert!(has(&args, "--disable-slash-commands"));
+                    assert!(has_pair(&args, "--mode", "plan"));
                     assert!(has(&args, "--sandbox"));
                     assert!(has_pair(&args, "--model", AGY_COMMIT_MODEL));
                     assert!(has_pair(&args, "--effort", AGY_COMMIT_EFFORT));

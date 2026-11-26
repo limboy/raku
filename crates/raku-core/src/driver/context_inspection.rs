@@ -515,6 +515,47 @@ pub(crate) fn pi_breakdown(stats: &Value, last_usage: Option<&Value>) -> Context
     }
 }
 
+/// Antigravity ACP's `usage_update` (`used`, `size`) plus the last settled
+/// `session/prompt` response `usage` (`inputTokens`, `outputTokens`, ...).
+pub(crate) fn agy_breakdown(
+    detail: ContextDetail,
+    model: Option<&str>,
+    last_usage: Option<(u64, u64)>,
+    turn_usage: Option<&Value>,
+) -> Option<ContextBreakdown> {
+    if last_usage.is_none() && turn_usage.is_none() {
+        return None;
+    }
+    let total_tokens = last_usage.map(|(used, _)| used).or_else(|| {
+        turn_usage
+            .and_then(|usage| u64_at(usage, "totalTokens"))
+            .filter(|tokens| *tokens > 0)
+    });
+    let window = last_usage.map(|(_, size)| size).filter(|size| *size > 0);
+    let token_split = turn_usage
+        .map(|usage| TokenSplit {
+            input: u64_at(usage, "inputTokens"),
+            cache_read: u64_at(usage, "cachedInputTokens"),
+            cache_write: None,
+            output: u64_at(usage, "outputTokens"),
+            reasoning: u64_at(usage, "reasoningOutputTokens")
+                .or_else(|| u64_at(usage, "thoughtsTokenCount")),
+        })
+        .unwrap_or_default();
+    Some(ContextBreakdown {
+        detail,
+        model: model.map(str::to_owned),
+        measured_at_ms: now_ms(),
+        total_tokens,
+        window,
+        auto_compact_threshold: None,
+        categories: Vec::new(),
+        sections: Vec::new(),
+        token_split,
+        tools: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +762,27 @@ mod tests {
             [("RAKU_TEST_FLAG".to_owned(), "1".to_owned())]
         );
         assert_eq!(manifest.appended_instructions, "be helpful");
+    }
+
+    #[test]
+    fn agy_breakdown_combines_occupancy_and_prompt_token_split() {
+        assert!(agy_breakdown(ContextDetail::Summary, None, None, None).is_none());
+        let turn_usage = json!({
+            "inputTokens": 20944,
+            "outputTokens": 41,
+            "totalTokens": 20985
+        });
+        let breakdown = agy_breakdown(
+            ContextDetail::Full,
+            Some("gemini-4-neon"),
+            Some((10538, 1048576)),
+            Some(&turn_usage),
+        )
+        .expect("agy breakdown");
+        assert_eq!(breakdown.model.as_deref(), Some("gemini-4-neon"));
+        assert_eq!(breakdown.total_tokens, Some(10538));
+        assert_eq!(breakdown.window, Some(1048576));
+        assert_eq!(breakdown.token_split.input, Some(20944));
+        assert_eq!(breakdown.token_split.output, Some(41));
     }
 }

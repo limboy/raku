@@ -17,7 +17,7 @@ English code, paths, technical identifiers, or background instructions;
 technical terms can retain their original form.
 
 Codex receives this policy in its title turn's system instructions. For
-Claude and Pi, Raku appends the same naming context to the first ordinary
+Claude, Pi, and Antigravity, Raku appends the same naming context to the first ordinary
 prompt whose language can be identified in each live driver. Language detection
 uses a bounded sample of the original prose, excluding code blocks, inline code,
 quoted background, paths, and identifiers. CJK characters are compared with Latin words rather
@@ -118,6 +118,7 @@ title near when the provider writes it, and long enough to survive a slow start.
 | Codex CLI | **Raku** (`gpt-5.6-luna`, effort `low`) | second `codex app-server` process | first `turn/started`, new threads only | [codex.rs:636](../crates/raku-core/src/driver/codex.rs#L636) |
 | Codex CLI | Codex | JSON-RPC stream | thread start/resume, `thread/name/updated` | [codex.rs:1612](../crates/raku-core/src/driver/codex.rs#L1612), [codex.rs:1735](../crates/raku-core/src/driver/codex.rs#L1735) |
 | Pi | user or extension; no built-in automatic generator in installed 1.4.0 | NDJSON stream | connect, explicit `session_info_changed` | [pi.rs](../crates/raku-core/src/driver/pi.rs) |
+| Antigravity | Antigravity's native title generator | ACP JSON-RPC stream | `session/update` (`session_info_update`) | [agy.rs](../crates/raku-core/src/driver/agy.rs) |
 
 ### Claude Code
 
@@ -253,6 +254,13 @@ currently forwards name changes but does not generate a missing Pi name.
 Both existing Pi conversations checked during the audit retained their prompt
 fallback and had no native `session_info` name entries. An extension can supply
 a name; built-in rename support is not automatic naming.
+
+### Antigravity
+
+Antigravity generates titles natively and pushes them over ACP via
+`session/update` notifications with `sessionUpdate: "session_info_update"` and a
+non-empty `title` field ([agy.rs](../crates/raku-core/src/driver/agy.rs)), which
+Raku forwards directly as `AutoTitleUpdated(Some(title))`.
 
 ## Adding a provider
 

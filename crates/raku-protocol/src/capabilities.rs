@@ -29,6 +29,9 @@ pub struct ProviderCapabilities {
     pub side_chat: bool,
     /// The transport can run as a `subagent.child` without asking the user.
     pub subagent_target: bool,
+    /// One-shot print generation runs without leaving conversations in the
+    /// provider's own history.
+    pub text_generation: bool,
 }
 
 impl ProviderCapabilities {
@@ -82,6 +85,7 @@ impl ProviderKind {
                 plan_mode: true,
                 side_chat: true,
                 subagent_target: true,
+                text_generation: true,
             },
             Self::Codex => ProviderCapabilities {
                 access_modes: &RuntimeMode::ACCESS_OPTIONS,
@@ -97,6 +101,7 @@ impl ProviderKind {
                 plan_mode: true,
                 side_chat: true,
                 subagent_target: true,
+                text_generation: true,
             },
             Self::Pi => ProviderCapabilities {
                 access_modes: &[RuntimeMode::FullAccess],
@@ -112,6 +117,7 @@ impl ProviderKind {
                 plan_mode: false,
                 side_chat: true,
                 subagent_target: true,
+                text_generation: true,
             },
             Self::Antigravity => ProviderCapabilities {
                 access_modes: &RuntimeMode::ACCESS_OPTIONS,
@@ -130,6 +136,7 @@ impl ProviderKind {
                 plan_mode: true,
                 side_chat: false,
                 subagent_target: false,
+                text_generation: false,
             },
         }
     }
@@ -210,9 +217,11 @@ mod tests {
         assert!(agy.plan_mode);
         assert!(!agy.side_chat);
         assert!(!agy.subagent_target);
+        assert!(!agy.text_generation);
         for provider in [ProviderKind::Claude, ProviderKind::Codex, ProviderKind::Pi] {
             assert!(provider.capabilities().side_chat);
             assert!(provider.capabilities().subagent_target);
+            assert!(provider.capabilities().text_generation);
         }
     }
 

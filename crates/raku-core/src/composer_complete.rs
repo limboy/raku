@@ -146,6 +146,7 @@ fn assemble_slash_commands(
         }
         ProviderKind::Antigravity => {
             if let Some(home) = home.as_deref() {
+                scan_skill_files(provider, &home.join(".gemini/config/skills"), &mut commands);
                 scan_skill_files(
                     provider,
                     &home.join(".gemini/antigravity-cli/skills"),

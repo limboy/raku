@@ -126,15 +126,38 @@ impl Raku {
             return;
         };
 
-        let invocation = self
-            .provider_probe(provider)
-            .and_then(|probe| probe.path.clone())
-            .map(|binary| crate::git_commit::AgentInvocation {
-                provider,
-                binary,
-                model,
-                reasoning_effort,
-            });
+        let invocation = if provider.capabilities().text_generation {
+            self.provider_probe(provider)
+                .and_then(|probe| probe.path.clone())
+                .map(|binary| crate::git_commit::AgentInvocation {
+                    provider,
+                    binary,
+                    model,
+                    reasoning_effort,
+                })
+        } else {
+            self.text_generation_invocation().or_else(|| {
+                ProviderKind::ALL
+                    .into_iter()
+                    .filter(|candidate| candidate.capabilities().text_generation)
+                    .filter(|candidate| !self.state.disabled_providers.contains(candidate))
+                    .find_map(|candidate| {
+                        let probe = self.provider_probe(candidate)?;
+                        let binary = probe.path.clone()?;
+                        let fallback_model = probe.preferred_model().map(|m| m.id.clone());
+                        let fallback_effort = fallback_model
+                            .as_deref()
+                            .and_then(|id| probe.model(id))
+                            .and_then(|m| m.default_reasoning_effort.clone());
+                        Some(crate::git_commit::AgentInvocation {
+                            provider: candidate,
+                            binary,
+                            model: fallback_model,
+                            reasoning_effort: fallback_effort,
+                        })
+                    })
+            })
+        };
         let cached_branch = self
             .visible_branch_snapshot
             .as_ref()

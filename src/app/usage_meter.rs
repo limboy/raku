@@ -20,6 +20,33 @@ const USAGE_METER_MENU_ID: &str = "usage-meter";
 pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 2] =
     [ProviderKind::Claude, ProviderKind::Codex];
 
+/// Quota group within Antigravity's `/usage` report so switching between two
+/// Gemini models (or between Claude and GPT) reuses the same cached snapshot.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) enum AntigravityUsageGroup {
+    Gemini,
+    ThirdParty,
+    Other(Option<String>),
+}
+
+impl AntigravityUsageGroup {
+    pub(super) fn for_model(model: Option<&str>) -> Self {
+        match model.map(str::trim).filter(|m| !m.is_empty()) {
+            Some(m) if m.starts_with("gemini-") => Self::Gemini,
+            Some(m) if m.starts_with("claude-") || m.starts_with("gpt-") => Self::ThirdParty,
+            other => Self::Other(other.map(str::to_owned)),
+        }
+    }
+
+    fn representative_model(&self) -> Option<String> {
+        match self {
+            Self::Gemini => Some("gemini-3.8-flash".to_owned()),
+            Self::ThirdParty => Some("claude-sonnet-5-5".to_owned()),
+            Self::Other(model) => model.clone(),
+        }
+    }
+}
+
 /// Cache key for an account-level plan snapshot. Top-level providers hold one
 /// account per binary; Pi routes to many upstreams, and only its OpenCode Go
 /// key (Go or Go Plus) has a quota endpoint, shared by every Go model.
@@ -28,9 +55,9 @@ pub(super) enum PlanUsageKey {
     Provider(ProviderKind),
     PiOpenCodeGo,
     /// Antigravity's quota is split by model group (Gemini models; Claude and
-    /// GPT models), so its snapshot is keyed by the model whose group it
-    /// shows. `None` is agy's own default model, which shows every group.
-    Antigravity(Option<String>),
+    /// GPT models), so its snapshot is keyed by quota group rather than exact
+    /// model id. `Other(None)` is agy's own default, which shows every group.
+    Antigravity(AntigravityUsageGroup),
 }
 
 impl PlanUsageKey {
@@ -75,7 +102,7 @@ impl Raku {
                 Some(PlanUsageKey::PiOpenCodeGo)
             }
             ProviderKind::Antigravity => Some(PlanUsageKey::Antigravity(
-                self.model_for_session(session).map(str::to_owned),
+                AntigravityUsageGroup::for_model(self.model_for_session(session)),
             )),
             _ => None,
         }
@@ -147,8 +174,8 @@ impl Raku {
                 PlanUsageKey::PiOpenCodeGo => {
                     Some(format!("{}/", crate::usage::PI_OPENCODE_GO_PROVIDER))
                 }
-                // The daemon keeps only this model's quota group.
-                PlanUsageKey::Antigravity(model) => model.clone(),
+                // The daemon keeps only this quota group's lanes.
+                PlanUsageKey::Antigravity(group) => group.representative_model(),
             };
             let daemon = self.daemon.client();
             cx.background_executor()
@@ -781,6 +808,30 @@ mod tests {
         assert!(!is_pi_opencode_go_model("opencode/claude-sonnet-4-5"));
         assert!(!is_pi_opencode_go_model("anthropic/opencode-go"));
         assert!(!is_pi_opencode_go_model("opencode-go"));
+    }
+
+    #[test]
+    fn antigravity_models_in_the_same_quota_group_share_one_cache_key() {
+        assert_eq!(
+            AntigravityUsageGroup::for_model(Some("gemini-4-neon")),
+            AntigravityUsageGroup::for_model(Some("gemini-3.8-flash"))
+        );
+        assert_eq!(
+            AntigravityUsageGroup::for_model(Some("gemini-pro-orchestrator-neon")),
+            AntigravityUsageGroup::Gemini
+        );
+        assert_eq!(
+            AntigravityUsageGroup::for_model(Some("claude-opus-5-5")),
+            AntigravityUsageGroup::for_model(Some("gpt-oss-120b-medium"))
+        );
+        assert_ne!(
+            AntigravityUsageGroup::for_model(Some("gemini-4-neon")),
+            AntigravityUsageGroup::for_model(Some("claude-opus-5-5"))
+        );
+        assert_eq!(
+            AntigravityUsageGroup::for_model(None),
+            AntigravityUsageGroup::Other(None)
+        );
     }
 
     #[test]

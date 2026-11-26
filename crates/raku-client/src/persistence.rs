@@ -1732,13 +1732,7 @@ mod tests {
 
     #[test]
     fn retired_provider_settings_do_not_block_launch_settings() {
-        for provider in [
-            "deepSeek",
-            "ohMyPi",
-            "openCode",
-            "openCode2",
-            "agy",
-        ] {
+        for provider in ["deepSeek", "ohMyPi", "openCode", "openCode2", "agy"] {
             let document = serde_json::to_vec(&serde_json::json!({
                 "theme": "dark",
                 "language": "simplified-chinese",
@@ -1819,13 +1813,7 @@ mod tests {
     fn retired_project_model_selections_preserve_other_desktop_state() {
         let retired_project = Uuid::new_v4();
         let active_project = Uuid::new_v4();
-        for provider in [
-            "deepSeek",
-            "ohMyPi",
-            "openCode",
-            "openCode2",
-            "agy",
-        ] {
+        for provider in ["deepSeek", "ohMyPi", "openCode", "openCode2", "agy"] {
             let document = serde_json::to_vec(&serde_json::json!({
                 "app_state_version": 1,
                 "selected_project": active_project,

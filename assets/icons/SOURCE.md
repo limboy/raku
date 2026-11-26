@@ -53,7 +53,9 @@ and its stroked plus and minus are set to the resulting total weight, so the
 boxed changes glyph matches its neighbours at both 12px rows and 20px
 summaries. The environment summary uses Ant's `card-list` glyph.
 
-Provider logos and polychrome file-type icons retain their own artwork.
+Provider logos (`provider-agy.svg`, `provider-claude.svg`,
+`provider-openai.svg`, and `provider-pi.svg`) and polychrome file-type icons
+retain their own artwork.
 File-type icons have separate [source notes](file-types/SOURCE.md).
 The website uses `lucide-react` separately in `website/package.json` and the
 workspace `bun.lock`.

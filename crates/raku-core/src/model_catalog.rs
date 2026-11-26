@@ -849,7 +849,7 @@ fn parse_agy_models_output(stdout: &str) -> Vec<ProviderModel> {
         }
         rows.push((id.to_owned(), name.to_owned()));
     }
-    group_agy_model_rows(&rows, None, None)
+    group_agy_model_rows(&rows, None, None, None)
 }
 
 fn split_agy_effort_suffix(id: &str) -> Option<(&str, &str)> {
@@ -867,9 +867,7 @@ fn strip_trailing_effort_label(name: &str, effort: &str) -> String {
     let suffix = format!(" ({effort})");
     if name.len() > suffix.len() {
         let tail_start = name.len() - suffix.len();
-        if name.is_char_boundary(tail_start)
-            && name[tail_start..].eq_ignore_ascii_case(&suffix)
-        {
+        if name.is_char_boundary(tail_start) && name[tail_start..].eq_ignore_ascii_case(&suffix) {
             return name[..tail_start].trim_end().to_owned();
         }
     }
@@ -878,6 +876,7 @@ fn strip_trailing_effort_label(name: &str, effort: &str) -> String {
 
 fn group_agy_model_rows(
     rows: &[(String, String)],
+    known_bases: Option<&HashSet<&str>>,
     default_model: Option<&str>,
     default_effort: Option<&str>,
 ) -> Vec<ProviderModel> {
@@ -891,8 +890,11 @@ fn group_agy_model_rows(
     let mut order = Vec::<String>::new();
     let mut grouped = HashMap::<String, (String, Vec<String>)>::new();
     for (id, name) in rows {
-        if let Some((stem, effort)) = split_agy_effort_suffix(id)
-            && stem_counts.get(stem).copied().unwrap_or(0) >= 2
+        let is_listed_standalone = known_bases.is_some_and(|bases| bases.contains(id.as_str()));
+        if !is_listed_standalone
+            && let Some((stem, effort)) = split_agy_effort_suffix(id)
+            && (known_bases.is_some_and(|bases| bases.contains(stem))
+                || stem_counts.get(stem).copied().unwrap_or(0) >= 2)
         {
             let entry = grouped.entry(stem.to_owned()).or_insert_with(|| {
                 order.push(stem.to_owned());
@@ -921,7 +923,9 @@ fn group_agy_model_rows(
             if !efforts.is_empty() {
                 let options: Vec<ProviderModelOption> = efforts
                     .iter()
-                    .map(|effort| ProviderModelOption::new(effort.clone(), reasoning_effort_label(effort)))
+                    .map(|effort| {
+                        ProviderModelOption::new(effort.clone(), reasoning_effort_label(effort))
+                    })
                     .collect();
                 let preferred = default_effort
                     .filter(|eff| options.iter().any(|opt| opt.id == *eff))
@@ -1068,7 +1072,11 @@ fn parse_agy_acp_models(result: &Value) -> Vec<ProviderModel> {
         .flatten()
         .filter_map(|entry| {
             let id = entry.get("modelId")?.as_str()?.trim();
-            let name = entry.get("name").and_then(Value::as_str).unwrap_or(id).trim();
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(id)
+                .trim();
             (!id.is_empty()).then(|| (id.to_owned(), name.to_owned()))
         })
         .collect();
@@ -1090,7 +1098,13 @@ fn parse_agy_acp_models(result: &Value) -> Vec<ProviderModel> {
         return models;
     }
 
-    let grouped = group_agy_model_rows(&available_rows, default_model, default_effort);
+    let known_bases: HashSet<&str> = base_options.iter().map(|(id, _)| id.as_str()).collect();
+    let grouped = group_agy_model_rows(
+        &available_rows,
+        (!known_bases.is_empty()).then_some(&known_bases),
+        default_model,
+        default_effort,
+    );
     if base_options.is_empty() {
         return grouped;
     }
@@ -1109,6 +1123,90 @@ fn parse_agy_acp_models(result: &Value) -> Vec<ProviderModel> {
         ordered[0].is_default = true;
     }
     ordered
+}
+
+/// Reconciles `model-cache/agy.json` against the authoritative base model IDs
+/// and `models.availableModels` reported by a live ACP session open. Called on
+/// the driver's background writer thread, never on the UI thread.
+#[cfg(not(test))]
+pub(crate) fn reconcile_agy_session_models(session_result: &Value) {
+    let existing = cached_models(ProviderKind::Antigravity);
+    if let Some(reconciled) = reconcile_agy_catalog(existing.as_deref(), session_result)
+        && existing.as_ref() != Some(&reconciled)
+    {
+        write_cached_models(ProviderKind::Antigravity, &reconciled);
+    }
+}
+
+fn reconcile_agy_catalog(
+    existing: Option<&[ProviderModel]>,
+    session_result: &Value,
+) -> Option<Vec<ProviderModel>> {
+    let has_available = session_result
+        .pointer("/models/availableModels")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty());
+    if has_available {
+        let parsed = parse_agy_acp_models(session_result);
+        return (!parsed.is_empty()).then_some(parsed);
+    }
+
+    let existing = existing?;
+    let base_options: Vec<(String, String)> = session_result
+        .get("configOptions")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|entry| {
+            entry.get("category").and_then(Value::as_str) == Some("model")
+                || entry.get("id").and_then(Value::as_str) == Some("model")
+        })?
+        .get("options")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|opt| {
+            Some((
+                opt.get("value")?.as_str()?.trim().to_owned(),
+                opt.get("name")?.as_str()?.trim().to_owned(),
+            ))
+        })
+        .filter(|(id, _)| !id.is_empty())
+        .collect();
+    if base_options.is_empty() {
+        return None;
+    }
+    let known_bases: HashSet<&str> = base_options.iter().map(|(id, _)| id.as_str()).collect();
+    let base_names: HashMap<&str, &str> = base_options
+        .iter()
+        .map(|(id, name)| (id.as_str(), name.as_str()))
+        .collect();
+
+    let mut changed = false;
+    let mut reconciled = Vec::with_capacity(existing.len());
+    for model in existing {
+        if model.reasoning_efforts.is_empty()
+            && !known_bases.contains(model.id.as_str())
+            && let Some((stem, effort)) = split_agy_effort_suffix(&model.id)
+            && known_bases.contains(stem)
+        {
+            changed = true;
+            let name = base_names
+                .get(stem)
+                .map(|n| (*n).to_owned())
+                .unwrap_or_else(|| strip_trailing_effort_label(&model.name, effort));
+            let mut collapsed = ProviderModel::new(stem, name).reasoning(
+                [ProviderModelOption::new(
+                    effort,
+                    reasoning_effort_label(effort),
+                )],
+                effort,
+            );
+            collapsed.is_default = model.is_default;
+            reconciled.push(collapsed);
+        } else {
+            reconciled.push(model.clone());
+        }
+    }
+    changed.then_some(reconciled)
 }
 
 #[cfg(test)]
@@ -1676,8 +1774,44 @@ gpt-oss-120b-medium\tGPT-OSS 120B (Medium)
         );
         // The session's current effort is the default only where the model
         // offers it; Gemini 4 Neon has no `medium`, so it keeps its own.
-        assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("medium"));
-        assert_ne!(models[0].default_reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            models[1].default_reasoning_effort.as_deref(),
+            Some("medium")
+        );
+        assert_ne!(
+            models[0].default_reasoning_effort.as_deref(),
+            Some("medium")
+        );
         assert!(models[2].reasoning_efforts.is_empty());
+    }
+
+    #[test]
+    fn reconciles_single_effort_agy_model_against_authoritative_session_bases() {
+        // `agy models` left a single-effort variant uncollapsed because only 1
+        // row shared its stem; the live session's base option list resolves it.
+        let cached = parse_agy_models_output(
+            "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\n\
+             gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n",
+        );
+        assert_eq!(cached[0].id, "claude-sonnet-5-5-medium");
+        let session_result = json!({
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "currentValue": "claude-sonnet-5-5",
+                "options": [
+                    { "value": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5" },
+                    { "value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)" }
+                ]
+            }]
+        });
+        let reconciled = reconcile_agy_catalog(Some(&cached), &session_result)
+            .expect("single-effort base should reconcile");
+        assert_eq!(reconciled[0].id, "claude-sonnet-5-5");
+        assert_eq!(reconciled[0].name, "Claude Sonnet 5.5");
+        assert_eq!(reconciled[0].reasoning_efforts.len(), 1);
+        assert_eq!(reconciled[0].reasoning_efforts[0].id, "medium");
+        assert_eq!(reconciled[1].id, "gpt-oss-120b-medium");
+        assert!(reconciled[1].reasoning_efforts.is_empty());
     }
 }

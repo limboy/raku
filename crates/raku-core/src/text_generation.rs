@@ -50,6 +50,12 @@ pub fn reasoning_headline(reasoning: &str, invocation: &AgentInvocation) -> anyh
 }
 
 fn generate(prompt: &str, invocation: &AgentInvocation) -> anyhow::Result<String> {
+    if !invocation.provider.capabilities().text_generation {
+        bail!(tr!(
+            "errors.provider_text_generation_unsupported",
+            provider = invocation.provider.display_name()
+        ));
+    }
     // A neutral directory keeps project instructions, hooks, and trust prompts
     // out of a request that needs none of them.
     let cwd = std::env::temp_dir();
@@ -156,6 +162,8 @@ fn arguments(
                 "--output-format",
                 "text",
                 "--disable-slash-commands",
+                "--mode",
+                "plan",
                 "--sandbox",
             ] {
                 push(arg);
@@ -242,6 +250,7 @@ mod tests {
         );
         assert!(has_pair(&agy, "--output-format", "text"));
         assert!(agy.contains(&OsString::from("--disable-slash-commands")));
+        assert!(has_pair(&agy, "--mode", "plan"));
         assert!(agy.contains(&OsString::from("--sandbox")));
         assert!(has_pair(&agy, "--model", "gemini-3.8-flash"));
         assert!(has_pair(&agy, "--effort", "low"));

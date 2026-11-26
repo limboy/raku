@@ -487,47 +487,49 @@ impl Raku {
                         .child(SharedString::from(question.question.clone())),
                 )
                 .children((!question.options.is_empty()).then_some(options))
-                .children((!question.fixed_options || question.options.is_empty()).then(|| {
-                    div()
-                        .mt(px(if question.options.is_empty() {
-                            9.0
-                        } else {
-                            4.0
-                        }))
-                        .min_h(px(34.0))
-                        .px(px(10.0))
-                        .py(px(5.0))
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(if has_custom {
-                            theme.accent.opacity(0.34)
-                        } else {
-                            theme.border.opacity(0.0)
-                        })
-                        .bg(if has_custom {
-                            theme.accent.opacity(0.06)
-                        } else {
-                            theme.overlay
-                        })
-                        .flex()
-                        .items_start()
-                        .gap(px(7.0))
-                        .child(div().h(sp(22.0)).flex().items_center().child(icon(
-                            "icons/pencil.svg",
-                            11.0,
-                            if has_custom {
-                                theme.accent
+                .children(
+                    (!question.fixed_options || question.options.is_empty()).then(|| {
+                        div()
+                            .mt(px(if question.options.is_empty() {
+                                9.0
                             } else {
-                                theme.text_ghost
-                            },
-                        )))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(self.user_input_answer.clone()),
-                        )
-                }))
+                                4.0
+                            }))
+                            .min_h(px(34.0))
+                            .px(px(10.0))
+                            .py(px(5.0))
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(if has_custom {
+                                theme.accent.opacity(0.34)
+                            } else {
+                                theme.border.opacity(0.0)
+                            })
+                            .bg(if has_custom {
+                                theme.accent.opacity(0.06)
+                            } else {
+                                theme.overlay
+                            })
+                            .flex()
+                            .items_start()
+                            .gap(px(7.0))
+                            .child(div().h(sp(22.0)).flex().items_center().child(icon(
+                                "icons/pencil.svg",
+                                11.0,
+                                if has_custom {
+                                    theme.accent
+                                } else {
+                                    theme.text_ghost
+                                },
+                            )))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(self.user_input_answer.clone()),
+                            )
+                    }),
+                )
                 .child(
                     div()
                         .mt(px(8.0))
