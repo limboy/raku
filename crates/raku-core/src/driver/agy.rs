@@ -1,5 +1,6 @@
 //! Antigravity CLI (`agy acp`) stdio JSON-RPC transport.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -7,7 +8,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
 use base64::Engine as _;
@@ -263,6 +264,10 @@ impl AgyDriver {
 
         let (commands, command_rx) = unbounded::<CommandMessage>();
         let (shutdown, shutdown_rx) = bounded::<()>(1);
+        // Reader-originated replies (permission auto-answers, method-not-found,
+        // auth shutdown) travel on their own channel so the writer can answer
+        // them while it blocks on a handshake or config RPC.
+        let (reader_commands, urgent_rx) = unbounded::<CommandMessage>();
         let state = Arc::new(Mutex::new(AgyRuntimeState {
             base_mode: mode,
             plan_mode,
@@ -272,7 +277,6 @@ impl AgyDriver {
 
         let reader_state = state.clone();
         let reader_suppress_replay = suppress_replay.clone();
-        let reader_commands = commands.clone();
         let reader_events = events.clone();
         let subagent_child = subagent.child;
         let reader_thread = thread::Builder::new()
@@ -330,13 +334,18 @@ impl AgyDriver {
             .spawn(move || {
                 let mut stdin = stdin;
                 let mut next_request_id: u64 = 0;
+                let signals = WriterSignals {
+                    shutdown: shutdown_rx,
+                    urgent: urgent_rx,
+                    stop: Cell::new(false),
+                };
 
                 if !run_handshake(
                     &mut stdin,
                     &mut next_request_id,
                     &writer_state,
                     &writer_suppress_replay,
-                    &shutdown_rx,
+                    &signals,
                     &writer_events,
                     &cwd_string,
                     &instructions_owned,
@@ -350,7 +359,28 @@ impl AgyDriver {
                     return;
                 }
 
-                while let Ok(command) = command_rx.recv() {
+                let never = crossbeam_channel::never::<CommandMessage>();
+                let mut urgent_open = true;
+                loop {
+                    if signals.stop.get() {
+                        break;
+                    }
+                    let urgent = if urgent_open { &signals.urgent } else { &never };
+                    let command = select! {
+                        recv(command_rx) -> msg => match msg {
+                            Ok(command) => command,
+                            Err(_) => break,
+                        },
+                        recv(urgent) -> msg => match msg {
+                            Ok(command) => command,
+                            // The reader exited; keep serving driver commands
+                            // until the driver drops.
+                            Err(_) => {
+                                urgent_open = false;
+                                continue;
+                            }
+                        },
+                    };
                     match command {
                         CommandMessage::Prompt(text) => {
                             let Some(session_id) = writer_state.lock().session_id.clone() else {
@@ -451,13 +481,8 @@ impl AgyDriver {
                                 break;
                             }
                         }
-                        CommandMessage::RespondPermissionRaw { raw_id, result } => {
-                            let reply = json!({
-                                "jsonrpc": "2.0",
-                                "id": raw_id,
-                                "result": result,
-                            });
-                            if let Err(error) = write_json_line(&mut stdin, &reply) {
+                        command @ CommandMessage::RespondPermissionRaw { .. } => {
+                            if let Err(error) = write_raw_reply(&mut stdin, command) {
                                 let _ = writer_events.send(DriverEvent::Error(tr!(
                                     "errors.answer_provider_permission",
                                     provider = ProviderKind::Antigravity.display_name(),
@@ -466,20 +491,8 @@ impl AgyDriver {
                                 break;
                             }
                         }
-                        CommandMessage::RespondErrorRaw {
-                            raw_id,
-                            code,
-                            message,
-                        } => {
-                            let reply = json!({
-                                "jsonrpc": "2.0",
-                                "id": raw_id,
-                                "error": {
-                                    "code": code,
-                                    "message": message,
-                                }
-                            });
-                            if write_json_line(&mut stdin, &reply).is_err() {
+                        command @ CommandMessage::RespondErrorRaw { .. } => {
+                            if write_raw_reply(&mut stdin, command).is_err() {
                                 break;
                             }
                         }
@@ -488,7 +501,7 @@ impl AgyDriver {
                                 &mut stdin,
                                 &mut next_request_id,
                                 &writer_state,
-                                &shutdown_rx,
+                                &signals,
                                 &writer_events,
                                 &options,
                             );
@@ -630,6 +643,41 @@ impl DriverControl for AgyDriver {
     }
 }
 
+/// What a blocking writer-side RPC must keep listening to while it waits.
+struct WriterSignals {
+    /// Fires (or disconnects) when the driver is dropped.
+    shutdown: Receiver<()>,
+    /// Reader-originated commands: raw replies the server is waiting on, and
+    /// `Shutdown` after an auth failure.
+    urgent: Receiver<CommandMessage>,
+    /// Set when a blocking RPC consumed an urgent `Shutdown`, so the writer
+    /// loop stops once that RPC returns.
+    stop: Cell<bool>,
+}
+
+/// Writes a reader-originated reply to a server-to-client request. Other
+/// commands are ignored; only the reader sends these two variants.
+fn write_raw_reply(stdin: &mut impl Write, command: CommandMessage) -> std::io::Result<()> {
+    let reply = match command {
+        CommandMessage::RespondPermissionRaw { raw_id, result } => json!({
+            "jsonrpc": "2.0",
+            "id": raw_id,
+            "result": result,
+        }),
+        CommandMessage::RespondErrorRaw {
+            raw_id,
+            code,
+            message,
+        } => json!({
+            "jsonrpc": "2.0",
+            "id": raw_id,
+            "error": { "code": code, "message": message },
+        }),
+        _ => return Ok(()),
+    };
+    write_json_line(stdin, &reply)
+}
+
 enum RpcCallError {
     /// Reader exited (stdout EOF) or driver was dropped; the reaper thread
     /// owns exit diagnostics.
@@ -643,7 +691,7 @@ fn run_handshake(
     next_request_id: &mut u64,
     state: &Mutex<AgyRuntimeState>,
     suppress_replay: &AtomicBool,
-    shutdown_rx: &Receiver<()>,
+    signals: &WriterSignals,
     events: &impl DriverEventSink,
     cwd: &str,
     instructions: &str,
@@ -668,7 +716,7 @@ fn run_handshake(
         stdin,
         next_request_id,
         state,
-        shutdown_rx,
+        signals,
         "initialize",
         init_params,
         HANDSHAKE_TIMEOUT,
@@ -710,7 +758,7 @@ fn run_handshake(
             stdin,
             next_request_id,
             state,
-            shutdown_rx,
+            signals,
             "session/resume",
             resume_params,
             HANDSHAKE_TIMEOUT,
@@ -733,7 +781,7 @@ fn run_handshake(
                     stdin,
                     next_request_id,
                     state,
-                    shutdown_rx,
+                    signals,
                     "session/load",
                     load_params,
                     HANDSHAKE_TIMEOUT,
@@ -763,7 +811,7 @@ fn run_handshake(
             stdin,
             next_request_id,
             state,
-            shutdown_rx,
+            signals,
             "session/new",
             new_params,
             HANDSHAKE_TIMEOUT,
@@ -818,14 +866,21 @@ fn run_handshake(
         guard.plan_mode = plan_mode;
     }
 
-    // Apply requested model -> clamped effort -> effective mode.
-    if let Some(requested_model) = requested_model
+    // Apply requested model -> clamped effort -> effective mode. A saved id
+    // the session no longer offers (retired, or an effort-suffixed id the
+    // catalog has since collapsed) must not make the thread unopenable: map
+    // it to its base model, or stay on the session's own model.
+    let offered_models = offered_model_ids(result);
+    let resolved_model =
+        requested_model.and_then(|model| resolve_requested_model(model, &offered_models));
+    let requested_effort = requested_effort.or(resolved_model.and_then(|(_, effort)| effort));
+    if let Some((requested_model, _)) = resolved_model
         && state.lock().current_model.as_deref() != Some(requested_model)
         && !set_config_option_sync(
             stdin,
             next_request_id,
             state,
-            shutdown_rx,
+            signals,
             events,
             &session_id,
             "model",
@@ -854,7 +909,7 @@ fn run_handshake(
             stdin,
             next_request_id,
             state,
-            shutdown_rx,
+            signals,
             events,
             &session_id,
             "thought_level",
@@ -874,7 +929,7 @@ fn run_handshake(
             stdin,
             next_request_id,
             state,
-            shutdown_rx,
+            signals,
             events,
             &session_id,
             "mode",
@@ -896,7 +951,7 @@ fn apply_session_options_rpc(
     stdin: &mut impl Write,
     next_request_id: &mut u64,
     state: &Mutex<AgyRuntimeState>,
-    shutdown_rx: &Receiver<()>,
+    signals: &WriterSignals,
     events: &impl DriverEventSink,
     options: &SessionOptions,
 ) {
@@ -920,7 +975,7 @@ fn apply_session_options_rpc(
             stdin,
             next_request_id,
             state,
-            shutdown_rx,
+            signals,
             events,
             &session_id,
             "model",
@@ -946,7 +1001,7 @@ fn apply_session_options_rpc(
             stdin,
             next_request_id,
             state,
-            shutdown_rx,
+            signals,
             events,
             &session_id,
             "thought_level",
@@ -962,7 +1017,7 @@ fn apply_session_options_rpc(
             stdin,
             next_request_id,
             state,
-            shutdown_rx,
+            signals,
             events,
             &session_id,
             "mode",
@@ -980,7 +1035,7 @@ fn set_config_option_sync(
     stdin: &mut impl Write,
     next_request_id: &mut u64,
     state: &Mutex<AgyRuntimeState>,
-    shutdown_rx: &Receiver<()>,
+    signals: &WriterSignals,
     events: &impl DriverEventSink,
     session_id: &str,
     config_id: &str,
@@ -997,7 +1052,7 @@ fn set_config_option_sync(
         stdin,
         next_request_id,
         state,
-        shutdown_rx,
+        signals,
         "session/set_config_option",
         params,
         CONFIG_TIMEOUT,
@@ -1033,7 +1088,7 @@ fn call_rpc_sync(
     stdin: &mut impl Write,
     next_request_id: &mut u64,
     state: &Mutex<AgyRuntimeState>,
-    shutdown_rx: &Receiver<()>,
+    signals: &WriterSignals,
     method: &str,
     params: Value,
     timeout: Duration,
@@ -1052,15 +1107,40 @@ fn call_rpc_sync(
         state.lock().pending_rpc.remove(&id);
         return Err(RpcCallError::Failed(error.to_string()));
     }
-    select! {
-        recv(rx) -> msg => msg.map_err(|_| RpcCallError::Disconnected),
-        recv(shutdown_rx) -> _ => {
-            state.lock().pending_rpc.remove(&id);
-            Err(RpcCallError::Disconnected)
-        }
-        default(timeout) => {
-            state.lock().pending_rpc.remove(&id);
-            Err(RpcCallError::Failed(format!("{method} timed out")))
+    let deadline = Instant::now() + timeout;
+    loop {
+        select! {
+            recv(rx) -> msg => return msg.map_err(|_| RpcCallError::Disconnected),
+            recv(signals.shutdown) -> _ => {
+                state.lock().pending_rpc.remove(&id);
+                return Err(RpcCallError::Disconnected);
+            }
+            // The server may block this RPC on a request of its own (a
+            // permission or an unsupported callback); answer it now rather
+            // than after the RPC times out.
+            recv(signals.urgent) -> msg => match msg {
+                Ok(CommandMessage::Shutdown) => {
+                    signals.stop.set(true);
+                    state.lock().pending_rpc.remove(&id);
+                    return Err(RpcCallError::Disconnected);
+                }
+                Ok(command) => {
+                    if write_raw_reply(stdin, command).is_err() {
+                        state.lock().pending_rpc.remove(&id);
+                        return Err(RpcCallError::Disconnected);
+                    }
+                }
+                // The reader exited; only a response it already delivered
+                // can still arrive.
+                Err(_) => {
+                    state.lock().pending_rpc.remove(&id);
+                    return rx.try_recv().map_err(|_| RpcCallError::Disconnected);
+                }
+            },
+            default(deadline.saturating_duration_since(Instant::now())) => {
+                state.lock().pending_rpc.remove(&id);
+                return Err(RpcCallError::Failed(format!("{method} timed out")));
+            }
         }
     }
 }
@@ -1819,6 +1899,46 @@ fn extract_config_state(value: &Value) -> ExtractedConfig {
     }
 }
 
+/// The `model` option values a session response advertises, or empty when it
+/// lists none.
+fn offered_model_ids(value: &Value) -> Vec<String> {
+    value
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| {
+            entry.get("category").and_then(Value::as_str) == Some("model")
+                || entry.get("id").and_then(Value::as_str) == Some("model")
+        })
+        .and_then(|entry| entry.get("options"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| option.get("value").and_then(Value::as_str))
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// The model to switch to for `requested`, plus the effort an effort-suffixed
+/// id carried. `None` means the session does not offer it at all, so the
+/// session keeps its own model. An empty `offered` list cannot be checked, so
+/// the request goes through as is.
+fn resolve_requested_model<'a>(
+    requested: &'a str,
+    offered: &[String],
+) -> Option<(&'a str, Option<&'a str>)> {
+    if offered.is_empty() || offered.iter().any(|id| id == requested) {
+        return Some((requested, None));
+    }
+    let (stem, effort) = crate::model_catalog::split_agy_effort_suffix(requested)?;
+    offered
+        .iter()
+        .any(|id| id == stem)
+        .then_some((stem, Some(effort)))
+}
+
 fn clamp_thought_level(
     requested: Option<&str>,
     supported: &[String],
@@ -2392,6 +2512,100 @@ mod tests {
                 summary: Some(_)
             }]
         ));
+    }
+
+    #[test]
+    fn blocking_rpc_answers_reader_replies_and_honors_auth_shutdown() {
+        let state = Mutex::new(AgyRuntimeState::default());
+        let (urgent_tx, urgent_rx) = unbounded();
+        let (_shutdown_tx, shutdown_rx) = bounded::<()>(1);
+        let signals = WriterSignals {
+            shutdown: shutdown_rx,
+            urgent: urgent_rx,
+            stop: Cell::new(false),
+        };
+        urgent_tx
+            .send(CommandMessage::RespondErrorRaw {
+                raw_id: json!("req-1"),
+                code: -32601,
+                message: "Method not found: fs/read_text_file".into(),
+            })
+            .unwrap();
+        let mut stdin = Vec::new();
+        let mut next_id = 0;
+        let result = call_rpc_sync(
+            &mut stdin,
+            &mut next_id,
+            &state,
+            &signals,
+            "session/load",
+            json!({}),
+            Duration::from_millis(100),
+        );
+        assert!(matches!(result, Err(RpcCallError::Failed(_))));
+        let lines: Vec<Value> = String::from_utf8(stdin)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines[0]["method"], "session/load");
+        assert_eq!(lines[1]["id"], "req-1");
+        assert_eq!(lines[1]["error"]["code"], -32601);
+        assert!(state.lock().pending_rpc.is_empty());
+
+        urgent_tx.send(CommandMessage::Shutdown).unwrap();
+        let mut stdin = Vec::new();
+        let started = std::time::Instant::now();
+        let result = call_rpc_sync(
+            &mut stdin,
+            &mut next_id,
+            &state,
+            &signals,
+            "session/set_config_option",
+            json!({}),
+            Duration::from_secs(5),
+        );
+        assert!(matches!(result, Err(RpcCallError::Disconnected)));
+        assert!(signals.stop.get());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn resolves_stale_requested_models_against_offered_options() {
+        let result = json!({
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "currentValue": "gemini-4-neon",
+                "options": [
+                    { "value": "gemini-4-neon", "name": "Gemini 4 Neon" },
+                    { "value": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5" },
+                    { "value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)" }
+                ]
+            }]
+        });
+        let offered = offered_model_ids(&result);
+        assert_eq!(
+            resolve_requested_model("claude-sonnet-5-5", &offered),
+            Some(("claude-sonnet-5-5", None))
+        );
+        // A standalone id that merely looks suffixed stays as listed.
+        assert_eq!(
+            resolve_requested_model("gpt-oss-120b-medium", &offered),
+            Some(("gpt-oss-120b-medium", None))
+        );
+        // An id the catalog has since collapsed maps to its base and effort.
+        assert_eq!(
+            resolve_requested_model("claude-sonnet-5-5-medium", &offered),
+            Some(("claude-sonnet-5-5", Some("medium")))
+        );
+        // A retired model is skipped instead of failing the handshake.
+        assert_eq!(resolve_requested_model("gemini-2-pro", &offered), None);
+        // Without an option list the request cannot be checked.
+        assert_eq!(
+            resolve_requested_model("gemini-2-pro", &[]),
+            Some(("gemini-2-pro", None))
+        );
     }
 
     #[test]

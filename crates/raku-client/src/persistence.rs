@@ -914,9 +914,20 @@ impl PersistedState {
         self.side_chat_provider = settings.side_chat_provider;
         self.side_chat_model = settings.side_chat_model;
         self.side_chat_reasoning_effort = settings.side_chat_reasoning_effort;
-        self.text_generation_provider = settings.text_generation_provider;
-        self.text_generation_model = settings.text_generation_model;
-        self.text_generation_reasoning_effort = settings.text_generation_reasoning_effort;
+        // A provider saved before it lost sessionless text generation would
+        // read as selected while every label silently stops; turn it off.
+        if settings
+            .text_generation_provider
+            .is_some_and(|provider| provider.capabilities().text_generation)
+        {
+            self.text_generation_provider = settings.text_generation_provider;
+            self.text_generation_model = settings.text_generation_model;
+            self.text_generation_reasoning_effort = settings.text_generation_reasoning_effort;
+        } else {
+            self.text_generation_provider = None;
+            self.text_generation_model = None;
+            self.text_generation_reasoning_effort = None;
+        }
         self.subagents = settings.subagents;
     }
 
@@ -2055,6 +2066,16 @@ mod tests {
             restored.text_generation_reasoning_effort.as_deref(),
             Some("low")
         );
+
+        // A provider without sessionless generation restores as off.
+        state.text_generation_provider = Some(ProviderKind::Antigravity);
+        state.text_generation_model = Some("gemini-3.8-flash".into());
+        let settings = serde_json::to_string(&state.app_settings()).unwrap();
+        let mut restored = PersistedState::empty();
+        restored.apply_app_settings(serde_json::from_str(&settings).unwrap());
+        assert_eq!(restored.text_generation_provider, None);
+        assert_eq!(restored.text_generation_model, None);
+        assert_eq!(restored.text_generation_reasoning_effort, None);
     }
 
     #[test]

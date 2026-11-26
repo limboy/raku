@@ -852,7 +852,7 @@ fn parse_agy_models_output(stdout: &str) -> Vec<ProviderModel> {
     group_agy_model_rows(&rows, None, None, None)
 }
 
-fn split_agy_effort_suffix(id: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_agy_effort_suffix(id: &str) -> Option<(&str, &str)> {
     for suffix in AGY_EFFORT_SUFFIXES {
         if let Some(stem) = id.strip_suffix(&format!("-{suffix}"))
             && !stem.is_empty()

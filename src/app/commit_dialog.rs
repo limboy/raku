@@ -136,27 +136,10 @@ impl Raku {
                     reasoning_effort,
                 })
         } else {
-            self.text_generation_invocation().or_else(|| {
-                ProviderKind::ALL
-                    .into_iter()
-                    .filter(|candidate| candidate.capabilities().text_generation)
-                    .filter(|candidate| !self.state.disabled_providers.contains(candidate))
-                    .find_map(|candidate| {
-                        let probe = self.provider_probe(candidate)?;
-                        let binary = probe.path.clone()?;
-                        let fallback_model = probe.preferred_model().map(|m| m.id.clone());
-                        let fallback_effort = fallback_model
-                            .as_deref()
-                            .and_then(|id| probe.model(id))
-                            .and_then(|m| m.default_reasoning_effort.clone());
-                        Some(crate::git_commit::AgentInvocation {
-                            provider: candidate,
-                            binary,
-                            model: fallback_model,
-                            reasoning_effort: fallback_effort,
-                        })
-                    })
-            })
+            // Only the provider the user picked for text generation may write
+            // the message in its place; never send the diff to a provider the
+            // user did not choose. Without one the dialog asks for a message.
+            self.text_generation_invocation()
         };
         let cached_branch = self
             .visible_branch_snapshot
