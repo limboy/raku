@@ -787,6 +787,10 @@ struct RightPanelFileEditor {
     /// started earlier cannot apply over a newer truth — a save in particular,
     /// which makes any read already in flight describe the pre-save file.
     read_epoch: u64,
+    /// No project is open, so there is no file to read. HTML previews show
+    /// the "preview unavailable" card instead of an empty native WebView;
+    /// cleared by the next read that lands.
+    source_unavailable: bool,
 }
 
 struct RightPanelSessionState {

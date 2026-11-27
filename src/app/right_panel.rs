@@ -4408,6 +4408,9 @@ impl Raku {
 
     fn active_file_webview_id(&self, display_path: &str, editor_path: &str) -> Option<Uuid> {
         let editor = self.right_panel_file_editors.get(editor_path)?;
+        if editor.source_unavailable {
+            return None;
+        }
         file_webview_id_if_active(
             display_path,
             editor.preview,
@@ -5181,7 +5184,8 @@ impl Raku {
                     && editor_snapshot.disk_content.is_empty()));
         let show_reload_preview = !initial_loading
             && ((is_pdf && matches!(editor_snapshot.pdf_path, Some(Ok(_))))
-                || (is_html && preview));
+                || (is_html && preview && !editor_snapshot.source_unavailable));
+        let html_unavailable = editor_snapshot.source_unavailable;
         let webview_loading = editor_snapshot
             .webview_id
             .and_then(|id| self.right_panel_browsers.get(&id))
@@ -5194,6 +5198,15 @@ impl Raku {
             )
         } else if is_pdf {
             self.render_file_pdf_preview(&relative_path, window, cx)
+        } else if is_html && preview && html_unavailable {
+            let reason = self.right_panel_file_editors[&relative_path]
+                .disk_content
+                .clone();
+            self.render_right_panel_empty_message(
+                tr!("attachments.preview_unavailable"),
+                reason,
+                cx,
+            )
         } else if is_html && preview {
             self.render_file_html_preview(&relative_path, attachment.as_ref(), window, cx)
         } else if is_tabular && preview {
@@ -5442,6 +5455,7 @@ impl Raku {
                 dirty: false,
                 reading: false,
                 read_epoch: 0,
+                source_unavailable: false,
             },
         );
 
@@ -5510,14 +5524,13 @@ impl Raku {
                 editor.reading = false;
                 editor.disk_content = tr!("files.no_project_is_open");
                 editor.writable = false;
-                // Previews with nothing to show must not sit on a loading
-                // placeholder or an empty native WebView: CSV reports the
-                // reason, and HTML falls back to the source view carrying it.
+                // Previews with nothing to show report the reason on the same
+                // "preview unavailable" card PDFs use, rather than sitting on
+                // a loading placeholder or an empty native WebView. The
+                // preview toggle is left as the user set it.
+                editor.source_unavailable = true;
                 if super::artifacts::is_tabular_file(&relative_path) {
                     editor.csv = Some(Err(editor.disk_content.clone()));
-                }
-                if super::artifacts::is_html_file(&relative_path) {
-                    editor.preview = false;
                 }
                 let state = editor.state.clone();
                 let content = editor.disk_content.clone();
@@ -5589,6 +5602,7 @@ impl Raku {
                     return;
                 }
                 editor.reading = false;
+                editor.source_unavailable = false;
                 // An edit landed while the read was in flight; the user's text
                 // wins over the copy on disk.
                 if editor.dirty {
