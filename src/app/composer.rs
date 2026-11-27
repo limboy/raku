@@ -1789,6 +1789,23 @@ impl Raku {
     /// immediately unpack it back into the composer.
     pub(super) fn stage_pasted_text_snippet(&mut self, text: String, cx: &mut Context<Self>) {
         let title = crate::input::pasted_text_title(&text);
+        self.stage_named_text_snippet(title, text, cx);
+    }
+
+    /// Stage an excerpt from a right-panel artifact/file preview as a
+    /// collapsible snippet carrying its `Source: <path>` header.
+    pub(super) fn stage_file_excerpt_snippet(
+        &mut self,
+        display_path: &str,
+        excerpt: String,
+        cx: &mut Context<Self>,
+    ) {
+        let (title, content) =
+            super::artifacts::format_file_excerpt_snippet(display_path, &excerpt);
+        self.stage_named_text_snippet(title, content, cx);
+    }
+
+    fn stage_named_text_snippet(&mut self, title: String, text: String, cx: &mut Context<Self>) {
         let daemon = self.daemon.clone();
         let draft_owner = self.selected_composer_draft_key();
         let text_bytes = text.as_bytes().to_vec();

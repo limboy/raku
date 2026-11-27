@@ -322,6 +322,13 @@ impl ContextMenuHandle {
         open_menu(self, position, SurfaceFocus::Card, false, window, cx);
     }
 
+    /// Opens a context menu from the keyboard at an explicit window position,
+    /// for triggers such as a grid cell that are smaller than the menu's
+    /// recorded trigger bounds.
+    pub fn open_context_menu_at(&self, position: Point<Pixels>, window: &mut Window, cx: &mut App) {
+        open_menu(self, position, SurfaceFocus::Card, false, window, cx);
+    }
+
     pub fn close(&self, window: &mut Window, cx: &mut App) {
         self.submenu_bounds.set(None);
         let was_open = {

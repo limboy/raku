@@ -2247,6 +2247,7 @@ mod tests {
                     start: 4,
                     end: 19,
                 }],
+                source_path: None,
             }),
         };
         session.side_chat = Some(origin.clone());

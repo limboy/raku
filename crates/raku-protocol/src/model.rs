@@ -1151,6 +1151,10 @@ pub struct SideChatAnchor {
     pub quote: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<SideChatAnchorSpan>,
+    /// Present when the excerpt came from a right-panel artifact/file preview
+    /// rather than a transcript message (`message_id` is nil, `spans` empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]

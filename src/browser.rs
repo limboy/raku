@@ -24,6 +24,7 @@
 //!
 //! [`Raku`]: crate::app::Raku
 
+use std::path::Path;
 use std::rc::Rc;
 
 use gpui::{
@@ -145,6 +146,7 @@ mod host {
 
     use std::cell::Cell;
     use std::ffi::c_void;
+    use std::path::Path;
     use std::ptr::null_mut;
 
     use gpui::{Bounds, Pixels};
@@ -356,6 +358,42 @@ mod host {
                     .downcast_ref::<NSView>()
                     .is_some_and(|responder| responder.isDescendantOf(view))
             })
+        }
+
+        pub fn load_local_file(&self, file_path: &Path, read_access_dir: &Path) {
+            use objc2_foundation::{NSString, NSURL};
+
+            // The `isDirectory:` constructors take the answer instead of
+            // stat-ing the path, so these loads do no filesystem I/O on the
+            // UI thread that requests them.
+            let file_url = NSURL::fileURLWithPath_isDirectory(
+                &NSString::from_str(&file_path.to_string_lossy()),
+                false,
+            );
+            let read_url = NSURL::fileURLWithPath_isDirectory(
+                &NSString::from_str(&read_access_dir.to_string_lossy()),
+                true,
+            );
+            unsafe {
+                let _ = self
+                    .wk
+                    .loadFileURL_allowingReadAccessToURL(&file_url, &read_url);
+            }
+        }
+
+        pub fn load_html_string(&self, html: &str, base_dir: Option<&Path>) {
+            use objc2_foundation::{NSString, NSURL};
+
+            let html = NSString::from_str(html);
+            let base_url = base_dir.map(|dir| {
+                NSURL::fileURLWithPath_isDirectory(
+                    &NSString::from_str(&dir.to_string_lossy()),
+                    true,
+                )
+            });
+            unsafe {
+                let _ = self.wk.loadHTMLString_baseURL(&html, base_url.as_deref());
+            }
         }
     }
 
@@ -615,6 +653,10 @@ mod host {
 
         pub fn load_url(&self, url: &str) -> windows::core::Result<()> {
             unsafe { self.0.Navigate(&HSTRING::from(url)) }
+        }
+
+        pub fn load_html_string(&self, html: &str) -> windows::core::Result<()> {
+            unsafe { self.0.NavigateToString(&HSTRING::from(html)) }
         }
 
         /// Fire and forget: nothing in the surface reads a script's result,
@@ -1191,7 +1233,21 @@ impl Deferred {
     }
 }
 
+#[cfg(target_os = "windows")]
+enum PendingLoad {
+    Url(String),
+    LocalFile {
+        file_path: std::path::PathBuf,
+        read_access_dir: std::path::PathBuf,
+    },
+    Html {
+        html: String,
+        base_dir: Option<std::path::PathBuf>,
+    },
+}
+
 pub struct BrowserView {
+    show_toolbar: bool,
     focus_handle: FocusHandle,
     address: Entity<TextInput>,
     host: Option<Rc<WebviewHost>>,
@@ -1201,7 +1257,7 @@ pub struct BrowserView {
     /// controller is created asynchronously, so the surface can be asked to
     /// open a URL before it has anything to open it in.
     #[cfg(target_os = "windows")]
-    pending_url: Option<String>,
+    pending_load: Option<PendingLoad>,
     /// A navigation has been requested at least once: the surface shows the
     /// page area instead of the start hint, and the native view may be shown.
     navigation_requested: bool,
@@ -1235,6 +1291,14 @@ pub struct BrowserView {
 
 impl BrowserView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_toolbar(true, window, cx)
+    }
+
+    pub fn new_embedded(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_toolbar(false, window, cx)
+    }
+
+    fn with_toolbar(show_toolbar: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let address = cx.new(|cx| {
             TextInput::new(window, cx)
                 .select_all_on_focus_click()
@@ -1309,12 +1373,13 @@ impl BrowserView {
         });
 
         let mut this = Self {
+            show_toolbar,
             focus_handle,
             address,
             host: None,
             host_error: None,
             #[cfg(target_os = "windows")]
-            pending_url: None,
+            pending_load: None,
             navigation_requested: false,
             current_url: None,
             page_title: None,
@@ -1595,10 +1660,19 @@ impl BrowserView {
         match outcome {
             Ok(host) => {
                 self.host = Some(host);
-                // A URL typed before the page existed waits here rather than
+                // A load requested before the page existed waits here rather than
                 // being dropped on the floor.
-                if let Some(url) = self.pending_url.take() {
-                    self.navigate_to_url(url, cx);
+                if let Some(pending) = self.pending_load.take() {
+                    match pending {
+                        PendingLoad::Url(url) => self.navigate_to_url(url, cx),
+                        PendingLoad::LocalFile {
+                            file_path,
+                            read_access_dir,
+                        } => self.load_local_file(&file_path, &read_access_dir, cx),
+                        PendingLoad::Html { html, base_dir } => {
+                            self.load_html_string(html, base_dir.as_deref(), cx);
+                        }
+                    }
                 }
             }
             Err(error) => self.host_error = Some(error),
@@ -1723,7 +1797,7 @@ impl BrowserView {
         let Some(host) = &self.host else {
             #[cfg(target_os = "windows")]
             {
-                self.pending_url = Some(url);
+                self.pending_load = Some(PendingLoad::Url(url));
             }
             return;
         };
@@ -1741,6 +1815,111 @@ impl BrowserView {
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     pub fn navigate_to_url(&mut self, _url: String, _cx: &mut Context<Self>) {}
+
+    /// Load a local file (PDF, HTML, etc.) into the embedded preview without
+    /// stealing keyboard focus away from the rest of the workspace.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub fn load_local_file(
+        &mut self,
+        file_path: &Path,
+        read_access_dir: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = &self.host else {
+            #[cfg(target_os = "windows")]
+            {
+                self.pending_load = Some(PendingLoad::LocalFile {
+                    file_path: file_path.to_path_buf(),
+                    read_access_dir: read_access_dir.to_path_buf(),
+                });
+            }
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        host.load_local_file(file_path, read_access_dir);
+        #[cfg(target_os = "windows")]
+        {
+            let _ = read_access_dir;
+            let Ok(url) = url::Url::from_file_path(file_path) else {
+                return;
+            };
+            if host.webview.load_url(url.as_str()).is_err() {
+                return;
+            }
+        }
+        self.navigation_requested = true;
+        self.loading = true;
+        self.load_failure = None;
+        self.page_title = None;
+        self.snapshot = None;
+        self.current_url = url::Url::from_file_path(file_path).ok().map(Into::into);
+        self.address_dirty = false;
+        self.echo_page_url(cx);
+        cx.notify();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    pub fn load_local_file(
+        &mut self,
+        _file_path: &Path,
+        _read_access_dir: &Path,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+
+    /// Render an in-memory HTML document (dirty buffer or attachment) in the
+    /// embedded preview without stealing focus.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub fn load_html_string(
+        &mut self,
+        html: String,
+        base_dir: Option<&Path>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = &self.host else {
+            #[cfg(target_os = "windows")]
+            {
+                self.pending_load = Some(PendingLoad::Html {
+                    html,
+                    base_dir: base_dir.map(Path::to_path_buf),
+                });
+            }
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        host.load_html_string(&html, base_dir);
+        #[cfg(target_os = "windows")]
+        {
+            let _ = base_dir;
+            if host.webview.load_html_string(&html).is_err() {
+                return;
+            }
+        }
+        self.navigation_requested = true;
+        self.loading = true;
+        self.load_failure = None;
+        self.page_title = None;
+        self.snapshot = None;
+        self.current_url = base_dir
+            .and_then(|dir| url::Url::from_file_path(dir).ok())
+            .map(Into::into);
+        self.address_dirty = false;
+        self.echo_page_url(cx);
+        cx.notify();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    pub fn load_html_string(
+        &mut self,
+        _html: String,
+        _base_dir: Option<&Path>,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
 
     /// Hand the keyboard to the page. `makeFirstResponder` runs responder
     /// callbacks synchronously and this is reached from inside an entity
@@ -1767,13 +1946,15 @@ impl BrowserView {
     }
 
     /// Where focus should land when this surface becomes active: the page if
-    /// there is one, otherwise the address bar ready for typing.
+    /// there is one, otherwise the address bar ready for typing (when shown).
     pub fn focus_default(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.navigation_requested {
             self.focus_page(cx);
             window.focus(&self.focus_handle, cx);
-        } else {
+        } else if self.show_toolbar {
             self.focus_address(window, cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
         }
     }
 
@@ -2773,7 +2954,9 @@ impl Render for BrowserView {
             .on_action(cx.listener(|this, _: &BrowserStop, _, cx| this.stop_loading(cx)))
             .on_action(cx.listener(|this, _: &BrowserDevtools, _, _| this.toggle_devtools()))
             .on_action(cx.listener(|this, _: &FocusBrowserAddress, window, cx| {
-                this.focus_address(window, cx);
+                if this.show_toolbar {
+                    this.focus_address(window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &WebviewCopy, _, _| this.webview_copy()))
             .on_action(cx.listener(|this, _: &WebviewCut, _, _| this.webview_cut()))
@@ -2783,7 +2966,9 @@ impl Render for BrowserView {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(self.render_toolbar(cx))
+            .when(self.show_toolbar, |view| {
+                view.child(self.render_toolbar(cx))
+            })
             .child(body)
     }
 }

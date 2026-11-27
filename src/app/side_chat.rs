@@ -265,7 +265,11 @@ fn head_within(text: &str, limit: usize) -> &str {
 /// Hidden context for a side chat's first prompt: the parent conversation so
 /// far (newest messages kept within [`SNAPSHOT_LIMIT`]) and the quoted
 /// excerpt. The user's bubble shows only what they typed.
-pub(super) fn side_chat_preamble(parent: &AgentSession, quote: Option<&str>) -> String {
+pub(super) fn side_chat_preamble(
+    parent: &AgentSession,
+    quote: Option<&str>,
+    source_path: Option<&str>,
+) -> String {
     let mut entries = Vec::new();
     let mut used = 0;
     let mut truncated = false;
@@ -312,7 +316,16 @@ pub(super) fn side_chat_preamble(parent: &AgentSession, quote: Option<&str>) -> 
         out.push_str("</conversation>\n\n");
     }
     if let Some(quote) = quote.map(str::trim).filter(|quote| !quote.is_empty()) {
-        out.push_str("The user is asking about this excerpt:\n<excerpt>\n");
+        match source_path.map(str::trim).filter(|path| !path.is_empty()) {
+            Some(path) => {
+                out.push_str("The user is asking about this excerpt from `");
+                out.push_str(path);
+                out.push_str("`:\n<excerpt>\n");
+            }
+            None => {
+                out.push_str("The user is asking about this excerpt:\n<excerpt>\n");
+            }
+        }
         out.push_str(head_within(quote, QUOTE_LIMIT));
         out.push_str("\n</excerpt>\n\n");
     }
@@ -323,16 +336,42 @@ pub(super) fn side_chat_preamble(parent: &AgentSession, quote: Option<&str>) -> 
 }
 
 /// The quote a side chat is about, as a pasted-text style chip: its first
-/// line, the whole quote on hover. Not interactive — the quote stays readable
-/// in the transcript, where its dashed link lives.
-fn side_chat_quote_chip(theme: &Theme, key: &str, quote: &str) -> Stateful<Div> {
-    let title = SharedString::from(single_line_label(quote));
+/// line (prefixed with filename when anchored to a file), the whole quote on
+/// hover. Not interactive — the quote stays readable in the transcript, where
+/// its dashed link lives.
+fn side_chat_quote_chip(
+    theme: &Theme,
+    key: &str,
+    quote: &str,
+    source_path: Option<&str>,
+) -> Stateful<Div> {
+    let first_line = single_line_label(quote);
+    let title = match source_path {
+        Some(path) => {
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(path);
+            if first_line.is_empty() {
+                SharedString::from(filename.to_owned())
+            } else {
+                SharedString::from(format!("{filename} · {first_line}"))
+            }
+        }
+        None => SharedString::from(first_line),
+    };
     let trimmed = quote.trim();
     let shown = head_within(trimmed, QUOTE_TOOLTIP_LIMIT);
-    let full = if shown.len() < trimmed.len() {
+    let body = if shown.len() < trimmed.len() {
         format!("{shown}…")
     } else {
         shown.to_owned()
+    };
+    let full = match source_path {
+        Some(path) if !body.is_empty() => format!("{path}\n\n{body}"),
+        Some(path) => path.to_owned(),
+        None => body,
     };
     pasted_text_chip(theme, &title)
         .id(SharedString::from(format!("side-chat-quote-{key}")))
@@ -389,7 +428,7 @@ impl Raku {
     }
 
     /// The task side chats branch from: the selected task, never a side chat.
-    fn side_chat_parent_session(&self) -> Option<&AgentSession> {
+    pub(super) fn side_chat_parent_session(&self) -> Option<&AgentSession> {
         self.selected_session()
             .filter(|session| !session.is_child())
     }
@@ -551,9 +590,36 @@ impl Raku {
                 message_id,
                 quote: head_within(quote.trim(), QUOTE_LIMIT).to_owned(),
                 spans,
+                source_path: None,
             }
         };
         self.transcript_selection.selection.borrow_mut().clear();
+        if let Some(id) = self.create_side_chat(parent, Some(anchor), cx) {
+            self.open_side_chat(id, window, cx);
+        }
+    }
+
+    /// Start a side chat about an excerpt from a right-panel artifact/file preview.
+    pub(super) fn start_side_chat_from_file_excerpt(
+        &mut self,
+        display_path: String,
+        quote: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(parent) = self.side_chat_parent_session().map(|session| session.id) else {
+            return;
+        };
+        let trimmed = quote.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let anchor = SideChatAnchor {
+            message_id: Uuid::nil(),
+            quote: head_within(trimmed, QUOTE_LIMIT).to_owned(),
+            spans: Vec::new(),
+            source_path: Some(display_path),
+        };
         if let Some(id) = self.create_side_chat(parent, Some(anchor), cx) {
             self.open_side_chat(id, window, cx);
         }
@@ -697,11 +763,12 @@ impl Raku {
             return;
         }
         let submission = if first {
-            let quote = session
+            let (quote, source_path) = session
                 .side_chat
                 .as_ref()
                 .and_then(|origin| origin.anchor.as_ref())
-                .map(|anchor| anchor.quote.clone());
+                .map(|anchor| (Some(anchor.quote.as_str()), anchor.source_path.as_deref()))
+                .unwrap_or((None, None));
             let preamble = session
                 .side_chat_parent()
                 .and_then(|parent| {
@@ -710,7 +777,7 @@ impl Raku {
                         .iter()
                         .find(|session| session.id == parent)
                 })
-                .map(|parent| side_chat_preamble(parent, quote.as_deref()))
+                .map(|parent| side_chat_preamble(parent, quote, source_path))
                 .unwrap_or_default();
             ComposerSubmission {
                 prompt: format!("{preamble}{prompt}"),
@@ -996,7 +1063,7 @@ impl Raku {
             .as_ref()
             .and_then(|origin| origin.anchor.as_ref())
             .filter(|_| session.messages.is_empty() && session.turns.is_empty())
-            .map(|anchor| anchor.quote.clone());
+            .map(|anchor| (anchor.quote.clone(), anchor.source_path.clone()));
         let queued = session.queued_messages.len();
         let (rows, tail_len) = Self::side_chat_rows(session, busy);
         let empty = rows.is_empty();
@@ -1157,9 +1224,14 @@ impl Raku {
                 .pt(px(6.0))
                 .pb(px(6.0))
                 .pr(px(6.0))
-                .when_some(pending_quote, |card, quote| {
+                .when_some(pending_quote, |card, (quote, source_path)| {
                     card.child(div().px(px(10.0)).pt(px(4.0)).pb(px(2.0)).flex().child(
-                        side_chat_quote_chip(&theme, &format!("composer-{id}"), &quote),
+                        side_chat_quote_chip(
+                            &theme,
+                            &format!("composer-{id}"),
+                            &quote,
+                            source_path.as_deref(),
+                        ),
                     ))
                 })
                 .child(
@@ -1366,7 +1438,7 @@ impl Raku {
                             .as_ref()
                             .and_then(|origin| origin.anchor.as_ref())
                             .filter(|_| first_user == Some(message_index))
-                            .map(|anchor| anchor.quote.clone())
+                            .map(|anchor| (anchor.quote.clone(), anchor.source_path.clone()))
                     })
                     .flatten();
                 match message.role {
@@ -1376,11 +1448,12 @@ impl Raku {
                         .flex_col()
                         .items_end()
                         .gap(px(6.0))
-                        .when_some(quote, |column, quote| {
+                        .when_some(quote, |column, (quote, source_path)| {
                             column.child(side_chat_quote_chip(
                                 &theme,
                                 &format!("message-{}", message.id),
                                 &quote,
+                                source_path.as_deref(),
                             ))
                         })
                         .child(
@@ -2225,12 +2298,19 @@ mod tests {
             );
         }
         parent.push_message(MessageRole::User, "latest question");
-        let preamble = side_chat_preamble(&parent, Some("quoted text"));
+        let preamble = side_chat_preamble(&parent, Some("quoted text"), None);
         assert!(preamble.len() < SNAPSHOT_LIMIT + 1024);
         assert!(preamble.contains("latest question"));
         assert!(!preamble.contains("first question"));
         assert!(preamble.contains("[earlier messages omitted]"));
-        assert!(preamble.contains("<excerpt>\nquoted text\n</excerpt>"));
+        assert!(preamble.contains(
+            "The user is asking about this excerpt:\n<excerpt>\nquoted text\n</excerpt>"
+        ));
+
+        let file_preamble = side_chat_preamble(&parent, Some("row data"), Some("docs/report.md"));
+        assert!(file_preamble.contains(
+            "The user is asking about this excerpt from `docs/report.md`:\n<excerpt>\nrow data\n</excerpt>"
+        ));
     }
 
     #[test]
@@ -2248,6 +2328,7 @@ mod tests {
                     start: 2,
                     end: 8,
                 }],
+                source_path: None,
             }),
         });
         let mut standard = AgentSession::new(parent.project_id, ProviderKind::Pi);
@@ -2255,14 +2336,30 @@ mod tests {
             parent_session_id: parent.id,
             anchor: None,
         });
-        let index = build_side_chat_index(&[parent.clone(), chat.clone(), standard.clone()]);
+        let mut file_excerpt = AgentSession::new(parent.project_id, ProviderKind::Pi);
+        file_excerpt.side_chat = Some(SideChatOrigin {
+            parent_session_id: parent.id,
+            anchor: Some(SideChatAnchor {
+                message_id: Uuid::nil(),
+                quote: "Section 2".into(),
+                spans: Vec::new(),
+                source_path: Some("docs/spec.md".into()),
+            }),
+        });
+        let index = build_side_chat_index(&[
+            parent.clone(),
+            chat.clone(),
+            standard.clone(),
+            file_excerpt.clone(),
+        ]);
         let ids = &index.by_parent[&parent.id];
-        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.len(), 3);
         let anchors = &index.anchors[&message_id];
         assert_eq!(anchors.len(), 1);
         assert_eq!(anchors[0].index, 3);
         assert_eq!(anchors[0].range, 2..8);
         assert_eq!(side_chat_link_target(&anchors[0].target), Some(chat.id));
+        assert!(!index.anchors.contains_key(&Uuid::nil()));
         assert!(!chat.is_listed_task());
         assert!(!chat.is_task_draft());
     }

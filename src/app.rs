@@ -751,11 +751,31 @@ struct RightPanelFileEditor {
     /// Uploaded files retain their daemon reference and are always read-only.
     attachment: Option<right_panel::AttachmentFile>,
     disk_content: String,
+    /// Workspace file path confirmed on a background worker for direct local
+    /// WebView loads (relative `<script>`/`<link>`/images resolve against it).
+    local_path: Option<PathBuf>,
     /// Image bytes are fetched and prepared on a worker. Rendering only reads
     /// this source; GPUI decodes encoded images through its background cache.
     image: Option<Result<right_panel::FileImageSource, String>>,
-    image_preview: bool,
-    image_epoch: u64,
+    /// Local path (workspace file or disposable temp cache) for PDF previews.
+    pdf_path: Option<Result<PathBuf, String>>,
+    pdf_fingerprint: Option<(u64, Option<std::time::SystemTime>)>,
+    /// Parsed table data for CSV/TSV previews, computed off the UI thread.
+    csv: Option<Result<Arc<artifacts::CsvTable>, String>>,
+    csv_view: Option<artifacts::CsvTableViewState>,
+    /// Embedded `BrowserView` id in `right_panel_browsers` for HTML/PDF previews.
+    webview_id: Option<Uuid>,
+    /// `preview_epoch` last loaded into the embedded `BrowserView`.
+    webview_loaded_epoch: u64,
+    preview: bool,
+    /// Bumped only when the embedded WebView must (re)load: the file's disk
+    /// content or PDF changed, HTML preview was switched on, or the user asked
+    /// for a reload. Session restores and saves leave it alone so scroll and
+    /// page state survive.
+    preview_epoch: u64,
+    /// Guards in-flight SVG decodes and CSV parses started from the buffer. A
+    /// result whose epoch no longer matches describes superseded content.
+    parse_epoch: u64,
     writable: bool,
     dirty: bool,
     /// A read is in flight on the background executor. Set from the moment the
@@ -1759,6 +1779,7 @@ pub struct Raku {
 mod activity_diff;
 mod activity_input;
 mod activity_read;
+mod artifacts;
 mod autocomplete;
 mod background_work;
 mod backup_settings;

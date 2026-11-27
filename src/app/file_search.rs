@@ -300,17 +300,21 @@ impl Raku {
         let Some(path) = self.visible_right_panel_file_path() else {
             return;
         };
-        if right_panel::is_image_file(&path) {
-            if !right_panel::is_svg_file(&path) {
-                return;
-            }
-            if self
+        if super::artifacts::is_pdf_file(&path) {
+            return;
+        }
+        if right_panel::is_image_file(&path) && !right_panel::is_svg_file(&path) {
+            return;
+        }
+        if (right_panel::is_svg_file(&path)
+            || super::artifacts::is_html_file(&path)
+            || super::artifacts::is_tabular_file(&path))
+            && self
                 .right_panel_file_editors
                 .get(&path)
-                .is_some_and(|editor| editor.image_preview)
-            {
-                self.toggle_file_preview(&path, cx);
-            }
+                .is_some_and(|editor| editor.preview)
+        {
+            self.toggle_file_preview(&path, cx);
         }
         self.ensure_file_search(window, cx);
 

@@ -808,6 +808,23 @@ files.edit_markdown_source: 编辑源码
 files.view_markdown_source: 查看源码
 files.view_svg_source: 查看 SVG 源码
 files.preview_svg: 预览 SVG
+files.preview_html: 预览 HTML
+files.edit_html_source: 编辑 HTML 源码
+files.view_html_source: 查看 HTML 源码
+files.preview_table: 预览表格
+files.edit_table_source: 编辑源码
+files.view_table_source: 查看源码
+files.reload_preview: 刷新预览
+files.filter_rows: 筛选行…
+files.table_stats: "%{rows} 行 · %{cols} 列"
+files.table_stats_filtered: "显示 %{shown} / %{total} 行 · %{cols} 列"
+files.table_truncated: 预览已截断
+files.table_empty: 空表格
+files.table_empty_description: 此文件不包含任何表格数据。
+files.table_no_matching_rows: 没有匹配的行
+files.copy_cell: 复制单元格
+files.copy_row: 复制整行
+files.sort_column: "按 %{column} 排序"
 files.unable_to_open: "无法打开此文件：%{error}"
 files.preview_too_large: 文件过大，无法预览（最大 2 MB）。
 files.binary_preview_unavailable: 此文件包含二进制数据。

@@ -87,13 +87,14 @@ impl AttachmentFile {
             .extension()
             .and_then(|extension| extension.to_str())
             .map(str::to_ascii_lowercase);
+        let is_pdf = super::artifacts::is_pdf_file(name);
         let is_text = file_highlighter_language(name) != "text"
             || matches!(
                 extension.as_deref(),
                 Some("txt" | "text" | "log" | "csv" | "tsv" | "rst" | "adoc" | "asciidoc")
             )
             || extension.is_none();
-        (!is_dir && !is_image && is_text).then(|| Self {
+        (!is_dir && !is_image && (is_text || is_pdf)).then(|| Self {
             path: path.to_owned(),
             reference: reference.map(str::to_owned),
             name: name.to_owned().into(),
@@ -772,7 +773,7 @@ fn file_icon_for_name(name: &str) -> &'static str {
         "md" | "mdx" | "markdown" => "icons/file-types/markdown.svg",
         "sh" | "bash" | "zsh" | "fish" => "icons/file-types/console.svg",
         "ps1" | "psm1" => "icons/file-types/powershell.svg",
-        "sql" | "db" | "sqlite" | "sqlite3" | "csv" | "xls" | "xlsx" => {
+        "sql" | "db" | "sqlite" | "sqlite3" | "csv" | "tsv" | "xls" | "xlsx" => {
             "icons/file-types/database.svg"
         }
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "ico" | "tif" | "tiff" | "bmp"
@@ -1022,36 +1023,103 @@ fn file_image_source(bytes: Vec<u8>, path: &str) -> anyhow::Result<FileImageSour
 struct LoadedRightPanelFile {
     content: String,
     writable: bool,
+    local_path: Option<PathBuf>,
     image: Option<Result<FileImageSource, String>>,
+    pdf_path: Option<Result<PathBuf, String>>,
+    pdf_fingerprint: Option<(u64, Option<std::time::SystemTime>)>,
+    csv: Option<Result<Arc<super::artifacts::CsvTable>, String>>,
 }
 
 impl LoadedRightPanelFile {
-    fn text(content: String, writable: bool) -> Self {
+    fn text(content: String, writable: bool, local_path: Option<PathBuf>) -> Self {
         Self {
             content,
             writable,
+            local_path,
             image: None,
+            pdf_path: None,
+            pdf_fingerprint: None,
+            csv: None,
         }
     }
 
-    fn svg(content: String) -> Self {
+    fn svg(content: String, local_path: Option<PathBuf>) -> Self {
         let image = file_image_source(content.as_bytes().to_vec(), "preview.svg")
             .map_err(|error| error.to_string());
         Self {
             content,
             writable: true,
+            local_path,
             image: Some(image),
+            pdf_path: None,
+            pdf_fingerprint: None,
+            csv: None,
+        }
+    }
+
+    fn csv(
+        content: String,
+        writable: bool,
+        local_path: Option<PathBuf>,
+        csv: Result<Arc<super::artifacts::CsvTable>, String>,
+    ) -> Self {
+        Self {
+            content,
+            writable,
+            local_path,
+            image: None,
+            pdf_path: None,
+            pdf_fingerprint: None,
+            csv: Some(csv),
+        }
+    }
+
+    fn pdf(
+        pdf_path: Result<PathBuf, String>,
+        pdf_fingerprint: Option<(u64, Option<std::time::SystemTime>)>,
+    ) -> Self {
+        Self {
+            content: String::new(),
+            writable: false,
+            local_path: None,
+            image: None,
+            pdf_path: Some(pdf_path),
+            pdf_fingerprint,
+            csv: None,
         }
     }
 }
 
-/// Reads text or image bytes from the daemon. Only called on a worker by
-/// [`Raku::read_right_panel_file_into_editor`], never directly from a frame.
+/// Reads text, image, PDF, or CSV bytes from the daemon. Only called on a
+/// worker by [`Raku::read_right_panel_file_into_editor`], never from a frame.
 fn read_right_panel_file(
     workspace: &raku_client::WorkspaceClient,
     project_path: &Path,
     relative_path: &str,
 ) -> LoadedRightPanelFile {
+    if super::artifacts::is_pdf_file(relative_path) {
+        let local_candidate = project_path.join(relative_path);
+        if let Ok(meta) = std::fs::metadata(&local_candidate)
+            && meta.is_file()
+        {
+            return LoadedRightPanelFile::pdf(
+                Ok(local_candidate),
+                Some((meta.len(), meta.modified().ok())),
+            );
+        }
+        let pdf = (|| -> anyhow::Result<PathBuf> {
+            let raku_client::WorkspaceResult::FileBytes { bytes } =
+                workspace.request(raku_client::WorkspaceOperation::ReadFileBytes {
+                    root: project_path.to_path_buf(),
+                    relative_path: PathBuf::from(relative_path),
+                })?
+            else {
+                anyhow::bail!("the daemon returned an invalid PDF response");
+            };
+            super::artifacts::materialize_pdf_preview_cache(relative_path, &bytes)
+        })();
+        return LoadedRightPanelFile::pdf(pdf.map_err(|error| error.to_string()), None);
+    }
     if is_image_file(relative_path) && !is_svg_file(relative_path) {
         let image = (|| -> anyhow::Result<FileImageSource> {
             let raku_client::WorkspaceResult::FileBytes { bytes } =
@@ -1067,38 +1135,105 @@ fn read_right_panel_file(
         return LoadedRightPanelFile {
             content: String::new(),
             writable: false,
+            local_path: None,
             image: Some(image.map_err(|error| error.to_string())),
+            pdf_path: None,
+            pdf_fingerprint: None,
+            csv: None,
         };
     }
+    let local_candidate = project_path.join(relative_path);
+    let local_path = std::fs::metadata(&local_candidate)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .map(|_| local_candidate);
     match workspace.request(raku_client::WorkspaceOperation::ReadTextFile {
         root: project_path.to_path_buf(),
         relative_path: PathBuf::from(relative_path),
     }) {
         Ok(raku_client::WorkspaceResult::TextFile { content }) => {
             if is_svg_file(relative_path) {
-                LoadedRightPanelFile::svg(content)
+                LoadedRightPanelFile::svg(content, local_path)
+            } else if super::artifacts::is_tabular_file(relative_path) {
+                let table = Arc::new(super::artifacts::parse_csv(
+                    &content,
+                    super::artifacts::tabular_delimiter(relative_path),
+                ));
+                LoadedRightPanelFile::csv(content, true, local_path, Ok(table))
             } else {
-                LoadedRightPanelFile::text(content, true)
+                LoadedRightPanelFile::text(content, true, local_path)
             }
         }
-        Ok(_) => LoadedRightPanelFile::text(
-            tr!(
+        Ok(_) => {
+            let message = tr!(
                 "files.unable_to_edit",
                 error = "the daemon returned an invalid file response"
-            ),
-            false,
-        ),
-        Err(error) => LoadedRightPanelFile::text(
-            tr!("files.unable_to_edit", error = error.to_string()),
-            false,
-        ),
+            );
+            if super::artifacts::is_tabular_file(relative_path) {
+                LoadedRightPanelFile::csv(message.clone(), false, None, Err(message))
+            } else {
+                LoadedRightPanelFile::text(message, false, None)
+            }
+        }
+        Err(error) => {
+            let message = tr!("files.unable_to_edit", error = error.to_string());
+            if super::artifacts::is_tabular_file(relative_path) {
+                LoadedRightPanelFile::csv(message.clone(), false, None, Err(message))
+            } else {
+                LoadedRightPanelFile::text(message, false, None)
+            }
+        }
     }
 }
 
 fn read_attachment_file(
     attachment: &AttachmentFile,
     request: impl FnOnce(raku_client::Command) -> anyhow::Result<raku_client::ResponsePayload>,
-) -> (String, bool) {
+) -> LoadedRightPanelFile {
+    if super::artifacts::is_pdf_file(&attachment.name) {
+        let pdf = (|| -> anyhow::Result<PathBuf> {
+            let bytes = if let Some(reference) = attachment.reference.as_ref() {
+                let command = if raku_protocol::blob::is_reference(reference) {
+                    raku_client::Command::ReadBlob {
+                        reference: reference.clone(),
+                    }
+                } else {
+                    raku_client::Command::ReadAttachment {
+                        reference: reference.clone(),
+                        path: attachment.path.clone(),
+                    }
+                };
+                let raku_client::ResponsePayload::BlobData { bytes } = request(command)? else {
+                    anyhow::bail!("the daemon returned an invalid attachment response");
+                };
+                bytes
+            } else {
+                let root = attachment
+                    .path
+                    .parent()
+                    .context("invalid attachment path")?;
+                let name = attachment
+                    .path
+                    .file_name()
+                    .context("invalid attachment name")?;
+                let raku_client::ResponsePayload::Workspace {
+                    result: raku_client::WorkspaceResult::FileBytes { bytes },
+                } = request(raku_client::Command::Workspace {
+                    operation: raku_client::WorkspaceOperation::ReadFileBytes {
+                        root: root.to_owned(),
+                        relative_path: PathBuf::from(name),
+                    },
+                })?
+                else {
+                    anyhow::bail!("the daemon returned an invalid file response");
+                };
+                bytes
+            };
+            super::artifacts::materialize_pdf_preview_cache(&attachment.editor_path(), &bytes)
+        })();
+        return LoadedRightPanelFile::pdf(pdf.map_err(|error| error.to_string()), None);
+    }
+
     let read = (|| -> anyhow::Result<String> {
         if let Some(reference) = attachment.reference.as_ref() {
             let command = if raku_protocol::blob::is_reference(reference) {
@@ -1140,10 +1275,27 @@ fn read_attachment_file(
         };
         attachment_text(content.into_bytes())
     })();
-    (
-        read.unwrap_or_else(|error| tr!("files.unable_to_open", error = error.to_string())),
-        false,
-    )
+    match read {
+        Ok(content) => {
+            if super::artifacts::is_tabular_file(&attachment.name) {
+                let table = Arc::new(super::artifacts::parse_csv(
+                    &content,
+                    super::artifacts::tabular_delimiter(&attachment.name),
+                ));
+                LoadedRightPanelFile::csv(content, false, None, Ok(table))
+            } else {
+                LoadedRightPanelFile::text(content, false, None)
+            }
+        }
+        Err(error) => {
+            let message = tr!("files.unable_to_open", error = error.to_string());
+            if super::artifacts::is_tabular_file(&attachment.name) {
+                LoadedRightPanelFile::csv(message.clone(), false, None, Err(message))
+            } else {
+                LoadedRightPanelFile::text(message, false, None)
+            }
+        }
+    }
 }
 
 fn attachment_text(bytes: Vec<u8>) -> anyhow::Result<String> {
@@ -1248,6 +1400,192 @@ fn right_panel_tab_icon(
             .map(file_icon_for_path)
             .unwrap_or_else(|| surface.icon_path()),
         _ => surface.icon_path(),
+    }
+}
+
+fn markdown_preview_menu_items(
+    display_path: String,
+    selected: String,
+    can_side_chat: bool,
+    selection: TranscriptSelection,
+    raku: WeakEntity<Raku>,
+) -> Vec<MenuItem> {
+    let copy_text = selected.clone();
+    let add_raku = raku.clone();
+    let add_path = display_path.clone();
+    let add_text = selected.clone();
+    let add_selection = selection.clone();
+    let mut items = vec![
+        MenuItem::new(tr!("menu.copy"), move |_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+        })
+        .icon("icons/copy.svg"),
+        MenuItem::Separator,
+        MenuItem::new(tr!("common.add_to_chat"), move |window, cx| {
+            let path = add_path.clone();
+            let text = add_text.clone();
+            add_selection.clear();
+            let _ = add_raku.update(cx, |this, cx| {
+                this.stage_file_excerpt_snippet(&path, text, cx);
+                let focus = this.composer.read(cx).focus();
+                window.focus(&focus, cx);
+            });
+        })
+        .icon("icons/plus.svg"),
+    ];
+    if can_side_chat {
+        items.push(
+            MenuItem::new(tr!("side_chat.menu_item"), move |window, cx| {
+                let path = display_path.clone();
+                let text = selected.clone();
+                selection.clear();
+                let _ = raku.update(cx, |this, cx| {
+                    this.start_side_chat_from_file_excerpt(path, text, window, cx);
+                });
+            })
+            .icon("icons/ant/message-plus.svg"),
+        );
+    }
+    items
+}
+
+fn csv_cell_menu_items(
+    display_path: String,
+    row_number: usize,
+    cell_text: Option<String>,
+    headers: &[String],
+    row: &[String],
+    can_side_chat: bool,
+    raku: WeakEntity<Raku>,
+) -> Vec<MenuItem> {
+    let row_tsv = super::artifacts::format_csv_row_tsv(row);
+    let row_markdown = super::artifacts::format_csv_row_markdown(headers, row);
+    let excerpt_source = format!("{display_path} (row {row_number})");
+    let add_raku = raku.clone();
+    let add_source = excerpt_source.clone();
+    let add_markdown = row_markdown.clone();
+    let mut items = Vec::new();
+    if let Some(cell_text) = cell_text {
+        items.push(
+            MenuItem::new(tr!("files.copy_cell"), move |_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(cell_text.clone()));
+            })
+            .icon("icons/copy.svg"),
+        );
+    }
+    items.extend([
+        MenuItem::new(tr!("files.copy_row"), move |_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(row_tsv.clone()));
+        }),
+        MenuItem::Separator,
+        MenuItem::new(tr!("common.add_to_chat"), move |window, cx| {
+            let source = add_source.clone();
+            let markdown = add_markdown.clone();
+            let _ = add_raku.update(cx, |this, cx| {
+                this.stage_file_excerpt_snippet(&source, markdown, cx);
+                let focus = this.composer.read(cx).focus();
+                window.focus(&focus, cx);
+            });
+        })
+        .icon("icons/plus.svg"),
+    ]);
+    if can_side_chat {
+        items.push(
+            MenuItem::new(tr!("side_chat.menu_item"), move |window, cx| {
+                let source = excerpt_source.clone();
+                let markdown = row_markdown.clone();
+                let _ = raku.update(cx, |this, cx| {
+                    this.start_side_chat_from_file_excerpt(source, markdown, window, cx);
+                });
+            })
+            .icon("icons/ant/message-plus.svg"),
+        );
+    }
+    items
+}
+
+const CSV_GUTTER_WIDTH: f32 = 48.0;
+const CSV_HEADER_HEIGHT: f32 = 34.0;
+const CSV_ROW_HEIGHT: f32 = 32.0;
+/// Columns rendered on each side of the viewport, so a scroll step never
+/// exposes an unbuilt cell before the next frame.
+const CSV_COLUMN_OVERSCAN: usize = 1;
+
+/// Left edges of each CSV column relative to the end of the row-number gutter,
+/// followed by the total width of all columns (`len == columns + 1`).
+fn csv_column_offsets(col_widths: &[f32]) -> Vec<f32> {
+    let mut offsets = Vec::with_capacity(col_widths.len() + 1);
+    let mut x = 0.0;
+    offsets.push(x);
+    for width in col_widths {
+        x += width;
+        offsets.push(x);
+    }
+    offsets
+}
+
+/// The columns intersecting a horizontal viewport, plus overscan. A viewport
+/// that has not been laid out yet (`width <= 0`) assumes a wide panel rather
+/// than building every column.
+fn csv_visible_columns(
+    offsets: &[f32],
+    scroll_x: f32,
+    viewport_width: f32,
+) -> std::ops::Range<usize> {
+    let cols = offsets.len().saturating_sub(1);
+    let viewport_width = if viewport_width > 0.0 {
+        viewport_width
+    } else {
+        2_000.0
+    };
+    let left = scroll_x - CSV_GUTTER_WIDTH;
+    let right = left + viewport_width;
+    let first = offsets[1..].partition_point(|&edge| edge <= left);
+    let end = offsets[..cols].partition_point(|&edge| edge < right);
+    let first = first.saturating_sub(CSV_COLUMN_OVERSCAN);
+    let end = (end + CSV_COLUMN_OVERSCAN).min(cols);
+    first.min(end)..end
+}
+
+fn file_webview_id_if_active(
+    display_path: &str,
+    preview: bool,
+    reading: bool,
+    webview_loaded_epoch: u64,
+    pdf_ready: bool,
+    webview_id: Option<Uuid>,
+) -> Option<Uuid> {
+    let active = if super::artifacts::is_pdf_file(display_path) {
+        pdf_ready
+    } else if super::artifacts::is_html_file(display_path) {
+        preview && !(reading && webview_loaded_epoch == 0)
+    } else {
+        false
+    };
+    active.then_some(webview_id).flatten()
+}
+
+fn active_webview_id_for_state(
+    right_panel_visible: bool,
+    sliding: bool,
+    active_surface: Option<&RightPanelSurface>,
+    files_selected_path: Option<&str>,
+    file_webview: impl FnOnce(&str, &str) -> Option<Uuid>,
+) -> Option<Uuid> {
+    if !right_panel_visible || sliding {
+        return None;
+    }
+    match active_surface? {
+        RightPanelSurface::Browser(browser_id) => Some(*browser_id),
+        RightPanelSurface::Files => {
+            let path = files_selected_path?;
+            file_webview(path, path)
+        }
+        RightPanelSurface::File(path) => file_webview(path, path),
+        RightPanelSurface::AttachmentFile(attachment) => {
+            file_webview(&attachment.name, &attachment.editor_path())
+        }
+        _ => None,
     }
 }
 
@@ -1506,7 +1844,7 @@ mod tests {
             (source.to_owned(), [0, 0, 255, 255]),
             (source.replace("red", "blue"), [255, 0, 0, 255]),
         ] {
-            let loaded = LoadedRightPanelFile::svg(content.clone());
+            let loaded = LoadedRightPanelFile::svg(content.clone(), None);
             assert_eq!(loaded.content, content);
             assert!(loaded.writable);
             let FileImageSource::Encoded(image) = loaded.image.unwrap().unwrap() else {
@@ -1516,7 +1854,7 @@ mod tests {
             let rendered = image.to_image_data(renderer.clone()).unwrap();
             assert_eq!(&rendered.as_bytes(0).unwrap()[..4], &pixel);
         }
-        let invalid = LoadedRightPanelFile::svg("<svg incomplete".into());
+        let invalid = LoadedRightPanelFile::svg("<svg incomplete".into(), None);
         assert!(invalid.writable);
         assert_eq!(invalid.content, "<svg incomplete");
     }
@@ -1530,6 +1868,7 @@ mod tests {
             "build.log",
             "app.rs",
             "LICENSE",
+            "report.pdf",
         ] {
             assert!(
                 AttachmentFile::for_preview(Path::new(name), None, name, false, false).is_some()
@@ -1538,7 +1877,6 @@ mod tests {
         for (name, is_dir, is_image) in [
             ("report.md", true, false),
             ("photo.png", false, true),
-            ("report.pdf", false, false),
             ("archive.zip", false, false),
         ] {
             assert!(
@@ -1559,7 +1897,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let (text, writable) = read_attachment_file(&attachment, |command| {
+        let loaded = read_attachment_file(&attachment, |command| {
             let raku_client::Command::ReadAttachment {
                 reference: actual,
                 path,
@@ -1573,8 +1911,8 @@ mod tests {
                 bytes: "\u{feff}# Report\n修复 #14\n".as_bytes().to_vec(),
             })
         });
-        assert_eq!(text, "# Report\n修复 #14\n");
-        assert!(!writable);
+        assert_eq!(loaded.content, "# Report\n修复 #14\n");
+        assert!(!loaded.writable);
     }
 
     #[test]
@@ -1587,7 +1925,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let (text, writable) = read_attachment_file(&attachment, |command| {
+        let loaded = read_attachment_file(&attachment, |command| {
             let raku_client::Command::Workspace {
                 operation:
                     raku_client::WorkspaceOperation::ReadTextFile {
@@ -1606,8 +1944,8 @@ mod tests {
                 },
             })
         });
-        assert_eq!(text, "literal *text*\n");
-        assert!(!writable);
+        assert_eq!(loaded.content, "literal *text*\n");
+        assert!(!loaded.writable);
     }
 
     #[test]
@@ -1620,10 +1958,9 @@ mod tests {
             false,
         )
         .unwrap();
-        let (text, writable) =
-            read_attachment_file(&attachment, |_| anyhow::bail!("missing attachment"));
-        assert!(text.contains("missing attachment"));
-        assert!(!writable);
+        let loaded = read_attachment_file(&attachment, |_| anyhow::bail!("missing attachment"));
+        assert!(loaded.content.contains("missing attachment"));
+        assert!(!loaded.writable);
         assert!(attachment_text(Vec::new()).unwrap().is_empty());
         assert!(attachment_text(vec![0xff, 0xfe]).is_err());
         assert!(attachment_text(b"binary\0data".to_vec()).is_err());
@@ -2998,6 +3335,300 @@ mod tests {
             "cached pane context menu must disappear after clicking Copy"
         );
     }
+
+    fn menu_item_labels(items: &[MenuItem]) -> Vec<Option<String>> {
+        items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Entry { label, .. } => Some(label.to_string()),
+                MenuItem::Separator => None,
+                MenuItem::Submenu { label, .. } => Some(label.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn markdown_preview_menu_items_include_copy_add_to_chat_and_conditional_side_chat() {
+        let selection = TranscriptSelection::default();
+        let with_side_chat = markdown_preview_menu_items(
+            "docs/plan.md".into(),
+            "Key takeaway".into(),
+            true,
+            selection.clone(),
+            WeakEntity::new_invalid(),
+        );
+        assert_eq!(
+            menu_item_labels(&with_side_chat),
+            vec![
+                Some(tr!("menu.copy")),
+                None,
+                Some(tr!("common.add_to_chat")),
+                Some(tr!("side_chat.menu_item")),
+            ]
+        );
+
+        let without_side_chat = markdown_preview_menu_items(
+            "docs/plan.md".into(),
+            "Key takeaway".into(),
+            false,
+            selection,
+            WeakEntity::new_invalid(),
+        );
+        assert_eq!(
+            menu_item_labels(&without_side_chat),
+            vec![
+                Some(tr!("menu.copy")),
+                None,
+                Some(tr!("common.add_to_chat")),
+            ]
+        );
+    }
+
+    #[test]
+    fn csv_visible_columns_cover_only_the_viewport_plus_overscan() {
+        let offsets = csv_column_offsets(&[100.0; 128]);
+        assert_eq!(offsets.len(), 129);
+        assert_eq!(csv_visible_columns(&offsets, 0.0, 300.0), 0..4);
+        assert_eq!(csv_visible_columns(&offsets, 1048.0, 300.0), 9..14);
+        assert_eq!(csv_visible_columns(&offsets, 1e6, 300.0), 127..128);
+        assert_eq!(
+            csv_visible_columns(&csv_column_offsets(&[]), 0.0, 300.0),
+            0..0
+        );
+        // Not laid out yet: a wide fallback viewport, never every column.
+        assert_eq!(csv_visible_columns(&offsets, 0.0, 0.0).end, 21);
+    }
+
+    #[test]
+    fn csv_cell_menu_items_include_copy_and_annotation_actions() {
+        let headers = vec!["Name".to_owned(), "Score".to_owned()];
+        let row = vec!["Alice".to_owned(), "99".to_owned()];
+        let with_side_chat = csv_cell_menu_items(
+            "results.csv".into(),
+            1,
+            Some("99".into()),
+            &headers,
+            &row,
+            true,
+            WeakEntity::new_invalid(),
+        );
+        assert_eq!(
+            menu_item_labels(&with_side_chat),
+            vec![
+                Some(tr!("files.copy_cell")),
+                Some(tr!("files.copy_row")),
+                None,
+                Some(tr!("common.add_to_chat")),
+                Some(tr!("side_chat.menu_item")),
+            ]
+        );
+
+        let without_side_chat = csv_cell_menu_items(
+            "results.csv".into(),
+            1,
+            Some("99".into()),
+            &headers,
+            &row,
+            false,
+            WeakEntity::new_invalid(),
+        );
+        assert_eq!(
+            menu_item_labels(&without_side_chat),
+            vec![
+                Some(tr!("files.copy_cell")),
+                Some(tr!("files.copy_row")),
+                None,
+                Some(tr!("common.add_to_chat")),
+            ]
+        );
+
+        let gutter_only = csv_cell_menu_items(
+            "results.csv".into(),
+            1,
+            None,
+            &headers,
+            &row,
+            true,
+            WeakEntity::new_invalid(),
+        );
+        assert_eq!(
+            menu_item_labels(&gutter_only),
+            vec![
+                Some(tr!("files.copy_row")),
+                None,
+                Some(tr!("common.add_to_chat")),
+                Some(tr!("side_chat.menu_item")),
+            ]
+        );
+    }
+
+    #[test]
+    fn active_webview_id_tracks_html_and_pdf_preview_visibility() {
+        let html_id = Uuid::new_v4();
+        let pdf_id = Uuid::new_v4();
+        let browser_id = Uuid::new_v4();
+        let html_surface = RightPanelSurface::File("report.html".into());
+        let pdf_surface = RightPanelSurface::File("paper.pdf".into());
+        let files_surface = RightPanelSurface::Files;
+        let diff_surface = RightPanelSurface::Diff;
+        let browser_surface = RightPanelSurface::Browser(browser_id);
+        let pdf_attachment = AttachmentFile::for_preview(
+            Path::new("/daemon/brief.pdf"),
+            Some("waku-attachment:brief"),
+            "brief.pdf",
+            false,
+            false,
+        )
+        .unwrap();
+        let pdf_attachment_path = pdf_attachment.editor_path();
+        let pdf_attachment_surface = RightPanelSurface::AttachmentFile(pdf_attachment);
+
+        assert_eq!(
+            active_webview_id_for_state(true, false, Some(&html_surface), None, |display, _| {
+                file_webview_id_if_active(display, true, false, 1, false, Some(html_id))
+            }),
+            Some(html_id)
+        );
+        // Switching HTML to source mode hides its native WebView.
+        assert_eq!(
+            active_webview_id_for_state(true, false, Some(&html_surface), None, |display, _| {
+                file_webview_id_if_active(display, false, false, 1, false, Some(html_id))
+            }),
+            None
+        );
+        // Hidden or sliding right panel always hides native WebViews.
+        assert_eq!(
+            active_webview_id_for_state(false, false, Some(&html_surface), None, |display, _| {
+                file_webview_id_for_test(display, html_id)
+            }),
+            None
+        );
+        assert_eq!(
+            active_webview_id_for_state(true, true, Some(&pdf_surface), None, |display, _| {
+                file_webview_id_if_active(display, true, false, 1, true, Some(pdf_id))
+            }),
+            None
+        );
+        // Active PDF inside Files tab and attachment PDF tab both expose their WebView.
+        assert_eq!(
+            active_webview_id_for_state(
+                true,
+                false,
+                Some(&files_surface),
+                Some("paper.pdf"),
+                |display, _| file_webview_id_if_active(display, true, false, 1, true, Some(pdf_id))
+            ),
+            Some(pdf_id)
+        );
+        assert_eq!(
+            active_webview_id_for_state(
+                true,
+                false,
+                Some(&pdf_attachment_surface),
+                None,
+                |display, editor_path| {
+                    assert_eq!(editor_path, pdf_attachment_path);
+                    file_webview_id_if_active(display, true, false, 1, true, Some(pdf_id))
+                }
+            ),
+            Some(pdf_id)
+        );
+        // Unrelated tabs return None; Browser tabs return their own id.
+        assert_eq!(
+            active_webview_id_for_state(true, false, Some(&diff_surface), None, |_, _| Some(
+                html_id
+            )),
+            None
+        );
+        assert_eq!(
+            active_webview_id_for_state(true, false, Some(&browser_surface), None, |_, _| Some(
+                html_id
+            )),
+            Some(browser_id)
+        );
+    }
+
+    fn file_webview_id_for_test(display_path: &str, id: Uuid) -> Option<Uuid> {
+        file_webview_id_if_active(display_path, true, false, 1, true, Some(id))
+    }
+
+    #[gpui::test]
+    fn csv_table_list_renders_and_scrolls_inside_horizontal_scroll(cx: &mut gpui::TestAppContext) {
+        struct CsvScrollHarness {
+            list_state: ListState,
+            h_scroll: ScrollHandle,
+        }
+
+        impl Render for CsvScrollHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let total_width = 900.0;
+                div().size_full().flex().flex_col().child(
+                    div()
+                        .id("csv-h-scroll-test")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_x_scroll()
+                        .track_scroll(&self.h_scroll)
+                        .child(
+                            div()
+                                .min_w_full()
+                                .w(px(total_width))
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .id("csv-header-test")
+                                        .h(px(34.0))
+                                        .flex_none()
+                                        .child("Header"),
+                                )
+                                .child(
+                                    div().flex_1().min_h_0().w_full().child(
+                                        list(self.list_state.clone(), |index, _, _| {
+                                            div()
+                                                .id(SharedString::from(format!("csv-row-{index}")))
+                                                .debug_selector(move || format!("csv-row-{index}"))
+                                                .h(px(32.0))
+                                                .w_full()
+                                                .child(format!("Row {index}"))
+                                                .into_any_element()
+                                        })
+                                        .size_full(),
+                                    ),
+                                ),
+                        ),
+                )
+            }
+        }
+
+        let list_state = ListState::new(100, gpui::ListAlignment::Top, px(32.0));
+        list_state.reset_with_uniform_height(100, px(32.0));
+        let (harness, cx) = cx.add_window_view(|_, _| CsvScrollHarness {
+            list_state: list_state.clone(),
+            h_scroll: ScrollHandle::new(),
+        });
+        cx.run_until_parked();
+
+        let first_row = cx.debug_bounds("csv-row-0").expect("first csv row bounds");
+        assert_eq!(first_row.size.height, px(32.0));
+
+        // Scroll vertically inside the horizontally-scrollable table wrapper.
+        let target = first_row.center();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: target,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-160.0))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+
+        let scroll_top = cx.read_entity(&harness, |view, _| view.list_state.logical_scroll_top());
+        assert!(
+            scroll_top.item_ix > 0 || scroll_top.offset_in_item > px(0.0),
+            "vertical wheel over list inside overflow_x_scroll should scroll rows: {scroll_top:?}"
+        );
+    }
 }
 
 impl Raku {
@@ -3056,9 +3687,11 @@ impl Raku {
         // result dropped, and the flag it left behind would stop the editor
         // ever asking again. Clear it and read afresh, which also picks up
         // edits made while another session was on screen.
+        // Leave `preview_epoch` alone: the embedded WebViews survived the
+        // switch, and reloading them would throw away scroll and page state.
+        // A fresh read bumps it if the file actually changed.
         for editor in self.right_panel_file_editors.values_mut() {
             editor.reading = false;
-            editor.image_epoch = editor.image_epoch.wrapping_add(1);
         }
         // The find bar pointed into the editors that were just swapped out;
         // its match list means nothing here, and restored editors may carry
@@ -3097,6 +3730,11 @@ impl Raku {
                     self.right_panel_terminals.remove(&terminal_id);
                 }
                 if let Some(browser_id) = surface.browser_id() {
+                    self.right_panel_browsers.remove(&browser_id);
+                }
+            }
+            for editor in state.file_editors.values() {
+                if let Some(browser_id) = editor.webview_id {
                     self.right_panel_browsers.remove(&browser_id);
                 }
             }
@@ -3348,6 +3986,28 @@ impl Raku {
         }
     }
 
+    fn release_unreferenced_file_webview(&mut self, editor_path: &str) {
+        let still_open = self
+            .right_panel_surfaces
+            .iter()
+            .any(|surface| match surface {
+                RightPanelSurface::Files => {
+                    self.right_panel_files_selected_path.as_deref() == Some(editor_path)
+                }
+                RightPanelSurface::File(path) => path == editor_path,
+                RightPanelSurface::AttachmentFile(attachment) => {
+                    attachment.editor_path() == editor_path
+                }
+                _ => false,
+            });
+        if !still_open && let Some(editor) = self.right_panel_file_editors.get_mut(editor_path) {
+            if let Some(webview_id) = editor.webview_id.take() {
+                self.right_panel_browsers.remove(&webview_id);
+            }
+            editor.webview_loaded_epoch = 0;
+        }
+    }
+
     fn open_right_panel_file(&mut self, relative_path: String, cx: &mut Context<Self>) {
         self.ensure_initial_right_panel_file_editor_width();
         let Some(active) = self.right_panel_active_surface else {
@@ -3368,7 +4028,10 @@ impl Raku {
                     return;
                 }
 
-                self.right_panel_files_selected_path = Some(relative_path);
+                let previous = self.right_panel_files_selected_path.replace(relative_path);
+                if let Some(previous) = previous {
+                    self.release_unreferenced_file_webview(&previous);
+                }
                 self.set_right_panel_visible(true, cx);
                 cx.notify();
             }
@@ -3397,6 +4060,7 @@ impl Raku {
                     self.right_panel_surfaces[active] = requested;
                     self.reveal_right_panel_tab(active);
                 }
+                self.release_unreferenced_file_webview(&current_path);
                 self.set_right_panel_visible(true, cx);
                 cx.notify();
             }
@@ -3432,6 +4096,12 @@ impl Raku {
         if index >= self.right_panel_surfaces.len() {
             return;
         }
+        let closing_editor_path = match &self.right_panel_surfaces[index] {
+            RightPanelSurface::Files => self.right_panel_files_selected_path.clone(),
+            RightPanelSurface::File(path) => Some(path.clone()),
+            RightPanelSurface::AttachmentFile(attachment) => Some(attachment.editor_path()),
+            _ => None,
+        };
         if let Some(terminal_id) = self.right_panel_surfaces[index].terminal_id() {
             self.right_panel_terminals.remove(&terminal_id);
         }
@@ -3443,6 +4113,9 @@ impl Raku {
             self.pasted_text_views.remove(&id);
         }
         self.right_panel_surfaces.remove(index);
+        if let Some(editor_path) = closing_editor_path {
+            self.release_unreferenced_file_webview(&editor_path);
+        }
         self.right_panel_active_surface = if self.right_panel_surfaces.is_empty() {
             None
         } else {
@@ -3662,16 +4335,23 @@ impl Raku {
             ))
     }
 
-    fn ensure_right_panel_browser(
+    fn ensure_browser_view_with(
         &mut self,
         browser_id: Uuid,
+        embedded: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<crate::browser::BrowserView> {
         if let Some(browser) = self.right_panel_browsers.get(&browser_id) {
             return browser.clone();
         }
-        let browser = cx.new(|cx| crate::browser::BrowserView::new(window, cx));
+        let browser = cx.new(|cx| {
+            if embedded {
+                crate::browser::BrowserView::new_embedded(window, cx)
+            } else {
+                crate::browser::BrowserView::new(window, cx)
+            }
+        });
         // Tab titles and toolbar state live on the browser entity; the panel
         // chrome re-renders when they move.
         cx.observe(&browser, |_, _, cx| cx.notify()).detach();
@@ -3680,21 +4360,74 @@ impl Raku {
         browser
     }
 
-    /// Drop browser views whose tab no longer exists in any session.
+    fn ensure_right_panel_browser(
+        &mut self,
+        browser_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::browser::BrowserView> {
+        self.ensure_browser_view_with(browser_id, false, window, cx)
+    }
+
+    fn ensure_right_panel_embedded_browser(
+        &mut self,
+        browser_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::browser::BrowserView> {
+        self.ensure_browser_view_with(browser_id, true, window, cx)
+    }
+
+    /// Drop browser views whose tab or file editor no longer exists in any session.
     pub(super) fn retain_right_panel_browsers(&mut self) {
         let retained_browser_ids = self
             .right_panel_surfaces
             .iter()
             .filter_map(RightPanelSurface::browser_id)
+            .chain(
+                self.right_panel_file_editors
+                    .values()
+                    .filter_map(|editor| editor.webview_id),
+            )
             .chain(self.right_panel_session_states.values().flat_map(|state| {
                 state
                     .surfaces
                     .iter()
                     .filter_map(RightPanelSurface::browser_id)
+                    .chain(
+                        state
+                            .file_editors
+                            .values()
+                            .filter_map(|editor| editor.webview_id),
+                    )
             }))
             .collect::<HashSet<_>>();
         self.right_panel_browsers
             .retain(|browser_id, _| retained_browser_ids.contains(browser_id));
+    }
+
+    fn active_file_webview_id(&self, display_path: &str, editor_path: &str) -> Option<Uuid> {
+        let editor = self.right_panel_file_editors.get(editor_path)?;
+        file_webview_id_if_active(
+            display_path,
+            editor.preview,
+            editor.reading,
+            editor.webview_loaded_epoch,
+            matches!(editor.pdf_path, Some(Ok(_))),
+            editor.webview_id,
+        )
+    }
+
+    /// The native WebView that belongs on screen right now, across Browser tabs,
+    /// HTML artifact previews, and PDF previews.
+    pub(super) fn active_right_panel_webview_id(&self) -> Option<Uuid> {
+        active_webview_id_for_state(
+            self.right_panel_visible,
+            self.right_panel_slide.is_some(),
+            self.active_right_panel_surface(),
+            self.right_panel_files_selected_path.as_deref(),
+            |display_path, editor_path| self.active_file_webview_id(display_path, editor_path),
+        )
     }
 
     /// Whether any GPUI overlay that could float above the right panel is
@@ -3732,12 +4465,7 @@ impl Raku {
         // A webview composites above the GPUI scene, so the panel's clip does
         // not apply to it: shown mid-slide it would hang over the transcript
         // at full width. Keep it down until the panel has finished moving.
-        let active_browser = if self.right_panel_visible && self.right_panel_slide.is_none() {
-            self.active_right_panel_surface()
-                .and_then(RightPanelSurface::browser_id)
-        } else {
-            None
-        };
+        let active_browser = self.active_right_panel_webview_id();
         for (browser_id, browser) in &self.right_panel_browsers {
             let surface_visible = active_browser == Some(*browser_id);
             browser.update(cx, |view, cx| {
@@ -4429,28 +5157,51 @@ impl Raku {
         let is_markdown = file_highlighter_language(&display_path) == "markdown";
         let is_image = attachment.is_none() && is_image_file(&display_path);
         let is_svg = is_image && is_svg_file(&display_path);
-        let preview = if is_image {
-            self.right_panel_file_editors[&relative_path].image_preview
+        let is_pdf = super::artifacts::is_pdf_file(&display_path);
+        let is_html = super::artifacts::is_html_file(&display_path);
+        let is_tabular = super::artifacts::is_tabular_file(&display_path);
+        let preview = if is_pdf {
+            true
+        } else if is_image || is_html || is_tabular {
+            self.right_panel_file_editors[&relative_path].preview
         } else {
             is_markdown && self.state.markdown_preview
         };
-        let reading = self.right_panel_file_editors[&relative_path].reading;
-        let body = if reading
+        let editor_snapshot = &self.right_panel_file_editors[&relative_path];
+        let reading = editor_snapshot.reading;
+        let initial_loading = reading
             && (attachment.is_some()
-                || is_image
-                    && self.right_panel_file_editors[&relative_path]
-                        .image
-                        .is_none())
-        {
+                || (is_image && editor_snapshot.image.is_none())
+                || (is_pdf && editor_snapshot.pdf_path.is_none())
+                || (is_tabular && preview && editor_snapshot.csv.is_none())
+                || (is_html
+                    && preview
+                    && editor_snapshot.webview_loaded_epoch == 0
+                    && editor_snapshot.local_path.is_none()
+                    && editor_snapshot.disk_content.is_empty()));
+        let show_reload_preview = !initial_loading
+            && ((is_pdf && matches!(editor_snapshot.pdf_path, Some(Ok(_))))
+                || (is_html && preview));
+        let webview_loading = editor_snapshot
+            .webview_id
+            .and_then(|id| self.right_panel_browsers.get(&id))
+            .is_some_and(|browser| browser.read(cx).is_loading());
+        let body = if initial_loading {
             self.render_right_panel_empty_message(
                 tr!("files.loading_file"),
                 tr!("files.preparing_editor"),
                 cx,
             )
+        } else if is_pdf {
+            self.render_file_pdf_preview(&relative_path, window, cx)
+        } else if is_html && preview {
+            self.render_file_html_preview(&relative_path, attachment.as_ref(), window, cx)
+        } else if is_tabular && preview {
+            self.render_file_csv_preview(&relative_path, &display_path, window, cx)
         } else if is_image && preview {
             self.render_file_image_preview(&relative_path, cx)
         } else if preview {
-            self.render_file_markdown_preview(&relative_path, &editor_state, cx)
+            self.render_file_markdown_preview(&relative_path, &display_path, &editor_state, cx)
         } else {
             self.render_file_editor_body(
                 &relative_path,
@@ -4461,13 +5212,67 @@ impl Raku {
                 cx,
             )
         };
-        let preview_toggle = (is_markdown || is_svg).then(|| {
+        let reload_preview_button = show_reload_preview.then(|| {
+            let focus = self.transcript_control_focus("file-preview-reload", cx);
+            let reload_icon: AnyElement = if webview_loading {
+                motion::spin(icon("icons/loader-circle.svg", 12.0, theme.text_tertiary))
+            } else {
+                icon("icons/rotate-cw.svg", 12.0, theme.text_tertiary).into_any_element()
+            };
+            let click_path = relative_path.clone();
+            let key_path = relative_path.clone();
+            div()
+                .id("file-preview-reload")
+                .track_focus(&focus)
+                .tab_index(0)
+                .size(px(26.0))
+                .rounded(px(7.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_default()
+                .focus_visible(|style| style.border_1().border_color(theme.accent))
+                .hover(|style| style.bg(theme.overlay))
+                .child(reload_icon)
+                .tooltip(Tooltip::text(tr!("files.reload_preview")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.reload_right_panel_file_preview(&click_path, cx);
+                }))
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        this.reload_right_panel_file_preview(&key_path, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+        });
+        let preview_toggle = (is_markdown || is_svg || is_html || is_tabular).then(|| {
             let focus = self.transcript_control_focus("file-preview-toggle", cx);
             let (icon_path, label) = if is_svg {
                 if preview {
                     ("icons/file.svg", tr!("files.view_svg_source"))
                 } else {
                     ("icons/eye.svg", tr!("files.preview_svg"))
+                }
+            } else if is_html {
+                if preview {
+                    if attachment.is_some() {
+                        ("icons/file.svg", tr!("files.view_html_source"))
+                    } else {
+                        ("icons/pencil.svg", tr!("files.edit_html_source"))
+                    }
+                } else {
+                    ("icons/eye.svg", tr!("files.preview_html"))
+                }
+            } else if is_tabular {
+                if preview {
+                    if attachment.is_some() {
+                        ("icons/file.svg", tr!("files.view_table_source"))
+                    } else {
+                        ("icons/pencil.svg", tr!("files.edit_table_source"))
+                    }
+                } else {
+                    ("icons/ant/table.svg", tr!("files.preview_table"))
                 }
             } else if preview {
                 if attachment.is_some() {
@@ -4505,6 +5310,8 @@ impl Raku {
                     }
                 }))
         });
+        let attach_rel_path = attachment.is_none().then(|| relative_path.clone());
+        let attach_weak = cx.entity().downgrade();
         let file_actions = attachment
             .as_ref()
             .map(|attachment| attachment.path.clone())
@@ -4525,7 +5332,23 @@ impl Raku {
                     menu_id,
                     &menu,
                     MenuAlign::BelowRight,
-                    move |_| file_menu_items(path.clone()),
+                    move |_| {
+                        let mut items = Vec::new();
+                        if let Some(rel) = attach_rel_path.clone() {
+                            let raku = attach_weak.clone();
+                            items.push(MenuItem::new(
+                                tr!("files.attach_as_context"),
+                                move |window, cx| {
+                                    let _ = raku.update(cx, |raku, cx| {
+                                        raku.attach_file_as_context(&rel, window, cx);
+                                    });
+                                },
+                            ));
+                            items.push(MenuItem::Separator);
+                        }
+                        items.extend(file_menu_items(path.clone()));
+                        items
+                    },
                 )
             });
 
@@ -4555,6 +5378,7 @@ impl Raku {
                             .text_color(theme.text_secondary)
                             .child(display_path),
                     )
+                    .children(reload_preview_button)
                     .children(preview_toggle)
                     .children(file_actions),
             )
@@ -4603,9 +5427,17 @@ impl Raku {
                 state: state.clone(),
                 attachment,
                 disk_content: String::new(),
+                local_path: None,
                 image: None,
-                image_preview: true,
-                image_epoch: 0,
+                pdf_path: None,
+                pdf_fingerprint: None,
+                csv: None,
+                csv_view: None,
+                webview_id: None,
+                webview_loaded_epoch: 0,
+                preview: true,
+                preview_epoch: 0,
+                parse_epoch: 0,
                 writable: false,
                 dirty: false,
                 reading: false,
@@ -4678,6 +5510,15 @@ impl Raku {
                 editor.reading = false;
                 editor.disk_content = tr!("files.no_project_is_open");
                 editor.writable = false;
+                // Previews with nothing to show must not sit on a loading
+                // placeholder or an empty native WebView: CSV reports the
+                // reason, and HTML falls back to the source view carrying it.
+                if super::artifacts::is_tabular_file(&relative_path) {
+                    editor.csv = Some(Err(editor.disk_content.clone()));
+                }
+                if super::artifacts::is_html_file(&relative_path) {
+                    editor.preview = false;
+                }
                 let state = editor.state.clone();
                 let content = editor.disk_content.clone();
                 state.update(cx, |state, cx| state.set_content(content, cx));
@@ -4707,11 +5548,9 @@ impl Raku {
                     let relative_path = relative_path.clone();
                     async move {
                         if let Some(attachment) = attachment {
-                            let (content, writable) =
-                                read_attachment_file(&attachment, |command| {
-                                    client.request(Uuid::nil(), Uuid::nil(), command)
-                                });
-                            LoadedRightPanelFile::text(content, writable)
+                            read_attachment_file(&attachment, |command| {
+                                client.request(Uuid::nil(), Uuid::nil(), command)
+                            })
                         } else {
                             read_right_panel_file(
                                 &workspace,
@@ -4735,7 +5574,11 @@ impl Raku {
                 let LoadedRightPanelFile {
                     content,
                     writable,
+                    local_path,
                     image,
+                    pdf_path,
+                    pdf_fingerprint,
+                    csv,
                 } = read;
                 let Some(editor) = raku.right_panel_file_editors.get_mut(&relative_path) else {
                     return;
@@ -4751,16 +5594,49 @@ impl Raku {
                 if editor.dirty {
                     return;
                 }
-                if editor.disk_content == content && editor.writable == writable && image.is_none()
+                // Daemon-fetched PDFs carry no fingerprint, but their cache path
+                // is content-hashed, so an unchanged path means unchanged bytes.
+                let pdf_changed = pdf_path.is_some()
+                    && (editor.pdf_path.is_none()
+                        || editor.pdf_fingerprint != pdf_fingerprint
+                        || matches!(
+                            (&editor.pdf_path, &pdf_path),
+                            (Some(Ok(prev)), Some(Ok(next))) if prev != next
+                        )
+                        || matches!(pdf_path, Some(Err(_))));
+                let csv_changed =
+                    csv.is_some() && (editor.disk_content != content || editor.csv.is_none());
+                if editor.disk_content == content
+                    && editor.writable == writable
+                    && editor.local_path == local_path
+                    && image.is_none()
+                    && !pdf_changed
+                    && !csv_changed
                 {
                     // An empty read-only attachment still retires its loading
                     // placeholder even though its initial text did not change.
                     cx.notify();
                     return;
                 }
+                if editor.disk_content != content || editor.local_path != local_path || pdf_changed
+                {
+                    editor.preview_epoch = editor.preview_epoch.wrapping_add(1);
+                }
+                if image.is_some() || csv.is_some() {
+                    // Fresher than any buffer parse still in flight.
+                    editor.parse_epoch = editor.parse_epoch.wrapping_add(1);
+                }
                 editor.disk_content = content.clone();
-                editor.image_epoch = editor.image_epoch.wrapping_add(1);
+                editor.local_path = local_path;
                 editor.image = image;
+                if pdf_path.is_some() {
+                    editor.pdf_path = pdf_path;
+                    editor.pdf_fingerprint = pdf_fingerprint;
+                }
+                let csv_replaced = csv.is_some();
+                if let Some(csv_result) = csv {
+                    editor.csv = Some(csv_result);
+                }
                 editor.writable = writable;
                 editor.dirty = false;
                 let state = editor.state.clone();
@@ -4768,6 +5644,9 @@ impl Raku {
                     state.set_read_only(!writable);
                     state.set_content(content, cx);
                 });
+                if csv_replaced {
+                    raku.refresh_csv_visible_rows(&relative_path, cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -4966,48 +5845,1069 @@ impl Raku {
     }
 
     pub(super) fn toggle_file_preview(&mut self, relative_path: &str, cx: &mut Context<Self>) {
-        if !is_svg_file(relative_path) {
-            self.toggle_markdown_preview(cx);
+        if is_svg_file(relative_path) {
+            let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) else {
+                return;
+            };
+            editor.preview = !editor.preview;
+            if editor.preview && !editor.reading && editor.writable {
+                // Preview the current buffer, including unsaved source edits. Do
+                // not hash or decode a potentially large SVG in the event handler.
+                let content = editor.state.read(cx).content().to_owned();
+                let state_id = editor.state.entity_id();
+                editor.parse_epoch = editor.parse_epoch.wrapping_add(1);
+                let epoch = editor.parse_epoch;
+                let session_id = self.state.selected_session;
+                let relative_path = relative_path.to_owned();
+                cx.spawn(async move |raku, cx| {
+                    let image = cx
+                        .background_executor()
+                        .spawn(async move {
+                            file_image_source(content.into_bytes(), "preview.svg")
+                                .map_err(|error| error.to_string())
+                        })
+                        .await;
+                    let _ = raku.update(cx, |raku, cx| {
+                        if raku.state.selected_session != session_id {
+                            return;
+                        }
+                        let Some(editor) = raku.right_panel_file_editors.get_mut(&relative_path)
+                        else {
+                            return;
+                        };
+                        if editor.state.entity_id() != state_id || editor.parse_epoch != epoch {
+                            return;
+                        }
+                        editor.image = Some(image);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            cx.notify();
             return;
         }
+
+        let display_name = self
+            .right_panel_file_editors
+            .get(relative_path)
+            .and_then(|editor| editor.attachment.as_ref())
+            .map(|attachment| attachment.name.to_string());
+        let kind_path = display_name.as_deref().unwrap_or(relative_path);
+
+        if super::artifacts::is_html_file(kind_path) {
+            let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) else {
+                return;
+            };
+            editor.preview = !editor.preview;
+            if editor.preview {
+                editor.preview_epoch = editor.preview_epoch.wrapping_add(1);
+            }
+            cx.notify();
+            return;
+        }
+
+        if super::artifacts::is_tabular_file(kind_path) {
+            let delimiter = super::artifacts::tabular_delimiter(kind_path);
+            let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) else {
+                return;
+            };
+            editor.preview = !editor.preview;
+            if editor.preview && !editor.reading && editor.writable {
+                let content = editor.state.read(cx).content().to_owned();
+                let state_id = editor.state.entity_id();
+                editor.parse_epoch = editor.parse_epoch.wrapping_add(1);
+                let epoch = editor.parse_epoch;
+                let session_id = self.state.selected_session;
+                let relative_path = relative_path.to_owned();
+                cx.spawn(async move |raku, cx| {
+                    let table =
+                        cx.background_executor()
+                            .spawn(async move {
+                                Arc::new(super::artifacts::parse_csv(&content, delimiter))
+                            })
+                            .await;
+                    let _ = raku.update(cx, |raku, cx| {
+                        if raku.state.selected_session != session_id {
+                            return;
+                        }
+                        let Some(editor) = raku.right_panel_file_editors.get_mut(&relative_path)
+                        else {
+                            return;
+                        };
+                        if editor.state.entity_id() != state_id || editor.parse_epoch != epoch {
+                            return;
+                        }
+                        editor.csv = Some(Ok(table));
+                        raku.refresh_csv_visible_rows(&relative_path, cx);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            cx.notify();
+            return;
+        }
+
+        self.toggle_markdown_preview(cx);
+    }
+
+    fn reload_right_panel_file_preview(&mut self, relative_path: &str, cx: &mut Context<Self>) {
+        let should_reload_disk = {
+            let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) else {
+                return;
+            };
+            editor.preview_epoch = editor.preview_epoch.wrapping_add(1);
+            editor.attachment.is_none() && !editor.dirty
+        };
+        if should_reload_disk {
+            self.read_right_panel_file_into_editor(relative_path.to_owned(), cx);
+        }
+        cx.notify();
+    }
+
+    fn ensure_file_webview(
+        &mut self,
+        relative_path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<crate::browser::BrowserView>, u64, u64)> {
+        let webview_id = {
+            let editor = self.right_panel_file_editors.get_mut(relative_path)?;
+            *editor.webview_id.get_or_insert_with(Uuid::new_v4)
+        };
+        let browser = self.ensure_right_panel_embedded_browser(webview_id, window, cx);
+        let editor = self.right_panel_file_editors.get(relative_path)?;
+        Some((browser, editor.preview_epoch, editor.webview_loaded_epoch))
+    }
+
+    fn render_file_pdf_preview(
+        &mut self,
+        relative_path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (pdf_path, reading, disk_content) = {
+            let editor = &self.right_panel_file_editors[relative_path];
+            (
+                editor.pdf_path.clone(),
+                editor.reading,
+                editor.disk_content.clone(),
+            )
+        };
+        match pdf_path {
+            Some(Ok(path)) => {
+                let Some((browser, preview_epoch, loaded_epoch)) =
+                    self.ensure_file_webview(relative_path, window, cx)
+                else {
+                    return div().flex_1().min_h_0().min_w_0();
+                };
+                if loaded_epoch != preview_epoch {
+                    if let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) {
+                        editor.webview_loaded_epoch = preview_epoch;
+                    }
+                    let read_dir = path.parent().unwrap_or(path.as_path()).to_path_buf();
+                    browser.update(cx, |view, cx| view.load_local_file(&path, &read_dir, cx));
+                }
+                div().flex_1().min_h_0().min_w_0().child(browser)
+            }
+            Some(Err(error)) => self.render_right_panel_empty_message(
+                tr!("attachments.preview_unavailable"),
+                error,
+                cx,
+            ),
+            None => self.render_right_panel_empty_message(
+                if reading {
+                    tr!("files.loading_file")
+                } else {
+                    tr!("attachments.preview_unavailable")
+                },
+                disk_content,
+                cx,
+            ),
+        }
+    }
+
+    fn render_file_html_preview(
+        &mut self,
+        relative_path: &str,
+        attachment: Option<&AttachmentFile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let Some((browser, preview_epoch, loaded_epoch)) =
+            self.ensure_file_webview(relative_path, window, cx)
+        else {
+            return div().flex_1().min_h_0().min_w_0();
+        };
+        if loaded_epoch != preview_epoch {
+            let (dirty, local_path, html) = {
+                let editor = &self.right_panel_file_editors[relative_path];
+                (
+                    editor.dirty,
+                    editor.local_path.clone(),
+                    editor.state.read(cx).content().to_owned(),
+                )
+            };
+            if let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) {
+                editor.webview_loaded_epoch = preview_epoch;
+            }
+            let workspace = self
+                .selected_workspace_path()
+                .map(std::path::Path::to_path_buf);
+            if !dirty
+                && attachment.is_none()
+                && let (Some(local_path), Some(workspace)) = (local_path, workspace.as_ref())
+            {
+                browser.update(cx, |view, cx| {
+                    view.load_local_file(&local_path, workspace, cx);
+                });
+            } else {
+                let base_dir = if attachment.is_none() {
+                    workspace.and_then(|root| {
+                        root.join(relative_path)
+                            .parent()
+                            .map(std::path::Path::to_path_buf)
+                    })
+                } else {
+                    None
+                };
+                browser.update(cx, |view, cx| {
+                    view.load_html_string(html, base_dir.as_deref(), cx);
+                });
+            }
+        }
+        div().flex_1().min_h_0().min_w_0().child(browser)
+    }
+
+    fn ensure_csv_view_state(
+        &mut self,
+        relative_path: &str,
+        table: &super::artifacts::CsvTable,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .right_panel_file_editors
+            .get(relative_path)
+            .is_some_and(|editor| editor.csv_view.is_some())
+        {
+            return;
+        }
+        let filter = cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("files.filter_rows")));
+        let edited_path = relative_path.to_owned();
+        cx.subscribe(
+            &filter,
+            move |this: &mut Self, _, event: &InputEvent, cx| {
+                if !matches!(event, InputEvent::Edited) {
+                    return;
+                }
+                this.refresh_csv_visible_rows(&edited_path, cx);
+            },
+        )
+        .detach();
+
+        let grid_focus = cx.focus_handle();
+        let row_count = table.rows.len();
+        let list_state = ListState::new(row_count, gpui::ListAlignment::Top, px(32.0));
+        list_state.reset_with_uniform_height(row_count, px(32.0));
+        let view = super::artifacts::CsvTableViewState {
+            filter,
+            sort: None,
+            visible_rows: (0..row_count).collect(),
+            list_state,
+            v_scrollbar: ScrollbarState::new(),
+            h_scroll_handle: ScrollHandle::new(),
+            context_cell: Rc::new(std::cell::Cell::new(None)),
+            rows_generation: 0,
+            cursor: None,
+            grid_focus: grid_focus.clone(),
+        };
+        // The cursor ring and the full-cell footer follow grid focus, and a
+        // focus change alone does not re-render the cached right-panel pane.
+        cx.on_focus(&grid_focus, window, |_, _, cx| cx.notify())
+            .detach();
+        cx.on_blur(&grid_focus, window, |_, _, cx| cx.notify())
+            .detach();
+        if let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) {
+            editor.csv_view = Some(view);
+        }
+    }
+
+    fn toggle_csv_sort(&mut self, relative_path: &str, column: usize, cx: &mut Context<Self>) {
         let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) else {
             return;
         };
-        editor.image_preview = !editor.image_preview;
-        if editor.image_preview && !editor.reading && editor.writable {
-            // Preview the current buffer, including unsaved source edits. Do
-            // not hash or decode a potentially large SVG in the event handler.
-            let content = editor.state.read(cx).content().to_owned();
-            let state_id = editor.state.entity_id();
-            editor.image_epoch = editor.image_epoch.wrapping_add(1);
-            let epoch = editor.image_epoch;
-            let session_id = self.state.selected_session;
-            let relative_path = relative_path.to_owned();
-            cx.spawn(async move |raku, cx| {
-                let image = cx
-                    .background_executor()
-                    .spawn(async move {
-                        file_image_source(content.into_bytes(), "preview.svg")
-                            .map_err(|error| error.to_string())
-                    })
-                    .await;
-                let _ = raku.update(cx, |raku, cx| {
-                    if raku.state.selected_session != session_id {
-                        return;
-                    }
-                    let Some(editor) = raku.right_panel_file_editors.get_mut(&relative_path) else {
-                        return;
-                    };
-                    if editor.state.entity_id() != state_id || editor.image_epoch != epoch {
-                        return;
-                    }
-                    editor.image = Some(image);
-                    cx.notify();
+        let Some(view) = editor.csv_view.as_mut() else {
+            return;
+        };
+        view.sort = match view.sort {
+            Some((col, super::artifacts::CsvSortDirection::Asc)) if col == column => {
+                Some((column, super::artifacts::CsvSortDirection::Desc))
+            }
+            Some((col, super::artifacts::CsvSortDirection::Desc)) if col == column => None,
+            _ => Some((column, super::artifacts::CsvSortDirection::Asc)),
+        };
+        self.refresh_csv_visible_rows(relative_path, cx);
+        cx.notify();
+    }
+
+    /// Recomputes the CSV preview's filtered and sorted row order on a worker.
+    /// Until it lands the previous order stays on screen (clamped to the
+    /// current table), and a pass superseded by a newer keystroke, sort, or
+    /// table is dropped by its generation.
+    fn refresh_csv_visible_rows(&mut self, relative_path: &str, cx: &mut Context<Self>) {
+        let session_id = self.state.selected_session;
+        let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) else {
+            return;
+        };
+        let Some(Ok(table)) = editor.csv.clone() else {
+            return;
+        };
+        let state_id = editor.state.entity_id();
+        let Some(view) = editor.csv_view.as_mut() else {
+            return;
+        };
+        let row_count = table.rows.len();
+        if view.visible_rows.iter().any(|&index| index >= row_count) {
+            view.visible_rows.retain(|&index| index < row_count);
+            view.list_state
+                .reset_with_uniform_height(view.visible_rows.len(), px(32.0));
+        }
+        view.sort = view.sort.filter(|(col, _)| *col < table.headers.len());
+        view.rows_generation = view.rows_generation.wrapping_add(1);
+        let generation = view.rows_generation;
+        let query = view.filter.read(cx).content().to_owned();
+        let sort = view.sort;
+        let relative_path = relative_path.to_owned();
+        cx.spawn(async move |raku, cx| {
+            let rows = cx
+                .background_executor()
+                .spawn({
+                    let table = Arc::clone(&table);
+                    async move { super::artifacts::compute_visible_rows(&table, &query, sort) }
+                })
+                .await;
+            let _ = raku.update(cx, |raku, cx| {
+                if raku.state.selected_session != session_id {
+                    return;
+                }
+                let Some(editor) = raku.right_panel_file_editors.get_mut(&relative_path) else {
+                    return;
+                };
+                if editor.state.entity_id() != state_id
+                    || !matches!(&editor.csv, Some(Ok(current)) if Arc::ptr_eq(current, &table))
+                {
+                    return;
+                }
+                let Some(view) = editor.csv_view.as_mut() else {
+                    return;
+                };
+                if view.rows_generation != generation {
+                    return;
+                }
+                view.visible_rows = rows;
+                view.cursor = view.cursor.and_then(|(row, col)| {
+                    let last = view.visible_rows.len().checked_sub(1)?;
+                    Some((row.min(last), col))
                 });
+                view.list_state
+                    .reset_with_uniform_height(view.visible_rows.len(), px(32.0));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_file_csv_preview(
+        &mut self,
+        relative_path: &str,
+        display_path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let csv = self.right_panel_file_editors[relative_path].csv.clone();
+        let table = match csv {
+            Some(Ok(table)) => table,
+            Some(Err(error)) => {
+                return self.render_right_panel_empty_message(
+                    tr!("attachments.preview_unavailable"),
+                    error,
+                    cx,
+                );
+            }
+            None => {
+                return self.render_right_panel_empty_message(
+                    tr!("files.loading_file"),
+                    tr!("files.preparing_editor"),
+                    cx,
+                );
+            }
+        };
+
+        self.ensure_csv_view_state(relative_path, &table, window, cx);
+        let theme = Theme::current(cx);
+        let (
+            filter_entity,
+            sort,
+            visible_count,
+            list_state,
+            v_scrollbar,
+            h_scroll,
+            context_cell,
+            grid_focus,
+            cursor_raw_row,
+        ) = {
+            let view = self.right_panel_file_editors[relative_path]
+                .csv_view
+                .as_ref()
+                .expect("csv_view ensured above");
+            let cursor = view.cursor.unwrap_or((0, 0));
+            (
+                view.filter.clone(),
+                view.sort,
+                view.visible_rows.len(),
+                view.list_state.clone(),
+                view.v_scrollbar.clone(),
+                view.h_scroll_handle.clone(),
+                view.context_cell.clone(),
+                view.grid_focus.clone(),
+                view.visible_rows
+                    .get(cursor.0)
+                    .map(|&raw_row| (raw_row, cursor.1)),
+            )
+        };
+        // Truncated cells reveal their full text on hover; the keyboard
+        // cursor reveals it here, so the content never depends on a pointer.
+        let cursor_detail = grid_focus
+            .is_focused(window)
+            .then_some(cursor_raw_row)
+            .flatten()
+            .and_then(|(raw_row, col)| {
+                let value = table.rows.get(raw_row)?.get(col)?.clone();
+                let header = table.headers.get(col)?.clone();
+                Some((raw_row + 1, header, value))
+            });
+
+        let query_active = !filter_entity.read(cx).content().trim().is_empty();
+        let total_rows = table.rows.len();
+        let total_cols = table.headers.len();
+        let stats_label = if query_active {
+            tr!(
+                "files.table_stats_filtered",
+                shown = visible_count,
+                total = total_rows,
+                cols = total_cols
+            )
+        } else {
+            tr!("files.table_stats", rows = total_rows, cols = total_cols)
+        };
+        let truncated = table.truncated_rows || table.truncated_cols;
+        let filter_focus = filter_entity.read(cx).focus();
+
+        let toolbar = div()
+            .h(px(36.0))
+            .flex_none()
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div().w(px(220.0)).min_w(px(120.0)).flex_shrink(1.0).child(
+                    TextField::new(
+                        SharedString::from(format!("csv-filter-{relative_path}")),
+                        filter_entity,
+                    )
+                    .track_focus(&filter_focus)
+                    .tab_index(0)
+                    .icon("icons/search.svg", 13.0)
+                    .transparent()
+                    .w_full(),
+                ),
+            )
+            .child(div().flex_1())
+            .when(truncated, |row| {
+                row.child(
+                    div()
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
+                        .text_color(theme.warning)
+                        .child(tr!("files.table_truncated")),
+                )
             })
-            .detach();
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
+                    .text_color(theme.text_tertiary)
+                    .child(stats_label),
+            );
+
+        if table.headers.is_empty() {
+            return div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .bg(theme.surface)
+                .child(toolbar)
+                .child(self.render_right_panel_empty_message(
+                    tr!("files.table_empty"),
+                    tr!("files.table_empty_description"),
+                    cx,
+                ));
+        }
+
+        let total_width = CSV_GUTTER_WIDTH + table.col_widths.iter().sum::<f32>() + 12.0;
+        let mut header_row = div()
+            .h(px(CSV_HEADER_HEIGHT))
+            .flex_none()
+            .min_w_full()
+            .w(px(total_width))
+            .flex()
+            .items_center()
+            .bg(theme.overlay)
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .w(px(CSV_GUTTER_WIDTH))
+                    .h_full()
+                    .flex_none()
+                    .px(px(8.0))
+                    .border_r_1()
+                    .border_color(theme.border)
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .font_family(md::render::MONO_FAMILY)
+                    .text_size(sp(SMALL_UI_FONT_SIZE))
+                    .text_color(theme.text_ghost)
+                    .child("#"),
+            );
+
+        for (col_index, header_text) in table.headers.iter().enumerate() {
+            let col_width = table.col_widths.get(col_index).copied().unwrap_or(120.0);
+            let label = if header_text.trim().is_empty() {
+                format!("Column {}", col_index + 1)
+            } else {
+                header_text.clone()
+            };
+            let sort_dir = sort.and_then(|(col, dir)| (col == col_index).then_some(dir));
+            let focus = self
+                .transcript_control_focus(format!("csv-header-{relative_path}-{col_index}"), cx);
+            let click_path = relative_path.to_owned();
+            let key_path = relative_path.to_owned();
+            header_row = header_row.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "csv-header-{relative_path}-{col_index}"
+                    )))
+                    .track_focus(&focus)
+                    .tab_index(0)
+                    .w(px(col_width))
+                    .h_full()
+                    .flex_none()
+                    .px(px(10.0))
+                    .border_r_1()
+                    .border_color(theme.border)
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .cursor_default()
+                    .hover(|style| style.bg(theme.overlay_strong))
+                    .focus_visible(|style| style.border_1().border_color(theme.accent))
+                    .tooltip(Tooltip::text(tr!(
+                        "files.sort_column",
+                        column = label.clone()
+                    )))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .text_size(sp(SMALL_UI_FONT_SIZE))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if sort_dir.is_some() {
+                                theme.text
+                            } else {
+                                theme.text_secondary
+                            })
+                            .child(label),
+                    )
+                    .when_some(sort_dir, |cell, dir| {
+                        cell.child(icon(
+                            match dir {
+                                super::artifacts::CsvSortDirection::Asc => "icons/chevron-up.svg",
+                                super::artifacts::CsvSortDirection::Desc => {
+                                    "icons/chevron-down.svg"
+                                }
+                            },
+                            11.0,
+                            theme.text_secondary,
+                        ))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_csv_sort(&click_path, col_index, cx);
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.toggle_csv_sort(&key_path, col_index, cx);
+                            cx.stop_propagation();
+                        }
+                    })),
+            );
+        }
+
+        let body: AnyElement = if visible_count == 0 {
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "csv-empty-header-scroll-{relative_path}"
+                        )))
+                        .w_full()
+                        .overflow_x_scroll()
+                        .track_scroll(&h_scroll)
+                        .child(header_row),
+                )
+                .child(self.render_right_panel_empty_message(
+                    if query_active {
+                        tr!("files.table_no_matching_rows")
+                    } else {
+                        tr!("files.table_empty")
+                    },
+                    if query_active {
+                        String::new()
+                    } else {
+                        tr!("files.table_empty_description")
+                    },
+                    cx,
+                ))
+                .into_any_element()
+        } else {
+            let entity = cx.entity().downgrade();
+            let row_rel_path = relative_path.to_owned();
+            let row_table = Arc::clone(&table);
+            let row_context_cell = context_cell.clone();
+            let col_offsets: Rc<[f32]> = csv_column_offsets(&table.col_widths).into();
+            let row_col_offsets = Rc::clone(&col_offsets);
+            let row_h_scroll = h_scroll.clone();
+            let row_grid_focus = grid_focus.clone();
+            let right_panel_pane = self.right_panel_pane.clone();
+            let menu_raku = cx.entity().downgrade();
+            let csv_menu =
+                self.menu_handle_with("csv-preview-cell", cx, move |open, window, cx| {
+                    if !open {
+                        let _ = menu_raku.update(cx, |this, _| {
+                            for editor in this.right_panel_file_editors.values() {
+                                if let Some(view) = editor.csv_view.as_ref() {
+                                    view.context_cell.set(None);
+                                }
+                            }
+                        });
+                    }
+                    let pane = right_panel_pane.clone();
+                    window.defer(cx, move |_, cx| {
+                        pane.update(cx, |_, cx| cx.notify());
+                    });
+                });
+            let key_menu = csv_menu.clone();
+            let key_path = relative_path.to_owned();
+            let key_col_offsets = Rc::clone(&col_offsets);
+            let menu_context_cell = context_cell.clone();
+            let menu_table = Arc::clone(&table);
+            let menu_display_path = display_path.to_owned();
+            let can_side_chat = self.side_chat_parent_session().is_some();
+            let menu_weak = cx.entity().downgrade();
+            let rows_list = context_menu(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .track_focus(&grid_focus)
+                    .tab_index(0)
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                        if this.handle_csv_grid_key(
+                            &key_path,
+                            event,
+                            &key_col_offsets,
+                            &key_menu,
+                            window,
+                            cx,
+                        ) {
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(
+                        list(list_state.clone(), move |visible_index, window, cx| {
+                            let grid_focused = row_grid_focus.is_focused(window);
+                            let scroll_x = -f32::from(row_h_scroll.offset().x);
+                            let viewport = f32::from(row_h_scroll.bounds().size.width);
+                            let columns = csv_visible_columns(&row_col_offsets, scroll_x, viewport);
+                            entity
+                                .upgrade()
+                                .map(|entity| {
+                                    entity.update(cx, |this, cx| {
+                                        this.render_file_csv_row(
+                                            &row_rel_path,
+                                            &row_table,
+                                            visible_index,
+                                            total_width,
+                                            &row_col_offsets,
+                                            columns,
+                                            grid_focused,
+                                            &row_context_cell,
+                                            cx,
+                                        )
+                                    })
+                                })
+                                .unwrap_or_else(|| div().h(px(CSV_ROW_HEIGHT)).into_any_element())
+                        })
+                        .size_full(),
+                    ),
+                SharedString::from(format!("csv-preview-menu-{relative_path}")),
+                &csv_menu,
+                move |_| {
+                    let Some((raw_row_index, col_index)) = menu_context_cell.get() else {
+                        return Vec::new();
+                    };
+                    let Some(row) = menu_table.rows.get(raw_row_index) else {
+                        return Vec::new();
+                    };
+                    let cell_text = col_index.map(|col| row.get(col).cloned().unwrap_or_default());
+                    csv_cell_menu_items(
+                        menu_display_path.clone(),
+                        raw_row_index + 1,
+                        cell_text,
+                        &menu_table.headers,
+                        row,
+                        can_side_chat,
+                        menu_weak.clone(),
+                    )
+                },
+            );
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .relative()
+                .child(
+                    div()
+                        .id(SharedString::from(format!("csv-h-scroll-{relative_path}")))
+                        .size_full()
+                        .overflow_x_scroll()
+                        .track_scroll(&h_scroll)
+                        .child(
+                            div()
+                                .min_w_full()
+                                .w(px(total_width))
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .child(header_row)
+                                .child(rows_list),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(CSV_HEADER_HEIGHT))
+                        .bottom_0()
+                        .right_0()
+                        .w(px(11.0))
+                        .child(scrollbar::vertical(&list_state, &v_scrollbar)),
+                )
+                .into_any_element()
+        };
+
+        div()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .bg(theme.surface)
+            .child(toolbar)
+            .child(body)
+            .when_some(cursor_detail, |panel, (row_number, header, value)| {
+                panel.child(
+                    div()
+                        .flex_none()
+                        .max_h(px(76.0))
+                        .overflow_hidden()
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
+                        .child(
+                            div()
+                                .text_color(theme.text_tertiary)
+                                .truncate()
+                                .child(format!("{header} · {row_number}")),
+                        )
+                        .child(div().text_color(theme.text).child(value)),
+                )
+            })
+    }
+
+    /// Keyboard operation of the CSV grid: arrows, page and home/end keys
+    /// move the cell cursor; `enter`, `space`, or `shift-f10` open the cell's
+    /// context menu; `cmd-c` copies the cell. Returns whether it handled the key.
+    fn handle_csv_grid_key(
+        &mut self,
+        relative_path: &str,
+        event: &KeyDownEvent,
+        col_offsets: &[f32],
+        menu: &crate::ui::menu::ContextMenuHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(editor) = self.right_panel_file_editors.get_mut(relative_path) else {
+            return false;
+        };
+        let Some(Ok(table)) = editor.csv.clone() else {
+            return false;
+        };
+        let Some(view) = editor.csv_view.as_mut() else {
+            return false;
+        };
+        let row_count = view.visible_rows.len();
+        let col_count = table.headers.len();
+        if row_count == 0 || col_count == 0 {
+            return false;
+        }
+        let (row, col) = view.cursor.unwrap_or((0, 0));
+        let (row, col) = (row.min(row_count - 1), col.min(col_count - 1));
+        let keystroke = &event.keystroke;
+        let jump = keystroke.modifiers.platform || keystroke.modifiers.control;
+        let h_bounds = view.h_scroll_handle.bounds();
+        let page_rows = ((f32::from(h_bounds.size.height) - CSV_HEADER_HEIGHT) / CSV_ROW_HEIGHT)
+            .floor()
+            .max(1.0) as usize;
+        let last_row = row_count - 1;
+        let last_col = col_count - 1;
+        let next = match keystroke.key.as_str() {
+            "up" if jump => (0, col),
+            "down" if jump => (last_row, col),
+            "up" => (row.saturating_sub(1), col),
+            "down" => ((row + 1).min(last_row), col),
+            "left" => (row, col.saturating_sub(1)),
+            "right" => (row, (col + 1).min(last_col)),
+            "pageup" => (row.saturating_sub(page_rows), col),
+            "pagedown" => ((row + page_rows).min(last_row), col),
+            "home" if jump => (0, 0),
+            "end" if jump => (last_row, last_col),
+            "home" => (row, 0),
+            "end" => (row, last_col),
+            "c" if keystroke.modifiers.platform => {
+                let raw_row = view.visible_rows[row];
+                let text = table.rows[raw_row].get(col).cloned().unwrap_or_default();
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                return true;
+            }
+            key if matches!(key, "enter" | "space")
+                || key == "f10" && keystroke.modifiers.shift =>
+            {
+                view.cursor = Some((row, col));
+                view.context_cell
+                    .set(Some((view.visible_rows[row], Some(col))));
+                let position = view.list_state.bounds_for_item(row).map(|bounds| {
+                    point(
+                        bounds.left()
+                            + px(CSV_GUTTER_WIDTH + col_offsets.get(col).copied().unwrap_or(0.0))
+                            + px(8.0),
+                        bounds.bottom(),
+                    )
+                });
+                match position {
+                    Some(position) => menu.open_context_menu_at(position, window, cx),
+                    None => menu.open_context_menu(window, cx),
+                }
+                return true;
+            }
+            _ => return false,
+        };
+        view.cursor = Some(next);
+        view.list_state.scroll_to_reveal_item(next.0);
+        // Bring the cursor column fully into the horizontal viewport.
+        let viewport = f32::from(h_bounds.size.width);
+        if viewport > 0.0 {
+            let offset = view.h_scroll_handle.offset();
+            let scroll_x = -f32::from(offset.x);
+            let total = CSV_GUTTER_WIDTH + col_offsets.last().copied().unwrap_or(0.0) + 12.0;
+            let left = if next.1 == 0 {
+                0.0
+            } else {
+                CSV_GUTTER_WIDTH + col_offsets[next.1]
+            };
+            let right = CSV_GUTTER_WIDTH + col_offsets[next.1 + 1];
+            let target = if left < scroll_x {
+                left
+            } else if right > scroll_x + viewport {
+                right - viewport
+            } else {
+                scroll_x
+            }
+            .clamp(0.0, (total - viewport).max(0.0));
+            if target != scroll_x {
+                view.h_scroll_handle
+                    .set_offset(point(px(-target), offset.y));
+            }
         }
         cx.notify();
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_file_csv_row(
+        &self,
+        relative_path: &str,
+        table: &Arc<super::artifacts::CsvTable>,
+        visible_index: usize,
+        total_width: f32,
+        col_offsets: &[f32],
+        columns: std::ops::Range<usize>,
+        grid_focused: bool,
+        context_cell: &Rc<std::cell::Cell<Option<(usize, Option<usize>)>>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some((raw_row_index, cursor)) = self
+            .right_panel_file_editors
+            .get(relative_path)
+            .and_then(|editor| editor.csv_view.as_ref())
+            .and_then(|view| {
+                let raw = view.visible_rows.get(visible_index).copied()?;
+                Some((raw, view.cursor.unwrap_or((0, 0))))
+            })
+        else {
+            return div().h(px(CSV_ROW_HEIGHT)).into_any_element();
+        };
+        let Some(row_cells) = table.rows.get(raw_row_index) else {
+            return div().h(px(CSV_ROW_HEIGHT)).into_any_element();
+        };
+        let cursor_col = (grid_focused && cursor.0 == visible_index).then_some(cursor.1);
+
+        let theme = Theme::current(cx);
+        let row_number = raw_row_index + 1;
+        let gutter_context_cell = context_cell.clone();
+
+        let mut row = div()
+            .id(("csv-row", raw_row_index))
+            .h(px(CSV_ROW_HEIGHT))
+            .min_w_full()
+            .w(px(total_width))
+            .flex()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border.opacity(0.6))
+            .when(visible_index % 2 == 1, |el| {
+                el.bg(theme.overlay.opacity(0.35))
+            })
+            .hover(|style| style.bg(theme.overlay))
+            .child(
+                div()
+                    .w(px(CSV_GUTTER_WIDTH))
+                    .h_full()
+                    .flex_none()
+                    .px(px(8.0))
+                    .border_r_1()
+                    .border_color(theme.border.opacity(0.6))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .font_family(md::render::MONO_FAMILY)
+                    .text_size(sp(12.0))
+                    .text_color(theme.text_ghost)
+                    .on_mouse_down(MouseButton::Right, move |_, _, _| {
+                        gutter_context_cell.set(Some((raw_row_index, None)));
+                    })
+                    .child(row_number.to_string()),
+            );
+
+        // Only the columns in (or next to) the horizontal viewport are built;
+        // a spacer stands in for the ones scrolled off to the left, and the
+        // row's fixed width covers those off to the right.
+        let leading = col_offsets.get(columns.start).copied().unwrap_or(0.0);
+        if leading > 0.0 {
+            row = row.child(div().w(px(leading)).h_full().flex_none());
+        }
+        for col_index in columns {
+            let col_width = table.col_widths.get(col_index).copied().unwrap_or(120.0);
+            let cell_raw: SharedString =
+                row_cells.get(col_index).cloned().unwrap_or_default().into();
+            let display = if cell_raw.contains(['\r', '\n']) {
+                SharedString::from(cell_raw.replace("\r\n", " ").replace(['\r', '\n'], " "))
+            } else {
+                cell_raw.clone()
+            };
+            let numeric = table.col_numeric.get(col_index).copied().unwrap_or(false);
+            let cell_context_cell = context_cell.clone();
+            let click_path = relative_path.to_owned();
+            let mut cell = div()
+                .id((
+                    "csv-cell",
+                    raw_row_index * super::artifacts::CSV_MAX_PREVIEW_COLS + col_index,
+                ))
+                .w(px(col_width))
+                .h_full()
+                .flex_none()
+                .px(px(10.0))
+                .border_r_1()
+                .border_color(theme.border.opacity(0.6))
+                .flex()
+                .items_center()
+                .when(numeric, |el| el.justify_end())
+                .when(cursor_col == Some(col_index), |el| {
+                    el.border_1().border_color(theme.accent)
+                })
+                .cursor_default()
+                .on_mouse_down(MouseButton::Right, move |_, _, _| {
+                    cell_context_cell.set(Some((raw_row_index, Some(col_index))));
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        let Some(view) = this
+                            .right_panel_file_editors
+                            .get_mut(&click_path)
+                            .and_then(|editor| editor.csv_view.as_mut())
+                        else {
+                            return;
+                        };
+                        view.cursor = Some((visible_index, col_index));
+                        let focus = view.grid_focus.clone();
+                        window.focus(&focus, cx);
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .max_w_full()
+                        .truncate()
+                        .text_size(sp(SMALL_UI_FONT_SIZE))
+                        .text_color(theme.text)
+                        .child(display),
+                );
+            if !cell_raw.is_empty() && (cell_raw.contains('\n') || cell_raw.len() > 14) {
+                cell = cell.tooltip(Tooltip::text(cell_raw));
+            }
+            row = row.child(cell);
+        }
+
+        row.into_any_element()
     }
 
     /// Flips the global markdown source/preview mode and persists it, so the
@@ -5030,6 +6930,7 @@ impl Raku {
     fn render_file_markdown_preview(
         &mut self,
         relative_path: &str,
+        display_path: &str,
         editor_state: &Entity<TextInput>,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -5080,6 +6981,9 @@ impl Raku {
         };
 
         let menu_selection = self.file_preview_selection.clone();
+        let menu_display_path = display_path.to_owned();
+        let can_side_chat = self.side_chat_parent_session().is_some();
+        let menu_raku = cx.entity().downgrade();
         let scroll = div()
             .id(SharedString::from(format!("file-preview-{relative_path}")))
             .size_full()
@@ -5104,9 +7008,13 @@ impl Raku {
                 let Some(selected) = menu_selection.selection.borrow().selected_text() else {
                     return Vec::new();
                 };
-                vec![MenuItem::new(tr!("menu.copy"), move |_, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(selected.clone()));
-                })]
+                markdown_preview_menu_items(
+                    menu_display_path.clone(),
+                    selected,
+                    can_side_chat,
+                    menu_selection.clone(),
+                    menu_raku.clone(),
+                )
             },
         );
 
@@ -5139,10 +7047,19 @@ impl Raku {
     }
 
     pub(super) fn reload_clean_right_panel_file_editors(&mut self, cx: &mut Context<Self>) {
+        // Uploaded attachments never change, so one successful read is final;
+        // re-fetching them would re-download up to 32 MB per session switch.
         let paths = self
             .right_panel_file_editors
             .iter()
             .filter(|(_, editor)| !editor.dirty)
+            .filter(|(_, editor)| {
+                editor.attachment.is_none()
+                    || !(matches!(editor.pdf_path, Some(Ok(_)))
+                        || matches!(editor.image, Some(Ok(_)))
+                        || matches!(editor.csv, Some(Ok(_)))
+                        || !editor.disk_content.is_empty())
+            })
             .map(|(path, _)| path.clone())
             .collect::<Vec<_>>();
         for path in paths {

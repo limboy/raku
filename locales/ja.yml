@@ -846,6 +846,23 @@ files.edit_markdown_source: ソースを編集
 files.view_markdown_source: ソースを表示
 files.view_svg_source: SVG ソースを表示
 files.preview_svg: SVG をプレビュー
+files.preview_html: HTML をプレビュー
+files.edit_html_source: HTML ソースを編集
+files.view_html_source: HTML ソースを表示
+files.preview_table: テーブルをプレビュー
+files.edit_table_source: ソースを編集
+files.view_table_source: ソースを表示
+files.reload_preview: プレビューを再読み込み
+files.filter_rows: 行を絞り込む…
+files.table_stats: "%{rows} 行 · %{cols} 列"
+files.table_stats_filtered: "%{total} 行中 %{shown} 行 · %{cols} 列"
+files.table_truncated: プレビューを一部省略
+files.table_empty: 空のテーブル
+files.table_empty_description: このファイルには表形式のデータが含まれていません。
+files.table_no_matching_rows: 一致する行がありません
+files.copy_cell: セルをコピー
+files.copy_row: 行をコピー
+files.sort_column: "%{column} で並べ替え"
 files.unable_to_open: "このファイルを開けません：%{error}"
 files.preview_too_large: ファイルが大きすぎるためプレビューできません（最大 2 MB）。
 files.binary_preview_unavailable: このファイルにはバイナリデータが含まれています。

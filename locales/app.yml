@@ -1653,6 +1653,40 @@ files.view_svg_source:
   en: View SVG source
 files.preview_svg:
   en: Preview SVG
+files.preview_html:
+  en: Preview HTML
+files.edit_html_source:
+  en: Edit HTML source
+files.view_html_source:
+  en: View HTML source
+files.preview_table:
+  en: Preview table
+files.edit_table_source:
+  en: Edit source
+files.view_table_source:
+  en: View source
+files.reload_preview:
+  en: Reload preview
+files.filter_rows:
+  en: Filter rows…
+files.table_stats:
+  en: "%{rows} rows · %{cols} columns"
+files.table_stats_filtered:
+  en: "%{shown} of %{total} rows · %{cols} columns"
+files.table_truncated:
+  en: Preview truncated
+files.table_empty:
+  en: Empty table
+files.table_empty_description:
+  en: This file does not contain any tabular rows.
+files.table_no_matching_rows:
+  en: No matching rows
+files.copy_cell:
+  en: Copy cell
+files.copy_row:
+  en: Copy row
+files.sort_column:
+  en: "Sort by %{column}"
 files.unable_to_open:
   en: "Unable to open this file: %{error}"
 files.preview_too_large:
