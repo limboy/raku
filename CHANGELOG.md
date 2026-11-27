@@ -16,6 +16,13 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.8.0] - 2026-11-27
+
+- Preview PDF and HTML files in the right panel, and CSV/TSV files as a table you can filter, sort, and navigate by keyboard
+- Copy table rows or Markdown selections, add them to the composer as a sourced excerpt, or open them in a side chat that remembers the file they came from
+- Return a file preview to the Files view with a notice when the file is moved or deleted
+- Reveal the task's folder in Finder from the Files view's empty state
+
 ## [2.7.0] - 2026-11-26
 
 - Add Antigravity CLI as a provider, with streamed reasoning and tool activity, permission requests, plan mode, model and thinking-level switching, and its skills in the slash command list
