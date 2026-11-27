@@ -1090,6 +1090,15 @@ impl LoadedRightPanelFile {
     }
 }
 
+/// Whether a workspace file is gone from disk, as opposed to unreadable. Only
+/// answers for a workspace this machine can see: a remote one cannot be
+/// probed locally, so its files are never reported deleted. Worker-only.
+fn workspace_file_was_deleted(project_path: &Path, relative_path: &str) -> bool {
+    std::fs::metadata(project_path).is_ok_and(|meta| meta.is_dir())
+        && std::fs::symlink_metadata(project_path.join(relative_path))
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// Reads text, image, PDF, or CSV bytes from the daemon. Only called on a
 /// worker by [`Raku::read_right_panel_file_into_editor`], never from a frame.
 fn read_right_panel_file(
@@ -4092,6 +4101,39 @@ impl Raku {
         self.open_right_panel_surface(RightPanelSurface::AttachmentFile(attachment), cx);
     }
 
+    /// A previewed workspace file was deleted outside Raku. Return everything
+    /// showing it to the default view: the Files surface drops its selection
+    /// (back to its empty state), a dedicated tab becomes the Files surface or
+    /// closes if one is already open, and the stale editor is discarded so a
+    /// recreated file is read afresh.
+    fn close_deleted_right_panel_file(&mut self, relative_path: &str, cx: &mut Context<Self>) {
+        if self.right_panel_files_selected_path.as_deref() == Some(relative_path) {
+            self.right_panel_files_selected_path = None;
+        }
+        let tab_indices = self
+            .right_panel_surfaces
+            .iter()
+            .enumerate()
+            .filter(|(_, surface)| matches!(surface, RightPanelSurface::File(path) if path == relative_path))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        // From the back, so closing a tab never shifts one still to visit.
+        for index in tab_indices.into_iter().rev() {
+            if self
+                .right_panel_surfaces
+                .contains(&RightPanelSurface::Files)
+            {
+                self.close_right_panel_surface(index, cx);
+            } else {
+                self.right_panel_surfaces[index] = RightPanelSurface::Files;
+            }
+        }
+        self.release_unreferenced_file_webview(relative_path);
+        self.right_panel_file_editors.remove(relative_path);
+        self.show_toast(tr!("files.file_deleted", path = relative_path));
+        cx.notify();
+    }
+
     pub(super) fn close_right_panel_surface(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.right_panel_surfaces.len() {
             return;
@@ -4708,6 +4750,51 @@ impl Raku {
             let theme = Theme::current(cx);
             let file_tree_width =
                 fitted_file_tree_width(panel_width, self.right_panel_file_tree_width);
+            let empty_state = div()
+                .px(px(14.0))
+                .py(px(10.0))
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(icon("icons/folder.svg", 24.0, theme.text_tertiary))
+                .child(
+                    div()
+                        .mt(px(10.0))
+                        .text_size(sp(14.0))
+                        .text_color(theme.text)
+                        .child(tr!("files.open_files_appear_here")),
+                );
+            // The icon and title double as the way to the session's folder —
+            // the project, or the scratch folder a "No project" task works in.
+            let empty_state: AnyElement =
+                match self.selected_workspace_path().map(Path::to_path_buf) {
+                    Some(folder) => {
+                        let focus = self.transcript_control_focus("files-empty-reveal-folder", cx);
+                        let key_folder = folder.clone();
+                        empty_state
+                            .id("files-empty-reveal-folder")
+                            .track_focus(&focus)
+                            .tab_index(0)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.overlay))
+                            .focus_visible(|style| style.border_color(theme.accent))
+                            .tooltip(Tooltip::text(crate::platform::reveal_label()))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                crate::platform::reveal_in_file_manager(&folder, cx);
+                            }))
+                            .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    crate::platform::reveal_in_file_manager(&key_folder, cx);
+                                    cx.stop_propagation();
+                                }
+                            }))
+                            .into_any_element()
+                    }
+                    None => empty_state.into_any_element(),
+                };
             div()
                 .flex_1()
                 .min_h_0()
@@ -4725,23 +4812,7 @@ impl Raku {
                         .items_center()
                         .justify_center()
                         .text_center()
-                        .child(icon("icons/folder.svg", 24.0, theme.text_tertiary))
-                        .child(
-                            div()
-                                .mt(px(24.0))
-                                .text_size(sp(14.0))
-                                .text_color(theme.text)
-                                .child(tr!("files.open_files_appear_here")),
-                        )
-                        .child(
-                            div()
-                                .mt(px(6.0))
-                                .max_w(px(300.0))
-                                .text_size(sp(13.0))
-                                .line_height(sp(18.0))
-                                .text_color(theme.text_tertiary)
-                                .child(tr!("files.open_files_description")),
-                        ),
+                        .child(empty_state),
                 )
                 .child(self.render_right_panel_file_tree(None, file_tree_width, cx))
         }
@@ -5203,7 +5274,7 @@ impl Raku {
                 .disk_content
                 .clone();
             self.render_right_panel_empty_message(
-                tr!("attachments.preview_unavailable"),
+                tr!("files.preview_unavailable"),
                 reason,
                 cx,
             )
@@ -5554,22 +5625,24 @@ impl Raku {
         let reading_attachment = attachment.is_some();
 
         cx.spawn(async move |raku, cx| {
-            let read = cx
+            let (read, deleted) = cx
                 .background_executor()
                 .spawn({
                     let project_path = project_path.clone();
                     let relative_path = relative_path.clone();
                     async move {
                         if let Some(attachment) = attachment {
-                            read_attachment_file(&attachment, |command| {
+                            let read = read_attachment_file(&attachment, |command| {
                                 client.request(Uuid::nil(), Uuid::nil(), command)
-                            })
+                            });
+                            (read, false)
                         } else {
-                            read_right_panel_file(
-                                &workspace,
-                                project_path.as_deref().expect("workspace checked above"),
-                                &relative_path,
-                            )
+                            let project_path =
+                                project_path.as_deref().expect("workspace checked above");
+                            let read =
+                                read_right_panel_file(&workspace, project_path, &relative_path);
+                            let deleted = workspace_file_was_deleted(project_path, &relative_path);
+                            (read, deleted)
                         }
                     }
                 })
@@ -5606,6 +5679,10 @@ impl Raku {
                 // An edit landed while the read was in flight; the user's text
                 // wins over the copy on disk.
                 if editor.dirty {
+                    return;
+                }
+                if deleted {
+                    raku.close_deleted_right_panel_file(&relative_path, cx);
                     return;
                 }
                 // Daemon-fetched PDFs carry no fingerprint, but their cache path
@@ -6026,7 +6103,7 @@ impl Raku {
                 div().flex_1().min_h_0().min_w_0().child(browser)
             }
             Some(Err(error)) => self.render_right_panel_empty_message(
-                tr!("attachments.preview_unavailable"),
+                tr!("files.preview_unavailable"),
                 error,
                 cx,
             ),
@@ -6034,7 +6111,7 @@ impl Raku {
                 if reading {
                     tr!("files.loading_file")
                 } else {
-                    tr!("attachments.preview_unavailable")
+                    tr!("files.preview_unavailable")
                 },
                 disk_content,
                 cx,
@@ -6245,7 +6322,7 @@ impl Raku {
             Some(Ok(table)) => table,
             Some(Err(error)) => {
                 return self.render_right_panel_empty_message(
-                    tr!("attachments.preview_unavailable"),
+                    tr!("files.preview_unavailable"),
                     error,
                     cx,
                 );

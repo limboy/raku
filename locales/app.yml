@@ -1611,8 +1611,6 @@ files.unsaved_changes:
   en: Unsaved changes — %{shortcut} to save
 files.open_files_appear_here:
   en: Open files appear here
-files.open_files_description:
-  en: Pick a file in the tree, or click a file path in the conversation.
 files.filter_files:
   en: Filter files…
 files.no_matching_files:
@@ -1687,6 +1685,10 @@ files.copy_row:
   en: Copy row
 files.sort_column:
   en: "Sort by %{column}"
+files.preview_unavailable:
+  en: Preview unavailable
+files.file_deleted:
+  en: "%{path} was moved or deleted"
 files.unable_to_open:
   en: "Unable to open this file: %{error}"
 files.preview_too_large:

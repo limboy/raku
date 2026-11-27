@@ -787,7 +787,6 @@ background.status.lost: 已断开
 background.unavailable: 此后台工作已不可用。
 files.unsaved_changes: 有未保存的更改 — 按 %{shortcut} 保存
 files.open_files_appear_here: 打开的文件会显示在这里
-files.open_files_description: 在文件树中选择文件，或点击对话中的文件路径。
 files.filter_files: 筛选文件…
 files.no_matching_files: 没有匹配的文件
 files.no_project_open: 尚未打开项目
@@ -825,6 +824,8 @@ files.table_no_matching_rows: 没有匹配的行
 files.copy_cell: 复制单元格
 files.copy_row: 复制整行
 files.sort_column: "按 %{column} 排序"
+files.preview_unavailable: 无法预览
+files.file_deleted: "%{path} 已被移动或删除"
 files.unable_to_open: "无法打开此文件：%{error}"
 files.preview_too_large: 文件过大，无法预览（最大 2 MB）。
 files.binary_preview_unavailable: 此文件包含二进制数据。
