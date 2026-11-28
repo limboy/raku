@@ -7044,16 +7044,15 @@ impl Raku {
                 pane.update(cx, |_, cx| cx.notify());
             });
         });
+        // Typeset like an assistant reply in the transcript: same font, the
+        // same size setting, and the same body metrics.
         let ctx = MarkdownCtx::new(
             format!("file-preview-{relative_path}"),
             &palette,
-            MarkdownMetrics::document(
-                raku_client::persistence::DEFAULT_UI_FONT_SIZE,
-                self.state.code_font_size,
-            ),
+            self.transcript_markdown_metrics(MarkdownMetrics::BODY),
             self.file_preview_selection.clone(),
         )
-        .with_font_family(self.fonts.interface.clone())
+        .with_font_family(self.fonts.transcript.clone())
         .with_font_fallbacks(self.fonts.fallbacks())
         .with_math_enabled(self.state.render_math)
         .with_context_menu(preview_menu.clone())
