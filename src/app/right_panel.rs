@@ -1420,20 +1420,41 @@ fn markdown_preview_menu_items(
     raku: WeakEntity<Raku>,
 ) -> Vec<MenuItem> {
     let copy_text = selected.clone();
-    let add_raku = raku.clone();
-    let add_path = display_path.clone();
-    let add_text = selected.clone();
-    let add_selection = selection.clone();
     let mut items = vec![
         MenuItem::new(tr!("menu.copy"), move |_, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
         })
         .icon("icons/copy.svg"),
         MenuItem::Separator,
+    ];
+    items.extend(file_excerpt_chat_menu_items(
+        display_path,
+        selected,
+        can_side_chat,
+        Rc::new(move || selection.clear()),
+        raku,
+    ));
+    items
+}
+
+/// "Add to chat" and, when a side chat can start, "Start side chat" for text
+/// selected in a file view. `on_use` runs first, to drop the view's selection.
+fn file_excerpt_chat_menu_items(
+    display_path: String,
+    selected: String,
+    can_side_chat: bool,
+    on_use: Rc<dyn Fn()>,
+    raku: WeakEntity<Raku>,
+) -> Vec<MenuItem> {
+    let add_raku = raku.clone();
+    let add_path = display_path.clone();
+    let add_text = selected.clone();
+    let add_on_use = on_use.clone();
+    let mut items = vec![
         MenuItem::new(tr!("common.add_to_chat"), move |window, cx| {
             let path = add_path.clone();
             let text = add_text.clone();
-            add_selection.clear();
+            add_on_use();
             let _ = add_raku.update(cx, |this, cx| {
                 this.stage_file_excerpt_snippet(&path, text, cx);
                 let focus = this.composer.read(cx).focus();
@@ -1447,7 +1468,7 @@ fn markdown_preview_menu_items(
             MenuItem::new(tr!("side_chat.menu_item"), move |window, cx| {
                 let path = display_path.clone();
                 let text = selected.clone();
-                selection.clear();
+                on_use();
                 let _ = raku.update(cx, |this, cx| {
                     this.start_side_chat_from_file_excerpt(path, text, window, cx);
                 });
@@ -5273,11 +5294,7 @@ impl Raku {
             let reason = self.right_panel_file_editors[&relative_path]
                 .disk_content
                 .clone();
-            self.render_right_panel_empty_message(
-                tr!("files.preview_unavailable"),
-                reason,
-                cx,
-            )
+            self.render_right_panel_empty_message(tr!("files.preview_unavailable"), reason, cx)
         } else if is_html && preview {
             self.render_file_html_preview(&relative_path, attachment.as_ref(), window, cx)
         } else if is_tabular && preview {
@@ -5498,11 +5515,31 @@ impl Raku {
         // starts empty and locked, and `read_right_panel_file_into_editor`
         // fills it in from the background executor a frame or two later.
         let language = file_highlighter_language(relative_path);
+        let display_path = attachment
+            .as_ref()
+            .map(|attachment| attachment.name.to_string())
+            .unwrap_or_else(|| relative_path.to_owned());
+        let raku = cx.entity().downgrade();
         let state = cx.new(|cx| {
-            TextInput::new(window, cx)
+            let mut input = TextInput::new(window, cx)
                 .multi_line()
                 .syntax(Some(language))
-                .read_only(true)
+                .read_only(true);
+            // Source mode offers the same chat actions as the rendered
+            // preview's menu, after the field's own editing entries.
+            input.set_context_menu_extras(Rc::new(move |selected, cx| {
+                let can_side_chat = raku
+                    .upgrade()
+                    .is_some_and(|raku| raku.read(cx).side_chat_parent_session().is_some());
+                file_excerpt_chat_menu_items(
+                    display_path.clone(),
+                    selected,
+                    can_side_chat,
+                    Rc::new(|| {}),
+                    raku.clone(),
+                )
+            }));
+            input
         });
 
         self.right_panel_file_editors.insert(
@@ -6102,11 +6139,9 @@ impl Raku {
                 }
                 div().flex_1().min_h_0().min_w_0().child(browser)
             }
-            Some(Err(error)) => self.render_right_panel_empty_message(
-                tr!("files.preview_unavailable"),
-                error,
-                cx,
-            ),
+            Some(Err(error)) => {
+                self.render_right_panel_empty_message(tr!("files.preview_unavailable"), error, cx)
+            }
             None => self.render_right_panel_empty_message(
                 if reading {
                     tr!("files.loading_file")

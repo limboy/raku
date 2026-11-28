@@ -83,7 +83,7 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-use crate::theme::{DEFAULT_FONT_WEIGHT, SMALL_UI_FONT_SIZE, Theme, sp};
+use crate::theme::{DEFAULT_FONT_WEIGHT, Fonts, SMALL_UI_FONT_SIZE, Theme, sp};
 use crate::ui::icon;
 
 /// One row of a menu.
@@ -1512,7 +1512,13 @@ impl RenderOnce for MenuCard {
             }
         }
 
+        // The card is deferred but inherits the text style of where it was
+        // declared, so a menu opened over a code editor would otherwise draw
+        // in the editor's mono face and size. Every menu speaks the interface
+        // font; the rows set their own size and the cards their own weight.
+        let interface_font = cx.try_global::<Fonts>().map(Fonts::interface_font);
         let mut surface = div()
+            .when_some(interface_font, |surface, font| surface.font(font))
             .relative()
             .occlude()
             .track_focus(&self.handle.focus)

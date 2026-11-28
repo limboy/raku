@@ -801,9 +801,20 @@ pub struct TextInput {
     history: EditHistory,
     external_context_menu_focus_holds: usize,
     context_menu: ContextMenuHandle,
+    /// The field's own right-click menu opened while the field held focus.
+    /// The card takes real focus while open, so closing it without picking an
+    /// item hands focus back here; otherwise the window's focus-lost fallback
+    /// would send it elsewhere and the next Copy would miss this selection.
+    context_menu_return_focus: bool,
+    /// Owner-supplied entries appended to the right-click menu while text is
+    /// selected, given that text.
+    context_menu_extras: Option<ContextMenuExtras>,
     blink_cursor: Entity<BlinkCursor>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Builds the owner's extra right-click entries for the selected text.
+pub type ContextMenuExtras = Rc<dyn Fn(String, &mut App) -> Vec<MenuItem>>;
 
 #[derive(Clone, PartialEq)]
 struct TrailingHint {
@@ -890,13 +901,22 @@ impl TextInput {
                 ContextMenuHandle::new(cx).on_toggle(move |open, window, cx| {
                     let _ = composer.update(cx, |composer: &mut Self, cx| {
                         if open {
-                            composer.preserve_visual_focus_for_context_menu(window, cx);
+                            composer.context_menu_return_focus =
+                                composer.preserve_visual_focus_for_context_menu(window, cx);
                         } else {
                             composer.release_visual_focus_for_context_menu(window, cx);
+                            // Runs before whatever closed the menu: a click on
+                            // another focusable element still takes focus in its
+                            // own bubble pass, and a picked item still acts after.
+                            if std::mem::take(&mut composer.context_menu_return_focus) {
+                                window.focus(&composer.focus_handle, cx);
+                            }
                         }
                     });
                 })
             },
+            context_menu_return_focus: false,
+            context_menu_extras: None,
             blink_cursor,
             _subscriptions,
         }
@@ -1073,6 +1093,12 @@ impl TextInput {
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
         self
+    }
+
+    /// Entries the owner appends to the right-click menu while text is
+    /// selected, such as sending the selection to a chat.
+    pub fn set_context_menu_extras(&mut self, extras: ContextMenuExtras) {
+        self.context_menu_extras = Some(extras);
     }
 
     /// Flip read-only after construction. A file editor starts locked because
@@ -3404,14 +3430,30 @@ impl Render for TextInput {
             "composer-context-menu",
             &self.context_menu,
             move |cx| {
-                let (has_selection, has_content, all_selected) = {
+                let (has_selection, has_content, all_selected, read_only, extras) = {
                     let input = context_menu_input.read(cx);
                     let has_selection = !input.selected_range.is_empty();
                     let has_content = !input.content.is_empty();
                     let all_selected = has_content
                         && input.selected_range.start == 0
                         && input.selected_range.end == input.content.len();
-                    (has_selection, has_content, all_selected)
+                    let extras = input
+                        .context_menu_extras
+                        .clone()
+                        .filter(|_| has_selection)
+                        .map(|extras| {
+                            (
+                                extras,
+                                input.content[input.selected_range.clone()].to_owned(),
+                            )
+                        });
+                    (
+                        has_selection,
+                        has_content,
+                        all_selected,
+                        input.read_only,
+                        extras,
+                    )
                 };
                 let can_paste = cx
                     .read_from_clipboard()
@@ -3435,37 +3477,62 @@ impl Render for TextInput {
                     }
                 };
 
-                vec![
-                    MenuItem::new(
-                        tr!("menu.cut"),
-                        run(&context_menu_input, |input, window, cx| {
-                            input.cut(&Cut, window, cx)
-                        }),
-                    )
-                    .disabled(!has_selection),
+                let mut items = Vec::new();
+                // A read-only field cannot cut or paste; offering the entries
+                // disabled would only advertise edits it never takes.
+                if !read_only {
+                    items.push(
+                        MenuItem::new(
+                            tr!("menu.cut"),
+                            run(&context_menu_input, |input, window, cx| {
+                                input.cut(&Cut, window, cx)
+                            }),
+                        )
+                        .icon("icons/ant/scissors.svg")
+                        .disabled(!has_selection),
+                    );
+                }
+                items.push(
                     MenuItem::new(
                         tr!("menu.copy"),
                         run(&context_menu_input, |input, window, cx| {
                             input.copy(&Copy, window, cx)
                         }),
                     )
+                    .icon("icons/copy.svg")
                     .disabled(!has_selection),
-                    MenuItem::new(
-                        tr!("menu.paste"),
-                        run(&context_menu_input, |input, window, cx| {
-                            input.paste(&Paste, window, cx)
-                        }),
-                    )
-                    .disabled(!can_paste),
-                    MenuItem::Separator,
+                );
+                if !read_only {
+                    items.push(
+                        MenuItem::new(
+                            tr!("menu.paste"),
+                            run(&context_menu_input, |input, window, cx| {
+                                input.paste(&Paste, window, cx)
+                            }),
+                        )
+                        .icon("icons/ant/clipboard.svg")
+                        .disabled(!can_paste),
+                    );
+                }
+                items.push(MenuItem::Separator);
+                items.push(
                     MenuItem::new(
                         tr!("menu.select_all"),
                         run(&context_menu_input, |input, window, cx| {
                             input.select_all(&SelectAll, window, cx)
                         }),
                     )
+                    .icon("icons/ant/text-select.svg")
                     .disabled(!has_content || all_selected),
-                ]
+                );
+                if let Some((extras, selected)) = extras {
+                    let extra_items = extras(selected, cx);
+                    if !extra_items.is_empty() {
+                        items.push(MenuItem::Separator);
+                        items.extend(extra_items);
+                    }
+                }
+                items
             },
         )
     }
@@ -3846,6 +3913,41 @@ mod tests {
         cx.update(|window, cx| window.focus(&composer.read(cx).focus(), cx));
         cx.run_until_parked();
         (composer, cx)
+    }
+
+    #[gpui::test]
+    fn dismissing_the_context_menu_returns_focus_so_copy_still_works(cx: &mut TestAppContext) {
+        let (input, cx) = setup_input(cx, "copy me please", px(300.));
+        cx.update(|_, cx| crate::ui::menu::init(cx));
+        input.update(cx, |input, cx| input.select_range(0..7, cx));
+        let center = cx.read_entity(&input, |input, _| {
+            input.last_layout.as_ref().unwrap().bounds().center()
+        });
+        cx.simulate_mouse_down(center, gpui::MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            cx.read_entity(&input, |input, _| input.context_menu_open()),
+            "right-click opens the field's menu"
+        );
+        // The card claims focus a couple of frames after opening; take it
+        // now, as a real window would have by the time a key arrives.
+        cx.update(|window, cx| {
+            let card = input.read(cx).context_menu.focus_handle().clone();
+            window.focus(&card, cx);
+        });
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(cx.read_entity(&input, |input, _| !input.context_menu_open()));
+        assert!(
+            cx.update(|window, cx| input.read(cx).focus().is_focused(window)),
+            "closing the menu hands focus back to the field"
+        );
+        cx.simulate_keystrokes("secondary-c");
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("copy me".to_owned())
+        );
     }
 
     #[gpui::test]
