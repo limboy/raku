@@ -16,6 +16,13 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [2.8.1] - 2026-11-28
+
+- Match Markdown file previews to the transcript's font and text-size settings
+- Add selected source text to chat or start a side chat from the file editor's context menu
+- Match text-field context menus to the app's menus and hide editing actions in read-only files
+- Keep Cmd+C working on selected text after dismissing its context menu
+
 ## [2.8.0] - 2026-11-27
 
 - Preview PDF and HTML files in the right panel, and CSV/TSV files as a table you can filter, sort, and navigate by keyboard
